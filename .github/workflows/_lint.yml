@@ -33,4 +33,5 @@ jobs:
         run: sqlc diff
       - if: inputs.lang == 'go'
         uses: golangci/golangci-lint-action@v6
-        with: { working-directory: ${{ inputs.path }} }
+        with:
+          working-directory: ${{ inputs.path }}
