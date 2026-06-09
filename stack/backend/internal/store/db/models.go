@@ -8,9 +8,10 @@ import (
 	pgvector "github.com/pgvector/pgvector-go"
 )
 
-type Document struct {
+type Claim struct {
 	ID        string
 	Content   string
-	Metadata  []byte
+	Verdict   string
+	Sources   []byte
 	Embedding pgvector.HalfVector
 }

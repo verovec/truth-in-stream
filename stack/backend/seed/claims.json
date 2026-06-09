@@ -1,0 +1,197 @@
+[
+  {
+    "id": "great-wall-from-space",
+    "text": "The Great Wall of China is visible from space with the naked eye.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "NASA: China's Wall Less Great in View from Space", "url": "https://www.nasa.gov/vision/space/workinginspace/great_wall.html" },
+      { "title": "Scientific American: Is China's Great Wall Visible from Space?", "url": "https://www.scientificamerican.com/article/is-chinas-great-wall-visible-from-space/" }
+    ]
+  },
+  {
+    "id": "water-boiling-point",
+    "text": "Water boils at 100 degrees Celsius at sea level.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "NIST: Water Properties", "url": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C7732185" }
+    ]
+  },
+  {
+    "id": "ten-percent-brain",
+    "text": "Humans only use ten percent of their brains.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Scientific American: Do People Only Use 10 Percent of Their Brains?", "url": "https://www.scientificamerican.com/article/do-people-only-use-10-percent-of-their-brains/" }
+    ]
+  },
+  {
+    "id": "lightning-strikes-twice",
+    "text": "Lightning never strikes the same place twice.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "NOAA: Lightning Safety Myths", "url": "https://www.weather.gov/safety/lightning-myths" }
+    ]
+  },
+  {
+    "id": "amazon-oxygen-share",
+    "text": "The Amazon rainforest produces twenty percent of the world's oxygen.",
+    "verdict": "unclear",
+    "sources": [
+      { "title": "National Geographic: Why the Amazon Doesn't Really Produce 20% of the World's Oxygen", "url": "https://www.nationalgeographic.com/environment/article/why-amazon-doesnt-produce-20-percent-worlds-oxygen" }
+    ]
+  },
+  {
+    "id": "vaccines-autism",
+    "text": "Childhood vaccines cause autism.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "CDC: Vaccines Do Not Cause Autism", "url": "https://www.cdc.gov/vaccinesafety/concerns/autism.html" },
+      { "title": "WHO: Autism spectrum disorders", "url": "https://www.who.int/news-room/fact-sheets/detail/autism-spectrum-disorders" }
+    ]
+  },
+  {
+    "id": "everest-highest",
+    "text": "Mount Everest is the highest mountain above sea level on Earth.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "National Geographic: Mount Everest", "url": "https://education.nationalgeographic.org/resource/mount-everest/" }
+    ]
+  },
+  {
+    "id": "goldfish-memory",
+    "text": "Goldfish have a memory span of only three seconds.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Scientific American: Fact or Fiction: Goldfish Memory", "url": "https://www.scientificamerican.com/article/fact-or-fiction-goldfish-memory/" }
+    ]
+  },
+  {
+    "id": "sugar-hyperactivity",
+    "text": "Eating sugar makes children hyperactive.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "NIH MedlinePlus: Sugar and hyperactivity", "url": "https://medlineplus.gov/ency/article/002426.htm" }
+    ]
+  },
+  {
+    "id": "bats-blind",
+    "text": "Bats are blind.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "USGS: Do bats really drink blood and are they blind?", "url": "https://www.usgs.gov/faqs/are-bats-blind" }
+    ]
+  },
+  {
+    "id": "co2-greenhouse-gas",
+    "text": "Carbon dioxide is a greenhouse gas that traps heat in Earth's atmosphere.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "NASA: The Causes of Climate Change", "url": "https://climate.nasa.gov/causes/" },
+      { "title": "NOAA: Climate Forcing", "url": "https://www.climate.gov/news-features/understanding-climate/climate-change-atmospheric-carbon-dioxide" }
+    ]
+  },
+  {
+    "id": "napoleon-short",
+    "text": "Napoleon Bonaparte was unusually short for his time.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Encyclopaedia Britannica: Was Napoleon Short?", "url": "https://www.britannica.com/story/was-napoleon-short" }
+    ]
+  },
+  {
+    "id": "five-second-rule",
+    "text": "Food dropped on the floor is safe to eat if picked up within five seconds.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Rutgers: The Five-Second Rule Explored", "url": "https://www.rutgers.edu/news/rutgers-researchers-debunk-five-second-rule-eating-food-floor" }
+    ]
+  },
+  {
+    "id": "body-water-percentage",
+    "text": "The adult human body is roughly sixty percent water.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "USGS: The Water in You", "url": "https://www.usgs.gov/special-topics/water-science-school/science/water-you-water-and-human-body" }
+    ]
+  },
+  {
+    "id": "coffee-stunts-growth",
+    "text": "Drinking coffee stunts your growth.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Harvard Health: Coffee and your growth", "url": "https://www.health.harvard.edu/staying-healthy/is-coffee-good-or-bad-for-your-health" }
+    ]
+  },
+  {
+    "id": "speed-of-light-limit",
+    "text": "Nothing can travel faster than the speed of light in a vacuum.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "NASA: The Speed of Light", "url": "https://www.nasa.gov/directorates/heo/scan/communications/outreach/funfacts/txt_speed_of_light.html" }
+    ]
+  },
+  {
+    "id": "ostrich-head-sand",
+    "text": "Ostriches bury their heads in the sand when frightened.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Smithsonian: Do Ostriches Really Bury Their Heads in the Sand?", "url": "https://www.smithsonianmag.com/smart-news/ostriches-dont-bury-their-heads-sand/" }
+    ]
+  },
+  {
+    "id": "tongue-taste-zones",
+    "text": "Different parts of the tongue detect different basic tastes in distinct zones.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "Scientific American: The Tongue Map Is a Myth", "url": "https://www.scientificamerican.com/article/the-tongue-map-tasteless-myth-debunked/" }
+    ]
+  },
+  {
+    "id": "moon-dark-side",
+    "text": "The far side of the Moon never receives any sunlight.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "NASA: Is There a Dark Side of the Moon?", "url": "https://moon.nasa.gov/resources/216/is-there-a-dark-side-of-the-moon/" }
+    ]
+  },
+  {
+    "id": "honey-never-spoils",
+    "text": "Honey can remain edible for years and effectively never spoils when stored properly.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "Smithsonian: The Science Behind Honey's Eternal Shelf Life", "url": "https://www.smithsonianmag.com/science-nature/the-science-behind-honeys-eternal-shelf-life-1218690/" }
+    ]
+  },
+  {
+    "id": "birds-from-dinosaurs",
+    "text": "Modern birds are descended from theropod dinosaurs.",
+    "verdict": "corroborates",
+    "sources": [
+      { "title": "American Museum of Natural History: Are Birds Dinosaurs?", "url": "https://www.amnh.org/dinosaurs/dinosaur-facts" }
+    ]
+  },
+  {
+    "id": "antibiotics-vs-viruses",
+    "text": "Antibiotics are effective at treating viral infections like the common cold.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "CDC: Antibiotic Use Questions and Answers", "url": "https://www.cdc.gov/antibiotic-use/about/index.html" }
+    ]
+  },
+  {
+    "id": "seasons-from-distance",
+    "text": "Earth's seasons are caused by its changing distance from the Sun.",
+    "verdict": "contradicts",
+    "sources": [
+      { "title": "NASA: What Causes the Seasons?", "url": "https://spaceplace.nasa.gov/seasons/en/" }
+    ]
+  },
+  {
+    "id": "breakfast-weight-loss",
+    "text": "Eating breakfast is essential for losing weight.",
+    "verdict": "unclear",
+    "sources": [
+      { "title": "BMJ: Association between breakfast and weight change", "url": "https://www.bmj.com/content/364/bmj.l42" }
+    ]
+  }
+]

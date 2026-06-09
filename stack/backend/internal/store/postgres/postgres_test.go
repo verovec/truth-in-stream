@@ -4,14 +4,16 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-const dims = 1024
+const dims = domain.EmbeddingDim
 
 // setupStore opens a store against TEST_DATABASE_URL and resets the schema.
 // It skips the test when the variable is unset so unit runs stay hermetic;
@@ -24,7 +26,7 @@ func setupStore(t *testing.T) *Store {
 		t.Skip("TEST_DATABASE_URL not set; skipping pgvector integration test")
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	resetSchema(t, ctx, dsn)
 
 	store, err := Open(ctx, dsn)
@@ -35,6 +37,11 @@ func setupStore(t *testing.T) *Store {
 	return store
 }
 
+// resetSchema brings the database to the latest schema from a clean slate that
+// does not depend on the current migration version: it drops the known tables,
+// then applies every up migration in order, exactly as CI and golang-migrate
+// apply them. (Down migrations are inverses valid only at their own version, so
+// they are not safe to replay blindly from arbitrary state.)
 func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 	t.Helper()
 
@@ -44,26 +51,33 @@ func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 	}
 	defer pool.Close()
 
-	migrations := filepath.Join("..", "..", "..", "migrations")
-	down, err := os.ReadFile(filepath.Join(migrations, "0001_init.down.sql"))
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents"); err != nil {
+		t.Fatalf("reset: drop tables: %v", err)
+	}
+
+	dir := filepath.Join("..", "..", "..", "migrations")
+	ups, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
 	if err != nil {
-		t.Fatalf("reset: read down migration: %v", err)
+		t.Fatalf("reset: glob migrations: %v", err)
 	}
-	up, err := os.ReadFile(filepath.Join(migrations, "0001_init.up.sql"))
-	if err != nil {
-		t.Fatalf("reset: read up migration: %v", err)
-	}
-	// Run down then up so a stray object from a prior run cannot survive, and
-	// so both migration directions are exercised.
-	if _, err := pool.Exec(ctx, string(down)); err != nil {
-		t.Fatalf("reset: apply down migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(up)); err != nil {
-		t.Fatalf("reset: apply up migration: %v", err)
+	sort.Strings(ups)
+	for _, up := range ups {
+		execSQLFile(t, ctx, pool, up)
 	}
 }
 
-// unitVec returns a 1024-dim vector that is 1 at index hot, 0 elsewhere.
+func execSQLFile(t *testing.T, ctx context.Context, pool *pgxpool.Pool, path string) {
+	t.Helper()
+	sql, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reset: read %s: %v", path, err)
+	}
+	if _, err := pool.Exec(ctx, string(sql)); err != nil {
+		t.Fatalf("reset: apply %s: %v", path, err)
+	}
+}
+
+// unitVec returns a dims-length vector that is 1 at index hot, 0 elsewhere.
 // Distinct hot indices are mutually orthogonal, so cosine distance is 1
 // between any two and 0 to itself - convenient for asserting ordering.
 func unitVec(hot int) []float32 {
@@ -74,27 +88,28 @@ func unitVec(hot int) []float32 {
 
 func TestSearchOrdersByCosineDistance(t *testing.T) {
 	store := setupStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	docs := []domain.Document{
-		{ID: "a", Content: "alpha", Metadata: map[string]any{"k": "a"}, Embedding: unitVec(0)},
-		{ID: "b", Content: "bravo", Metadata: map[string]any{"k": "b"}, Embedding: unitVec(1)},
-		{ID: "c", Content: "charlie", Metadata: map[string]any{"k": "c"}, Embedding: unitVec(2)},
+	claims := []domain.Claim{
+		{ID: "a", Text: "alpha", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "A", URL: "https://a.example"}}, Embedding: unitVec(0)},
+		{ID: "b", Text: "bravo", Verdict: domain.VerdictContradicts, Sources: []domain.Source{{Title: "B", URL: "https://b.example"}}, Embedding: unitVec(1)},
+		{ID: "c", Text: "charlie", Verdict: domain.VerdictUnclear, Embedding: unitVec(2)},
 	}
-	if err := store.Upsert(ctx, docs); err != nil {
+	if err := store.Upsert(ctx, claims); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
 	tests := []struct {
-		name      string
-		query     []float32
-		topK      int
-		wantFirst string
-		wantLen   int
+		name        string
+		query       []float32
+		topK        int
+		wantFirst   string
+		wantVerdict domain.Verdict
+		wantLen     int
 	}{
-		{name: "nearest is a", query: unitVec(0), topK: 3, wantFirst: "a", wantLen: 3},
-		{name: "nearest is b", query: unitVec(1), topK: 3, wantFirst: "b", wantLen: 3},
-		{name: "topK truncates", query: unitVec(2), topK: 1, wantFirst: "c", wantLen: 1},
+		{name: "nearest is a", query: unitVec(0), topK: 3, wantFirst: "a", wantVerdict: domain.VerdictCorroborates, wantLen: 3},
+		{name: "nearest is b", query: unitVec(1), topK: 3, wantFirst: "b", wantVerdict: domain.VerdictContradicts, wantLen: 3},
+		{name: "topK truncates", query: unitVec(2), topK: 1, wantFirst: "c", wantVerdict: domain.VerdictUnclear, wantLen: 1},
 	}
 
 	for _, tc := range tests {
@@ -109,27 +124,50 @@ func TestSearchOrdersByCosineDistance(t *testing.T) {
 			if got[0].ID != tc.wantFirst {
 				t.Fatalf("nearest = %q, want %q", got[0].ID, tc.wantFirst)
 			}
+			if got[0].Verdict != tc.wantVerdict {
+				t.Errorf("verdict = %q, want %q", got[0].Verdict, tc.wantVerdict)
+			}
 			if got[0].Distance > 1e-4 {
 				t.Errorf("nearest distance = %v, want ~0", got[0].Distance)
-			}
-			if got[0].Metadata["k"] != tc.wantFirst {
-				t.Errorf("metadata not round-tripped: got %v", got[0].Metadata)
 			}
 		})
 	}
 }
 
+func TestSearchRoundTripsSources(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	want := []domain.Source{
+		{Title: "First", URL: "https://first.example/path"},
+		{Title: "Second", URL: "https://second.example"},
+	}
+	if err := store.Upsert(ctx, []domain.Claim{
+		{ID: "s", Text: "sourced", Verdict: domain.VerdictCorroborates, Sources: want, Embedding: unitVec(0)},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, err := store.Search(ctx, unitVec(0), 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if diff := cmp.Diff(want, got[0].Sources); diff != "" {
+		t.Errorf("sources mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestUpsertReplacesByID(t *testing.T) {
 	store := setupStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	if err := store.Upsert(ctx, []domain.Document{
-		{ID: "x", Content: "first", Embedding: unitVec(0)},
+	if err := store.Upsert(ctx, []domain.Claim{
+		{ID: "x", Text: "first", Verdict: domain.VerdictCorroborates, Embedding: unitVec(0)},
 	}); err != nil {
 		t.Fatalf("Upsert insert: %v", err)
 	}
-	if err := store.Upsert(ctx, []domain.Document{
-		{ID: "x", Content: "second", Embedding: unitVec(0)},
+	if err := store.Upsert(ctx, []domain.Claim{
+		{ID: "x", Text: "second", Verdict: domain.VerdictContradicts, Embedding: unitVec(0)},
 	}); err != nil {
 		t.Fatalf("Upsert replace: %v", err)
 	}
@@ -141,14 +179,91 @@ func TestUpsertReplacesByID(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d matches, want 1 (upsert must not duplicate)", len(got))
 	}
-	if got[0].Content != "second" {
-		t.Errorf("content = %q, want %q", got[0].Content, "second")
+	if got[0].Text != "second" || got[0].Verdict != domain.VerdictContradicts {
+		t.Errorf("claim = %q/%q, want second/contradicts", got[0].Text, got[0].Verdict)
+	}
+}
+
+func TestUpsertRejectsInvalidVerdict(t *testing.T) {
+	store := setupStore(t)
+	err := store.Upsert(t.Context(), []domain.Claim{
+		{ID: "bad", Text: "no verdict", Verdict: "maybe", Embedding: unitVec(0)},
+	})
+	if err == nil {
+		t.Fatal("Upsert with invalid verdict: want error, got nil")
+	}
+}
+
+func TestUpsertRejectsWrongDimension(t *testing.T) {
+	store := setupStore(t)
+	err := store.Upsert(t.Context(), []domain.Claim{
+		{ID: "bad", Text: "short vector", Verdict: domain.VerdictUnclear, Embedding: []float32{1, 2, 3}},
+	})
+	if err == nil {
+		t.Fatal("Upsert with wrong dimension: want error, got nil")
 	}
 }
 
 func TestUpsertEmptyIsNoop(t *testing.T) {
 	store := setupStore(t)
-	if err := store.Upsert(context.Background(), nil); err != nil {
+	if err := store.Upsert(t.Context(), nil); err != nil {
 		t.Fatalf("Upsert(nil): %v", err)
+	}
+}
+
+// These run without a database: they exercise the jsonb encoding directly.
+
+func TestMarshalSourcesShape(t *testing.T) {
+	t.Parallel()
+	raw, err := marshalSources([]domain.Source{{Title: "T", URL: "https://u.example"}})
+	if err != nil {
+		t.Fatalf("marshalSources: %v", err)
+	}
+	if got, want := string(raw), `[{"title":"T","url":"https://u.example"}]`; got != want {
+		t.Errorf("encoding = %s, want %s", got, want)
+	}
+}
+
+func TestSourcesEncodingRoundTrip(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   []domain.Source
+		want []domain.Source
+	}{
+		{name: "nil normalizes to empty", in: nil, want: []domain.Source{}},
+		{name: "empty stays empty", in: []domain.Source{}, want: []domain.Source{}},
+		{
+			name: "multiple preserved in order",
+			in:   []domain.Source{{Title: "A", URL: "https://a"}, {Title: "B", URL: "https://b"}},
+			want: []domain.Source{{Title: "A", URL: "https://a"}, {Title: "B", URL: "https://b"}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := marshalSources(tc.in)
+			if err != nil {
+				t.Fatalf("marshalSources: %v", err)
+			}
+			got, err := unmarshalSources(raw)
+			if err != nil {
+				t.Fatalf("unmarshalSources: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("round trip mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestUnmarshalSourcesNullJSON(t *testing.T) {
+	t.Parallel()
+	got, err := unmarshalSources([]byte("null"))
+	if err != nil {
+		t.Fatalf("unmarshalSources(null): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d sources, want 0", len(got))
 	}
 }

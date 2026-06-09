@@ -3,6 +3,7 @@ module github.com/verovec/truth-in-stream/backend
 go 1.26
 
 require (
+	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pgvector/pgvector-go v0.4.0
 	github.com/pgvector/pgvector-go/pgx v0.4.0

@@ -12,8 +12,8 @@ type Querier interface {
 	// Named arg query_embedding is referenced twice but sqlc collapses it to a
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
-	SearchDocuments(ctx context.Context, arg SearchDocumentsParams) ([]SearchDocumentsRow, error)
-	UpsertDocument(ctx context.Context, arg []UpsertDocumentParams) *UpsertDocumentBatchResults
+	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
+	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 }
 
 var _ Querier = (*Queries)(nil)

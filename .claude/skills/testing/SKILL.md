@@ -33,13 +33,13 @@ npx tsc --noEmit                # type-check - run even though CI lacks this job
 npm test                        # vitest run (CI: _test.yml)
 ```
 
-All eight commands pass or the PR does not open. `make test` alone is not the full backend suite - the store integration tests only run with a database (`docker compose up postgres` provides `pgvector/pgvector:pg16`, same image as CI).
+All eight commands pass or the PR does not open. `make test` alone is not the full backend suite - the store integration tests only run with a database: `docker compose up -d postgres` (root compose file, `pgvector/pgvector:pg16`, same image as CI) matches the Makefile's default `DATABASE_URL` exactly, so `make test-integration` then works with no flags. Note `make sqlc-verify`, `migrate-*`, and the compose database all need Docker running - that is by design (pinned tooling, no local installs).
 
 ## CI contract (what the reusable workflows guarantee)
 
-- `_test.yml`: node -> `npm ci && npm test`; go -> `go test -race ./...` with a `pgvector/pgvector:pg16` service and `TEST_DATABASE_URL` injected. So **store integration tests always run in CI** - the env-var skip is a local convenience only, never a way to dodge them.
+- `_test.yml`: node -> `npm ci && npm test --if-present` (caveat: `--if-present` silently passes if the `test` script is missing - never remove or rename the `test` script in package.json); go -> `go test -race ./...` with a `pgvector/pgvector:pg16` service and `TEST_DATABASE_URL` injected. So **store integration tests always run in CI**; the env-var skip exists solely so a unit-test run works before `docker compose up` - it is never a sanctioned way to avoid running them before a PR.
 - `_lint.yml`: node -> eslint; go -> gofmt-check + `go vet` + `sqlc diff` (auto-skipped when no `sqlc.yaml`) + golangci-lint.
-- Extending CI: a new stack or check is two `uses:` entries in `pr.yml` reusing `_lint.yml`/`_test.yml` (and mirrored into `deploy.yml`'s gate), never a bespoke one-off workflow. Never add `paths:` filters to `pr.yml` - the whole-codebase gate is the point. Pin tool versions (Go, Node, sqlc) identically in CI, Makefile, and local docs; a version drift between them is a finding.
+- Extending CI: a new stack or check is two `uses:` entries in `pr.yml` reusing `_lint.yml`/`_test.yml` (and mirrored into `deploy.yml`'s gate), never a bespoke one-off workflow. ANY workflow change - new job, new reusable workflow, new gap-fix - is its own card, never a rider on a feature card. Never add `paths:` filters to `pr.yml` - the whole-codebase gate is the point. Pin tool versions (Go, Node, sqlc) identically in CI, Makefile, and local docs; a version drift between them is a finding.
 
 ## What every card ships (test side of Definition of Done)
 

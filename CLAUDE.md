@@ -56,7 +56,7 @@ changes. A card is not Done until its review passes.
 - Integrating a new pattern -> research-patterns skill; command `/research`.
 
 ## Commands
-`/roadmap`, `/card`, `/research`, `/version`, `/mayday` (router).
+`/roadmap`, `/card`, `/research`, `/version`, `/reconcile`, `/mayday` (router).
 
 ## State
 `.factory-state.json` (gitignored) holds identity, Linear ids, and the `stack` choices.

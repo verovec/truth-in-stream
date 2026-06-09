@@ -17,44 +17,47 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
-const upsertDocument = `-- name: UpsertDocument :batchexec
-INSERT INTO documents (id, content, metadata, embedding)
-VALUES ($1, $2, $3, $4)
+const upsertClaim = `-- name: UpsertClaim :batchexec
+INSERT INTO claims (id, content, verdict, sources, embedding)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (id) DO UPDATE
     SET content = EXCLUDED.content,
-        metadata = EXCLUDED.metadata,
+        verdict = EXCLUDED.verdict,
+        sources = EXCLUDED.sources,
         embedding = EXCLUDED.embedding
 `
 
-type UpsertDocumentBatchResults struct {
+type UpsertClaimBatchResults struct {
 	br     pgx.BatchResults
 	tot    int
 	closed bool
 }
 
-type UpsertDocumentParams struct {
+type UpsertClaimParams struct {
 	ID        string
 	Content   string
-	Metadata  []byte
+	Verdict   string
+	Sources   []byte
 	Embedding pgvector.HalfVector
 }
 
-func (q *Queries) UpsertDocument(ctx context.Context, arg []UpsertDocumentParams) *UpsertDocumentBatchResults {
+func (q *Queries) UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults {
 	batch := &pgx.Batch{}
 	for _, a := range arg {
 		vals := []interface{}{
 			a.ID,
 			a.Content,
-			a.Metadata,
+			a.Verdict,
+			a.Sources,
 			a.Embedding,
 		}
-		batch.Queue(upsertDocument, vals...)
+		batch.Queue(upsertClaim, vals...)
 	}
 	br := q.db.SendBatch(ctx, batch)
-	return &UpsertDocumentBatchResults{br, len(arg), false}
+	return &UpsertClaimBatchResults{br, len(arg), false}
 }
 
-func (b *UpsertDocumentBatchResults) Exec(f func(int, error)) {
+func (b *UpsertClaimBatchResults) Exec(f func(int, error)) {
 	defer b.br.Close()
 	for t := 0; t < b.tot; t++ {
 		if b.closed {
@@ -70,7 +73,7 @@ func (b *UpsertDocumentBatchResults) Exec(f func(int, error)) {
 	}
 }
 
-func (b *UpsertDocumentBatchResults) Close() error {
+func (b *UpsertClaimBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }

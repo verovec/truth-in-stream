@@ -6,7 +6,7 @@ MIGRATE_IMAGE := migrate/migrate:v4.18.3
 # Override for a real target, e.g. make migrate-up DATABASE_URL=postgres://...
 DATABASE_URL  ?= postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -40,3 +40,6 @@ tidy: ## go mod tidy
 
 build: ## Static build of the server
 	CGO_ENABLED=0 go build ./...
+
+ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
+	go run ./cmd/ingest

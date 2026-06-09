@@ -9,21 +9,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
-type fakeStore struct{ err error }
+type fakePinger struct{ err error }
 
-func (f fakeStore) Ping(ctx context.Context) error                        { return f.err }
-func (f fakeStore) Upsert(ctx context.Context, _ []domain.Document) error { return nil }
-func (f fakeStore) Search(ctx context.Context, _ []float32, _ int) ([]domain.Match, error) {
-	return nil, nil
-}
+func (f fakePinger) Ping(ctx context.Context) error { return f.err }
 
 func newTestServer(storeErr error) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	hc := service.NewHealthChecker(fakeStore{err: storeErr})
+	hc := service.NewHealthChecker(fakePinger{err: storeErr})
 	return NewMux(hc, logger)
 }
 

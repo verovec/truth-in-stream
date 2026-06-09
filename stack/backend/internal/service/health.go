@@ -4,24 +4,29 @@ package service
 import (
 	"context"
 	"fmt"
-
-	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// Pinger is the slice of the claim store the health check needs: a single
+// reachability probe. Defined here, on the consumer side, so the health check
+// does not depend on the full store surface.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
 
 // HealthChecker reports whether dependencies are reachable.
 type HealthChecker struct {
-	store domain.VectorStore
+	store Pinger
 }
 
-// NewHealthChecker builds a HealthChecker over the given vector store.
-func NewHealthChecker(store domain.VectorStore) *HealthChecker {
+// NewHealthChecker builds a HealthChecker over the given store.
+func NewHealthChecker(store Pinger) *HealthChecker {
 	return &HealthChecker{store: store}
 }
 
 // Check returns nil when all dependencies are healthy.
 func (h *HealthChecker) Check(ctx context.Context) error {
 	if err := h.store.Ping(ctx); err != nil {
-		return fmt.Errorf("vector store: %w", err)
+		return fmt.Errorf("claim store: %w", err)
 	}
 	return nil
 }
