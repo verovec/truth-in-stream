@@ -18,7 +18,7 @@ export default function Home() {
       <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 items-start gap-4 p-4 sm:p-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <PlaybackProvider>
           <VideoPlayer src={SAMPLE_VIDEO.src} title={SAMPLE_VIDEO.title} />
-          <FactCheckPanel />
+          <FactCheckPanel source={SAMPLE_VIDEO.src} />
         </PlaybackProvider>
       </main>
     </div>
