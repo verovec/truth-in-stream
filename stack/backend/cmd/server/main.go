@@ -15,6 +15,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
+	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
 )
 
 func main() {
@@ -32,6 +33,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	transcription, err := config.LoadTranscription()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -43,12 +48,19 @@ func run(logger *slog.Logger) error {
 	defer store.Close()
 
 	health := service.NewHealthChecker(store)
+	scribe := transcribe.New(transcribe.Config{
+		APIKey: transcription.APIKey,
+		Model:  transcription.Model,
+	})
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      handler.NewMux(health, logger),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    ":" + cfg.Port,
+		Handler: handler.NewMux(health, scribe, logger),
+		// Tight server-wide bounds; the transcript route extends its own
+		// deadlines per request via http.ResponseController.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

@@ -63,6 +63,12 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the wrapped writer so http.ResponseController can reach the
+// connection's deadline and flush controls through this wrapper.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
 func newID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)

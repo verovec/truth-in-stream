@@ -14,6 +14,9 @@ import (
 // are meaningless.
 const defaultEmbeddingModel = "voyage-4"
 
+// defaultTranscriptionModel is the ElevenLabs batch speech-to-text model.
+const defaultTranscriptionModel = "scribe_v2"
+
 // Config holds the runtime configuration for the server.
 type Config struct {
 	Port        string
@@ -23,14 +26,14 @@ type Config struct {
 // Load reads configuration from the environment, applying defaults and
 // failing fast when a required variable is missing.
 func Load() (Config, error) {
-	cfg := Config{
+	dbURL, err := requireEnv("DATABASE_URL")
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{
 		Port:        getenv("PORT", "8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-	}
-	if cfg.DatabaseURL == "" {
-		return Config{}, fmt.Errorf("config: DATABASE_URL is required")
-	}
-	return cfg, nil
+		DatabaseURL: dbURL,
+	}, nil
 }
 
 // Embedding holds the configuration for the Voyage embedding provider.
@@ -46,13 +49,14 @@ type Embedding struct {
 // EMBEDDING_DIM that disagrees with the pinned dimension is a fatal
 // misconfiguration rather than a silent re-ingest hazard.
 func LoadEmbedding() (Embedding, error) {
+	apiKey, err := requireEnv("EMBEDDING_API_KEY")
+	if err != nil {
+		return Embedding{}, err
+	}
 	e := Embedding{
-		APIKey: os.Getenv("EMBEDDING_API_KEY"),
+		APIKey: apiKey,
 		Model:  getenv("EMBEDDING_MODEL", defaultEmbeddingModel),
 		Dim:    domain.EmbeddingDim,
-	}
-	if e.APIKey == "" {
-		return Embedding{}, fmt.Errorf("config: EMBEDDING_API_KEY is required")
 	}
 	if raw := os.Getenv("EMBEDDING_DIM"); raw != "" {
 		dim, err := strconv.Atoi(raw)
@@ -66,9 +70,38 @@ func LoadEmbedding() (Embedding, error) {
 	return e, nil
 }
 
+// Transcription holds the configuration for the ElevenLabs speech-to-text
+// provider.
+type Transcription struct {
+	APIKey string
+	Model  string
+}
+
+// LoadTranscription reads the transcription provider configuration from the
+// environment. TRANSCRIPTION_API_KEY is required; the model defaults to
+// scribe_v2.
+func LoadTranscription() (Transcription, error) {
+	apiKey, err := requireEnv("TRANSCRIPTION_API_KEY")
+	if err != nil {
+		return Transcription{}, err
+	}
+	return Transcription{
+		APIKey: apiKey,
+		Model:  getenv("TRANSCRIPTION_MODEL", defaultTranscriptionModel),
+	}, nil
+}
+
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+func requireEnv(key string) (string, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return "", fmt.Errorf("config: %s is required", key)
+	}
+	return v, nil
 }

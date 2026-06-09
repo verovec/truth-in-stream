@@ -98,6 +98,25 @@ All SQL goes through sqlc - hand-written query strings and ORMs are both banned.
 - pgvector gotchas (hard-won, keep): `halfvec` needs a per-**column** override to `pgvector.HalfVector` (not `db_type`) - every new vector column gets one. Use `sqlc.arg(query_embedding)` in both SELECT and ORDER BY so sqlc emits one param and HNSW drives the order (sqlc #3496). Cast distance `(... <=> ...)::float8` to get `float64`, not `interface{}`. Nil `map[string]any` encodes as SQL NULL - coerce to `{}` before insert (`metadata` is NOT NULL). Batch writes use `:batchexec` (pgx `SendBatch`). Register vector types and `SET hnsw.ef_search` in `cfg.AfterConnect`.
 - Migrations: `migrations/000N_*.{up,down}.sql`, applied by golang-migrate (`make migrate-up`; compose runs a one-shot migrate service; prod applies on deploy).
 
+## Transcription (ElevenLabs Scribe, via internal/transcribe)
+
+Verified 2026-06 against elevenlabs.io/docs/api-reference/speech-to-text: batch is `POST
+https://api.elevenlabs.io/v1/speech-to-text`, auth header `xi-api-key` (NOT Bearer), model
+`scribe_v2`; realtime is `wss://api.elevenlabs.io/v1/speech-to-text/realtime`, model
+`scribe_v2_realtime`. No official Go SDK exists - the direct net/http adapter in
+`internal/transcribe` is the sanctioned integration; community SDKs are banned.
+
+- All callers go through the `transcribe.Transcriber` interface - never construct provider
+  requests elsewhere. `TranscribeStream` is the reserved live-mode method; implement it
+  against Scribe v2 Realtime without changing the interface.
+- Requests are multipart with explicit `model_id`, `timestamps_granularity=word`,
+  `diarize=false`, `tag_audio_events=false`; the audio streams through `io.Pipe` - never
+  buffer the upload in memory.
+- Response words are typed `word` / `spacing` / `audio_event`; `start`/`end` are null on
+  spacing entries, so the wire type uses `*float64`. Error bodies: `detail` is an object on
+  most statuses but an ARRAY on 422.
+- Key from `TRANSCRIPTION_API_KEY` via `config.LoadTranscription`; fail fast, never log it.
+
 ## Testing
 
 - Table-driven with `t.Run(tc.name, ...)`; `t.Parallel()` wherever tests are independent; `t.Context()` instead of `context.Background()`.
