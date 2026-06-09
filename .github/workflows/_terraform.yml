@@ -17,20 +17,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive
-      # Without AWS credentials we can still validate config (no backend access).
+
+      # No credentials (e.g. fork PRs): validate offline, no backend access.
       - if: env.AWS_ROLE_ARN == ''
-        run: terraform init -backend=false -input=false
-      - if: env.AWS_ROLE_ARN == ''
-        run: terraform validate
-      # With credentials, init against the real backend and plan (apply on main).
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      # With credentials: real backend, then validate and plan.
       - if: env.AWS_ROLE_ARN != ''
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with: { role-to-assume: "${{ env.AWS_ROLE_ARN }}", aws-region: eu-west-3 }
       - if: env.AWS_ROLE_ARN != ''
-        run: terraform init -input=false
-      - if: env.AWS_ROLE_ARN != ''
-        run: terraform validate
-      - if: env.AWS_ROLE_ARN != ''
-        run: terraform plan -input=false
+        run: |
+          terraform init -input=false
+          terraform validate
+          terraform plan -input=false -out=tfplan
+
+      # Apply exactly the plan produced above (main only).
       - if: ${{ inputs.apply && env.AWS_ROLE_ARN != '' }}
-        run: terraform apply -auto-approve -input=false
+        run: terraform apply -input=false tfplan

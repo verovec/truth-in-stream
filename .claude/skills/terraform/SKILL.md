@@ -25,6 +25,16 @@ Pin in `versions.tf`: `required_version = ">= 1.11.0, < 2.0.0"`, aws `version = 
 ## Environments
 Each env directory holds its own `versions.tf`/`providers.tf`/`backend.tf`/`variables.tf`/`main.tf`. Prefer this over workspaces or tfvars-only - it gives true state isolation and no cross-env blast radius.
 
+## Runtime architecture (VER-14, 2026-06; modeled on a prior internal setup)
+Modules in `stack/terraform/modules/`: `vpc` (2-AZ, configurable `nat_gateway_count` — dev 1, prod 2; S3 gateway endpoint; tasks SG is egress-only), `ecs` (Fargate cluster, Container Insights; default capacity strategy is on-demand FARGATE, SPOT registered for opt-in), `ecr` (scan-on-push, keep-last-10), `iam` (account-global GitHub OIDC provider — dev creates, prod references via `create_oidc_provider=false`; deploy-role trust pinned with `StringEquals` to `repo:<org/repo>:ref:refs/heads/main`, never `:*`; task-execution role scoped to specific secret ARNs; empty app task role), `rds` (PG17 gp3 encrypted, private, generated URL-safe password -> Secrets Manager credentials + ready-made DSN secret), `alb` (HTTP + fixed-404 default; HTTPS+redirect activate when `certificate_arn` set), `service` (task def + target group + path rule + service; **adds its own per-container-port ingress rule from the ALB SG** — least-privilege, not all-ports), `migration` (one-shot golang-migrate Fargate task; deploy workflow runs it and gates on exit 0).
+- Path routing: backend `/api/*`+`/healthz` (priority 10), frontend `/*` (priority 100).
+- App-key secrets (`EMBEDDING_API_KEY`, `TRANSCRIPTION_API_KEY`) are created empty; values set out of band. Containers consume everything (incl. `DATABASE_URL`) as ECS secrets.
+- Deploy network config (subnets/SG for `run-task`) is published via SSM `/truth-in-stream/<env>/deploy/*`.
+- Two CI roles: `AWS_ROLE_ARN` (terraform plan/apply, bootstrap out-of-band) and `AWS_DEPLOY_ROLE_ARN` (narrow: ECR push, ECS deploy, run migrate task; output of the iam module).
+- Pin GitHub Actions to commit SHAs, especially `aws-actions/configure-aws-credentials` and `amazon-ecr-login` (they mint/use AWS creds).
+- aws provider v6: use `data.aws_region.current.region` (`.name` is deprecated). An `aws_security_group` with no `egress` block has NO egress (TF strips AWS's default allow-all) — that is intended for the Postgres SG.
+- Deliberate omissions vs the reference: no customer-managed KMS (AWS-managed keys), no RabbitMQ/Redis/bastion, no cross-account Route53, dual NAT only in prod.
+
 ## Pitfalls
 1. Forgetting bucket versioning - native locking silently fails.
 2. `use_lockfile` defaults to false - be explicit.
