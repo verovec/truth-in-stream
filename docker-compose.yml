@@ -13,6 +13,7 @@ services:
       - "8080:8080"
     volumes:
       - ./stack/backend:/app
+      - ladybug-lib:/app/lib-ladybug
       - go-mod-cache:/go/pkg/mod
       - ladybug-data:/data
 
@@ -32,6 +33,7 @@ services:
       - backend
 
 volumes:
+  ladybug-lib:
   go-mod-cache:
   frontend-node-modules:
   ladybug-data:
