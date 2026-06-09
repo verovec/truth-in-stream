@@ -1,0 +1,53 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/verovec/truth-in-stream/backend/internal/service"
+)
+
+type fakeGraph struct{ err error }
+
+func (f fakeGraph) Ping(ctx context.Context) error { return f.err }
+
+func newTestServer(graphErr error) http.Handler {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	hc := service.NewHealthChecker(fakeGraph{err: graphErr})
+	return NewMux(hc, logger)
+}
+
+func TestHealthz(t *testing.T) {
+	tests := []struct {
+		name     string
+		graphErr error
+		wantCode int
+	}{
+		{name: "healthy", graphErr: nil, wantCode: http.StatusOK},
+		{name: "graph down", graphErr: errors.New("down"), wantCode: http.StatusServiceUnavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(tc.graphErr)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if rec.Code != tc.wantCode {
+				t.Fatalf("GET /healthz = %d, want %d", rec.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestUnknownRouteIs404(t *testing.T) {
+	srv := newTestServer(nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /nope = %d, want 404", rec.Code)
+	}
+}
