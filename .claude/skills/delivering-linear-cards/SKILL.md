@@ -17,7 +17,7 @@ You own the work from card to open PR. The human owns the merge. When asked to "
 ## Workflow (per card)
 
 1. **Card must be executor-ready.** A different agent authors the card than executes it, so it must stand alone: outcome, context, approach, acceptance criteria, todos, definition of done. If the card you are handed is thin, enrich it first (format: `roadmap-linear` skill). Do not execute a vague card.
-2. **Branch off `main`.** Never implement on `main`.
+2. **Branch off `main`.** Never implement on `main`. The branch name MUST be `<TEAM>-<NUMBER>-<slug>`: the card's team identifier and number exactly as Linear shows them (uppercase, e.g. `VER-6`), a single dash, then a slug of 3 to 5 lowercase words joined by underscores. NEVER add a username/author prefix, NEVER use dashes inside the slug, NEVER exceed 5 words. Distill the card title to its essence; do not transcribe it verbatim. Example: card `VER-6 "Curated verification database schema and ingestion (pgvector)"` -> `VER-6-pgvector_database_schema`.
 3. **TDD with regression safety.** Write tests first (REQUIRED: superpowers:test-driven-development). Tests must prove the new behavior AND guard existing behavior, so a merge cannot silently break something else. The WHOLE suite must pass, not just the new test.
 4. **Run `/code-review`, then apply it.** Before pushing, run `/code-review` and apply the findings. Re-run tests afterward.
 5. **Verify green, never push broken code.** Build plus the full test suite pass locally (REQUIRED: superpowers:verification-before-completion). A failing build or a red or skipped test means do not push.
