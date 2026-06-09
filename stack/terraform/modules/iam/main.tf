@@ -87,7 +87,6 @@ data "aws_iam_policy_document" "deploy" {
       "ecs:RunTask",
       "ecs:DescribeTasks",
       "ecs:DescribeTaskDefinition",
-      "ecs:ListTasks",
     ]
     resources = ["*"]
 

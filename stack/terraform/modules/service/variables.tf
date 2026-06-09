@@ -65,7 +65,12 @@ variable "subnet_ids" {
 
 variable "security_group_id" {
   type        = string
-  description = "Security group for the tasks."
+  description = "Shared security group for the tasks."
+}
+
+variable "alb_security_group_id" {
+  type        = string
+  description = "ALB security group allowed to reach this service's container port."
 }
 
 variable "task_execution_role_arn" {

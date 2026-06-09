@@ -115,6 +115,7 @@ module "backend" {
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
   security_group_id       = module.vpc.ecs_tasks_security_group_id
+  alb_security_group_id   = module.vpc.alb_security_group_id
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
@@ -147,6 +148,7 @@ module "frontend" {
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
   security_group_id       = module.vpc.ecs_tasks_security_group_id
+  alb_security_group_id   = module.vpc.alb_security_group_id
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
