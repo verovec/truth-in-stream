@@ -1,5 +1,2 @@
 .git
-*_test.go
-Dockerfile
-.dockerignore
-README.md
+**/*_test.go

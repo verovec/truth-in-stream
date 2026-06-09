@@ -1,20 +1,58 @@
 # Local development. Source is bind-mounted and dev servers run with hot reload.
 # Production images are built from stack/*/Dockerfile (used by the deploy workflow).
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: truthinstream
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d truthinstream"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: applies the golang-migrate up migrations, then exits. The backend
+  # waits for it so the schema exists before the API starts.
+  migrate:
+    image: migrate/migrate:v4.18.3
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      - "up"
+    volumes:
+      - ./stack/backend/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
-    image: golang:1.26
+    build:
+      context: ./stack/backend
+      target: dev
     working_dir: /app
-    command: go run ./cmd/server
     environment:
       PORT: "8080"
+      # Dev-only credentials; production DATABASE_URL comes from Secrets Manager.
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
     ports:
       - "8080:8080"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
-    image: node:22-alpine
+    image: node:24-alpine
     working_dir: /app
     command: sh -c "npm install && npm run dev"
     environment:
@@ -31,3 +69,4 @@ services:
 volumes:
   go-mod-cache:
   frontend-node-modules:
+  pgdata:

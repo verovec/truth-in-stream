@@ -1,66 +1,71 @@
+// Command server is the truth-in-stream backend API.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"log"
-	"net"
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/handler"
+	"github.com/verovec/truth-in-stream/backend/internal/service"
+	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
 
-func newMux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", handleHealthz)
-	return mux
-}
-
-func handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
 
-	srv := &http.Server{
-		Addr:         net.JoinHostPort("", port),
-		Handler:      newMux(),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	if err := run(logger); err != nil {
+		logger.Error("server exited with error", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	health := service.NewHealthChecker(store)
+	srv := &http.Server{
+		Addr:         ":" + cfg.Port,
+		Handler:      handler.NewMux(health, logger),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("server starting on %s", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+		logger.Info("listening", slog.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 
-	<-ctx.Done()
-	log.Println("shutdown signal received")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("graceful shutdown failed: %v", err)
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		logger.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
 	}
-
-	log.Println("server stopped")
 }

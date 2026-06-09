@@ -1,0 +1,5 @@
+# One-shot migration image: the official migrate CLI plus this repo's
+# migration files. Run by the deploy workflow as a Fargate task before the
+# backend service rolls (see stack/terraform/modules/migration).
+FROM migrate/migrate:v4.18.3
+COPY migrations /migrations
