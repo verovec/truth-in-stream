@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -127,8 +128,8 @@ func LoadMatch() (Match, error) {
 		if err != nil {
 			return Match{}, fmt.Errorf("config: MATCH_TOP_K %q: %w", raw, err)
 		}
-		if k < 1 {
-			return Match{}, fmt.Errorf("config: MATCH_TOP_K must be at least 1, got %d", k)
+		if k < 1 || k > math.MaxInt32 {
+			return Match{}, fmt.Errorf("config: MATCH_TOP_K must be in [1, %d], got %d", math.MaxInt32, k)
 		}
 		m.TopK = k
 	}
@@ -137,7 +138,9 @@ func LoadMatch() (Match, error) {
 		if err != nil {
 			return Match{}, fmt.Errorf("config: MATCH_SCORE_THRESHOLD %q: %w", raw, err)
 		}
-		if threshold < -1 || threshold > 1 {
+		// The inverted comparison also rejects NaN, which ParseFloat accepts
+		// and which would otherwise disable the filter entirely.
+		if !(threshold >= -1 && threshold <= 1) {
 			return Match{}, fmt.Errorf("config: MATCH_SCORE_THRESHOLD %v outside cosine similarity range [-1, 1]", threshold)
 		}
 		m.ScoreThreshold = threshold

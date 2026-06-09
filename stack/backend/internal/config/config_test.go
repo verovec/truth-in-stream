@@ -211,6 +211,16 @@ func TestLoadMatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "NaN threshold fails",
+			env:     map[string]string{"MATCH_SCORE_THRESHOLD": "NaN"},
+			wantErr: true,
+		},
+		{
+			name:    "top k beyond int32 fails",
+			env:     map[string]string{"MATCH_TOP_K": "3000000000"},
+			wantErr: true,
+		},
+		{
 			name:    "zero concurrency fails",
 			env:     map[string]string{"MATCH_EMBED_CONCURRENCY": "0"},
 			wantErr: true,

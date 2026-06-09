@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -238,6 +239,8 @@ func TestNewMatcherValidatesConfig(t *testing.T) {
 	}{
 		{name: "valid config accepted", mutate: func(*MatcherConfig) {}},
 		{name: "zero top k rejected", mutate: func(c *MatcherConfig) { c.TopK = 0 }, wantErr: true},
+		{name: "top k beyond int32 rejected", mutate: func(c *MatcherConfig) { c.TopK = math.MaxInt32 + 1 }, wantErr: true},
+		{name: "NaN threshold rejected", mutate: func(c *MatcherConfig) { c.ScoreThreshold = math.NaN() }, wantErr: true},
 		{name: "threshold above 1 rejected", mutate: func(c *MatcherConfig) { c.ScoreThreshold = 1.5 }, wantErr: true},
 		{name: "threshold below -1 rejected", mutate: func(c *MatcherConfig) { c.ScoreThreshold = -1.5 }, wantErr: true},
 		{name: "zero concurrency rejected", mutate: func(c *MatcherConfig) { c.EmbedConcurrency = 0 }, wantErr: true},
