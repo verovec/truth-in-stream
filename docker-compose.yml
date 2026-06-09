@@ -1,0 +1,33 @@
+# Local development. Source is bind-mounted and dev servers run with hot reload.
+# Production images are built from stack/*/Dockerfile (used by the deploy workflow).
+services:
+  backend:
+    image: golang:1.26
+    working_dir: /app
+    command: go run ./cmd/server
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_API_URL: "http://localhost:8080"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./stack/frontend:/app
+      - frontend-node-modules:/app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  go-mod-cache:
+  frontend-node-modules:

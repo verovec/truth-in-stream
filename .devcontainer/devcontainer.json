@@ -1,11 +1,23 @@
 {
-  "name": "workspace",
+  "name": "truth-in-stream",
   "image": "mcr.microsoft.com/devcontainers/universal:2",
   "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.26" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
     "ghcr.io/devcontainers/features/terraform:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
+  "forwardPorts": [3000, 8080],
   "customizations": {
-    "vscode": { "extensions": ["anthropic.claude-code", "hashicorp.terraform"] }
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "golang.go",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "hashicorp.terraform"
+      ]
+    }
   }
 }

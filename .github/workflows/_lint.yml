@@ -3,20 +3,26 @@ on:
   workflow_call:
     inputs:
       path: { type: string, required: true }
-      lang: { type: string, required: true }   # node | python
+      lang: { type: string, required: true }   # node | go
 jobs:
   lint:
     runs-on: ubuntu-latest
-    defaults: { run: { working-directory: "${{ inputs.path }}" } }
     steps:
       - uses: actions/checkout@v4
       - if: inputs.lang == 'node'
         uses: actions/setup-node@v4
-        with: { node-version: 'lts/*' }
+        with: { node-version: '22' }
       - if: inputs.lang == 'node'
+        working-directory: ${{ inputs.path }}
         run: npm ci && npm run lint --if-present
-      - if: inputs.lang == 'python'
-        uses: actions/setup-python@v5
-        with: { python-version: '3.x' }
-      - if: inputs.lang == 'python'
-        run: pipx run ruff check .
+      - if: inputs.lang == 'go'
+        uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache: false }
+      - if: inputs.lang == 'go'
+        working-directory: ${{ inputs.path }}
+        run: |
+          test -z "$(gofmt -l .)" || { echo 'gofmt found unformatted files:'; gofmt -l .; exit 1; }
+          go vet ./...
+      - if: inputs.lang == 'go'
+        uses: golangci/golangci-lint-action@v6
+        with: { working-directory: ${{ inputs.path }} }

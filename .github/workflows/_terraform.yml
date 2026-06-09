@@ -2,7 +2,7 @@ name: _terraform
 on:
   workflow_call:
     inputs:
-      path: { type: string, default: stack/terraform }
+      path: { type: string, required: true }
       apply: { type: boolean, default: false }
     secrets:
       AWS_ROLE_ARN: { required: false }
@@ -16,10 +16,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      # Without AWS credentials we can still validate config (no backend access).
+      - if: env.AWS_ROLE_ARN == ''
+        run: terraform init -backend=false -input=false
+      - if: env.AWS_ROLE_ARN == ''
+        run: terraform validate
+      # With credentials, init against the real backend and plan (apply on main).
       - if: env.AWS_ROLE_ARN != ''
-        uses: aws-actions/configure-aws-credentials@v4
-        with: { role-to-assume: "${{ env.AWS_ROLE_ARN }}", aws-region: us-east-1 }
-      - run: terraform init -input=false
-      - run: terraform plan -input=false
-      - if: inputs.apply
+        uses: aws-actions/configure-aws-credentials@v6
+        with: { role-to-assume: "${{ env.AWS_ROLE_ARN }}", aws-region: eu-west-3 }
+      - if: env.AWS_ROLE_ARN != ''
+        run: terraform init -input=false
+      - if: env.AWS_ROLE_ARN != ''
+        run: terraform validate
+      - if: env.AWS_ROLE_ARN != ''
+        run: terraform plan -input=false
+      - if: ${{ inputs.apply && env.AWS_ROLE_ARN != '' }}
         run: terraform apply -auto-approve -input=false

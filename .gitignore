@@ -22,3 +22,19 @@ plan.md
 node_modules/
 .venv/
 __pycache__/
+
+# Env files (secrets)
+.env
+.env.*
+!.env.example
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
