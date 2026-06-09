@@ -10,18 +10,18 @@ import (
 
 // HealthChecker reports whether dependencies are reachable.
 type HealthChecker struct {
-	graph domain.GraphRepository
+	store domain.VectorStore
 }
 
-// NewHealthChecker builds a HealthChecker over the given graph repository.
-func NewHealthChecker(graph domain.GraphRepository) *HealthChecker {
-	return &HealthChecker{graph: graph}
+// NewHealthChecker builds a HealthChecker over the given vector store.
+func NewHealthChecker(store domain.VectorStore) *HealthChecker {
+	return &HealthChecker{store: store}
 }
 
 // Check returns nil when all dependencies are healthy.
 func (h *HealthChecker) Check(ctx context.Context) error {
-	if err := h.graph.Ping(ctx); err != nil {
-		return fmt.Errorf("graph: %w", err)
+	if err := h.store.Ping(ctx); err != nil {
+		return fmt.Errorf("vector store: %w", err)
 	}
 	return nil
 }

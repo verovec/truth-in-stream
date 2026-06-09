@@ -9,31 +9,36 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
-type fakeGraph struct{ err error }
+type fakeStore struct{ err error }
 
-func (f fakeGraph) Ping(ctx context.Context) error { return f.err }
+func (f fakeStore) Ping(ctx context.Context) error                        { return f.err }
+func (f fakeStore) Upsert(ctx context.Context, _ []domain.Document) error { return nil }
+func (f fakeStore) Search(ctx context.Context, _ []float32, _ int) ([]domain.Match, error) {
+	return nil, nil
+}
 
-func newTestServer(graphErr error) http.Handler {
+func newTestServer(storeErr error) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	hc := service.NewHealthChecker(fakeGraph{err: graphErr})
+	hc := service.NewHealthChecker(fakeStore{err: storeErr})
 	return NewMux(hc, logger)
 }
 
 func TestHealthz(t *testing.T) {
 	tests := []struct {
 		name     string
-		graphErr error
+		storeErr error
 		wantCode int
 	}{
-		{name: "healthy", graphErr: nil, wantCode: http.StatusOK},
-		{name: "graph down", graphErr: errors.New("down"), wantCode: http.StatusServiceUnavailable},
+		{name: "healthy", storeErr: nil, wantCode: http.StatusOK},
+		{name: "store down", storeErr: errors.New("down"), wantCode: http.StatusServiceUnavailable},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newTestServer(tc.graphErr)
+			srv := newTestServer(tc.storeErr)
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			if rec.Code != tc.wantCode {

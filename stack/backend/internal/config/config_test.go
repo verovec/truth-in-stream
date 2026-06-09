@@ -11,18 +11,18 @@ func TestLoad(t *testing.T) {
 	}{
 		{
 			name: "defaults applied",
-			env:  map[string]string{"LADYBUG_PATH": "/data/ladybug"},
-			want: Config{Port: "8080", LadybugPath: "/data/ladybug"},
+			env:  map[string]string{"DATABASE_URL": "postgres://localhost/db"},
+			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db"},
 		},
 		{
-			name:    "missing ladybug path fails",
+			name:    "missing database url fails",
 			env:     map[string]string{},
 			wantErr: true,
 		},
 		{
 			name: "port override",
-			env:  map[string]string{"PORT": "9090", "LADYBUG_PATH": "/data/ladybug"},
-			want: Config{Port: "9090", LadybugPath: "/data/ladybug"},
+			env:  map[string]string{"PORT": "9090", "DATABASE_URL": "postgres://localhost/db"},
+			want: Config{Port: "9090", DatabaseURL: "postgres://localhost/db"},
 		},
 	}
 	for _, tc := range tests {

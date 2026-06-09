@@ -14,7 +14,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
-	"github.com/verovec/truth-in-stream/backend/internal/store/graph"
+	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
 
 func main() {
@@ -33,13 +33,16 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	graphRepo, err := graph.Open(cfg.LadybugPath)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	defer graphRepo.Close()
+	defer store.Close()
 
-	health := service.NewHealthChecker(graphRepo)
+	health := service.NewHealthChecker(store)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      handler.NewMux(health, logger),
@@ -47,9 +50,6 @@ func run(logger *slog.Logger) error {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {

@@ -1,4 +1,2 @@
 .git
-lib-ladybug
-*.db
 **/*_test.go

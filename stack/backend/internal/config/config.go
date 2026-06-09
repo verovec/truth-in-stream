@@ -9,7 +9,7 @@ import (
 // Config holds the runtime configuration for the server.
 type Config struct {
 	Port        string
-	LadybugPath string
+	DatabaseURL string
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -17,10 +17,10 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		Port:        getenv("PORT", "8080"),
-		LadybugPath: os.Getenv("LADYBUG_PATH"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 	}
-	if cfg.LadybugPath == "" {
-		return Config{}, fmt.Errorf("config: LADYBUG_PATH is required")
+	if cfg.DatabaseURL == "" {
+		return Config{}, fmt.Errorf("config: DATABASE_URL is required")
 	}
 	return cfg, nil
 }
