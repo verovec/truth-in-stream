@@ -2,16 +2,19 @@
 # Production images are built from stack/*/Dockerfile (used by the deploy workflow).
 services:
   backend:
-    image: golang:1.26
+    build:
+      context: ./stack/backend
+      target: dev
     working_dir: /app
-    command: go run ./cmd/server
     environment:
       PORT: "8080"
+      LADYBUG_PATH: "/data/ladybug"
     ports:
       - "8080:8080"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+      - ladybug-data:/data/ladybug
 
   frontend:
     image: node:22-alpine
@@ -31,3 +34,4 @@ services:
 volumes:
   go-mod-cache:
   frontend-node-modules:
+  ladybug-data:
