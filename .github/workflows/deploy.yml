@@ -4,36 +4,120 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  packages: write
+  id-token: write
+env:
+  AWS_REGION: eu-west-3
+  ENVIRONMENT: dev
+  PROJECT: truth-in-stream
 jobs:
+  # Tests and lint gate every deploy: a direct push to main must pass the same
+  # checks as a PR before any image is built or published.
+  frontend-lint:
+    uses: ./.github/workflows/_lint.yml
+    with: { path: stack/frontend, lang: node }
+  frontend-test:
+    uses: ./.github/workflows/_test.yml
+    with: { path: stack/frontend, lang: node }
+  backend-lint:
+    uses: ./.github/workflows/_lint.yml
+    with: { path: stack/backend, lang: go }
+  backend-test:
+    uses: ./.github/workflows/_test.yml
+    with: { path: stack/backend, lang: go }
   images:
+    needs: [frontend-lint, frontend-test, backend-lint, backend-test]
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - { name: backend, context: stack/backend }
-          - { name: frontend, context: stack/frontend }
+          - { name: backend, context: stack/backend, dockerfile: stack/backend/Dockerfile }
+          - { name: frontend, context: stack/frontend, dockerfile: stack/frontend/Dockerfile }
+          - { name: migrate, context: stack/backend, dockerfile: stack/backend/Dockerfile.migrate }
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
-          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          images: ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ matrix.name }}
           tags: |
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
+      # Build once locally so the image can be scanned before it is published.
+      - name: Build image (no push)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: ${{ matrix.name }}:scan
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.name }}:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+      # Cache from the previous step makes this a near-instant re-tag and push.
+      - name: Build and push image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-  # TODO: add an AWS deploy job (e.g. ECS service update / App Runner) once
-  # stack/terraform provisions the runtime target. Authenticate via GitHub OIDC
-  # (aws-actions/configure-aws-credentials@v6, role-to-assume) like terraform.yml.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+          provenance: true
+          sbom: true
+  deploy:
+    needs: [images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run database migrations
+        run: |
+          set -euo pipefail
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          SUBNETS=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/private-subnet-ids" --query 'Parameter.Value' --output text)
+          SG=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/tasks-security-group-id" --query 'Parameter.Value' --output text)
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${PROJECT}-${ENVIRONMENT}-migrate" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          STOP_REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
+          fi
+          echo "Migrations applied"
+      - name: Roll services
+        run: |
+          set -euo pipefail
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          for SVC in backend frontend; do
+            aws ecs update-service --cluster "$CLUSTER" --service "$SVC" --force-new-deployment >/dev/null
+            echo "Rolling $SVC"
+          done
+          aws ecs wait services-stable --cluster "$CLUSTER" --services backend frontend
+          echo "Deployment stable"

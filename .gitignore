@@ -1,11 +1,5 @@
-# Generated per-customer agent files (never committed to template)
-agent/
-
-# Factory state (local workspace state, created by /mayday init)
-.factory-state.json
-
 # Local planning files
-plan.md
+docs/superpowers
 
 # IDE and OS
 .DS_Store

@@ -3,7 +3,7 @@
 ```
 CREATED: {{DATE}}
 LAST_UPDATED: {{DATE}}
-VERSION: 1.0.0
+VERSION: 2.0.0
 AGENT_TYPE: platform
 CATEGORY: platform
 SCOPE: Dockerfile patterns, container image builds, and security hardening for {{ORG_NAME}}
@@ -19,99 +19,88 @@ Before creating or updating any Linear card, you MUST read the roadmap agent fir
 ```
 THIS DOCUMENT MUST BE UPDATED WHEN:
 - A new Dockerfile is added or an existing one is restructured
-- Base image version changes (Python, Node, Go, etc.)
-- Dependency installation strategy changes (uv, pip, npm, etc.)
+- Base image version or pinned digest changes (Go, Node, distroless, etc.)
+- Dependency installation strategy changes (go mod, npm/pnpm, etc.)
 - Build stage structure changes (new stages, removed stages)
-- File permission or ownership patterns change
-- User/group configuration changes
+- User/group or non-root configuration changes
 - Entrypoint or CMD changes
-- Security hardening rules change (read-only, non-root, etc.)
-- CI/CD build-push steps change
+- Security hardening rules change (distroless, non-root, scanning, etc.)
+- CI/CD build-push-scan steps change
 - New container registry or tagging strategy adopted
 ```
 
 ---
 
-## 1. Reference Dockerfile Pattern
+## 1. Reference Patterns
 
-All Dockerfiles in this project MUST follow this structure. It is the canonical pattern derived from production Dockerfiles and security review feedback.
+This workspace ships two production images. Both are multi-stage, run as a non-root
+user, and pin their base images by immutable `@sha256` digest. New Dockerfiles MUST
+follow the matching pattern.
 
-### 1.1 Multi-stage build
+### 1.1 Go service (distroless final stage)
 
 ```dockerfile
-FROM <base-image> AS base
-# System-level setup: apt packages, env vars
+# syntax=docker/dockerfile:1
+FROM golang:<ver>@sha256:<digest> AS build
+WORKDIR /src
+# go.su[m] is an optional-file glob: copied if present, ignored until deps exist.
+COPY go.mod go.su[m] ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
-FROM base AS build-python
-# (or build-node, build-go, etc.)
-# Dependency manager setup (uv, pip, npm, cargo, etc.)
-# Copy lockfiles ONLY, install dependencies
-# --frozen / --lockfile-only to ensure reproducibility
-
-FROM base
-# Final stage: no build tools, no package managers
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:<digest>
+COPY --from=build /out/server /server
+EXPOSE <port>
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]
 ```
 
-### 1.2 Non-root user
+- `CGO_ENABLED=0` produces a static binary, so `distroless/static` (no libc, no shell,
+  no package manager) is the correct, smallest final stage.
+- `-trimpath -ldflags="-s -w"` strips paths and debug symbols for a smaller,
+  reproducible binary.
+- Cache mounts make module downloads and the build cache survive across builds.
+- No `HEALTHCHECK`: distroless has no shell and the only executable is the binary, so
+  liveness/readiness is delegated to the orchestrator (ECS/K8s probes).
 
-Create a dedicated user and group before copying application files. Never run the application as root.
-
-```dockerfile
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-RUN groupadd -g ${GROUP_ID} <username> \
-    && useradd -u ${USER_ID} -g ${GROUP_ID} --create-home <username>
-```
-
-### 1.3 Bind-mount copy with read-only permissions
-
-Use `RUN --mount=type=bind` to copy dependencies and source files in a single layer. This avoids intermediate writable layers and ensures files are never editable in the final image.
+### 1.2 Node / Next.js service (standalone output)
 
 ```dockerfile
-RUN mkdir /app && \
-    chown -R ${USER_ID}:${GROUP_ID} /app && \
-    chmod -R ug+rw /app
-
-USER <username>
+# syntax=docker/dockerfile:1
+FROM node:<ver>-alpine@sha256:<digest> AS deps
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
-RUN --mount=type=bind,from=<build-stage>,source=/app,target=/tmp/deps \
-    --mount=type=bind,source=<src-context>,target=/tmp/src \
-    cp -rp /tmp/deps/. /app/ && \
-    cp -rp /tmp/src/. /app/ && \
-    chmod -R a-w /app
+FROM node:<ver>-alpine@sha256:<digest> AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+FROM node:<ver>-alpine@sha256:<digest> AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+COPY --from=build /app/public ./public
+COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
+USER nextjs
+EXPOSE 3000
+CMD ["node", "server.js"]
 ```
 
-Key rules:
-- Drop to `USER` before the bind-mount RUN so the copy runs as the non-root user (the user owns `/app/`)
-- `cp -rp` preserves permissions from the build stage
-- `chmod -R a-w /app` removes write permission for all users in the same layer
-- Files are never writable in any layer of the final image
-
-### 1.4 PATH for virtualenv or toolchain binaries
-
-If using a Python virtualenv, Go binary, or Node modules with bin scripts:
-
-```dockerfile
-ENV PATH="/app/.venv/bin:$PATH"
-```
-
-This ensures dependency-installed binaries (gunicorn, celery, awslambdaric, etc.) are available without absolute paths. Never copy only `site-packages` to a system path -- copy the full virtualenv so `bin/` scripts are included.
-
-### 1.5 Entrypoint and CMD
-
-Separate ENTRYPOINT (the runtime) from CMD (the default command). This allows overriding CMD without changing the runtime.
-
-```dockerfile
-ENTRYPOINT ["python", "-m", "awslambdaric"]
-CMD ["handler.handler"]
-```
-
-Or for web services:
-
-```dockerfile
-CMD ["gunicorn", "-c", "python:config.gunicorn_conf", "app.wsgi:application"]
-```
+- Requires `output: "standalone"` in `next.config.ts`; the runner needs no
+  `node_modules`, only the standalone bundle plus `public` and `.next/static`.
+- The npm cache mount keeps `npm ci` fast across builds.
+- A `HEALTHCHECK` using the runtime's `fetch` against the listen port is optional and
+  only useful when the platform honours Docker health checks.
 
 ---
 
@@ -121,153 +110,105 @@ Every Dockerfile MUST satisfy all of the following:
 
 | Rule | How |
 |------|-----|
-| Non-root user | `USER <username>` before any application RUN/ENTRYPOINT |
-| Read-only application files | `chmod -R a-w /app` in the same layer as the copy |
-| No build tools in final image | Multi-stage build; final stage is `FROM base` without uv/pip/npm/cargo |
-| No secrets in image | Never COPY `.env`, credentials, or key files; inject at runtime via env vars or secrets manager |
-| Minimal apt packages | `--no-install-recommends`, clean apt cache in the same RUN |
-| Pinned base image | Use specific tags (e.g. `python:3.13-slim-bookworm`), not `latest` |
-| Single-layer copy | Use `RUN --mount=type=bind` instead of multiple `COPY` instructions for app files |
-| No writable intermediate layers | The bind-mount pattern ensures files go from build stage to read-only in one step |
+| Non-root user | distroless `:nonroot` + `USER nonroot:nonroot`, or a dedicated `adduser` before `USER` |
+| Minimal final image | distroless for Go; standalone bundle on alpine for Node. No build tools or package managers in the final stage |
+| Digest-pinned base images | `FROM <image>@sha256:<digest>`, never a floating tag in production images |
+| No secrets in image | Never COPY `.env`, credentials, or key files; inject at runtime via env vars or a secrets manager. Enforce with `.dockerignore` |
+| Reproducible dependencies | `go mod download` against `go.mod`/`go.sum`; `npm ci` against `package-lock.json` |
+| BuildKit cache mounts | `--mount=type=cache` for module/build caches instead of fat layers |
+| Vulnerability scan in CI | Trivy (or equivalent) gates the push on HIGH/CRITICAL (see Section 5) |
+| `.dockerignore` present | Exclude VCS, tests, secrets, `node_modules`, build artifacts from the context |
 
 ---
 
 ## 3. Dependency Installation Patterns
 
-### 3.1 Python (uv)
+### 3.1 Go
 
 ```dockerfile
-FROM base AS build-python
-ENV UV_LINK_MODE=copy \
-    UV_COMPILE_BYTECODE=1 \
-    UV_PYTHON_DOWNLOADS=never \
-    UV_PROJECT_ENVIRONMENT=/app/.venv
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-COPY pyproject.toml uv.lock /_lock/app/
-RUN cd /_lock/app && \
-    uv sync \
-        --frozen \
-        --no-dev \
-        --no-editable \
-        --no-install-project
+COPY go.mod go.su[m] ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 ```
 
-- `UV_LINK_MODE=copy`: copies files instead of symlinking (required for multi-stage)
-- `UV_COMPILE_BYTECODE=1`: pre-compiles .pyc for faster cold starts
-- `UV_PYTHON_DOWNLOADS=never`: uses the base image Python, no extra downloads
-- `--frozen`: fails if lockfile is out of date
-- `--no-editable`: installs packages as regular (not editable/development) installs
-- `--no-install-project`: installs dependencies only, not the project itself
+- The `go` directive in `go.mod` MUST match (be <=) the toolchain in the build image.
+- `go.su[m]` is the optional-file glob idiom so the COPY succeeds before any
+  dependency (and therefore any `go.sum`) exists.
 
-### 3.2 Python (pip)
+### 3.2 Node.js (npm / pnpm)
 
 ```dockerfile
-FROM base AS build-python
-RUN python -m venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
-
-COPY requirements.txt /_lock/
-RUN pip install --no-cache-dir -r /_lock/requirements.txt
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
 ```
 
-### 3.3 Node.js (npm/pnpm)
-
-```dockerfile
-FROM base AS build-node
-COPY package.json package-lock.json /_lock/app/
-RUN cd /_lock/app && npm ci --production
-```
-
-### 3.4 Go
-
-```dockerfile
-FROM golang:<version> AS build-go
-COPY go.mod go.sum /_lock/app/
-RUN cd /_lock/app && go mod download
-
-COPY . /build/
-RUN cd /build && CGO_ENABLED=0 go build -o /app/server .
-```
+- `npm ci` installs the full lockfile (including devDependencies needed to build).
+- The standalone build prunes what reaches the runner, so the final image carries
+  only runtime dependencies.
 
 ---
 
-## 4. Image Variants
+## 4. Local Development
 
-### 4.1 Web service (long-running)
-
-```dockerfile
-CMD ["gunicorn", "-c", "python:config.gunicorn_conf", "app.wsgi:application"]
-```
-
-- Health check endpoint required
-- Graceful shutdown via SIGTERM
-- `stop_timeout_sec` in YAML descriptor controls ECS/K8s grace period
-
-### 4.2 Worker (queue consumer)
-
-```dockerfile
-CMD ["celery", "-A", "app", "worker", "--loglevel=info"]
-```
-
-- Shutdown strategy: `drain-queue` for workers processing tasks that should not be interrupted
-- The orchestration layer (e.g. worker-lifecycle Lambda, K8s preStop hook) manages the drain duration
-- `stop_timeout_sec` is the container-level SIGTERM grace period, not the drain duration
-
-### 4.3 Beat / scheduler
-
-```dockerfile
-CMD ["celery", "-A", "app", "beat", "--loglevel=info"]
-```
-
-- Single instance only (no horizontal scaling)
-- Shutdown strategy: `rolling` (stateless, safe to kill and restart)
-
-### 4.4 Lambda / serverless function
-
-```dockerfile
-ENTRYPOINT ["python", "-m", "awslambdaric"]
-CMD ["handler.handler"]
-```
-
-- Full virtualenv copied (not just site-packages) so dependency bin scripts are available
-- Same read-only + non-root pattern as long-running services
-- `platforms: linux/amd64` and `provenance: false` in CI build step for Lambda compatibility
+Local dev runs through `docker-compose.yml`, not these Dockerfiles: source is
+bind-mounted and dev servers run with hot reload. Keep the compose base images
+digest-pinned to the same digests as the production stages (and the devcontainer) so
+local, CI, and production agree. Use `healthcheck` + `depends_on: condition:
+service_healthy` to order service startup.
 
 ---
 
 ## 5. CI/CD Build Integration
 
-### 5.1 GitHub Actions build-push pattern
+### 5.1 GitHub Actions build-scan-push pattern
 
 ```yaml
-- name: Build and push image
-  uses: docker/build-push-action@<pinned-sha> # v6
+- uses: actions/checkout@<sha> # <ver>
+- uses: docker/setup-buildx-action@<sha> # <ver>
+- uses: docker/login-action@<sha> # <ver>
+- id: meta
+  uses: docker/metadata-action@<sha> # <ver>
+# Build locally first so the image can be scanned before publishing.
+- name: Build image (no push)
+  uses: docker/build-push-action@<sha> # <ver>
   with:
-    context: <build-context-path>
-    file: <path-to-Dockerfile>
+    context: <context>
+    load: true
+    tags: <name>:scan
+    cache-from: type=gha,scope=<name>
+    cache-to: type=gha,scope=<name>,mode=max
+- name: Scan image
+  uses: aquasecurity/trivy-action@<sha> # <ver>
+  with:
+    image-ref: <name>:scan
+    exit-code: "1"
+    ignore-unfixed: true
+    severity: HIGH,CRITICAL
+- name: Build and push image
+  uses: docker/build-push-action@<sha> # <ver>
+  with:
+    context: <context>
     push: true
-    tags: |
-      <registry>/<repo>:<variant>-${{ steps.meta.outputs.tag }}
-      <registry>/<repo>:<variant>-latest
-    cache-from: type=gha,scope=<cache-scope>
-    cache-to: type=gha,scope=<cache-scope>,mode=max
+    tags: ${{ steps.meta.outputs.tags }}
+    labels: ${{ steps.meta.outputs.labels }}
+    cache-from: type=gha,scope=<name>
+    cache-to: type=gha,scope=<name>,mode=max
+    provenance: true
+    sbom: true
 ```
 
-- Pin action SHAs, not version tags
-- Use GHA cache for layer reuse across builds
-- Tag with both commit SHA prefix and `latest`
-- For Lambda images: add `platforms: linux/amd64` and `provenance: false`
+- Pin every action to a commit SHA, with the human-readable version in a trailing
+  comment. Never a bare tag.
+- The scan step gates the push; the shared GHA cache makes the second build a fast
+  re-tag.
+- Emit provenance + SBOM attestations for supply-chain traceability.
+- Resolve SHAs and image digests from a registry/API at change time, never from
+  memory; let Renovate/Dependabot keep them current.
 
 ### 5.2 Tagging convention
 
-| Variant | Tag pattern |
-|---------|-------------|
-| API / web | `api-<sha8>`, `api-latest` |
-| Worker | `worker-<sha8>`, `worker-latest` |
-| Beat | `beat-<sha8>`, `beat-latest` |
-| Lambda | `<function-name>-<sha8>`, `<function-name>-latest` |
+| Variant | Tags |
+|---------|------|
+| Any service | `type=sha` (commit SHA) and `latest` on the default branch |
 
 ---
 
@@ -277,11 +218,11 @@ CMD ["handler.handler"]
 
 For each Dockerfile, document:
 - Path relative to repo root
-- Image variant (web, worker, beat, lambda)
-- Base image and version
+- Runtime (Go service, Next.js service, etc.)
+- Base image, version, and pinned digest
 - Build context path
 - CI workflow that builds it
-- Deployed to (ECS service name, Lambda function name, K8s deployment, etc.)
+- Deployed to (ECS service, App Runner, K8s deployment, etc.)
 
 ---
 
@@ -301,8 +242,9 @@ When working on Dockerfile changes:
 1. Read this agent for the canonical pattern and security checklist
 2. Read the **platform agent** for deployment topology and CI/CD pipeline context
 3. Read the **application agent** if the change affects dependency installation or entrypoints
-4. Apply the pattern from Section 1, verify against the checklist in Section 2
-5. Update the Dockerfile inventory in Section 6 if a new Dockerfile was added
+4. Apply the matching pattern from Section 1, verify against the checklist in Section 2
+5. Resolve any new base-image digest or action SHA from a registry/API, not from memory
+6. Update the Dockerfile inventory in Section 6 if a new Dockerfile was added
 
 ## Document Maintenance
 
@@ -314,13 +256,12 @@ AUTHORS: [TO BE FILLED]
 
 UPDATE_TRIGGERS:
 - New Dockerfile added or existing one restructured
-- Base image version changes
+- Base image version or pinned digest changes
 - Dependency installation strategy changes
 - Build stage structure changes
 - Security hardening rules change
-- CI/CD build-push steps change
+- CI/CD build-scan-push steps change
 - Container registry or tagging strategy changes
-- File permission or ownership patterns change
 ```
 
 END_OF_DOCUMENT

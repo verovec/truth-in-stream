@@ -1,0 +1,43 @@
+{
+  "version": "5.0.0",
+  "org_name": "Truth in Stream",
+  "org_name_slug": "truth-in-stream",
+  "org_name_upper": "TRUTH-IN-STREAM",
+  "description": "Real-time fact-checking for live streams",
+  "github": {
+    "repo": "verovec/truth-in-stream",
+    "visibility": "public"
+  },
+  "linear_team": "Veroveit",
+  "linear_team_id": "619f9bc4-203b-4047-990b-07fbd1f995d1",
+  "linear_project": "Truth in Stream",
+  "linear_project_id": "3eee31ed-8ec6-4104-a69e-3a3b8c31a7ce",
+  "initialized_at": "2026-06-09",
+  "agent_root": "agent/truth-in-stream",
+  "tree": {
+    "id": "master",
+    "type": "master",
+    "category": "orchestration",
+    "scope": "full",
+    "path": "agent/truth-in-stream/MASTER-AGENT-TRUTH-IN-STREAM.md",
+    "children": [
+      {
+        "id": "roadmap",
+        "type": "roadmap",
+        "category": "planning",
+        "scope": "full",
+        "path": "agent/truth-in-stream/plans/ROADMAP-TRUTH-IN-STREAM.md",
+        "children": []
+      }
+    ]
+  },
+  "stack": {
+    "frontend": "nextjs",
+    "backend": "go",
+    "terraform": "aws",
+    "aws_region": "eu-west-3",
+    "tf_state_bucket": "truth-in-stream-tfstate",
+    "mcp_optional": []
+  },
+  "ci": ["lint", "test", "terraform", "deploy"]
+}

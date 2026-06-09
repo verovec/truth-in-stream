@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - if: inputs.lang == 'node'
         uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with: { node-version: '24' }
       - if: inputs.lang == 'node'
         working-directory: ${{ inputs.path }}
         run: npm ci && npm run lint --if-present
@@ -23,6 +23,14 @@ jobs:
         run: |
           test -z "$(gofmt -l .)" || { echo 'gofmt found unformatted files:'; gofmt -l .; exit 1; }
           go vet ./...
+      # Fail if sqlc-generated code drifts from the SQL. Skipped when the path
+      # has no sqlc.yaml.
+      - if: inputs.lang == 'go' && hashFiles(format('{0}/sqlc.yaml', inputs.path)) != ''
+        uses: sqlc-dev/setup-sqlc@v4
+        with: { sqlc-version: '1.31.1' }
+      - if: inputs.lang == 'go' && hashFiles(format('{0}/sqlc.yaml', inputs.path)) != ''
+        working-directory: ${{ inputs.path }}
+        run: sqlc diff
       - if: inputs.lang == 'go'
         uses: golangci/golangci-lint-action@v6
         with: { working-directory: ${{ inputs.path }} }

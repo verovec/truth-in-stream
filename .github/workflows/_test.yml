@@ -7,11 +7,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # pgvector is available for the Go store integration tests. Other stacks
+    # ignore it; the tests that need it read TEST_DATABASE_URL.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - if: inputs.lang == 'node'
         uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with: { node-version: '24' }
       - if: inputs.lang == 'node'
         working-directory: ${{ inputs.path }}
         run: npm ci && npm test --if-present
@@ -20,4 +34,6 @@ jobs:
         with: { go-version: '1.26', cache: false }
       - if: inputs.lang == 'go'
         working-directory: ${{ inputs.path }}
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/test?sslmode=disable
         run: go test -race ./...
