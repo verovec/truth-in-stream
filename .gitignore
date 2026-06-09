@@ -1,0 +1,24 @@
+# Generated per-customer agent files (never committed to template)
+agent/
+
+# Factory state (local workspace state, created by /mayday init)
+.factory-state.json
+
+# Local planning files
+plan.md
+
+# IDE and OS
+.DS_Store
+*.swp
+
+# MCP config (local secrets)
+.cursor/mcp.json
+.mcp.json.local
+
+# Claude local settings
+.claude/settings.local.json
+
+# Dependencies
+node_modules/
+.venv/
+__pycache__/

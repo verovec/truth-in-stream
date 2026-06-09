@@ -1,0 +1,55 @@
+{
+  "version": "4.0.0",
+  "org_name": "Workspace Name",
+  "org_name_slug": "workspace-name",
+  "org_name_upper": "WORKSPACE-NAME",
+  "linear_team": "team-name",
+  "linear_team_id": "uuid-from-linear",
+  "linear_project": "workspace-project",
+  "agent_root": "agent/workspace-name",
+  "initialized_at": "YYYY-MM-DD",
+  "stack": { "backend": null, "frontend": null, "terraform": "aws" },
+  "shared_agents": [
+    {
+      "id": "expert-aws",
+      "type": "expert",
+      "scope": "AWS services, IAM, ECS, RDS, S3, CloudFront, VPC, etc.",
+      "path": "agent/shared/EXPERT-AWS.md",
+      "doc_source": "context7:aws"
+    }
+  ],
+  "tree": {
+    "id": "master",
+    "type": "master",
+    "category": "orchestration",
+    "scope": "full",
+    "path": "agent/workspace-name/MASTER-AGENT-WORKSPACE-NAME.md",
+    "children": [
+      {
+        "id": "roadmap",
+        "type": "roadmap",
+        "category": "planning",
+        "scope": "full",
+        "path": "agent/workspace-name/plans/ROADMAP-WORKSPACE-NAME.md",
+        "children": []
+      },
+      {
+        "id": "full-app",
+        "type": "application",
+        "category": "application",
+        "scope": "Full application source code and tests",
+        "path": "agent/workspace-name/application/APPLICATION-AGENT-WORKSPACE-NAME.md",
+        "children": []
+      },
+      {
+        "id": "full-platform",
+        "type": "platform",
+        "category": "platform",
+        "scope": "Full infrastructure, deployment, and provider knowledge",
+        "specialists": ["aws"],
+        "path": "agent/workspace-name/platform/PLATFORM-AGENT-WORKSPACE-NAME.md",
+        "children": []
+      }
+    ]
+  }
+}
