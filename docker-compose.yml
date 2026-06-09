@@ -14,7 +14,7 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
-      - ladybug-data:/data/ladybug
+      - ladybug-data:/data
 
   frontend:
     image: node:22-alpine
