@@ -9,11 +9,15 @@ import (
 )
 
 type Querier interface {
+	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
+	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
+	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error
 	// Named arg query_embedding is referenced twice but sqlc collapses it to a
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
+	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
 }
 
 var _ Querier = (*Queries)(nil)
