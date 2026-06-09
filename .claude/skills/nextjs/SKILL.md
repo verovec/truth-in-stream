@@ -91,3 +91,12 @@ Next 16 removed implicit caching: every `fetch` is dynamic by default. Standardi
 - Sequential `await`s on independent data; a fetch outside the data-access layer.
 - An action without auth-then-validate at the top; `revalidateTag` without its profile arg.
 - A new `useMemo` with the compiler on and no DevTools evidence - and delete existing unjustified `useMemo`/`useCallback` in any component you touch; `console.log` left in; `npm i` of a client lib that duplicates a platform/RSC capability.
+
+## Recorded stack decisions
+
+- Video player: `react-player` 3.4.0 (Mux-maintained; peer dep `react ^17.0.2 || ^18 || ^19`).
+  Chosen 2026-06 over Vidstack (React 19 support broken, issues #1533/#1608 open), media-chrome
+  alone (needs custom-element shims under happy-dom), plyr-react (stale). v3 API is
+  HTMLMediaElement-shaped: `src` (not `url`), `onTimeUpdate`/`onDurationChange`/`onRateChange`,
+  ref exposes the media element. Native `controls` carry accessible browser UI incl. speed;
+  custom control bar later = chromeless + media-chrome (documented v3 path).
