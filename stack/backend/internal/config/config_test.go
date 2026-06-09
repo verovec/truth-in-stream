@@ -51,6 +51,51 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadTranscription(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Transcription
+		wantErr bool
+	}{
+		{
+			name:    "missing api key fails",
+			env:     map[string]string{"TRANSCRIPTION_API_KEY": ""},
+			wantErr: true,
+		},
+		{
+			name: "defaults applied",
+			env:  map[string]string{"TRANSCRIPTION_API_KEY": "k"},
+			want: Transcription{APIKey: "k", Model: "scribe_v2"},
+		},
+		{
+			name: "model override",
+			env:  map[string]string{"TRANSCRIPTION_API_KEY": "k", "TRANSCRIPTION_MODEL": "scribe_v1"},
+			want: Transcription{APIKey: "k", Model: "scribe_v1"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadTranscription()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEmbedding(t *testing.T) {
 	tests := []struct {
 		name    string

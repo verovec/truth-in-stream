@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestRequestIDSetsHeader(t *testing.T) {
@@ -31,5 +32,31 @@ func TestRecoverTurnsPanicInto500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d, want 500", rec.Code)
+	}
+}
+
+func TestLoggingWriterSupportsDeadlines(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	var readErr, writeErr error
+	h := Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		deadline := time.Now().Add(time.Minute)
+		readErr = rc.SetReadDeadline(deadline)
+		writeErr = rc.SetWriteDeadline(deadline)
+	}))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Get(srv.URL)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if readErr != nil {
+		t.Errorf("SetReadDeadline through Logging wrapper: %v", readErr)
+	}
+	if writeErr != nil {
+		t.Errorf("SetWriteDeadline through Logging wrapper: %v", writeErr)
 	}
 }

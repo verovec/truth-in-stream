@@ -40,6 +40,8 @@ services:
       PORT: "8080"
       # Dev-only credentials; production DATABASE_URL comes from Secrets Manager.
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      # From the root .env (see .env.example); the server fails fast if unset.
+      TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
     ports:
       - "8080:8080"
     volumes:
