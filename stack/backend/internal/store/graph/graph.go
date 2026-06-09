@@ -23,8 +23,13 @@ func Open(path string) (*Repository, error) {
 	return &Repository{db: db}, nil
 }
 
-// Ping verifies the engine answers a trivial query.
+// Ping verifies the engine answers a trivial query. The underlying go-ladybug
+// call is not itself context-cancellable, so ctx is honored only up to the point
+// the query is issued.
 func (r *Repository) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	conn, err := lbug.OpenConnection(r.db)
 	if err != nil {
 		return fmt.Errorf("graph: open connection: %w", err)
