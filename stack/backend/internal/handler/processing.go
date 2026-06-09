@@ -92,10 +92,18 @@ type segmentJSON struct {
 	Matches []domain.SegmentMatch `json:"matches"`
 }
 
+// maxSubmitBodyBytes bounds the submit request body; a video source
+// identifier fits comfortably within it.
+const maxSubmitBodyBytes = 1 << 20
+
 func submitVideoHandler(svc ProcessingService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req submitRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBodyBytes)).Decode(&req); err != nil {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+				httpx.Error(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
 			httpx.Error(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}

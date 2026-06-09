@@ -6,6 +6,10 @@ ON CONFLICT (video_id, start_ms) DO UPDATE
         content = EXCLUDED.content,
         matches = EXCLUDED.matches;
 
+-- name: DeleteSegmentResults :exec
+DELETE FROM segment_results
+WHERE video_id = $1;
+
 -- name: MarkVideoProcessed :exec
 INSERT INTO processed_videos (video_id, segment_count)
 VALUES ($1, $2)

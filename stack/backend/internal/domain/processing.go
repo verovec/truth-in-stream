@@ -41,6 +41,10 @@ type SegmentResultWriter interface {
 	// SaveSegmentResult inserts or replaces the result keyed by
 	// (videoID, result.Start).
 	SaveSegmentResult(ctx context.Context, videoID string, result SegmentResult) error
+	// DeleteSegmentResults removes every persisted result for videoID. A
+	// fresh run clears leftovers of an earlier failed run first, so a later
+	// completion never serves stale rows from a different segmentation.
+	DeleteSegmentResults(ctx context.Context, videoID string) error
 	// MarkVideoProcessed records that all segmentCount segments of videoID
 	// have been persisted.
 	MarkVideoProcessed(ctx context.Context, videoID string, segmentCount int) error

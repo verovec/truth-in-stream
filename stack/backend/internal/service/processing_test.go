@@ -1,6 +1,7 @@
 package service
 
 import (
+	stdcmp "cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +40,12 @@ func (f *fakeTranscriber) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeTranscriber) setSegs(segs []domain.Segment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.segs = segs
 }
 
 type fakeMatcher struct {
@@ -101,6 +108,13 @@ func (m *memStore) SaveSegmentResult(_ context.Context, videoID string, r domain
 	return nil
 }
 
+func (m *memStore) DeleteSegmentResults(_ context.Context, videoID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.results, videoID)
+	return nil
+}
+
 func (m *memStore) MarkVideoProcessed(_ context.Context, videoID string, segmentCount int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -126,7 +140,7 @@ func (m *memStore) ListSegmentResults(_ context.Context, videoID string) ([]doma
 		out = append(out, r)
 	}
 	slices.SortFunc(out, func(a, b domain.SegmentResult) int {
-		return int(a.Start - b.Start)
+		return stdcmp.Compare(a.Start, b.Start)
 	})
 	return out, nil
 }
@@ -571,6 +585,54 @@ func TestPartialFailureThenResubmitRecovers(t *testing.T) {
 		}
 		if len(results) != 3 {
 			t.Errorf("got %d results, want 3", len(results))
+		}
+	})
+}
+
+func TestReprocessingClearsStaleResults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tr := &fakeTranscriber{segs: testSegments(2)}
+		m := &fakeMatcher{matches: testMatches(), errOn: "segment 1"}
+		store := newMemStore()
+		p := NewProcessor(ProcessorConfig{
+			Transcriber: tr,
+			Matcher:     m,
+			Store:       store,
+			Logger:      testLogger(),
+		})
+		startRun(t, p)
+
+		sub, err := p.Submit(t.Context(), "v")
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		synctest.Wait()
+		if got := store.savedCount(sub.VideoID); got != 1 {
+			t.Fatalf("store has %d results after partial failure, want 1", got)
+		}
+
+		m.setErrOn("")
+		tr.setSegs([]domain.Segment{
+			{Start: 500 * time.Millisecond, End: time.Second, Text: "re-segmented a"},
+			{Start: 1500 * time.Millisecond, End: 2 * time.Second, Text: "re-segmented b"},
+		})
+		if _, err := p.Submit(t.Context(), "v"); err != nil {
+			t.Fatalf("re-Submit: %v", err)
+		}
+		synctest.Wait()
+
+		results, err := p.Results(t.Context(), sub.VideoID)
+		if err != nil {
+			t.Fatalf("Results: %v", err)
+		}
+		wantStarts := []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
+		if len(results) != len(wantStarts) {
+			t.Fatalf("got %d results, want %d (stale rows from the failed run must be cleared)", len(results), len(wantStarts))
+		}
+		for i, r := range results {
+			if r.Start != wantStarts[i] {
+				t.Errorf("result %d start = %v, want %v", i, r.Start, wantStarts[i])
+			}
 		}
 	})
 }

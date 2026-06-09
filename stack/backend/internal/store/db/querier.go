@@ -9,6 +9,7 @@ import (
 )
 
 type Querier interface {
+	DeleteSegmentResults(ctx context.Context, videoID string) error
 	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
 	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
 	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error

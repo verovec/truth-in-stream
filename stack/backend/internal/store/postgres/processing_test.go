@@ -116,6 +116,47 @@ func TestNilMatchesNormalizeToEmpty(t *testing.T) {
 	}
 }
 
+func TestDeleteSegmentResults(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	for _, seed := range []struct {
+		videoID string
+		start   time.Duration
+		text    string
+	}{
+		{videoID: "vid-a", start: 0, text: "a1"},
+		{videoID: "vid-a", start: time.Second, text: "a2"},
+		{videoID: "vid-b", start: 0, text: "b1"},
+	} {
+		if err := store.SaveSegmentResult(ctx, seed.videoID, domain.SegmentResult{
+			Segment: domain.Segment{Start: seed.start, End: seed.start + time.Second, Text: seed.text},
+			Matches: []domain.SegmentMatch{},
+		}); err != nil {
+			t.Fatalf("SaveSegmentResult %s: %v", seed.text, err)
+		}
+	}
+
+	if err := store.DeleteSegmentResults(ctx, "vid-a"); err != nil {
+		t.Fatalf("DeleteSegmentResults: %v", err)
+	}
+
+	gotA, err := store.ListSegmentResults(ctx, "vid-a")
+	if err != nil {
+		t.Fatalf("ListSegmentResults vid-a: %v", err)
+	}
+	if len(gotA) != 0 {
+		t.Errorf("vid-a has %d results after delete, want 0", len(gotA))
+	}
+	gotB, err := store.ListSegmentResults(ctx, "vid-b")
+	if err != nil {
+		t.Fatalf("ListSegmentResults vid-b: %v", err)
+	}
+	if len(gotB) != 1 {
+		t.Errorf("vid-b has %d results, want 1 (delete must be scoped by video)", len(gotB))
+	}
+}
+
 func TestProcessedSegmentCount(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

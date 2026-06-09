@@ -253,6 +253,11 @@ func (p *Processor) process(ctx context.Context, j *job) {
 	}
 	p.setTotal(j, len(segments))
 
+	if err := p.store.DeleteSegmentResults(ctx, j.videoID); err != nil {
+		p.fail(ctx, j, fmt.Errorf("clear previous results: %w", err))
+		return
+	}
+
 	for _, seg := range segments {
 		if err := ctx.Err(); err != nil {
 			p.fail(ctx, j, fmt.Errorf("processing interrupted: %w", err))
@@ -293,10 +298,15 @@ func (p *Processor) markSegmentDone(j *job) {
 	j.done++
 }
 
+// complete drops the finished job from the in-memory map: the store now
+// answers for it (Submit, Progress, and Results all consult the completion
+// marker first), and keeping every completed video would grow the map without
+// bound.
 func (p *Processor) complete(j *job) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	j.status = StatusComplete
+	delete(p.jobs, j.videoID)
 }
 
 func (p *Processor) fail(ctx context.Context, j *job, err error) {

@@ -38,6 +38,14 @@ func (s *Store) SaveSegmentResult(ctx context.Context, videoID string, result do
 	return nil
 }
 
+// DeleteSegmentResults removes every persisted result for videoID.
+func (s *Store) DeleteSegmentResults(ctx context.Context, videoID string) error {
+	if err := s.queries.DeleteSegmentResults(ctx, videoID); err != nil {
+		return fmt.Errorf("postgres: delete results %s: %w", videoID, err)
+	}
+	return nil
+}
+
 // MarkVideoProcessed records that all segmentCount segments of videoID have
 // been persisted.
 func (s *Store) MarkVideoProcessed(ctx context.Context, videoID string, segmentCount int) error {

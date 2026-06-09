@@ -9,6 +9,16 @@ import (
 	"context"
 )
 
+const deleteSegmentResults = `-- name: DeleteSegmentResults :exec
+DELETE FROM segment_results
+WHERE video_id = $1
+`
+
+func (q *Queries) DeleteSegmentResults(ctx context.Context, videoID string) error {
+	_, err := q.db.Exec(ctx, deleteSegmentResults, videoID)
+	return err
+}
+
 const getProcessedVideoSegmentCount = `-- name: GetProcessedVideoSegmentCount :one
 SELECT segment_count
 FROM processed_videos

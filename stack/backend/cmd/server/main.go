@@ -86,6 +86,8 @@ func run(logger *slog.Logger) error {
 
 	select {
 	case err := <-errCh:
+		stop()
+		<-processorDone
 		return err
 	case <-ctx.Done():
 		logger.Info("shutting down")

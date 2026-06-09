@@ -95,6 +95,12 @@ func TestSubmitVideo(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
+			name:     "oversized body rejected",
+			body:     `{"source":"` + strings.Repeat("a", 2<<20) + `"}`,
+			svc:      &fakeProcessing{},
+			wantCode: http.StatusRequestEntityTooLarge,
+		},
+		{
 			name:     "queue full",
 			body:     `{"source":"v"}`,
 			svc:      &fakeProcessing{submitErr: service.ErrQueueFull},
