@@ -1,8 +1,6 @@
 name: deploy
-# Paused: AWS is not configured yet (ECR/ECS absent, AWS_DEPLOY_ROLE_ARN unset) and the
-# images matrix references stack/backend/Dockerfile.migrate, which does not exist yet.
-# Manual-only for now; restore `push: { branches: [main] }` once AWS and the migrate
-# image are ready.
+# Paused: AWS is not configured yet (ECR/ECS absent, AWS_DEPLOY_ROLE_ARN unset).
+# Manual-only for now; restore `push: { branches: [main] }` once AWS is ready.
 on:
   workflow_dispatch:
 permissions:
