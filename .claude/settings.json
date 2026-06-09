@@ -8,6 +8,13 @@
           { "type": "command", "command": "bash .claude/hooks/guards.sh" }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash .claude/hooks/nexus-sync.sh" }
+        ]
+      }
     ]
   }
 }
