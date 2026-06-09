@@ -32,6 +32,7 @@ jobs:
         working-directory: ${{ inputs.path }}
         run: sqlc diff
       - if: inputs.lang == 'go'
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
+          version: v2.12.2
           working-directory: ${{ inputs.path }}
