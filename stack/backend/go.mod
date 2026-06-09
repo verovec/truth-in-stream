@@ -2,8 +2,9 @@ module github.com/verovec/truth-in-stream/backend
 
 go 1.26
 
+require github.com/LadybugDB/go-ladybug v0.17.0
+
 require (
-	github.com/LadybugDB/go-ladybug v0.17.0 // indirect
 	github.com/apache/arrow-go/v18 v18.6.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
