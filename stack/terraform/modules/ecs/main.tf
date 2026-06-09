@@ -11,8 +11,9 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
-# Tasks at or below the FARGATE base run on-demand; anything above it may be
-# placed on Spot. With desired_count 1 per service everything stays on-demand.
+# Default to on-demand for predictable capacity (no Spot interruptions during a
+# rollout with minimum-healthy 100%). FARGATE_SPOT stays registered so a service
+# can opt into it explicitly with its own capacity_provider_strategy.
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name       = aws_ecs_cluster.main.name
   capacity_providers = ["FARGATE", "FARGATE_SPOT"]
@@ -21,11 +22,6 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
     capacity_provider = "FARGATE"
     weight            = 1
     base              = 1
-  }
-
-  default_capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
   }
 }
 

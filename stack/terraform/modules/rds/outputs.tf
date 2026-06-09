@@ -5,7 +5,7 @@ output "endpoint" {
 
 output "credentials_secret_arn" {
   value       = aws_secretsmanager_secret.credentials.arn
-  description = "Secrets Manager ARN holding the structured credentials."
+  description = "Structured credentials (break-glass / admin tooling). The application reads dsn_secret_arn, not this."
 }
 
 output "dsn_secret_arn" {

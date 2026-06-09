@@ -147,16 +147,8 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "${local.name}-ecs-tasks"
-  description = "Fargate tasks; ingress only from the ALB"
+  description = "Fargate tasks. Per-service ingress rules (one per container port) are added by the service module; this SG only grants egress."
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description     = "From ALB"
-    from_port       = 0
-    to_port         = 65535
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
 
   egress {
     description = "All outbound (ECR pulls, external APIs)"

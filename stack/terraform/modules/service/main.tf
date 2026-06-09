@@ -4,6 +4,17 @@ locals {
 
 data "aws_region" "current" {}
 
+# Least-privilege ingress: only this service's container port, only from the
+# ALB. Each service adds its own rule to the shared tasks SG.
+resource "aws_vpc_security_group_ingress_rule" "from_alb" {
+  security_group_id            = var.security_group_id
+  referenced_security_group_id = var.alb_security_group_id
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  ip_protocol                  = "tcp"
+  description                  = "${var.name} container port from ALB"
+}
+
 resource "aws_ecs_task_definition" "main" {
   family                   = local.name
   requires_compatibilities = ["FARGATE"]
@@ -81,6 +92,10 @@ resource "aws_lb_listener_rule" "main" {
   }
 }
 
+# On the very first apply the ECR image does not exist yet, so tasks fail to
+# pull until the deploy workflow pushes one. The provider does not wait for
+# steady state, so apply still converges; the service self-heals on first
+# deploy. See stack/terraform/README.md for the bootstrap order.
 resource "aws_ecs_service" "main" {
   name            = var.name
   cluster         = var.cluster_id
