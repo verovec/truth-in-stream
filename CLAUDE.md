@@ -49,6 +49,7 @@ changes. A card is not Done until its review passes.
 ## On-demand context (load only when relevant)
 - Next.js frontend -> nextjs skill.
 - Go backend -> go skill.
+- Running/adding tests, finishing a card, CI checks -> testing skill.
 - Terraform / AWS -> terraform skill.
 - Writing/reviewing code -> coding-philosophy skill.
 - Linear cards / roadmap -> roadmap-linear skill; commands `/roadmap`, `/card`.

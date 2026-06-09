@@ -1,6 +1,9 @@
 # Local planning files
 docs/superpowers
 
+# Parallel-card worktrees
+.worktrees/
+
 # IDE and OS
 .DS_Store
 *.swp
