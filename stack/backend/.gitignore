@@ -1,0 +1,4 @@
+
+# native graph lib (fetched via go generate)
+lib-ladybug/
+*.db
