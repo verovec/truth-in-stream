@@ -19,6 +19,30 @@ ON CONFLICT (page_id, chunk_index) DO UPDATE
 -- name: DeleteWikiPage :exec
 DELETE FROM wiki_chunks WHERE page_id = $1;
 
+-- name: DeleteWikiPagesByTitle :exec
+-- Delta sync removes a hard-deleted page by title: RecentChanges reports a
+-- deletion with page id 0, so the stored page can only be found by its title.
+DELETE FROM wiki_chunks WHERE title = ANY(sqlc.arg(titles)::text[]);
+
+-- name: StoredWikiRevisions :many
+-- Delta sync diffs the revision RecentChanges reports against the one stored, so
+-- a page already at that revision is neither refetched nor re-embedded. A page's
+-- chunks share a revision after an upsert; max guards against a partial update.
+SELECT page_id, max(revision_id)::bigint AS revision_id
+FROM wiki_chunks
+WHERE page_id = ANY(sqlc.arg(page_ids)::bigint[])
+GROUP BY page_id;
+
+-- name: CountWikiPages :one
+SELECT count(DISTINCT page_id)::bigint FROM wiki_chunks;
+
+-- name: SetWikiChunkEmbedding :batchexec
+-- Delta sync writes embeddings straight into the live table: at delta volume the
+-- HNSW index absorbs the inserts incrementally, so no staging swap is needed.
+UPDATE wiki_chunks
+SET embedding = $1, synced_at = now()
+WHERE page_id = $2 AND chunk_index = $3;
+
 -- name: TrimWikiPageChunks :batchexec
 -- Removes the stale tail of a page after a re-sync produced fewer chunks
 -- (from_index 0 removes the page entirely, e.g. it became a redirect).

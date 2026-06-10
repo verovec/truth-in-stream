@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/store/db"
@@ -106,6 +107,77 @@ func (s *Store) TrimPages(ctx context.Context, trims []domain.WikiTrim) error {
 func (s *Store) DeletePage(ctx context.Context, pageID int64) error {
 	if err := s.queries.DeleteWikiPage(ctx, pageID); err != nil {
 		return fmt.Errorf("postgres: delete wiki page %d: %w", pageID, err)
+	}
+	return nil
+}
+
+// DeletePagesByTitle removes every chunk of each named page in one statement.
+// The delta sync uses it for hard deletions, which RecentChanges reports by
+// title (page id 0) rather than by page id.
+func (s *Store) DeletePagesByTitle(ctx context.Context, titles []string) error {
+	if len(titles) == 0 {
+		return nil
+	}
+	if err := s.queries.DeleteWikiPagesByTitle(ctx, titles); err != nil {
+		return fmt.Errorf("postgres: delete wiki pages by title: %w", err)
+	}
+	return nil
+}
+
+// StoredRevisions returns the stored revision id of each requested page the
+// corpus has chunks for; pages with no stored chunks are absent from the map.
+// The delta sync diffs these against the revisions RecentChanges reports to skip
+// pages already current.
+func (s *Store) StoredRevisions(ctx context.Context, pageIDs []int64) (map[int64]int64, error) {
+	if len(pageIDs) == 0 {
+		return map[int64]int64{}, nil
+	}
+	rows, err := s.queries.StoredWikiRevisions(ctx, pageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: stored wiki revisions: %w", err)
+	}
+	out := make(map[int64]int64, len(rows))
+	for _, r := range rows {
+		out[r.PageID] = r.RevisionID
+	}
+	return out, nil
+}
+
+// CountPages returns the number of distinct pages in the live corpus, the
+// denominator for the delta sync's bulk-recommendation guard.
+func (s *Store) CountPages(ctx context.Context) (int64, error) {
+	n, err := s.queries.CountWikiPages(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: count wiki pages: %w", err)
+	}
+	return n, nil
+}
+
+// SetChunkEmbeddings writes each chunk's embedding into the live table in one
+// batch. The delta sync embeds changed chunks in place; the HNSW index absorbs
+// the updates incrementally, so no staging swap is needed at delta volume.
+// Every chunk must carry a full-dimension embedding.
+func (s *Store) SetChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	params := make([]db.SetWikiChunkEmbeddingParams, len(chunks))
+	for i, c := range chunks {
+		if len(c.Embedding) != domain.EmbeddingDim {
+			return fmt.Errorf("postgres: set embedding page %d chunk %d: embedding has %d dims, want %d", c.PageID, c.ChunkIndex, len(c.Embedding), domain.EmbeddingDim)
+		}
+		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
+			return fmt.Errorf("postgres: set embedding page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+		}
+		hv := pgvector.NewHalfVector(c.Embedding)
+		params[i] = db.SetWikiChunkEmbeddingParams{
+			Embedding:  &hv,
+			PageID:     c.PageID,
+			ChunkIndex: int32(c.ChunkIndex),
+		}
+	}
+	if err := firstBatchError(s.queries.SetWikiChunkEmbedding(ctx, params)); err != nil {
+		return fmt.Errorf("postgres: set wiki chunk embeddings: %w", err)
 	}
 	return nil
 }

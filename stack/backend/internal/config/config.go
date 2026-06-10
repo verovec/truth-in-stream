@@ -474,6 +474,42 @@ func boundedDurationEnv(key string, fallback, maximum time.Duration) (time.Durat
 	return d, nil
 }
 
+// Delta-sync defaults. RecentChanges retains 30 days on Wikimedia wikis
+// ($wgRCMaxAge), so a checkpoint older than that cannot be caught up
+// incrementally and the run must fall back to a bulk re-ingest; the retention
+// window is the hard ceiling. BulkFraction is the share of the corpus that, once
+// exceeded by one window's change set, makes a bulk re-run (which rebuilds the
+// HNSW index from scratch) preferable to incremental inserts.
+const (
+	defaultWikiDeltaRetentionDays = 30
+	maxWikiDeltaRetentionDays     = 30
+	defaultWikiDeltaBulkFraction  = 0.25
+)
+
+// WikiDelta holds the periodic delta-sync configuration. RetentionDays bounds
+// how stale a checkpoint may be before delta is refused; BulkFraction is the
+// change-set share of the corpus above which a bulk re-run is recommended.
+type WikiDelta struct {
+	RetentionDays int
+	BulkFraction  float64
+}
+
+// LoadWikiDelta reads the delta-sync configuration from the environment,
+// applying defaults and failing fast on out-of-range values. RetentionDays is
+// capped at the API's 30-day RecentChanges window; BulkFraction is a [0,1]
+// share of the corpus.
+func LoadWikiDelta() (WikiDelta, error) {
+	w := WikiDelta{RetentionDays: defaultWikiDeltaRetentionDays, BulkFraction: defaultWikiDeltaBulkFraction}
+	var err error
+	if w.RetentionDays, err = intEnv("WIKI_DELTA_RETENTION_DAYS", w.RetentionDays, 1, maxWikiDeltaRetentionDays); err != nil {
+		return WikiDelta{}, err
+	}
+	if w.BulkFraction, err = floatEnv("WIKI_DELTA_BULK_FRACTION", w.BulkFraction, 0, 1); err != nil {
+		return WikiDelta{}, err
+	}
+	return w, nil
+}
+
 // intEnv reads an integer environment variable, applying fallback when unset
 // and enforcing an inclusive [low, high] range.
 func intEnv(key string, fallback, low, high int) (int, error) {
@@ -487,6 +523,23 @@ func intEnv(key string, fallback, low, high int) (int, error) {
 	}
 	if v < low || v > high {
 		return 0, fmt.Errorf("config: %s must be in [%d, %d], got %d", key, low, high, v)
+	}
+	return v, nil
+}
+
+// floatEnv reads a float environment variable, applying fallback when unset and
+// enforcing an inclusive [low, high] range.
+func floatEnv(key string, fallback, low, high float64) (float64, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	if v < low || v > high {
+		return 0, fmt.Errorf("config: %s must be in [%g, %g], got %g", key, low, high, v)
 	}
 	return v, nil
 }
