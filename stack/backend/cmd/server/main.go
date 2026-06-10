@@ -88,11 +88,14 @@ func run(logger *slog.Logger) error {
 	transcriber := transcribe.NewSourceTranscriber(scribe, cfg.DemoMediaDir)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
-	matcher, err := service.NewMatcher(embedder, store, service.MatcherConfig{
-		TopK:             matchCfg.TopK,
-		ScoreThreshold:   matchCfg.ScoreThreshold,
-		EmbedConcurrency: matchCfg.EmbedConcurrency,
-		Timeout:          matchCfg.Timeout,
+	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
+		TopK:              matchCfg.TopK,
+		ScoreThreshold:    matchCfg.ScoreThreshold,
+		EvidenceTopK:      matchCfg.EvidenceTopK,
+		EvidenceThreshold: matchCfg.EvidenceThreshold,
+		MaxResults:        matchCfg.MaxResults,
+		EmbedConcurrency:  matchCfg.EmbedConcurrency,
+		Timeout:           matchCfg.Timeout,
 	})
 	if err != nil {
 		return err

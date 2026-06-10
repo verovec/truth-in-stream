@@ -11,11 +11,34 @@ import (
 
 func testMatches() []domain.SegmentMatch {
 	return []domain.SegmentMatch{{
+		Kind:       domain.MatchKindClaim,
 		Claim:      "the sky is blue",
 		Verdict:    domain.VerdictCorroborates,
 		Sources:    []domain.Source{{Title: "Sky study", URL: "https://sky.example"}},
 		Similarity: 0.92,
 	}}
+}
+
+func TestSaveSegmentResultRejectsInvalidSkipReason(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	err := store.SaveSegmentResult(ctx, "vid-1", domain.SegmentResult{
+		Segment:    domain.Segment{Start: 0, End: time.Second, Text: "bad"},
+		Matches:    []domain.SegmentMatch{},
+		SkipReason: domain.SkipReason("bogus"),
+	})
+	if err == nil {
+		t.Fatal("SaveSegmentResult accepted an invalid skip reason, want rejection")
+	}
+
+	got, err := store.ListSegmentResults(ctx, "vid-1")
+	if err != nil {
+		t.Fatalf("ListSegmentResults: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("invalid skip reason was persisted (%d rows), want none", len(got))
+	}
 }
 
 func TestSegmentResultsRoundTripOrderedByStart(t *testing.T) {
@@ -222,7 +245,7 @@ func TestMarshalMatchesShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalMatches: %v", err)
 	}
-	want := `[{"claim":"the sky is blue","verdict":"corroborates","sources":[{"title":"Sky study","url":"https://sky.example"}],"similarity":0.92}]`
+	want := `[{"kind":"claim","claim":"the sky is blue","verdict":"corroborates","sources":[{"title":"Sky study","url":"https://sky.example"}],"similarity":0.92}]`
 	if got := string(raw); got != want {
 		t.Errorf("encoding = %s, want %s", got, want)
 	}

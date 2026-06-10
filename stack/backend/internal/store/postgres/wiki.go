@@ -49,6 +49,40 @@ func (s *Store) EnsureCorpus(ctx context.Context, corpus string) error {
 	return nil
 }
 
+// SearchWiki returns the topK embedded wiki chunks closest to query by cosine
+// distance, nearest first, as supporting evidence. It mirrors Store.Search over
+// the claims corpus; unembedded chunks are excluded by the query.
+func (s *Store) SearchWiki(ctx context.Context, query []float32, topK int) ([]domain.WikiEvidence, error) {
+	if topK <= 0 || topK > math.MaxInt32 {
+		return nil, fmt.Errorf("postgres: search wiki: topK %d out of range", topK)
+	}
+	if len(query) != domain.EmbeddingDim {
+		return nil, fmt.Errorf("postgres: search wiki: query has %d dims, want %d", len(query), domain.EmbeddingDim)
+	}
+
+	vec := pgvector.NewHalfVector(query)
+	rows, err := s.queries.SearchWikiChunks(ctx, db.SearchWikiChunksParams{
+		QueryEmbedding: &vec,
+		ResultLimit:    int32(topK),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("postgres: search wiki: %w", err)
+	}
+
+	evidence := make([]domain.WikiEvidence, 0, len(rows))
+	for _, r := range rows {
+		evidence = append(evidence, domain.WikiEvidence{
+			Title:   r.Title,
+			URL:     r.Url,
+			Content: r.Content,
+			// Cosine distance is in [0,2]; the float32 narrowing matches
+			// domain.WikiEvidence and is plenty precise for ranking.
+			Distance: float32(r.Distance),
+		})
+	}
+	return evidence, nil
+}
+
 // UpsertChunks inserts or replaces wiki chunks by (page_id, chunk_index) in a
 // single batch. Embeddings are never written here; the generated upsert keeps
 // an existing embedding only when the chunk content is unchanged.

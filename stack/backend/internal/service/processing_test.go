@@ -189,6 +189,7 @@ func testSegments(n int) []domain.Segment {
 
 func testMatches() []domain.SegmentMatch {
 	return []domain.SegmentMatch{{
+		Kind:       domain.MatchKindClaim,
 		Claim:      "the sky is blue",
 		Verdict:    domain.VerdictCorroborates,
 		Sources:    []domain.Source{{Title: "Sky study", URL: "https://sky.example"}},

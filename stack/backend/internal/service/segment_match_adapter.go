@@ -27,9 +27,11 @@ func NewSegmentMatchAdapter(matcher segmentMatcher) *SegmentMatchAdapter {
 	return &SegmentMatchAdapter{matcher: matcher}
 }
 
-// Match returns the ranked claim matches for text as domain.SegmentMatch
-// values, nearest first. A segment with no matchable text yields no matches
-// rather than failing the run; the returned slice is empty, never nil.
+// Match returns the ranked matches for text as domain.SegmentMatch values,
+// nearest first. Curated claims keep their verdict and sources; Wikipedia
+// evidence carries its article attribution and no verdict. A segment with no
+// matchable text yields no matches rather than failing the run; the returned
+// slice is empty, never nil.
 func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) ([]domain.SegmentMatch, error) {
 	hits, err := a.matcher.MatchSegment(ctx, text)
 	if err != nil {
@@ -40,12 +42,22 @@ func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) ([]domain.
 	}
 	matches := make([]domain.SegmentMatch, 0, len(hits))
 	for _, h := range hits {
-		matches = append(matches, domain.SegmentMatch{
+		sm := domain.SegmentMatch{
+			Kind:       h.Kind,
 			Claim:      h.Text,
-			Verdict:    h.Verdict,
-			Sources:    h.Sources,
+			Sources:    []domain.Source{},
 			Similarity: h.Score,
-		})
+		}
+		if h.Kind == domain.MatchKindEvidence {
+			article := h.Article
+			sm.Article = &article
+		} else {
+			sm.Verdict = h.Verdict
+			if h.Sources != nil {
+				sm.Sources = h.Sources
+			}
+		}
+		matches = append(matches, sm)
 	}
 	return matches, nil
 }

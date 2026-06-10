@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	pgvector "github.com/pgvector/pgvector-go"
 )
 
 const acquireWikiCorpusLock = `-- name: AcquireWikiCorpusLock :exec
@@ -206,6 +207,34 @@ type StoredWikiRevisionsRow struct {
 // chunks share a revision after an upsert; max guards against a partial update.
 func (q *Queries) StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error) {
 	rows, err := q.db.Query(ctx, storedWikiRevisions, pageIds)
+const searchWikiChunks = `-- name: SearchWikiChunks :many
+SELECT title, url, content, (embedding <=> $1)::float8 AS distance
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> $1
+LIMIT $2
+`
+
+type SearchWikiChunksParams struct {
+	QueryEmbedding *pgvector.HalfVector
+	ResultLimit    int32
+}
+
+type SearchWikiChunksRow struct {
+	Title    string
+	Url      string
+	Content  string
+	Distance float64
+}
+
+// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
+// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
+// the result regardless of the chosen plan; the HNSW index only indexes
+// non-null rows, so the filter does not degrade index use. query_embedding is
+// referenced twice but sqlc collapses it to one parameter, so the index still
+// drives the ORDER BY.
+func (q *Queries) SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error) {
+	rows, err := q.db.Query(ctx, searchWikiChunks, arg.QueryEmbedding, arg.ResultLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +243,15 @@ func (q *Queries) StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]S
 	for rows.Next() {
 		var i StoredWikiRevisionsRow
 		if err := rows.Scan(&i.PageID, &i.RevisionID); err != nil {
+	items := []SearchWikiChunksRow{}
+	for rows.Next() {
+		var i SearchWikiChunksRow
+		if err := rows.Scan(
+			&i.Title,
+			&i.Url,
+			&i.Content,
+			&i.Distance,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

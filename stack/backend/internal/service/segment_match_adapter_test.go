@@ -27,6 +27,7 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 	stub := &stubSegmentMatcher{
 		matches: []Match{
 			{
+				Kind:    domain.MatchKindClaim,
 				ClaimID: "great-wall-from-space",
 				Text:    "The Great Wall of China is visible from space with the naked eye.",
 				Verdict: domain.VerdictContradicts,
@@ -34,6 +35,13 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 				Score:   0.91,
 			},
 			{
+				Kind:    domain.MatchKindEvidence,
+				Text:    "The Great Wall of China is a series of fortifications.",
+				Article: domain.Article{Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China"},
+				Score:   0.8,
+			},
+			{
+				Kind:    domain.MatchKindClaim,
 				ClaimID: "everest-highest",
 				Text:    "Mount Everest is the highest mountain above sea level on Earth.",
 				Verdict: domain.VerdictCorroborates,
@@ -51,15 +59,26 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 
 	want := []domain.SegmentMatch{
 		{
+			Kind:       domain.MatchKindClaim,
 			Claim:      "The Great Wall of China is visible from space with the naked eye.",
 			Verdict:    domain.VerdictContradicts,
 			Sources:    []domain.Source{{Title: "NASA", URL: "https://nasa.gov"}},
 			Similarity: 0.91,
 		},
 		{
+			Kind:       domain.MatchKindEvidence,
+			Claim:      "The Great Wall of China is a series of fortifications.",
+			Sources:    []domain.Source{},
+			Similarity: 0.8,
+			Article:    &domain.Article{Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China"},
+		},
+		{
+			// Evidence has no verdict; a claim with no sources normalizes to an
+			// empty slice so the wire never carries a null sources array.
+			Kind:       domain.MatchKindClaim,
 			Claim:      "Mount Everest is the highest mountain above sea level on Earth.",
 			Verdict:    domain.VerdictCorroborates,
-			Sources:    nil,
+			Sources:    []domain.Source{},
 			Similarity: 0.74,
 		},
 	}
@@ -68,6 +87,35 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 	}
 	if stub.gotText != "you can see the great wall from orbit" {
 		t.Errorf("segment text not forwarded, got %q", stub.gotText)
+	}
+}
+
+func TestSegmentMatchAdapterEvidenceArticlesStayDistinct(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubSegmentMatcher{
+		matches: []Match{
+			{Kind: domain.MatchKindEvidence, Text: "first excerpt", Article: domain.Article{Title: "First", URL: "https://w/first"}, Score: 0.8},
+			{Kind: domain.MatchKindEvidence, Text: "second excerpt", Article: domain.Article{Title: "Second", URL: "https://w/second"}, Score: 0.7},
+		},
+	}
+	adapter := NewSegmentMatchAdapter(stub)
+
+	got, err := adapter.Match(context.Background(), "segment")
+	if err != nil {
+		t.Fatalf("Match returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d matches, want 2", len(got))
+	}
+	if got[0].Article == nil || got[1].Article == nil {
+		t.Fatal("evidence match missing article")
+	}
+	if got[0].Article == got[1].Article {
+		t.Fatal("evidence matches share the same Article pointer")
+	}
+	if got[0].Article.Title != "First" || got[1].Article.Title != "Second" {
+		t.Errorf("articles aliased: got %q and %q, want First and Second", got[0].Article.Title, got[1].Article.Title)
 	}
 }
 

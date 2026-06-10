@@ -108,6 +108,7 @@ describe("fetchVideoResults", () => {
           text: "hello world",
           matches: [
             {
+              kind: "claim",
               claim: "the world exists",
               verdict: "corroborates",
               sources: [{ title: "Source", url: "https://example.com" }],
@@ -133,6 +134,7 @@ describe("fetchVideoResults", () => {
           text: "hello world",
           matches: [
             {
+              kind: "claim",
               claim: "the world exists",
               verdict: "corroborates",
               sources: [{ title: "Source", url: "https://example.com" }],
@@ -141,6 +143,145 @@ describe("fetchVideoResults", () => {
           ],
         },
         { start: 4.5, end: 9, text: "quiet part", matches: [] },
+      ],
+    });
+  });
+
+  test("normalizes an evidence match into an excerpt with attribution", async () => {
+    mockFetch(200, {
+      video_id: "abc123",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              claim: "The Great Wall of China is a series of fortifications.",
+              sources: [],
+              similarity: 0.74,
+              article: {
+                title: "Great Wall of China",
+                url: "https://en.wikipedia.org/wiki/Great_Wall_of_China",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await fetchVideoResults("abc123");
+
+    expect(outcome).toEqual({
+      kind: "complete",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              excerpt:
+                "The Great Wall of China is a series of fortifications.",
+              article: {
+                title: "Great Wall of China",
+                url: "https://en.wikipedia.org/wiki/Great_Wall_of_China",
+              },
+              similarity: 0.74,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("keeps a malformed evidence match as evidence, never a fabricated verdict", async () => {
+    mockFetch(200, {
+      video_id: "abc123",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              claim: "The Great Wall of China is a series of fortifications.",
+              sources: [],
+              similarity: 0.74,
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await fetchVideoResults("abc123");
+
+    expect(outcome).toEqual({
+      kind: "complete",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              excerpt:
+                "The Great Wall of China is a series of fortifications.",
+              article: {
+                title: "Wikipedia",
+                url: "https://www.wikipedia.org",
+              },
+              similarity: 0.74,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("reads a legacy match without a kind as a claim", async () => {
+    mockFetch(200, {
+      video_id: "abc123",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "legacy",
+          matches: [
+            {
+              claim: "stored before evidence existed",
+              verdict: "unclear",
+              sources: [{ title: "Old", url: "https://old.example" }],
+              similarity: 0.5,
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await fetchVideoResults("abc123");
+
+    expect(outcome).toEqual({
+      kind: "complete",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "legacy",
+          matches: [
+            {
+              kind: "claim",
+              claim: "stored before evidence existed",
+              verdict: "unclear",
+              sources: [{ title: "Old", url: "https://old.example" }],
+              similarity: 0.5,
+            },
+          ],
+        },
       ],
     });
   });

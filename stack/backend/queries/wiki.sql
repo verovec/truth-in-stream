@@ -39,6 +39,21 @@ SELECT count(DISTINCT page_id)::bigint FROM wiki_chunks;
 UPDATE wiki_chunks
 SET embedding = $1, synced_at = now()
 WHERE page_id = $2 AND chunk_index = $3;
+-- name: SearchWikiChunks :many
+-- Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
+-- SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
+-- the result regardless of the chosen plan; the HNSW index only indexes
+-- non-null rows, so the filter does not degrade index use. query_embedding is
+-- referenced twice but sqlc collapses it to one parameter, so the index still
+-- drives the ORDER BY.
+SELECT title, url, content, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> sqlc.arg(query_embedding)
+LIMIT sqlc.arg(result_limit);
+
+-- name: DeleteWikiPage :exec
+DELETE FROM wiki_chunks WHERE page_id = $1;
 
 -- name: TrimWikiPageChunks :batchexec
 -- Removes the stale tail of a page after a re-sync produced fewer chunks

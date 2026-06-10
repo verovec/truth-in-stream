@@ -11,7 +11,14 @@ export type ClaimSource = {
   url: string;
 };
 
-export type SegmentMatch = {
+export type ArticleRef = {
+  title: string;
+  url: string;
+};
+
+// A curated claim match carries a verdict and citation sources.
+export type ClaimMatch = {
+  kind: "claim";
   claim: string;
   verdict: Verdict;
   sources: ClaimSource[];
@@ -21,6 +28,18 @@ export type SegmentMatch = {
 // SkipReason is why the check-worthiness gate declined to fact-check a segment.
 // It is distinct from a Verdict: a skipped segment carries no verdict at all.
 export type SkipReason = "not_a_claim" | "not_covered";
+
+// A Wikipedia evidence match is supporting context: an article excerpt with
+// attribution and no verdict. CC BY-SA 4.0 requires showing the article title
+// and URL wherever the excerpt is displayed.
+export type EvidenceMatch = {
+  kind: "evidence";
+  excerpt: string;
+  article: ArticleRef;
+  similarity: number;
+};
+
+export type SegmentMatch = ClaimMatch | EvidenceMatch;
 
 export type FactCheckSegment = {
   start: number;
@@ -71,15 +90,62 @@ type StatusWire = {
   error?: string;
 };
 
+// Wire shapes mirror stack/backend internal/handler/processing.go. A match's
+// kind may be absent on results stored before the Wikipedia evidence feature;
+// such matches read back as claims, matching the backend's own default.
+type MatchWire = {
+  kind?: "claim" | "evidence";
+  claim?: string;
+  verdict?: Verdict;
+  sources?: ClaimSource[];
+  similarity: number;
+  article?: ArticleRef;
+};
+
 type SegmentWire = {
   start: number;
   end: number;
   text: string;
-  matches: SegmentMatch[];
+  matches: MatchWire[];
   skip_reason?: SkipReason;
 };
 
 type ResultsWire = { video_id: string; segments: SegmentWire[] };
+
+function normalizeMatch(wire: MatchWire): SegmentMatch {
+  // Discriminate on kind alone: evidence must never fall through to the claim
+  // branch, or a missing attribution would fabricate an "unclear" verdict on
+  // content the corpus cannot adjudicate. A malformed evidence payload without
+  // an article degrades to a generic Wikipedia credit rather than a verdict.
+  if (wire.kind === "evidence") {
+    return {
+      kind: "evidence",
+      excerpt: wire.claim ?? "",
+      article: wire.article ?? {
+        title: "Wikipedia",
+        url: "https://www.wikipedia.org",
+      },
+      similarity: wire.similarity,
+    };
+  }
+  return {
+    kind: "claim",
+    claim: wire.claim ?? "",
+    verdict: wire.verdict ?? "unclear",
+    sources: wire.sources ?? [],
+    similarity: wire.similarity,
+  };
+}
+
+function normalizeSegment(wire: SegmentWire): FactCheckSegment {
+  return {
+    start: wire.start,
+    end: wire.end,
+    text: wire.text,
+    matches: wire.matches.map(normalizeMatch),
+    skipReason: wire.skip_reason,
+  };
+}
 
 async function toApiError(response: Response): Promise<ApiError> {
   const fallback = `request failed with status ${response.status}`;
@@ -152,14 +218,5 @@ export async function fetchVideoResults(
     throw await toApiError(response);
   }
   const wire = (await response.json()) as ResultsWire;
-  return {
-    kind: "complete",
-    segments: wire.segments.map((segment) => ({
-      start: segment.start,
-      end: segment.end,
-      text: segment.text,
-      matches: segment.matches,
-      skipReason: segment.skip_reason,
-    })),
-  };
+  return { kind: "complete", segments: wire.segments.map(normalizeSegment) };
 }

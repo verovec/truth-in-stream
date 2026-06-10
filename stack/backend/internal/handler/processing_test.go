@@ -207,12 +207,22 @@ func TestVideoResults(t *testing.T) {
 	results := []domain.SegmentResult{
 		{
 			Segment: domain.Segment{Start: 1500 * time.Millisecond, End: 2250 * time.Millisecond, Text: "hello"},
-			Matches: []domain.SegmentMatch{{
-				Claim:      "the sky is blue",
-				Verdict:    domain.VerdictCorroborates,
-				Sources:    []domain.Source{{Title: "Sky study", URL: "https://sky.example"}},
-				Similarity: 0.92,
-			}},
+			Matches: []domain.SegmentMatch{
+				{
+					Kind:       domain.MatchKindClaim,
+					Claim:      "the sky is blue",
+					Verdict:    domain.VerdictCorroborates,
+					Sources:    []domain.Source{{Title: "Sky study", URL: "https://sky.example"}},
+					Similarity: 0.92,
+				},
+				{
+					Kind:       domain.MatchKindEvidence,
+					Claim:      "The sky appears blue due to Rayleigh scattering.",
+					Sources:    []domain.Source{},
+					Similarity: 0.71,
+					Article:    &domain.Article{Title: "Diffuse sky radiation", URL: "https://en.wikipedia.org/wiki/Diffuse_sky_radiation"},
+				},
+			},
 		},
 		{
 			Segment: domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: "world"},
@@ -233,10 +243,18 @@ func TestVideoResults(t *testing.T) {
 				"text":  "hello",
 				"matches": []any{
 					map[string]any{
+						"kind":       "claim",
 						"claim":      "the sky is blue",
 						"verdict":    "corroborates",
 						"sources":    []any{map[string]any{"title": "Sky study", "url": "https://sky.example"}},
 						"similarity": 0.92,
+					},
+					map[string]any{
+						"kind":       "evidence",
+						"claim":      "The sky appears blue due to Rayleigh scattering.",
+						"sources":    []any{},
+						"similarity": 0.71,
+						"article":    map[string]any{"title": "Diffuse sky radiation", "url": "https://en.wikipedia.org/wiki/Diffuse_sky_radiation"},
 					},
 				},
 			},
