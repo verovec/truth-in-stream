@@ -5,7 +5,8 @@ description: Menu and router for this workspace's commands
 Route the user to the right command:
 
 - New project from this template -> run `/setup`.
-- Sync the roadmap from Linear -> run `/roadmap`.
+- Sync the roadmap from Linear (card list, dependency graph, ready queue) -> run `/roadmap`.
+- Pick up and deliver the next ready card (parallel-safe, one card per session) -> run `/pick`.
 - Create or update a Linear card -> run `/card`.
 - Verify best practice / latest version for a pattern -> run `/research`.
 - Compare local vs Linear version -> run `/version`.

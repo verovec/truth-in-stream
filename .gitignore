@@ -2,6 +2,7 @@
 docs/superpowers
 
 # Parallel-card worktrees
+.claude/worktrees/
 .worktrees/
 
 # IDE and OS

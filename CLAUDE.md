@@ -53,10 +53,11 @@ changes. A card is not Done until its review passes.
 - Terraform / AWS -> terraform skill.
 - Writing/reviewing code -> coding-philosophy skill.
 - Linear cards / roadmap -> roadmap-linear skill; commands `/roadmap`, `/card`.
+- Implementing a card / parallel card delivery -> delivering-linear-cards skill; commands `/pick`, `/reconcile`.
 - Integrating a new pattern -> research-patterns skill; command `/research`.
 
 ## Commands
-`/roadmap`, `/card`, `/research`, `/version`, `/reconcile`, `/mayday` (router).
+`/roadmap`, `/pick`, `/card`, `/research`, `/version`, `/reconcile`, `/mayday` (router).
 
 ## State
 `.factory-state.json` (gitignored) holds identity, Linear ids, and the `stack` choices.

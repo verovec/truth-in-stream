@@ -3,7 +3,7 @@ import { VideoPlayer } from "@/components/playback/video-player";
 import { FactCheckPanel } from "./_components/fact-check-panel";
 
 const SAMPLE_VIDEO = {
-  src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  src: "https://media.w3.org/2010/05/sintel/trailer.mp4",
   title: "Sample video",
 };
 

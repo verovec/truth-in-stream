@@ -11,7 +11,8 @@ skill for the branch-naming and card conventions.
 Resolve the set of branches to reconcile, in this order:
 
 1. Branches the user named explicitly (by branch or by card, e.g. `VER-6`, `VER-9`).
-2. Otherwise, every branch backing a worktree under `.worktrees/`.
+2. Otherwise, every branch backing a worktree under `.claude/worktrees/` (and legacy
+   `.worktrees/` trees still on disk).
 
 Each branch name is `<TEAM>-<NUMBER>-<slug>`, so the `<TEAM>-<NUMBER>` prefix IS the card
 binding. Use it to look up the card's intent (roadmap-linear skill / Linear MCP) when
@@ -20,8 +21,8 @@ resolving conflicts. If a branch does not match that pattern, ask which card it 
 ## Per branch (independently)
 
 1. `git fetch origin`.
-2. Rebase onto latest main, in the branch's worktree if one exists (`.worktrees/<branch>`),
-   else by checking the branch out: `git rebase origin/main`.
+2. Rebase onto latest main, in the branch's worktree if one exists (`.claude/worktrees/<branch>`,
+   or legacy `.worktrees/<branch>`), else by checking the branch out: `git rebase origin/main`.
 3. **On conflict:** read both sides, resolve semantically using the card's intent (never blind
    "accept theirs/ours"), `git add` the resolved files, `git rebase --continue`. Stop and ask
    the user only when a conflict is genuinely ambiguous.

@@ -80,3 +80,20 @@ The repo is indexed by **GitNexus** for graph-aware code navigation:
 - A SessionStart hook (`.claude/hooks/nexus-sync.sh`) refreshes the index in the background
   every session - non-blocking, index-only (never edits tracked files).
 - Run **`/nexus`** for an on-demand refresh, or **`/nexus force`** for a full re-index.
+
+### Parallel card delivery
+
+Cards are delivered from Linear, one card per session, and several sessions can run at once:
+
+1. **`/roadmap`** syncs Linear into the state file and computes a **ready queue** - the cards
+   whose dependencies (`depends_on`) are all `Done`, ordered by priority then critical-path
+   impact. This is the feature tracker that tells a session which card to pick next.
+2. **`/pick`** (run it in each session) claims the top ready card. Claiming flips the card to
+   `In Progress` and posts a `CLAIM <nonce>` comment; the earliest comment (by Linear's server
+   timestamp) wins, so two sessions never take the same card. The winner gets an isolated
+   worktree under `.claude/worktrees/<branch>` and delivers it (TDD -> `/code-review` ->
+   PR -> In Review) without touching the others.
+3. **`/reconcile`** rebases the per-card worktree branches onto latest `main` when they drift.
+4. **`/pick --steal VER-x`** reclaims a card left `In Progress` by a session that died.
+
+Rules live in the `roadmap-linear` and `delivering-linear-cards` skills.

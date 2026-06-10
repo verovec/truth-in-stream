@@ -39,5 +39,20 @@ reading anything else.
 - Short direct sentences. No emojis. No filler.
 - Never mention agent files, paths, or internal workspace structure in card content.
 
+## Dependencies & the ready queue (feature tracker)
+The ROADMAP state file is the source of truth for ordering, so parallel sessions can auto-pick
+the right card. `/roadmap` writes three things into `agent/<org_slug>/plans/ROADMAP-<ORG_UPPER>.md`:
+
+1. **Card list** - `| ID | Title | State | Priority | depends_on |`. `depends_on` is a
+   comma-separated list of card IDs that must reach `Done` first (empty if none). Derive it from
+   each card's stated dependencies (Context section); keep it in sync on every `/roadmap`.
+2. **Dependency graph** - the edges as `A -> B` (A must be Done before B starts).
+3. **Ready queue** - the computed pick order. A card is READY when its state is `Todo` AND every
+   `depends_on` card is `Done`. Order READY cards by Linear priority, then by unblock-count (how
+   many cards it transitively blocks, so critical-path work goes first), then by card number.
+
+`/pick` reads the Ready queue top-down and claims the first card it can. Never hand-edit the
+Ready queue - it is derived; fix `depends_on` or card states and re-run `/roadmap`.
+
 ## Version card
 - A card titled `agent-industry-version` mirrors the local `VERSION` file. Keep it in `Done`.
