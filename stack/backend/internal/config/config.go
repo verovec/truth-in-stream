@@ -172,43 +172,53 @@ func LoadAuth() (Auth, error) {
 // Match defaults: top-5 keeps responses focused, 0.5 cosine similarity drops
 // unrelated text without hiding genuine paraphrases, 4 concurrent embed calls
 // stay well inside the Voyage rate limits, and 10s bounds a single segment
-// end to end.
+// end to end. Evidence retrieval pulls 5 Wikipedia chunks at a higher 0.6
+// threshold (the corpus is far larger, so a stricter bar avoids loosely related
+// noise), and the merged result is capped at 5 across both corpora.
 const (
-	defaultMatchTopK             = 5
-	defaultMatchScoreThreshold   = 0.5
-	defaultMatchEmbedConcurrency = 4
-	defaultMatchTimeout          = 10 * time.Second
+	defaultMatchTopK              = 5
+	defaultMatchScoreThreshold    = 0.5
+	defaultMatchEvidenceTopK      = 5
+	defaultMatchEvidenceThreshold = 0.6
+	defaultMatchMaxResults        = 5
+	defaultMatchEmbedConcurrency  = 4
+	defaultMatchTimeout           = 10 * time.Second
 )
 
-// Match holds the segment-to-claim matching configuration.
+// Match holds the segment matching configuration across the curated claims and
+// Wikipedia evidence corpora.
 type Match struct {
-	TopK             int
-	ScoreThreshold   float64
-	EmbedConcurrency int
-	Timeout          time.Duration
+	TopK              int
+	ScoreThreshold    float64
+	EvidenceTopK      int
+	EvidenceThreshold float64
+	MaxResults        int
+	EmbedConcurrency  int
+	Timeout           time.Duration
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
 // defaults and failing fast on values that would make matching meaningless
-// (non-positive k or concurrency, a threshold outside cosine similarity's
-// [-1, 1] range, a non-positive timeout).
+// (out-of-range k or concurrency, a threshold outside cosine similarity's
+// [-1, 1] range, a non-positive timeout). MATCH_EVIDENCE_TOP_K 0 disables
+// Wikipedia evidence retrieval.
 func LoadMatch() (Match, error) {
 	m := Match{
-		TopK:             defaultMatchTopK,
-		ScoreThreshold:   defaultMatchScoreThreshold,
-		EmbedConcurrency: defaultMatchEmbedConcurrency,
-		Timeout:          defaultMatchTimeout,
+		TopK:              defaultMatchTopK,
+		ScoreThreshold:    defaultMatchScoreThreshold,
+		EvidenceTopK:      defaultMatchEvidenceTopK,
+		EvidenceThreshold: defaultMatchEvidenceThreshold,
+		MaxResults:        defaultMatchMaxResults,
+		EmbedConcurrency:  defaultMatchEmbedConcurrency,
+		Timeout:           defaultMatchTimeout,
 	}
-	if raw := os.Getenv("MATCH_TOP_K"); raw != "" {
-		k, err := strconv.Atoi(raw)
-		if err != nil {
-			return Match{}, fmt.Errorf("config: MATCH_TOP_K %q: %w", raw, err)
-		}
-		if k < 1 || k > math.MaxInt32 {
-			return Match{}, fmt.Errorf("config: MATCH_TOP_K must be in [1, %d], got %d", math.MaxInt32, k)
-		}
-		m.TopK = k
+	var err error
+	if m.TopK, err = intEnv("MATCH_TOP_K", m.TopK, 1, math.MaxInt32); err != nil {
+		return Match{}, err
 	}
+	if m.ScoreThreshold, err = thresholdEnv("MATCH_SCORE_THRESHOLD", m.ScoreThreshold); err != nil {
+		return Match{}, err
+  }
 	if raw := os.Getenv("MATCH_SCORE_THRESHOLD"); raw != "" {
 		threshold, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
@@ -219,21 +229,21 @@ func LoadMatch() (Match, error) {
 		}
 		m.ScoreThreshold = threshold
 	}
-	if raw := os.Getenv("MATCH_EMBED_CONCURRENCY"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			return Match{}, fmt.Errorf("config: MATCH_EMBED_CONCURRENCY %q: %w", raw, err)
-		}
-		if n < 1 {
-			return Match{}, fmt.Errorf("config: MATCH_EMBED_CONCURRENCY must be at least 1, got %d", n)
-		}
-		m.EmbedConcurrency = n
-	}
-	timeout, err := positiveDurationEnv("MATCH_TIMEOUT", m.Timeout)
-	if err != nil {
+	if m.EvidenceTopK, err = intEnv("MATCH_EVIDENCE_TOP_K", m.EvidenceTopK, 0, math.MaxInt32); err != nil {
 		return Match{}, err
 	}
-	m.Timeout = timeout
+	if m.EvidenceThreshold, err = thresholdEnv("MATCH_EVIDENCE_SCORE_THRESHOLD", m.EvidenceThreshold); err != nil {
+		return Match{}, err
+	}
+	if m.MaxResults, err = intEnv("MATCH_MAX_RESULTS", m.MaxResults, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.EmbedConcurrency, err = intEnv("MATCH_EMBED_CONCURRENCY", m.EmbedConcurrency, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.Timeout, err = positiveDurationEnv("MATCH_TIMEOUT", m.Timeout); err != nil {
+		return Match{}, err
+	}
 	return m, nil
 }
 
@@ -288,6 +298,25 @@ func LoadPrecheck() (Precheck, error) {
 		p.CoverageThreshold = threshold
 	}
 	return p, nil
+}
+
+// thresholdEnv reads a cosine-similarity threshold, falling back when unset and
+// rejecting values (including NaN) outside [-1, 1].
+func thresholdEnv(key string, fallback float64) (float64, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	// The inverted comparison also rejects NaN, which ParseFloat accepts and
+	// which would otherwise disable the filter entirely.
+	if !(v >= -1 && v <= 1) {
+		return 0, fmt.Errorf("config: %s %v outside cosine similarity range [-1, 1]", key, v)
+	}
+	return v, nil
 }
 
 // defaultWikiCorpus is the local and CI target; enwiki only matters once the

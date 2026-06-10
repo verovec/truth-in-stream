@@ -210,6 +210,60 @@ describe("FactCheckPanel", () => {
     );
   });
 
+  test("renders Wikipedia evidence with attribution and no verdict", async () => {
+    stubBackend([
+      submitRoute(json(200, { video_id: "v1", status: "complete" })),
+      resultsRoute(
+        json(200, {
+          video_id: "v1",
+          segments: [
+            {
+              start: 0,
+              end: 4,
+              text: "The Great Wall is very long.",
+              matches: [
+                {
+                  kind: "evidence",
+                  claim:
+                    "The Great Wall of China is a series of fortifications.",
+                  sources: [],
+                  similarity: 0.74,
+                  article: {
+                    title: "Great Wall of China",
+                    url: "https://en.wikipedia.org/wiki/Great_Wall_of_China",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ]);
+
+    renderPanel();
+    await screen.findByRole("list");
+
+    expect(
+      screen.getByText(
+        "The Great Wall of China is a series of fortifications.",
+      ),
+    ).toBeInTheDocument();
+
+    const articleLink = screen.getByRole("link", {
+      name: "Great Wall of China",
+    });
+    expect(articleLink).toHaveAttribute(
+      "href",
+      "https://en.wikipedia.org/wiki/Great_Wall_of_China",
+    );
+
+    expect(screen.getByText(/CC BY-SA 4.0/i)).toBeInTheDocument();
+    expect(screen.getByText(/^evidence$/i)).toBeInTheDocument();
+    // Evidence is never given a verdict.
+    expect(screen.queryByText(/^corroborates$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^contradicts$/i)).not.toBeInTheDocument();
+  });
+
   test("shows a neutral state for segments without a confident match", async () => {
     await renderReadyPanel();
 

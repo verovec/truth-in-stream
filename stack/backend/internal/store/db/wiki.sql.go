@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	pgvector "github.com/pgvector/pgvector-go"
 )
 
 const acquireWikiCorpusLock = `-- name: AcquireWikiCorpusLock :exec
@@ -174,6 +175,57 @@ UPDATE wiki_sync_state SET synced_at = now() WHERE corpus = $1
 func (q *Queries) MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error {
 	_, err := q.db.Exec(ctx, markWikiCorpusEmbedded, corpus)
 	return err
+}
+
+const searchWikiChunks = `-- name: SearchWikiChunks :many
+SELECT title, url, content, (embedding <=> $1)::float8 AS distance
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> $1
+LIMIT $2
+`
+
+type SearchWikiChunksParams struct {
+	QueryEmbedding *pgvector.HalfVector
+	ResultLimit    int32
+}
+
+type SearchWikiChunksRow struct {
+	Title    string
+	Url      string
+	Content  string
+	Distance float64
+}
+
+// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
+// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
+// the result regardless of the chosen plan; the HNSW index only indexes
+// non-null rows, so the filter does not degrade index use. query_embedding is
+// referenced twice but sqlc collapses it to one parameter, so the index still
+// drives the ORDER BY.
+func (q *Queries) SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error) {
+	rows, err := q.db.Query(ctx, searchWikiChunks, arg.QueryEmbedding, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchWikiChunksRow{}
+	for rows.Next() {
+		var i SearchWikiChunksRow
+		if err := rows.Scan(
+			&i.Title,
+			&i.Url,
+			&i.Content,
+			&i.Distance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unembeddedWikiChunks = `-- name: UnembeddedWikiChunks :many

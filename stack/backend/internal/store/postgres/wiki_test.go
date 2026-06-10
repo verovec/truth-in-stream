@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,6 +21,80 @@ func wikiChunk(pageID int64, idx int, content string) domain.WikiChunk {
 		RevisionID: 100,
 		Corpus:     "simplewiki",
 		Content:    content,
+	}
+}
+
+// setEmbedding writes an embedding onto an existing chunk so it becomes
+// searchable, mirroring what the bulk-embedding swap leaves behind.
+func setEmbedding(ctx context.Context, t *testing.T, store *Store, pageID int64, idx int, v []float32) {
+	t.Helper()
+	emb := pgvector.NewHalfVector(v)
+	if _, err := store.pool.Exec(ctx,
+		"UPDATE wiki_chunks SET embedding = $1 WHERE page_id = $2 AND chunk_index = $3",
+		emb, pageID, idx,
+	); err != nil {
+		t.Fatalf("set embedding page %d chunk %d: %v", pageID, idx, err)
+	}
+}
+
+func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunks := []domain.WikiChunk{
+		{PageID: 1, ChunkIndex: 0, Title: "Alpha", URL: "https://w/alpha", RevisionID: 1, Corpus: "simplewiki", Content: "alpha lead"},
+		{PageID: 2, ChunkIndex: 0, Title: "Bravo", URL: "https://w/bravo", RevisionID: 1, Corpus: "simplewiki", Content: "bravo lead"},
+		{PageID: 3, ChunkIndex: 0, Title: "Charlie", URL: "https://w/charlie", RevisionID: 1, Corpus: "simplewiki", Content: "charlie lead, never embedded"},
+	}
+	if err := store.UpsertChunks(ctx, chunks); err != nil {
+		t.Fatalf("UpsertChunks: %v", err)
+	}
+	setEmbedding(ctx, t, store, 1, 0, unitVec(0))
+	setEmbedding(ctx, t, store, 2, 0, unitVec(1))
+	// Page 3 stays unembedded and must never surface.
+
+	tests := []struct {
+		name      string
+		query     []float32
+		topK      int
+		wantFirst string
+		wantLen   int
+	}{
+		{name: "nearest is alpha", query: unitVec(0), topK: 5, wantFirst: "Alpha", wantLen: 2},
+		{name: "nearest is bravo", query: unitVec(1), topK: 5, wantFirst: "Bravo", wantLen: 2},
+		{name: "topK truncates", query: unitVec(0), topK: 1, wantFirst: "Alpha", wantLen: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.SearchWiki(ctx, tc.query, tc.topK)
+			if err != nil {
+				t.Fatalf("SearchWiki: %v", err)
+			}
+			if len(got) != tc.wantLen {
+				t.Fatalf("got %d evidence, want %d", len(got), tc.wantLen)
+			}
+			if got[0].Title != tc.wantFirst {
+				t.Fatalf("nearest = %q, want %q", got[0].Title, tc.wantFirst)
+			}
+			if got[0].Distance > 1e-4 {
+				t.Errorf("nearest distance = %v, want ~0", got[0].Distance)
+			}
+			for _, e := range got {
+				if e.Title == "Charlie" {
+					t.Errorf("unembedded chunk surfaced in evidence")
+				}
+				if e.URL == "" || e.Content == "" {
+					t.Errorf("evidence missing attribution: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchWikiRejectsWrongDimension(t *testing.T) {
+	store := setupStore(t)
+	if _, err := store.SearchWiki(t.Context(), []float32{1, 2, 3}, 5); err == nil {
+		t.Fatal("SearchWiki with wrong dimension: want error, got nil")
 	}
 }
 

@@ -16,6 +16,19 @@ ON CONFLICT (page_id, chunk_index) DO UPDATE
         END,
         synced_at = now();
 
+-- name: SearchWikiChunks :many
+-- Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
+-- SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
+-- the result regardless of the chosen plan; the HNSW index only indexes
+-- non-null rows, so the filter does not degrade index use. query_embedding is
+-- referenced twice but sqlc collapses it to one parameter, so the index still
+-- drives the ORDER BY.
+SELECT title, url, content, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> sqlc.arg(query_embedding)
+LIMIT sqlc.arg(result_limit);
+
 -- name: DeleteWikiPage :exec
 DELETE FROM wiki_chunks WHERE page_id = $1;
 
