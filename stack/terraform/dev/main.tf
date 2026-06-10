@@ -173,6 +173,39 @@ module "migration" {
   log_group_name          = module.ecs.log_group_name
 }
 
+# Weekly Wikipedia delta sync as a one-shot scheduled Fargate task.
+module "wiki_sync" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_wiki_sync ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "wikisync"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/wikisync"]
+  command     = ["-mode=delta"]
+
+  schedule_expression = var.wiki_sync_schedule
+  cpu                 = var.wiki_sync_cpu
+  memory              = var.wiki_sync_memory
+
+  environment_variables = {
+    WIKI_CORPUS = var.wiki_corpus
+  }
+  secrets = {
+    DATABASE_URL      = module.rds.dsn_secret_arn
+    EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
