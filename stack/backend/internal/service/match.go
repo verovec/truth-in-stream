@@ -129,9 +129,8 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, er
 }
 
 // embedSegment embeds one segment as a retrieval query under the shared
-// concurrency cap and verifies the result lives in the pinned vector space; a
-// dimension mismatch means the embedder disagrees with the store and any
-// distance would be garbage.
+// concurrency cap. The semaphore is the matcher's only addition over the shared
+// embedQuery helper.
 func (m *Matcher) embedSegment(ctx context.Context, segment string) ([]float32, error) {
 	select {
 	case m.embedSem <- struct{}{}:
@@ -139,16 +138,23 @@ func (m *Matcher) embedSegment(ctx context.Context, segment string) ([]float32, 
 	case <-ctx.Done():
 		return nil, fmt.Errorf("service: waiting for embed slot: %w", ctx.Err())
 	}
+	return embedQuery(ctx, m.embedder, segment)
+}
 
-	vecs, err := m.embedder.EmbedQueries(ctx, []string{segment})
+// embedQuery embeds one text as a retrieval query and verifies it lives in the
+// pinned vector space; a dimension mismatch means the embedder disagrees with
+// the store and any distance would be garbage. It is the single home of that
+// invariant, shared by the matcher and the precheck coverage stage.
+func embedQuery(ctx context.Context, embedder QueryEmbedder, text string) ([]float32, error) {
+	vecs, err := embedder.EmbedQueries(ctx, []string{text})
 	if err != nil {
-		return nil, fmt.Errorf("service: embed segment: %w", err)
+		return nil, fmt.Errorf("service: embed query: %w", err)
 	}
 	if len(vecs) != 1 {
-		return nil, fmt.Errorf("service: embed segment: got %d embeddings, want 1", len(vecs))
+		return nil, fmt.Errorf("service: embed query: got %d embeddings, want 1", len(vecs))
 	}
 	if len(vecs[0]) != domain.EmbeddingDim {
-		return nil, fmt.Errorf("service: embed segment: embedding has %d dims, want %d", len(vecs[0]), domain.EmbeddingDim)
+		return nil, fmt.Errorf("service: embed query: embedding has %d dims, want %d", len(vecs[0]), domain.EmbeddingDim)
 	}
 	return vecs[0], nil
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 // CoverageRetriever answers the gate's coverage question - "is this claim in
@@ -40,7 +38,7 @@ func (r *CoverageRetriever) TopSimilarity(ctx context.Context, text string) (flo
 		return 0, false, nil
 	}
 
-	query, err := r.embedQuery(ctx, text)
+	query, err := embedQuery(ctx, r.embedder, text)
 	if err != nil {
 		return 0, false, err
 	}
@@ -53,21 +51,4 @@ func (r *CoverageRetriever) TopSimilarity(ctx context.Context, text string) (flo
 		return 0, false, nil
 	}
 	return 1 - float64(hits[0].Distance), true, nil
-}
-
-// embedQuery embeds one segment as a retrieval query and verifies it lives in
-// the pinned vector space; a dimension mismatch means any distance would be
-// meaningless.
-func (r *CoverageRetriever) embedQuery(ctx context.Context, text string) ([]float32, error) {
-	vecs, err := r.embedder.EmbedQueries(ctx, []string{text})
-	if err != nil {
-		return nil, fmt.Errorf("service: coverage embed: %w", err)
-	}
-	if len(vecs) != 1 {
-		return nil, fmt.Errorf("service: coverage embed: got %d embeddings, want 1", len(vecs))
-	}
-	if len(vecs[0]) != domain.EmbeddingDim {
-		return nil, fmt.Errorf("service: coverage embed: embedding has %d dims, want %d", len(vecs[0]), domain.EmbeddingDim)
-	}
-	return vecs[0], nil
 }

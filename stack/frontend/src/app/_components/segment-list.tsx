@@ -76,6 +76,14 @@ const SKIP_LABELS: Record<SkipReason, string> = {
   not_covered: "Not checked - not covered by the reference corpus",
 };
 
+// skipLabel tolerates a skip reason the backend may add before the frontend
+// knows it, falling back to a generic notice rather than rendering blank. The
+// parameter is widened to string on purpose: the value crosses the wire
+// unchecked, so it is not guaranteed to be a known SkipReason at runtime.
+function skipLabel(reason: string): string {
+  return SKIP_LABELS[reason as SkipReason] ?? "Not checked";
+}
+
 // SegmentDetail renders the body under a segment: a skip notice when the gate
 // declined the segment, a neutral notice when it was checked but nothing
 // matched, or the ranked matches otherwise. The three states are visually and
@@ -84,7 +92,7 @@ function SegmentDetail({ segment }: { segment: FactCheckSegment }) {
   if (segment.skipReason) {
     return (
       <p className="border-t border-dashed border-zinc-200 px-3 py-2 text-xs italic text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">
-        {SKIP_LABELS[segment.skipReason]}
+        {skipLabel(segment.skipReason)}
       </p>
     );
   }
