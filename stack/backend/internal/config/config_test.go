@@ -17,7 +17,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{"DATABASE_URL": "postgres://localhost/db"},
-			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db"},
+			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db", DemoMediaDir: "demo"},
 		},
 		{
 			name:    "missing database url fails",
@@ -27,7 +27,17 @@ func TestLoad(t *testing.T) {
 		{
 			name: "port override",
 			env:  map[string]string{"PORT": "9090", "DATABASE_URL": "postgres://localhost/db"},
-			want: Config{Port: "9090", DatabaseURL: "postgres://localhost/db"},
+			want: Config{Port: "9090", DatabaseURL: "postgres://localhost/db", DemoMediaDir: "demo"},
+		},
+		{
+			name: "demo media dir override",
+			env:  map[string]string{"DATABASE_URL": "postgres://localhost/db", "DEMO_MEDIA_DIR": "/srv/media"},
+			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db", DemoMediaDir: "/srv/media"},
+		},
+		{
+			name: "cors allowed origin override",
+			env:  map[string]string{"DATABASE_URL": "postgres://localhost/db", "CORS_ALLOWED_ORIGIN": "http://localhost:3000"},
+			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db", DemoMediaDir: "demo", CORSAllowedOrigin: "http://localhost:3000"},
 		},
 	}
 	for _, tc := range tests {

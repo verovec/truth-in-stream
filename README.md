@@ -8,12 +8,19 @@ Real-time fact-checking for live streams.
 |-------|------|----------|
 | Frontend | Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) | `stack/frontend` |
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
-| Data | Ladybug (vector store; embeddings generated externally) + external transcription / embedding providers | _planned, see Configuration_ |
+| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4` embeddings, ElevenLabs Scribe v2 transcription | `stack/backend` |
 | Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
 
 ## Quick start
 
-Local development (both services, hot reload):
+The fact-check pipeline calls two external providers, so the demo needs API keys:
+
+```bash
+cp .env.example .env
+# then set TRANSCRIPTION_API_KEY (ElevenLabs) and EMBEDDING_API_KEY (Voyage) in .env
+```
+
+Bring up the whole stack (Postgres, schema migration, claim ingestion, backend, frontend):
 
 ```bash
 docker compose up
@@ -21,28 +28,38 @@ docker compose up
 # backend  -> http://localhost:8080/healthz
 ```
 
-Or run each service directly:
-
-```bash
-# backend
-cd stack/backend && go run ./cmd/server
-
-# frontend
-cd stack/frontend && npm install && npm run dev
-```
+`docker compose up` runs, in order: Postgres, a one-shot `migrate`, a one-shot `ingest` that
+embeds the seeded claims into pgvector, then the backend and frontend. Open
+http://localhost:3000 - the bundled demo clip loads, the backend transcribes it, embeds and
+matches each segment against the seeded claims, and the fact-check panel fills in as the clip
+plays. See [Demo](#demo).
 
 ## Configuration
 
-The current backend reads only `PORT` (default `8080`). The fact-checking pipeline is the next
-build-out and will require these provider credentials (not yet wired):
+Provide secrets via a local `.env` (gitignored) - never commit them. `docker compose`
+interpolates `.env` into the service environments.
 
-| Variable | Purpose |
-|----------|---------|
-| `TRANSCRIPTION_API_KEY` | External speech-to-text for the live stream |
-| `EMBEDDING_API_KEY` | External embedding generation for the Ladybug vector store |
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
+| `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 speech-to-text |
+| `EMBEDDING_API_KEY` | yes | Voyage AI `voyage-4` embeddings - used by both `ingest` and query |
+| `PORT` | no (default `8080`) | Backend listen port |
+| `CORS_ALLOWED_ORIGIN` | no (compose sets the dev frontend origin) | Browser origin allowed to call the API cross-origin; unset in production (same-origin) |
+| `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
+| `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
-Provide them via environment / a local `.env` (never commit secrets). Ladybug stores vectors
-only - embeddings are produced by the external provider, not in-process.
+The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
+`voyage-4`) and the pinned 1024-dim index are shared by both paths.
+
+## Demo
+
+The bundled demo clip (`stack/backend/demo/`) narrates several well-known claims. The backend
+serves it at `/demo/<file>` so the browser plays exactly the file the pipeline transcribes;
+the panel shows each segment's nearest curated claims with a `corroborates`, `contradicts`, or
+`unclear` verdict and source links, in sync with playback. Seeded claims live in
+`stack/backend/seed/claims.json`; re-running `ingest` is idempotent. If a provider call fails,
+the panel shows the error with a **Try again** button.
 
 ## Tests
 
