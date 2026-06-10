@@ -53,6 +53,37 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Object storage for uploaded video. Local mirror of the production S3 bucket;
+  # the backend talks to both through one storage abstraction selected by config
+  # (STORAGE_* env). Console on :9001, S3 API on :9000.
+  minio:
+    image: minio/minio:RELEASE.2025-10-15T17-29-55Z
+    command: server /data --console-address ":9001"
+    environment:
+      # Dev-only root credentials; production uses the ECS task role, no keys.
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  # One-shot: waits for MinIO, then creates the media bucket and exits.
+  # Idempotent (mc mb --ignore-existing), so repeated up cycles are safe.
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          echo 'waiting for minio'; sleep 1;
+        done
+        mc mb --ignore-existing local/media
+
   backend:
     build:
       context: ./stack/backend
@@ -107,3 +138,4 @@ volumes:
   go-mod-cache:
   frontend-node-modules:
   pgdata:
+  minio-data:

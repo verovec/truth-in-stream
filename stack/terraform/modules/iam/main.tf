@@ -181,3 +181,29 @@ resource "aws_iam_role" "task" {
   name               = "${local.name}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
+
+# Least-privilege media-storage access: object-level read/write for presigned
+# URLs, plus the bucket-level grants the SDK needs to address objects. Scoped
+# to the one bucket and only attached when its ARN is supplied.
+data "aws_iam_policy_document" "task_media" {
+  count = var.media_bucket_arn == "" ? 0 : 1
+
+  statement {
+    sid       = "MediaObjects"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${var.media_bucket_arn}/*"]
+  }
+
+  statement {
+    sid       = "MediaBucket"
+    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    resources = [var.media_bucket_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_media" {
+  count  = var.media_bucket_arn == "" ? 0 : 1
+  name   = "media-storage"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_media[0].json
+}
