@@ -218,6 +218,34 @@ describe("FactCheckPanel", () => {
     expect(items[2]).not.toHaveTextContent(/error/i);
   });
 
+  test("distinguishes skipped segments from checked ones without a match", async () => {
+    stubBackend([
+      submitRoute(json(200, { video_id: "v1", status: "complete" })),
+      resultsRoute(
+        json(200, {
+          video_id: "v1",
+          segments: [
+            { start: 0, end: 2, text: "What time is it?", matches: [], skip_reason: "not_a_claim" },
+            { start: 2, end: 4, text: "The obscure local thing happened.", matches: [], skip_reason: "not_covered" },
+            { start: 4, end: 6, text: "Paris is the capital of France.", matches: [] },
+          ],
+        }),
+      ),
+    ]);
+    renderPanel();
+    await screen.findByRole("list");
+
+    const items = screen.getAllByRole("listitem");
+    // Skipped segments read as "not checked", never as a verdict or a match.
+    expect(items[0]).toHaveTextContent(/not checked/i);
+    expect(items[0]).toHaveTextContent(/no verifiable claim/i);
+    expect(items[0]).not.toHaveTextContent(/no confident match/i);
+    expect(items[1]).toHaveTextContent(/not covered by the reference corpus/i);
+    // Checked-but-unmatched stays distinct from a skip.
+    expect(items[2]).toHaveTextContent(/no confident match/i);
+    expect(items[2]).not.toHaveTextContent(/not checked/i);
+  });
+
   test("highlights the segment containing the playback position", async () => {
     const { store } = await renderReadyPanel();
 

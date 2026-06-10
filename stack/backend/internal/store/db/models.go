@@ -24,11 +24,12 @@ type ProcessedVideo struct {
 }
 
 type SegmentResult struct {
-	VideoID string
-	StartMs int64
-	EndMs   int64
-	Content string
-	Matches []byte
+	VideoID    string
+	StartMs    int64
+	EndMs      int64
+	Content    string
+	Matches    []byte
+	SkipReason string
 }
 
 type WikiChunk struct {

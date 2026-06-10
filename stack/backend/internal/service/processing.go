@@ -27,6 +27,14 @@ type SegmentMatcher interface {
 	Match(ctx context.Context, text string) ([]domain.SegmentMatch, error)
 }
 
+// SegmentPrechecker is the check-worthiness gate the pipeline consults before
+// matching: it decides whether a segment is a checkable, corpus-covered claim
+// worth a verdict, or one to skip with a reason. Skipped segments never reach
+// the matcher, so no verdict is ever emitted on un-checkable speech.
+type SegmentPrechecker interface {
+	Evaluate(ctx context.Context, text string) (domain.PrecheckDecision, error)
+}
+
 // JobStatus is the lifecycle state of a processing job.
 type JobStatus string
 
@@ -82,12 +90,13 @@ func VideoID(source string) string {
 const defaultQueueSize = 16
 
 // ProcessorConfig wires a Processor. Transcriber, Matcher, and Store are
-// required; Logger defaults to slog.Default and QueueSize to
-// defaultQueueSize.
+// required; Logger defaults to slog.Default, QueueSize to defaultQueueSize, and
+// Prechecker to a no-op gate that checks every segment.
 type ProcessorConfig struct {
 	Transcriber Transcriber
 	Matcher     SegmentMatcher
 	Store       domain.SegmentResultStore
+	Prechecker  SegmentPrechecker
 	Logger      *slog.Logger
 	QueueSize   int
 }
@@ -110,6 +119,7 @@ type job struct {
 type Processor struct {
 	transcriber Transcriber
 	matcher     SegmentMatcher
+	prechecker  SegmentPrechecker
 	store       domain.SegmentResultStore
 	logger      *slog.Logger
 
@@ -130,9 +140,14 @@ func NewProcessor(cfg ProcessorConfig) *Processor {
 	if queueSize <= 0 {
 		queueSize = defaultQueueSize
 	}
+	prechecker := cfg.Prechecker
+	if prechecker == nil {
+		prechecker = allowAllPrechecker{}
+	}
 	return &Processor{
 		transcriber: cfg.Transcriber,
 		matcher:     cfg.Matcher,
+		prechecker:  prechecker,
 		store:       cfg.Store,
 		logger:      logger,
 		queue:       make(chan *job, queueSize),
@@ -263,12 +278,11 @@ func (p *Processor) process(ctx context.Context, j *job) {
 			p.fail(ctx, j, fmt.Errorf("processing interrupted: %w", err))
 			return
 		}
-		matches, err := p.matcher.Match(ctx, seg.Text)
+		result, err := p.checkSegment(ctx, seg)
 		if err != nil {
-			p.fail(ctx, j, fmt.Errorf("match segment at %s: %w", seg.Start, err))
+			p.fail(ctx, j, fmt.Errorf("segment at %s: %w", seg.Start, err))
 			return
 		}
-		result := domain.SegmentResult{Segment: seg, Matches: matches}
 		if err := p.store.SaveSegmentResult(ctx, j.videoID, result); err != nil {
 			p.fail(ctx, j, fmt.Errorf("save segment at %s: %w", seg.Start, err))
 			return
@@ -284,6 +298,26 @@ func (p *Processor) process(ctx context.Context, j *job) {
 	p.logger.InfoContext(ctx, "video processed",
 		slog.String("video_id", j.videoID),
 		slog.Int("segments", len(segments)))
+}
+
+// checkSegment runs the precheck gate, then matches only segments worth
+// checking. A skipped segment carries its skip reason and no matches, so it is
+// stored and served as "not checked" rather than as a verdict; a checked one
+// carries its ranked matches.
+func (p *Processor) checkSegment(ctx context.Context, seg domain.Segment) (domain.SegmentResult, error) {
+	decision, err := p.prechecker.Evaluate(ctx, seg.Text)
+	if err != nil {
+		return domain.SegmentResult{}, fmt.Errorf("precheck: %w", err)
+	}
+	if !decision.Checkable {
+		return domain.SegmentResult{Segment: seg, SkipReason: decision.Reason}, nil
+	}
+
+	matches, err := p.matcher.Match(ctx, seg.Text)
+	if err != nil {
+		return domain.SegmentResult{}, fmt.Errorf("match: %w", err)
+	}
+	return domain.SegmentResult{Segment: seg, Matches: matches}, nil
 }
 
 func (p *Processor) setTotal(j *job, total int) {

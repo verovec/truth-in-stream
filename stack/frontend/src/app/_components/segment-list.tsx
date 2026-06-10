@@ -5,7 +5,7 @@ import {
   usePlayback,
   usePlaybackStore,
 } from "@/components/playback/playback-provider";
-import type { FactCheckSegment } from "@/lib/fact-check/api";
+import type { FactCheckSegment, SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import { formatTime } from "@/lib/playback/format-time";
 import { VerdictBadge } from "./verdict-badge";
@@ -60,46 +60,71 @@ export function SegmentList({ segments }: { segments: FactCheckSegment[] }) {
                 {segment.text}
               </span>
             </button>
-            {segment.matches.length === 0 ? (
-              <p className="border-t border-dashed border-zinc-200 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                No confident match for this segment.
-              </p>
-            ) : (
-              <div className="flex flex-col divide-y divide-zinc-100 border-t border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
-                {segment.matches.map((match, matchIndex) => (
-                  <article
-                    key={matchIndex}
-                    className="flex flex-col gap-1.5 px-3 py-2"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <VerdictBadge verdict={match.verdict} />
-                      <span className="font-mono text-[11px] tabular-nums text-zinc-400 dark:text-zinc-500">
-                        {Math.round(match.similarity * 100)}% match
-                      </span>
-                    </div>
-                    <p className="text-sm leading-5 text-zinc-700 dark:text-zinc-300">
-                      {match.claim}
-                    </p>
-                    <p className="flex flex-wrap gap-x-3 gap-y-1">
-                      {match.sources.map((source) => (
-                        <a
-                          key={source.url}
-                          href={source.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
-                        >
-                          {source.title}
-                        </a>
-                      ))}
-                    </p>
-                  </article>
-                ))}
-              </div>
-            )}
+            <SegmentDetail segment={segment} />
           </li>
         );
       })}
     </ol>
+  );
+}
+
+// SKIP_LABELS explains, per skip reason, why a segment was not fact-checked.
+// The wording keeps "not checked" categorically separate from a verdict or a
+// no-confident-match result.
+const SKIP_LABELS: Record<SkipReason, string> = {
+  not_a_claim: "Not checked - no verifiable claim",
+  not_covered: "Not checked - not covered by the reference corpus",
+};
+
+// SegmentDetail renders the body under a segment: a skip notice when the gate
+// declined the segment, a neutral notice when it was checked but nothing
+// matched, or the ranked matches otherwise. The three states are visually and
+// textually distinct so a skipped segment is never read as a verdict.
+function SegmentDetail({ segment }: { segment: FactCheckSegment }) {
+  if (segment.skipReason) {
+    return (
+      <p className="border-t border-dashed border-zinc-200 px-3 py-2 text-xs italic text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">
+        {SKIP_LABELS[segment.skipReason]}
+      </p>
+    );
+  }
+
+  if (segment.matches.length === 0) {
+    return (
+      <p className="border-t border-dashed border-zinc-200 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+        No confident match for this segment.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col divide-y divide-zinc-100 border-t border-zinc-200 dark:divide-zinc-900 dark:border-zinc-800">
+      {segment.matches.map((match, matchIndex) => (
+        <article key={matchIndex} className="flex flex-col gap-1.5 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <VerdictBadge verdict={match.verdict} />
+            <span className="font-mono text-[11px] tabular-nums text-zinc-400 dark:text-zinc-500">
+              {Math.round(match.similarity * 100)}% match
+            </span>
+          </div>
+          <p className="text-sm leading-5 text-zinc-700 dark:text-zinc-300">
+            {match.claim}
+          </p>
+          <p className="flex flex-wrap gap-x-3 gap-y-1">
+            {match.sources.map((source) => (
+              <a
+                key={source.url}
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
+              >
+                {source.title}
+              </a>
+            ))}
+          </p>
+        </article>
+      ))}
+    </div>
   );
 }

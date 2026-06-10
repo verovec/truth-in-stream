@@ -28,9 +28,15 @@ type SegmentMatch struct {
 // SegmentResult is the fact-check outcome for one transcript segment. It is
 // the unit a batch pipeline persists per segment and the exact shape an
 // incremental live source will emit, so clients handle both modes identically.
+//
+// SkipReason distinguishes a segment the check-worthiness gate declined from
+// one that was checked: when it is SkipReasonNone the segment was matched and
+// Matches holds the (possibly empty) hits; when it is set the segment was
+// skipped, Matches is empty, and no verdict is implied.
 type SegmentResult struct {
 	Segment
-	Matches []SegmentMatch
+	Matches    []SegmentMatch
+	SkipReason SkipReason
 }
 
 // SegmentResultWriter is the write side of the processing results port: the

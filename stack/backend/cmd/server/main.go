@@ -49,6 +49,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	precheckCfg, err := config.LoadPrecheck()
+	if err != nil {
+		return err
+	}
 	authCfg, err := config.LoadAuth()
 	if err != nil {
 		return err
@@ -94,9 +98,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	prechecker, err := buildPrechecker(precheckCfg, embedder, store)
+	if err != nil {
+		return err
+	}
+
 	processor := service.NewProcessor(service.ProcessorConfig{
 		Transcriber: transcriber,
 		Matcher:     service.NewSegmentMatchAdapter(matcher),
+		Prechecker:  prechecker,
 		Store:       store,
 		Logger:      logger,
 	})
@@ -143,4 +153,22 @@ func run(logger *slog.Logger) error {
 		<-processorDone
 		return err
 	}
+}
+
+// buildPrechecker assembles the check-worthiness gate from config. A disabled
+// gate returns a nil prechecker, which the processor treats as "check
+// everything" - the pre-gate behavior - with no special-casing. An enabled
+// gate pairs the deterministic claim classifier with corpus coverage over the
+// same embedder and claim store the matcher uses.
+func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, store service.ClaimSearcher) (service.SegmentPrechecker, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	classifier := service.NewHeuristicClassifier(cfg.MinWords)
+	retriever := service.NewCoverageRetriever(embedder, store)
+	gate, err := service.NewGate(classifier, retriever, service.GateConfig{CoverageThreshold: cfg.CoverageThreshold})
+	if err != nil {
+		return nil, err
+	}
+	return gate, nil
 }

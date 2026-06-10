@@ -18,11 +18,18 @@ export type SegmentMatch = {
   similarity: number;
 };
 
+// SkipReason is why the check-worthiness gate declined to fact-check a segment.
+// It is distinct from a Verdict: a skipped segment carries no verdict at all.
+export type SkipReason = "not_a_claim" | "not_covered";
+
 export type FactCheckSegment = {
   start: number;
   end: number;
   text: string;
   matches: SegmentMatch[];
+  // Set only when the segment was skipped; absent means it was checked and
+  // matches (possibly empty) is authoritative.
+  skipReason?: SkipReason;
 };
 
 export type ProcessingStatus = "processing" | "complete" | "failed";
@@ -64,7 +71,15 @@ type StatusWire = {
   error?: string;
 };
 
-type ResultsWire = { video_id: string; segments: FactCheckSegment[] };
+type SegmentWire = {
+  start: number;
+  end: number;
+  text: string;
+  matches: SegmentMatch[];
+  skip_reason?: SkipReason;
+};
+
+type ResultsWire = { video_id: string; segments: SegmentWire[] };
 
 async function toApiError(response: Response): Promise<ApiError> {
   const fallback = `request failed with status ${response.status}`;
@@ -137,5 +152,14 @@ export async function fetchVideoResults(
     throw await toApiError(response);
   }
   const wire = (await response.json()) as ResultsWire;
-  return { kind: "complete", segments: wire.segments };
+  return {
+    kind: "complete",
+    segments: wire.segments.map((segment) => ({
+      start: segment.start,
+      end: segment.end,
+      text: segment.text,
+      matches: segment.matches,
+      skipReason: segment.skip_reason,
+    })),
+  };
 }

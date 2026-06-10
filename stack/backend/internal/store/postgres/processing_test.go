@@ -73,6 +73,31 @@ func TestSaveSegmentResultUpsertsByStart(t *testing.T) {
 	}
 }
 
+func TestSkipReasonRoundTrips(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	const videoID = "vid-1"
+
+	results := []domain.SegmentResult{
+		{Segment: domain.Segment{Start: 0, End: time.Second, Text: "checked claim"}, Matches: testMatches()},
+		{Segment: domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "a question"}, Matches: []domain.SegmentMatch{}, SkipReason: domain.SkipReasonNotAClaim},
+		{Segment: domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: "uncovered"}, Matches: []domain.SegmentMatch{}, SkipReason: domain.SkipReasonNotCovered},
+	}
+	for _, r := range results {
+		if err := store.SaveSegmentResult(ctx, videoID, r); err != nil {
+			t.Fatalf("SaveSegmentResult(%v): %v", r.Start, err)
+		}
+	}
+
+	got, err := store.ListSegmentResults(ctx, videoID)
+	if err != nil {
+		t.Fatalf("ListSegmentResults: %v", err)
+	}
+	if diff := cmp.Diff(results, got); diff != "" {
+		t.Errorf("skip reasons did not round-trip (-want +got):\n%s", diff)
+	}
+}
+
 func TestResultsAreScopedByVideo(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

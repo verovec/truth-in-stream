@@ -26,11 +26,12 @@ func (s *Store) SaveSegmentResult(ctx context.Context, videoID string, result do
 		return fmt.Errorf("postgres: save segment %s at %s: %w", videoID, result.Start, err)
 	}
 	err = s.queries.UpsertSegmentResult(ctx, db.UpsertSegmentResultParams{
-		VideoID: videoID,
-		StartMs: result.Start.Milliseconds(),
-		EndMs:   result.End.Milliseconds(),
-		Content: result.Text,
-		Matches: matches,
+		VideoID:    videoID,
+		StartMs:    result.Start.Milliseconds(),
+		EndMs:      result.End.Milliseconds(),
+		Content:    result.Text,
+		Matches:    matches,
+		SkipReason: string(result.SkipReason),
 	})
 	if err != nil {
 		return fmt.Errorf("postgres: save segment %s at %s: %w", videoID, result.Start, err)
@@ -95,7 +96,8 @@ func (s *Store) ListSegmentResults(ctx context.Context, videoID string) ([]domai
 				End:   time.Duration(r.EndMs) * time.Millisecond,
 				Text:  r.Content,
 			},
-			Matches: matches,
+			Matches:    matches,
+			SkipReason: domain.SkipReason(r.SkipReason),
 		})
 	}
 	return results, nil

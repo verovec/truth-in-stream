@@ -238,6 +238,61 @@ func LoadMatch() (Match, error) {
 	return m, nil
 }
 
+// Precheck defaults: a 4-word minimum drops bare fragments while keeping short
+// real claims, and a 0.4 cosine coverage floor sits below the 0.5 match
+// threshold so coverage only skips clearly-uncovered claims - a covered claim
+// can still yield no confident match, but an uncovered one is never forced into
+// a verdict. The gate is on by default; precision over recall is the point.
+const (
+	defaultPrecheckMinWords          = 4
+	defaultPrecheckCoverageThreshold = 0.4
+)
+
+// Precheck holds the check-worthiness gate configuration. Enabled toggles the
+// whole gate; MinWords bounds the claim-worthiness fragment filter;
+// CoverageThreshold is the minimum corpus similarity a claim must reach to be
+// checked.
+type Precheck struct {
+	Enabled           bool
+	MinWords          int
+	CoverageThreshold float64
+}
+
+// LoadPrecheck reads the precheck-gate configuration from the environment,
+// applying defaults and failing fast on a coverage threshold outside cosine
+// similarity's [-1, 1] range or a non-positive minimum word count.
+func LoadPrecheck() (Precheck, error) {
+	p := Precheck{
+		Enabled:           true,
+		MinWords:          defaultPrecheckMinWords,
+		CoverageThreshold: defaultPrecheckCoverageThreshold,
+	}
+	if raw := os.Getenv("PRECHECK_ENABLED"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Precheck{}, fmt.Errorf("config: PRECHECK_ENABLED %q: %w", raw, err)
+		}
+		p.Enabled = enabled
+	}
+	var err error
+	if p.MinWords, err = intEnv("PRECHECK_MIN_WORDS", p.MinWords, 1, math.MaxInt32); err != nil {
+		return Precheck{}, err
+	}
+	if raw := os.Getenv("PRECHECK_COVERAGE_THRESHOLD"); raw != "" {
+		threshold, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return Precheck{}, fmt.Errorf("config: PRECHECK_COVERAGE_THRESHOLD %q: %w", raw, err)
+		}
+		// The inverted comparison also rejects NaN, which ParseFloat accepts and
+		// which would make every segment fall through as not covered.
+		if !(threshold >= -1 && threshold <= 1) {
+			return Precheck{}, fmt.Errorf("config: PRECHECK_COVERAGE_THRESHOLD %v outside cosine similarity range [-1, 1]", threshold)
+		}
+		p.CoverageThreshold = threshold
+	}
+	return p, nil
+}
+
 // defaultWikiCorpus is the local and CI target; enwiki only matters once the
 // stack is deployed with storage sized for it.
 const defaultWikiCorpus = "simplewiki"
