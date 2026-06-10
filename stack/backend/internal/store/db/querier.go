@@ -9,16 +9,37 @@ import (
 )
 
 type Querier interface {
+	// Transaction-scoped advisory lock serializing corpus claims, so two
+	// concurrent syncs cannot both pass the foreign-corpus check and claim
+	// different corpora. Released automatically at commit/rollback.
+	AcquireWikiCorpusLock(ctx context.Context, key int64) error
+	// Claims the store for a corpus before ingestion starts (and before any
+	// checkpoint exists), so a corpus switch is detectable even after a crashed
+	// first run. Never overwrites an existing checkpoint.
+	ClaimWikiCorpus(ctx context.Context, corpus string) error
+	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
+	DeleteWikiPage(ctx context.Context, pageID int64) error
+	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
+	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
+	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
 	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error
 	// Named arg query_embedding is referenced twice but sqlc collapses it to a
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
+	// Removes the stale tail of a page after a re-sync produced fewer chunks
+	// (from_index 0 removes the page entirely, e.g. it became a redirect).
+	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
+	// Ingest never writes embeddings; the CASE keeps an existing embedding only
+	// while the content it was computed from is unchanged, so re-ingesting a
+	// changed revision invalidates the stale vector instead of serving it.
+	UpsertWikiChunk(ctx context.Context, arg []UpsertWikiChunkParams) *UpsertWikiChunkBatchResults
+	UpsertWikiSyncState(ctx context.Context, arg UpsertWikiSyncStateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

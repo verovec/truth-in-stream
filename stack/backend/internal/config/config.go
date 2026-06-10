@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -166,6 +167,34 @@ func LoadMatch() (Match, error) {
 		m.Timeout = d
 	}
 	return m, nil
+}
+
+// defaultWikiCorpus is the local and CI target; enwiki only matters once the
+// stack is deployed with storage sized for it.
+const defaultWikiCorpus = "simplewiki"
+
+// wikiCorpusRe matches Wikipedia dump database names ("simplewiki",
+// "enwiki", "frwiki", ...). Only "<lang>wiki" Wikipedias are supported: the
+// ingestion pipeline builds article URLs as <lang>.wikipedia.org, so other
+// Wikimedia projects (wiktionaries, wikidata) and underscore dump names
+// ("zh_yuewiki", whose real host hyphenates the lang code) would get dead
+// source links.
+var wikiCorpusRe = regexp.MustCompile(`^[a-z][a-z0-9]*wiki$`)
+
+// Wiki holds the Wikipedia ingestion configuration.
+type Wiki struct {
+	Corpus string
+}
+
+// LoadWiki reads the Wikipedia sync configuration from the environment.
+// WIKI_CORPUS defaults to simplewiki and must look like a Wikimedia dump
+// name, since it is interpolated into download URLs.
+func LoadWiki() (Wiki, error) {
+	corpus := getenv("WIKI_CORPUS", defaultWikiCorpus)
+	if !wikiCorpusRe.MatchString(corpus) {
+		return Wiki{}, fmt.Errorf("config: WIKI_CORPUS %q is not a valid dump name", corpus)
+	}
+	return Wiki{Corpus: corpus}, nil
 }
 
 func getenv(key, fallback string) string {
