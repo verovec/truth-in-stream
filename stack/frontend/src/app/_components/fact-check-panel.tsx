@@ -11,7 +11,7 @@ type FactCheckPanelProps = {
 };
 
 export function FactCheckPanel({ source, pollIntervalMs }: FactCheckPanelProps) {
-  const state = useFactCheck(source, pollIntervalMs);
+  const { state, retry } = useFactCheck(source, pollIntervalMs);
 
   return (
     <aside
@@ -27,12 +27,12 @@ export function FactCheckPanel({ source, pollIntervalMs }: FactCheckPanelProps) 
         </h2>
         <PlaybackClock />
       </header>
-      {renderBody(state)}
+      {renderBody(state, retry)}
     </aside>
   );
 }
 
-function renderBody(state: FactCheckState): ReactNode {
+function renderBody(state: FactCheckState, retry: () => void): ReactNode {
   switch (state.status) {
     case "loading":
       return (
@@ -79,12 +79,21 @@ function renderBody(state: FactCheckState): ReactNode {
     }
     case "error":
       return (
-        <p
-          role="alert"
-          className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
-        >
-          Fact checks are unavailable: {state.message}
-        </p>
+        <div className="flex flex-col items-start gap-3">
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
+          >
+            Fact checks are unavailable: {state.message}
+          </p>
+          <button
+            type="button"
+            onClick={retry}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          >
+            Try again
+          </button>
+        </div>
       );
     case "ready":
       if (state.segments.length === 0) {

@@ -161,6 +161,24 @@ describe("FactCheckPanel", () => {
     expect(alert).toHaveTextContent("transcription unavailable");
   });
 
+  test("retries from the error state and recovers to results", async () => {
+    const user = userEvent.setup();
+    stubBackend([
+      submitRoute(
+        json(503, { error: "processing queue is full, retry later" }),
+        json(200, { video_id: "v1", status: "complete" }),
+      ),
+      resultsRoute(json(200, RESULTS)),
+    ]);
+
+    renderPanel();
+
+    const retry = await screen.findByRole("button", { name: /try again/i });
+    await user.click(retry);
+
+    await screen.findByRole("list");
+  });
+
   test("shows an empty state when the video has no segments", async () => {
     stubBackend([
       submitRoute(json(200, { video_id: "v1", status: "complete" })),

@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import {
   json,
@@ -30,7 +30,7 @@ describe("useFactCheck", () => {
 
     const { result } = renderHook(() => useFactCheck("src", 60_000));
 
-    expect(result.current).toEqual({ status: "loading" });
+    expect(result.current.state).toEqual({ status: "loading" });
   });
 
   test("loads results directly for an already-processed video", async () => {
@@ -42,7 +42,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({ status: "ready", segments: SEGMENTS }),
+      expect(result.current.state).toEqual({ status: "ready", segments: SEGMENTS }),
     );
   });
 
@@ -76,7 +76,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({
+      expect(result.current.state).toEqual({
         status: "processing",
         segmentsDone: 3,
         segmentsTotal: 10,
@@ -85,7 +85,7 @@ describe("useFactCheck", () => {
 
     releaseCompletion();
     await waitFor(() =>
-      expect(result.current).toEqual({ status: "ready", segments: SEGMENTS }),
+      expect(result.current.state).toEqual({ status: "ready", segments: SEGMENTS }),
     );
   });
 
@@ -109,7 +109,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({ status: "ready", segments: SEGMENTS }),
+      expect(result.current.state).toEqual({ status: "ready", segments: SEGMENTS }),
     );
   });
 
@@ -130,7 +130,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({
+      expect(result.current.state).toEqual({
         status: "error",
         message: "transcription unavailable",
       }),
@@ -145,7 +145,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({
+      expect(result.current.state).toEqual({
         status: "error",
         message: "processing queue is full, retry later",
       }),
@@ -160,7 +160,7 @@ describe("useFactCheck", () => {
     const { result } = renderHook(() => useFactCheck("src", 0));
 
     await waitFor(() =>
-      expect(result.current).toEqual({
+      expect(result.current.state).toEqual({
         status: "error",
         message: "fetch failed",
       }),
@@ -199,16 +199,44 @@ describe("useFactCheck", () => {
       { initialProps: { source: "first" } },
     );
     await waitFor(() =>
-      expect(result.current).toEqual({ status: "ready", segments: SEGMENTS }),
+      expect(result.current.state).toEqual({ status: "ready", segments: SEGMENTS }),
     );
 
     rerender({ source: "second" });
 
-    expect(result.current).toEqual({ status: "loading" });
+    expect(result.current.state).toEqual({ status: "loading" });
     await waitFor(() =>
-      expect(result.current).toEqual({
+      expect(result.current.state).toEqual({
         status: "ready",
         segments: otherSegments,
+      }),
+    );
+  });
+
+  test("retry re-runs a failed pipeline and recovers", async () => {
+    stubBackend([
+      submitRoute(
+        json(503, { error: "processing queue is full, retry later" }),
+        json(200, { video_id: "v1", status: "complete" }),
+      ),
+      resultsRoute(json(200, { video_id: "v1", segments: SEGMENTS })),
+    ]);
+
+    const { result } = renderHook(() => useFactCheck("src", 0));
+
+    await waitFor(() =>
+      expect(result.current.state).toEqual({
+        status: "error",
+        message: "processing queue is full, retry later",
+      }),
+    );
+
+    act(() => result.current.retry());
+
+    await waitFor(() =>
+      expect(result.current.state).toEqual({
+        status: "ready",
+        segments: SEGMENTS,
       }),
     );
   });
@@ -228,7 +256,7 @@ describe("useFactCheck", () => {
 
     const { result, unmount } = renderHook(() => useFactCheck("src", 0));
     await waitFor(() =>
-      expect(result.current).toMatchObject({ status: "processing" }),
+      expect(result.current.state).toMatchObject({ status: "processing" }),
     );
 
     unmount();

@@ -48,7 +48,7 @@ func (f *fakeProcessing) Results(_ context.Context, videoID string) ([]domain.Se
 func newProcessingServer(svc ProcessingService) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	return NewMux(hc, &stubTranscriber{}, svc, logger)
+	return NewMux(hc, &stubTranscriber{}, svc, "", logger)
 }
 
 func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {

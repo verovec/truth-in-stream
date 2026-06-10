@@ -23,7 +23,9 @@ describe("Home", () => {
       screen.getByRole("heading", { level: 1, name: "Truth in Stream" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: /video/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: /common myths/i }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("complementary", { name: /fact checks/i }),
     ).toBeInTheDocument();

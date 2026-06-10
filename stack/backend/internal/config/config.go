@@ -19,10 +19,21 @@ const defaultEmbeddingModel = "voyage-4"
 // defaultTranscriptionModel is the ElevenLabs batch speech-to-text model.
 const defaultTranscriptionModel = "scribe_v2"
 
+// defaultDemoMediaDir is where the server reads and serves the bundled demo
+// clip from, relative to the working directory.
+const defaultDemoMediaDir = "demo"
+
 // Config holds the runtime configuration for the server.
 type Config struct {
 	Port        string
 	DatabaseURL string
+	// DemoMediaDir is the directory the bundled demo clip is served from and
+	// transcribed out of; the player and the pipeline read the same file.
+	DemoMediaDir string
+	// CORSAllowedOrigin is the browser origin permitted to call the API
+	// cross-origin. Empty in production, where the frontend and API share an
+	// origin and CORS is not needed; set to the dev frontend origin locally.
+	CORSAllowedOrigin string
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -33,8 +44,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Port:        getenv("PORT", "8080"),
-		DatabaseURL: dbURL,
+		Port:              getenv("PORT", "8080"),
+		DatabaseURL:       dbURL,
+		DemoMediaDir:      getenv("DEMO_MEDIA_DIR", defaultDemoMediaDir),
+		CORSAllowedOrigin: os.Getenv("CORS_ALLOWED_ORIGIN"),
 	}, nil
 }
 

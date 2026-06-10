@@ -14,19 +14,30 @@ export type FactCheckState =
   | { status: "ready"; segments: FactCheckSegment[] }
   | { status: "error"; message: string };
 
+/**
+ * FactCheck is the hook result: the current pipeline state and a retry handle
+ * that re-runs the pipeline from scratch, used to recover from the error state.
+ */
+export type FactCheck = {
+  state: FactCheckState;
+  retry: () => void;
+};
+
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 /**
  * Submits the video source for processing and resolves to its
  * timestamp-indexed fact-check results, polling status while the backend
- * pipeline runs. Already-processed sources short-circuit to results.
+ * pipeline runs. Already-processed sources short-circuit to results. The
+ * returned retry handle restarts a failed run.
  */
 export function useFactCheck(
   source: string,
   pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
-): FactCheckState {
+): FactCheck {
   const [state, setState] = useState<FactCheckState>({ status: "loading" });
   const [trackedSource, setTrackedSource] = useState(source);
+  const [attempt, setAttempt] = useState(0);
   if (trackedSource !== source) {
     setTrackedSource(source);
     setState({ status: "loading" });
@@ -104,7 +115,12 @@ export function useFactCheck(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [source, pollIntervalMs]);
+  }, [source, pollIntervalMs, attempt]);
 
-  return state;
+  const retry = () => {
+    setState({ status: "loading" });
+    setAttempt((n) => n + 1);
+  };
+
+  return { state, retry };
 }

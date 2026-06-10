@@ -31,6 +31,28 @@ services:
       postgres:
         condition: service_healthy
 
+  # One-shot: embeds the curated seed claims and upserts them into pgvector,
+  # then exits. Idempotent (claims upsert by id). The backend waits for it so
+  # the claim store is populated before the first video is matched. Requires
+  # EMBEDDING_API_KEY (the embed call hits Voyage); without it this fails fast.
+  ingest:
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/ingest"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: ./stack/backend
@@ -42,6 +64,11 @@ services:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       # From the root .env (see .env.example); the server fails fast if unset.
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # The browser loads the app from :3000 and calls the API at :8080, so the
+      # backend must allow that origin. In production both share an origin and
+      # this is left unset.
+      CORS_ALLOWED_ORIGIN: "http://localhost:3000"
     ports:
       - "8080:8080"
     volumes:
@@ -51,6 +78,8 @@ services:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      ingest:
         condition: service_completed_successfully
 
   frontend:
