@@ -38,6 +38,13 @@ type Querier interface {
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
+	// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
+	// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
+	// the result regardless of the chosen plan; the HNSW index only indexes
+	// non-null rows, so the filter does not degrade index use. query_embedding is
+	// referenced twice but sqlc collapses it to one parameter, so the index still
+	// drives the ORDER BY.
+	SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error)
 	// Removes the stale tail of a page after a re-sync produced fewer chunks
 	// (from_index 0 removes the page entirely, e.g. it became a redirect).
 	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults

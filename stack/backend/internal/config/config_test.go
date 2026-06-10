@@ -290,10 +290,13 @@ func TestLoadAuth(t *testing.T) {
 
 func TestLoadMatch(t *testing.T) {
 	defaults := Match{
-		TopK:             5,
-		ScoreThreshold:   0.5,
-		EmbedConcurrency: 4,
-		Timeout:          10 * time.Second,
+		TopK:              5,
+		ScoreThreshold:    0.5,
+		EvidenceTopK:      5,
+		EvidenceThreshold: 0.6,
+		MaxResults:        5,
+		EmbedConcurrency:  4,
+		Timeout:           10 * time.Second,
 	}
 	tests := []struct {
 		name    string
@@ -309,17 +312,40 @@ func TestLoadMatch(t *testing.T) {
 		{
 			name: "all overrides applied",
 			env: map[string]string{
-				"MATCH_TOP_K":             "10",
-				"MATCH_SCORE_THRESHOLD":   "0.75",
-				"MATCH_EMBED_CONCURRENCY": "2",
-				"MATCH_TIMEOUT":           "30s",
+				"MATCH_TOP_K":                    "10",
+				"MATCH_SCORE_THRESHOLD":          "0.75",
+				"MATCH_EVIDENCE_TOP_K":           "3",
+				"MATCH_EVIDENCE_SCORE_THRESHOLD": "0.8",
+				"MATCH_MAX_RESULTS":              "6",
+				"MATCH_EMBED_CONCURRENCY":        "2",
+				"MATCH_TIMEOUT":                  "30s",
 			},
-			want: Match{TopK: 10, ScoreThreshold: 0.75, EmbedConcurrency: 2, Timeout: 30 * time.Second},
+			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second},
 		},
 		{
 			name: "negative threshold accepted",
 			env:  map[string]string{"MATCH_SCORE_THRESHOLD": "-1"},
-			want: Match{TopK: 5, ScoreThreshold: -1, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+			want: Match{TopK: 5, ScoreThreshold: -1, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+		},
+		{
+			name: "evidence retrieval can be disabled",
+			env:  map[string]string{"MATCH_EVIDENCE_TOP_K": "0"},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+		},
+		{
+			name:    "evidence threshold above cosine range fails",
+			env:     map[string]string{"MATCH_EVIDENCE_SCORE_THRESHOLD": "1.5"},
+			wantErr: true,
+		},
+		{
+			name:    "negative evidence top k fails",
+			env:     map[string]string{"MATCH_EVIDENCE_TOP_K": "-1"},
+			wantErr: true,
+		},
+		{
+			name:    "zero max results fails",
+			env:     map[string]string{"MATCH_MAX_RESULTS": "0"},
+			wantErr: true,
 		},
 		{
 			name:    "non-numeric top k fails",

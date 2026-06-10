@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -14,15 +15,68 @@ type Segment struct {
 	Text  string
 }
 
-// SegmentMatch is one ranked claim hit for a spoken segment. Similarity is a
-// numeric score where higher means more similar. The json tags are both the
-// segment_results.matches jsonb wire format and the API response shape; they
-// are identical by design so the stored result is served verbatim.
+// MatchKind distinguishes a curated claim match (which carries a verdict) from
+// a Wikipedia evidence match (supporting context with attribution, never a
+// verdict). It is the discriminator the frontend switches on.
+type MatchKind string
+
+const (
+	// MatchKindClaim is a hit against the curated claims corpus; it carries a
+	// verdict and citation sources.
+	MatchKindClaim MatchKind = "claim"
+	// MatchKindEvidence is a hit against the Wikipedia corpus; it is supporting
+	// context with article attribution and no verdict.
+	MatchKindEvidence MatchKind = "evidence"
+)
+
+// Valid reports whether k is a known match kind.
+func (k MatchKind) Valid() bool {
+	switch k {
+	case MatchKindClaim, MatchKindEvidence:
+		return true
+	default:
+		return false
+	}
+}
+
+// Article is the attribution for a Wikipedia evidence match: the source title
+// and article URL. CC BY-SA 4.0 requires both whenever a snippet is shown.
+type Article struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// SegmentMatch is one ranked hit for a spoken segment, from either the curated
+// claims corpus (Kind claim, with Verdict and Sources) or the Wikipedia corpus
+// (Kind evidence, with Article and no verdict). Claim holds the matched
+// reference text in both cases: the claim statement for claims, the article
+// excerpt for evidence. The json tags are both the segment_results.matches
+// jsonb wire format and the API response shape; they are identical by design so
+// the stored result is served verbatim.
 type SegmentMatch struct {
-	Claim      string   `json:"claim"`
-	Verdict    Verdict  `json:"verdict"`
-	Sources    []Source `json:"sources"`
-	Similarity float64  `json:"similarity"`
+	Kind       MatchKind `json:"kind"`
+	Claim      string    `json:"claim"`
+	Verdict    Verdict   `json:"verdict,omitempty"`
+	Sources    []Source  `json:"sources"`
+	Similarity float64   `json:"similarity"`
+	Article    *Article  `json:"article,omitempty"`
+}
+
+// UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim.
+// Results stored before the Wikipedia evidence card carry no kind field; reading
+// them back as claim matches keeps the historical corpus valid without a data
+// migration.
+func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
+	type raw SegmentMatch
+	decoded := raw{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Kind == "" {
+		decoded.Kind = MatchKindClaim
+	}
+	*m = SegmentMatch(decoded)
+	return nil
 }
 
 // SegmentResult is the fact-check outcome for one transcript segment. It is

@@ -186,7 +186,7 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 
 	seedMatch := func(id string, score float64) Match {
 		s := seedByID(t, seeds, id)
-		return Match{ClaimID: s.ID, Text: s.Text, Verdict: s.Verdict, Sources: s.Sources, Score: score}
+		return Match{Kind: domain.MatchKindClaim, ClaimID: s.ID, Text: s.Text, Verdict: s.Verdict, Sources: s.Sources, Score: score}
 	}
 
 	tests := []struct {
@@ -258,9 +258,11 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := NewMatcher(embedder, store, MatcherConfig{
+			m, err := NewMatcher(embedder, store, store, MatcherConfig{
 				TopK:             tc.topK,
 				ScoreThreshold:   tc.threshold,
+				EvidenceTopK:     0,
+				MaxResults:       10,
 				EmbedConcurrency: 2,
 				Timeout:          30 * time.Second,
 			})

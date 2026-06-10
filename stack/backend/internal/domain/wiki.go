@@ -18,6 +18,17 @@ type WikiChunk struct {
 	Embedding  []float32
 }
 
+// WikiEvidence is a retrieval hit from the Wikipedia corpus: a chunk's article
+// attribution and excerpt with its cosine distance to the query in [0, 2],
+// lower is more similar. Wikipedia content is supporting evidence, never a
+// verdict, so this type carries no verdict.
+type WikiEvidence struct {
+	Title    string
+	URL      string
+	Content  string
+	Distance float32
+}
+
 // WikiTrim marks the chunks of a page that a sync run did not (re)produce:
 // every chunk of the page with index >= FromIndex is stale and must go.
 // FromIndex 0 removes the page entirely.

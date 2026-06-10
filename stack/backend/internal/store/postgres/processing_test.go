@@ -11,6 +11,7 @@ import (
 
 func testMatches() []domain.SegmentMatch {
 	return []domain.SegmentMatch{{
+		Kind:       domain.MatchKindClaim,
 		Claim:      "the sky is blue",
 		Verdict:    domain.VerdictCorroborates,
 		Sources:    []domain.Source{{Title: "Sky study", URL: "https://sky.example"}},
@@ -222,7 +223,7 @@ func TestMarshalMatchesShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalMatches: %v", err)
 	}
-	want := `[{"claim":"the sky is blue","verdict":"corroborates","sources":[{"title":"Sky study","url":"https://sky.example"}],"similarity":0.92}]`
+	want := `[{"kind":"claim","claim":"the sky is blue","verdict":"corroborates","sources":[{"title":"Sky study","url":"https://sky.example"}],"similarity":0.92}]`
 	if got := string(raw); got != want {
 		t.Errorf("encoding = %s, want %s", got, want)
 	}
