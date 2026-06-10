@@ -148,7 +148,7 @@ These workspace-specific slash commands drive day-to-day work:
 | `/card` | Create or update a Linear card following the workspace card rules |
 | `/research` | Verify current best practice and latest version before integrating a pattern |
 | `/version` | Compare the local `VERSION` file with the Linear version card |
-| `/nexus` | Refresh the GitNexus index for this repo and report status |
+| `/undersatnd` | Refresh the understand anything index for this repo and report status |
 | `/setup` | Bootstrap a new project from this template (detach, scaffold, link a new repo) |
 
 The repo is indexed by **GitNexus** for graph-aware code navigation:
