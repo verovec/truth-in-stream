@@ -456,7 +456,7 @@ func TestCancellationFailsInFlightJob(t *testing.T) {
 			t.Errorf("status after cancellation = %q, want %q", prog.Status, StatusFailed)
 		}
 		if store.isProcessed(sub.VideoID) {
-			t.Error("cancelled video must not be marked processed")
+			t.Error("canceled video must not be marked processed")
 		}
 		if _, err := p.Results(t.Context(), sub.VideoID); !errors.Is(err, ErrResultsNotReady) {
 			t.Errorf("Results err = %v, want ErrResultsNotReady", err)

@@ -24,7 +24,7 @@ const claimsSchemaLock = int64(0x747275746873)
 
 // lockSchema takes the schema advisory lock for the duration of the test.
 // Closing the session at cleanup releases the lock.
-func lockSchema(t *testing.T, ctx context.Context, dsn string) {
+func lockSchema(ctx context.Context, t *testing.T, dsn string) {
 	t.Helper()
 
 	conn, err := pgx.Connect(ctx, dsn)
@@ -49,8 +49,8 @@ func setupStore(t *testing.T) *Store {
 	}
 
 	ctx := t.Context()
-	lockSchema(t, ctx, dsn)
-	resetSchema(t, ctx, dsn)
+	lockSchema(ctx, t, dsn)
+	resetSchema(ctx, t, dsn)
 
 	store, err := Open(ctx, dsn)
 	if err != nil {
@@ -65,7 +65,7 @@ func setupStore(t *testing.T) *Store {
 // then applies every up migration in order, exactly as CI and golang-migrate
 // apply them. (Down migrations are inverses valid only at their own version, so
 // they are not safe to replay blindly from arbitrary state.)
-func resetSchema(t *testing.T, ctx context.Context, dsn string) {
+func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	t.Helper()
 
 	pool, err := pgxpool.New(ctx, dsn)
@@ -85,11 +85,11 @@ func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 	}
 	sort.Strings(ups)
 	for _, up := range ups {
-		execSQLFile(t, ctx, pool, up)
+		execSQLFile(ctx, t, pool, up)
 	}
 }
 
-func execSQLFile(t *testing.T, ctx context.Context, pool *pgxpool.Pool, path string) {
+func execSQLFile(ctx context.Context, t *testing.T, pool *pgxpool.Pool, path string) {
 	t.Helper()
 	sql, err := os.ReadFile(path)
 	if err != nil {

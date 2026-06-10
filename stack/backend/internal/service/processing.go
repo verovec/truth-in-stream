@@ -140,7 +140,7 @@ func NewProcessor(cfg ProcessorConfig) *Processor {
 	}
 }
 
-// Run consumes submitted jobs until ctx is cancelled. Jobs run one at a time
+// Run consumes submitted jobs until ctx is canceled. Jobs run one at a time
 // off the request goroutine; cancellation stops between segments, so graceful
 // shutdown is never blocked by a long video.
 func (p *Processor) Run(ctx context.Context) {

@@ -142,7 +142,7 @@ func TestEmbedAPIErrorIsClassified(t *testing.T) {
 
 func TestEmbedRejectsWrongDimension(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := embedServer(t, http.StatusOK, func(req embedRequest) any {
+	srv, _, _ := embedServer(t, http.StatusOK, func(_ embedRequest) any {
 		return embedResponse{Data: []embedData{{Index: 0, Embedding: []float32{1, 2}}}}
 	})
 	client := newTestClient(t, srv)
@@ -154,7 +154,7 @@ func TestEmbedRejectsWrongDimension(t *testing.T) {
 
 func TestEmbedRejectsCountMismatch(t *testing.T) {
 	t.Parallel()
-	srv, _, _ := embedServer(t, http.StatusOK, func(req embedRequest) any {
+	srv, _, _ := embedServer(t, http.StatusOK, func(_ embedRequest) any {
 		return embedResponse{Data: []embedData{{Index: 0, Embedding: make([]float32, testDim)}}}
 	})
 	client := newTestClient(t, srv)

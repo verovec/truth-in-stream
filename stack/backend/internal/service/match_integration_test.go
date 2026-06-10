@@ -27,7 +27,7 @@ const claimsSchemaLock = int64(0x747275746873)
 
 // lockSchema takes the schema advisory lock for the duration of the test.
 // Closing the session at cleanup releases the lock.
-func lockSchema(t *testing.T, ctx context.Context, dsn string) {
+func lockSchema(ctx context.Context, t *testing.T, dsn string) {
 	t.Helper()
 
 	conn, err := pgx.Connect(ctx, dsn)
@@ -81,8 +81,8 @@ func setupSeededStore(t *testing.T) (*postgres.Store, []ingest.SeedClaim, map[st
 	}
 
 	ctx := t.Context()
-	lockSchema(t, ctx, dsn)
-	resetSchema(t, ctx, dsn)
+	lockSchema(ctx, t, dsn)
+	resetSchema(ctx, t, dsn)
 
 	seedFile, err := os.Open(filepath.Join("..", "..", "seed", "claims.json"))
 	if err != nil {
@@ -113,7 +113,7 @@ func setupSeededStore(t *testing.T) (*postgres.Store, []ingest.SeedClaim, map[st
 
 // resetSchema mirrors the store integration tests: drop the known tables and
 // replay every up migration in order.
-func resetSchema(t *testing.T, ctx context.Context, dsn string) {
+func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	t.Helper()
 
 	pool, err := pgxpool.New(ctx, dsn)

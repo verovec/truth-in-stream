@@ -149,7 +149,7 @@ func (c *Client) TranscribeFile(ctx context.Context, audio io.Reader, opts Optio
 
 // TranscribeStream is the live-mode half of the Transcriber contract, to be
 // implemented against Scribe v2 Realtime. v1 is batch-only.
-func (c *Client) TranscribeStream(ctx context.Context, chunks <-chan []byte, opts Options) (<-chan TranscriptEvent, error) {
+func (c *Client) TranscribeStream(_ context.Context, _ <-chan []byte, _ Options) (<-chan TranscriptEvent, error) {
 	return nil, errors.New("scribe: streaming transcription is not implemented in v1")
 }
 

@@ -8,7 +8,7 @@ import (
 
 type fakePinger struct{ err error }
 
-func (f fakePinger) Ping(ctx context.Context) error { return f.err }
+func (f fakePinger) Ping(_ context.Context) error { return f.err }
 
 func TestHealthCheckerCheck(t *testing.T) {
 	tests := []struct {
