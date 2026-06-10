@@ -53,6 +53,9 @@ interpolates `.env` into the service environments.
 | `PORT` | no (default `8080`) | Backend listen port |
 | `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
 | `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
+| `EMBEDDING_MODEL` | no (default `voyage-4`) | Voyage embedding model; the same value must be used for ingest and query |
+| `EMBEDDING_DIM` | no | If set, must equal the pinned index dimension (1024); a mismatch fails fast rather than silently re-ingesting |
+| `TRANSCRIPTION_MODEL` | no (default `scribe_v2`) | ElevenLabs batch speech-to-text model |
 | `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
 The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
@@ -83,6 +86,26 @@ transcribes; the panel shows each segment's nearest curated claims with a `corro
 live in `stack/backend/seed/claims.json`; re-running `ingest` is idempotent. If a provider
 call fails, the panel shows the error with a **Try again** button.
 
+## Wikipedia corpus
+
+Beyond the seeded claims, the verification store can be backed by a full Wikipedia corpus.
+`make wikisync` (from `stack/backend`) downloads the corpus's multistream dump, extracts and
+chunks each article's lead section, upserts the chunks, embeds every chunk via Voyage, then
+swaps the freshly embedded corpus into place. The run is idempotent and an interrupted embed
+resumes; `go run ./cmd/wikisync -dry-run` ingests and reports the embedding-cost estimate
+without calling the embedding API or swapping anything.
+
+It needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional knobs:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `WIKI_CORPUS` | no (default `simplewiki`) | Wikimedia dump name (`<lang>wiki`); interpolated into the download and source URLs |
+| `WIKI_EMBED_BATCH_SIZE` | no (default `128`, max `1000`) | Chunks per Voyage embedding request |
+| `WIKI_EMBED_CONCURRENCY` | no (default `4`) | Concurrent embedding requests |
+| `WIKI_EMBED_MAX_RETRIES` | no (default `6`) | Retries per request when the API throttles |
+| `WIKI_EMBED_MAINTENANCE_WORK_MEM` | no (default `512MB`) | Postgres `maintenance_work_mem` for the HNSW index build; raise it for `enwiki` |
+| `WIKI_EMBED_MAX_PARALLEL_WORKERS` | no (default `7`) | Parallel workers for the index build |
+
 ## Tests
 
 ```bash
@@ -109,10 +132,24 @@ cd stack/terraform/dev && terraform init && terraform plan
   (fails on HIGH/CRITICAL OS or library vulns), then pushes to GHCR with SBOM + provenance
   attestations. The AWS deploy step is a documented TODO pending the runtime target in Terraform.
 
-## Working with Claude Code
+## Claude Workflow
 
 `.claude/` is the source of truth. `CLAUDE.md` holds always-on rules; per-stack knowledge
 loads on demand via the `nextjs`, `go`, and `terraform` skills.
+
+These workspace-specific slash commands drive day-to-day work:
+
+| Command | Purpose |
+|---------|---------|
+| `/mayday` | Menu and router for this workspace's commands |
+| `/roadmap` | Sync the roadmap state file from Linear and compute the ready queue |
+| `/pick` | Claim the next ready card (parallel-safe) and deliver it in an isolated worktree |
+| `/reconcile` | Rebase one or more card branches onto latest `main`, resolving conflicts per branch |
+| `/card` | Create or update a Linear card following the workspace card rules |
+| `/research` | Verify current best practice and latest version before integrating a pattern |
+| `/version` | Compare the local `VERSION` file with the Linear version card |
+| `/nexus` | Refresh the GitNexus index for this repo and report status |
+| `/setup` | Bootstrap a new project from this template (detach, scaffold, link a new repo) |
 
 The repo is indexed by **GitNexus** for graph-aware code navigation:
 

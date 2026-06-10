@@ -43,6 +43,7 @@ Ready queue.
 | VER-29 | Upload UI and video library/picker (frontend) | Todo | High | VER-28 |
 | VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | Todo | High | VER-28 |
 | VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Todo | High | VER-29, VER-30 |
+| VER-32 | Local dev data environment: one-command reset, seeds, and offline fixtures | Todo | High | |
 
 ## Dependency Graph
 
@@ -66,8 +67,9 @@ A card is READY when state is `Todo` AND every depends_on card is `Done`.
 
 1. VER-27 (High) - Object storage foundation; no dependencies, unblocks the whole video-upload epic (5 downstream cards).
 2. VER-24 (High) - Check-worthiness precheck gate; no dependencies, unblocks VER-25.
-3. VER-21 (Medium) - Periodic Wikipedia delta sync; VER-20 now Done.
-4. VER-22 (Medium) - Wikipedia evidence in fact-check results; VER-20 now Done.
+3. VER-32 (High) - Local dev data environment; no dependencies, improves the loop for all remaining work.
+4. VER-21 (Medium) - Periodic Wikipedia delta sync; VER-20 now Done.
+5. VER-22 (Medium) - Wikipedia evidence in fact-check results; VER-20 now Done.
 
 Blocked or otherwise not claimable by `/pick`:
 
