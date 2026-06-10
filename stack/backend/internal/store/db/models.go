@@ -5,6 +5,7 @@
 package db
 
 import (
+	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
 )
 
@@ -14,4 +15,18 @@ type Claim struct {
 	Verdict   string
 	Sources   []byte
 	Embedding pgvector.HalfVector
+}
+
+type ProcessedVideo struct {
+	VideoID      string
+	SegmentCount int32
+	CompletedAt  pgtype.Timestamptz
+}
+
+type SegmentResult struct {
+	VideoID string
+	StartMs int64
+	EndMs   int64
+	Content string
+	Matches []byte
 }

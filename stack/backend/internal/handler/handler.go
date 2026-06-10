@@ -11,10 +11,13 @@ import (
 )
 
 // NewMux builds the application router with middleware applied.
-func NewMux(health *service.HealthChecker, transcriber transcribe.Transcriber, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, transcriber transcribe.Transcriber, processing ProcessingService, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(health))
 	mux.HandleFunc("POST /api/transcripts", transcriptHandler(transcriber, logger))
+	mux.HandleFunc("POST /api/videos", submitVideoHandler(processing))
+	mux.HandleFunc("GET /api/videos/{id}/status", videoStatusHandler(processing))
+	mux.HandleFunc("GET /api/videos/{id}/results", videoResultsHandler(processing))
 
 	var h http.Handler = mux
 	h = middleware.Logging(logger)(h)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
@@ -52,9 +53,21 @@ func run(logger *slog.Logger) error {
 		APIKey: transcription.APIKey,
 		Model:  transcription.Model,
 	})
+	processor := service.NewProcessor(service.ProcessorConfig{
+		Transcriber: pendingTranscriber{},
+		Matcher:     pendingMatcher{},
+		Store:       store,
+		Logger:      logger,
+	})
+	processorDone := make(chan struct{})
+	go func() {
+		defer close(processorDone)
+		processor.Run(ctx)
+	}()
+
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: handler.NewMux(health, scribe, logger),
+		Handler: handler.NewMux(health, scribe, processor, logger),
 		// Tight server-wide bounds; the transcript route extends its own
 		// deadlines per request via http.ResponseController.
 		ReadHeaderTimeout: 5 * time.Second,
@@ -73,11 +86,32 @@ func run(logger *slog.Logger) error {
 
 	select {
 	case err := <-errCh:
+		stop()
+		<-processorDone
 		return err
 	case <-ctx.Done():
 		logger.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		err := srv.Shutdown(shutdownCtx)
+		<-processorDone
+		return err
 	}
+}
+
+// pendingTranscriber stands in for the VER-7 transcription service until it
+// merges; jobs fail fast with a clear message instead of hanging. Replace
+// with the real Transcriber implementation at wiring time.
+type pendingTranscriber struct{}
+
+func (pendingTranscriber) Transcribe(context.Context, string) ([]domain.Segment, error) {
+	return nil, errors.New("transcriber not wired yet (pending VER-7)")
+}
+
+// pendingMatcher stands in for the VER-9 embed-and-match service until it
+// merges. Replace with the real SegmentMatcher implementation at wiring time.
+type pendingMatcher struct{}
+
+func (pendingMatcher) Match(context.Context, string) ([]domain.SegmentMatch, error) {
+	return nil, errors.New("segment matcher not wired yet (pending VER-9)")
 }

@@ -74,7 +74,7 @@ func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, segment_results, processed_videos"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 

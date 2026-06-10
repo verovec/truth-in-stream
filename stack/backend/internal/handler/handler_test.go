@@ -19,7 +19,7 @@ func (f fakePinger) Ping(ctx context.Context) error { return f.err }
 func newTestServer(storeErr error, transcriber *stubTranscriber) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{err: storeErr})
-	return NewMux(hc, transcriber, logger)
+	return NewMux(hc, transcriber, &fakeProcessing{}, logger)
 }
 
 func TestHealthz(t *testing.T) {
