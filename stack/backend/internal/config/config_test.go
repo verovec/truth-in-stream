@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -140,6 +141,107 @@ func TestLoadEmbedding(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			got, err := LoadEmbedding()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadMatch(t *testing.T) {
+	defaults := Match{
+		TopK:             5,
+		ScoreThreshold:   0.5,
+		EmbedConcurrency: 4,
+		Timeout:          10 * time.Second,
+	}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Match
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "all overrides applied",
+			env: map[string]string{
+				"MATCH_TOP_K":             "10",
+				"MATCH_SCORE_THRESHOLD":   "0.75",
+				"MATCH_EMBED_CONCURRENCY": "2",
+				"MATCH_TIMEOUT":           "30s",
+			},
+			want: Match{TopK: 10, ScoreThreshold: 0.75, EmbedConcurrency: 2, Timeout: 30 * time.Second},
+		},
+		{
+			name: "negative threshold accepted",
+			env:  map[string]string{"MATCH_SCORE_THRESHOLD": "-1"},
+			want: Match{TopK: 5, ScoreThreshold: -1, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+		},
+		{
+			name:    "non-numeric top k fails",
+			env:     map[string]string{"MATCH_TOP_K": "many"},
+			wantErr: true,
+		},
+		{
+			name:    "zero top k fails",
+			env:     map[string]string{"MATCH_TOP_K": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "non-numeric threshold fails",
+			env:     map[string]string{"MATCH_SCORE_THRESHOLD": "high"},
+			wantErr: true,
+		},
+		{
+			name:    "threshold above cosine range fails",
+			env:     map[string]string{"MATCH_SCORE_THRESHOLD": "1.5"},
+			wantErr: true,
+		},
+		{
+			name:    "NaN threshold fails",
+			env:     map[string]string{"MATCH_SCORE_THRESHOLD": "NaN"},
+			wantErr: true,
+		},
+		{
+			name:    "top k beyond int32 fails",
+			env:     map[string]string{"MATCH_TOP_K": "3000000000"},
+			wantErr: true,
+		},
+		{
+			name:    "zero concurrency fails",
+			env:     map[string]string{"MATCH_EMBED_CONCURRENCY": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "non-duration timeout fails",
+			env:     map[string]string{"MATCH_TIMEOUT": "soon"},
+			wantErr: true,
+		},
+		{
+			name:    "non-positive timeout fails",
+			env:     map[string]string{"MATCH_TIMEOUT": "0s"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadMatch()
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

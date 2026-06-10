@@ -8,12 +8,34 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 const dims = domain.EmbeddingDim
+
+// claimsSchemaLock is the advisory lock key serializing every integration
+// test that resets the shared claims schema. `go test ./...` runs package
+// test binaries in parallel against the same TEST_DATABASE_URL, so the
+// service integration tests take the same key (service.claimsSchemaLock).
+const claimsSchemaLock = int64(0x747275746873)
+
+// lockSchema takes the schema advisory lock for the duration of the test.
+// Closing the session at cleanup releases the lock.
+func lockSchema(t *testing.T, ctx context.Context, dsn string) {
+	t.Helper()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("lock: connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", claimsSchemaLock); err != nil {
+		t.Fatalf("lock: acquire: %v", err)
+	}
+}
 
 // setupStore opens a store against TEST_DATABASE_URL and resets the schema.
 // It skips the test when the variable is unset so unit runs stay hermetic;
@@ -27,6 +49,7 @@ func setupStore(t *testing.T) *Store {
 	}
 
 	ctx := t.Context()
+	lockSchema(t, ctx, dsn)
 	resetSchema(t, ctx, dsn)
 
 	store, err := Open(ctx, dsn)
