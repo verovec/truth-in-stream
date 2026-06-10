@@ -10,6 +10,15 @@ import "context"
 // similarity scores are meaningless.
 const EmbeddingDim = 1024
 
+// ValidCosineThreshold reports whether t is a usable cosine-similarity
+// threshold: a real number in [-1, 1]. The inverted comparison also rejects
+// NaN, which would otherwise disable whatever threshold filter gates on it. It
+// is the single definition every matcher, gate, and config loader checks
+// against so they cannot drift on what a valid threshold is.
+func ValidCosineThreshold(t float64) bool {
+	return t >= -1 && t <= 1
+}
+
 // Verdict is the fact-check stance of a claim against what was spoken.
 type Verdict string
 
