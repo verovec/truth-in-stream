@@ -1,20 +1,33 @@
 {
-  "enabledMcpjsonServers": ["context7", "github", "linear"],
+  "enabledMcpjsonServers": [
+    "context7",
+    "github",
+    "linear"
+  ],
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Write|Edit",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/guards.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guards.sh"
+          }
         ]
       }
     ],
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/nexus-sync.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/nexus-sync.sh"
+          }
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "understand-anything@understand-anything": true
   }
 }

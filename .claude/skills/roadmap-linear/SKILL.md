@@ -13,6 +13,9 @@ Identity comes from `.factory-state.json`: `linear_team_id`, `linear_project` (a
 ## Creating / updating
 - `create_issue` requires both `teamId` and `projectId`.
 - `update_issue` takes the issue UUID. `update_issue_state` changes state.
+- Create every card directly in `Todo`, never `Backlog` - `/pick` only claims `Todo` cards.
+  Set the state at creation (or flip it with `update_issue_state` right after) so the card
+  enters the Ready queue immediately.
 
 ## Card structure
 Every card MUST contain these seven sections, in order. Bold headings (not `#`), inline code

@@ -1,119 +1,67 @@
-# Truth in Stream Roadmap - Implementation Plan
+# Truth in Stream Roadmap - State File
 
 ```
-LINEAR_TEAM: TBD (Linear setup handled separately)
-LINEAR_PROJECT: TBD
-LINEAR_TICKETS: none yet
+LINEAR_TEAM: Veroveit
+LINEAR_PROJECT: Truth in Stream
+LINEAR_TICKETS: VER-6..VER-23
 AGENT_INDUSTRY_VERSION: 5.0.0
-SCOPE: Truth in Stream implementation lifecycle
 STATUS: Active
 CREATED: 2026-06-09
-LAST_UPDATED: 2026-06-09
+LAST_UPDATED: 2026-06-10
 ```
 
-## Linear Card Rules
+Rules live in the `roadmap-linear` skill. This file is derived state; never hand-edit the
+Ready queue.
 
-Single source of truth for how Linear cards are created and updated across all agents in this
-domain. Every agent references this section via the roadmap gate. Do not duplicate elsewhere.
+## Card List (live as of 2026-06-10)
 
-### Confidentiality
-
-- NEVER mention agent files, their paths, their existence, or their structure in card content
-- NEVER reference the `agent/` folder or any `*.md` agent file
-- NEVER describe how agent documentation is organized or where it lives
-- Cards are for humans and must contain only actionable implementation content
-
-### Card Structure
-
-Every card description follows this exact layout:
-
-1. **Opening paragraph** - 1-3 sentences explaining what the card is about. Plain language. Say what happens, not how it works internally
-2. **Acceptance Criteria** (`**Acceptance Criteria**`) - bullet list of observable outcomes. Each item starts with `*` and describes a verifiable result, not an implementation step
-3. **Todo** (`**Todo**`) - checkbox list of concrete implementation tasks. Each item starts with `- [ ]` and is a single actionable step
-
-### Formatting
-
-- Use markdown bold (`**text**`) for section headings, not `#` headings
-- `*` bullets for acceptance criteria, `- [ ]` checkboxes for todos
-- Inline code (backticks) for command names, file paths, resource names, env vars
-- Tables only for small side-by-side comparisons. Do not overuse
-- No emojis. No filler ("In order to...", "This ticket aims to..."). Get to the point
-- Single hyphen `-` as separator, never double dash
-- Do not end a sentence with a period if it is the only/last sentence of a paragraph
-
-### Tone
-
-- Short, direct sentences. Technical but not dense
-- Acceptance criteria from the user's/operator's perspective; todos from the implementer's
-
-### Defaults
-
-- **State**: Always create cards in "Todo", never "Backlog"
-- **Cross-references**: Use the identifier directly (e.g. "see INF-22")
-- **Scope awareness**: Align card content with the current roadmap phase; avoid duplication
-
-### MCP Tool Usage
-
-Use the Linear MCP server (the server whose tools include `get_viewer`, `projects`,
-`project_issues`, `create_issue`, etc.):
-
-- **Create**: `create_issue` with `teamId` (use `get_viewer` to list teams if needed)
-- **Update description**: `update_issue` with the issue UUID (fetch it first with `issue` using the identifier)
-- **Change state**: `update_issue_state` with `stateId` (fetch with `issue_states`)
-- **Fetch by identifier**: use the `issue` tool with the identifier string; do NOT use `search_issues` for identifier lookups
+| ID | Title | State | Priority | depends_on |
+|----|-------|-------|----------|------------|
+| VER-13 | Local dev stack and layered backend skeleton | Done | High | |
+| VER-14 | AWS runtime: Terraform ECS/RDS/ALB/ECR/OIDC | Done | High | |
+| VER-6 | Curated verification database: schema + ingestion | Done | High | VER-13 |
+| VER-7 | Transcription service: audio to segments | Done | High | VER-13 |
+| VER-9 | Embedding and match service | Done | High | VER-6 |
+| VER-10 | Processing orchestration | Done | High | VER-7, VER-9 |
+| VER-8 | Video player UI | Done | Medium | VER-13 |
+| VER-11 | Synced fact-check panel | Done | Medium | VER-8, VER-10 |
+| VER-16 | Fix CI startup failure | Done | High | |
+| VER-15 | Re-enable backend PR CI + deploy trigger | Done | Medium | VER-16 |
+| VER-17 | golangci-lint config enforcing lint standard | In Review | Medium | |
+| VER-12 | End-to-end demo and polish | In Review | Medium | VER-6, VER-7, VER-8, VER-9, VER-10, VER-11 |
+| VER-18 | Operator authentication and login (single user) | In Progress | High | |
+| VER-19 | Wikipedia corpus: schema, dump parsing, and chunk storage | In Progress | High | |
+| VER-20 | Wikipedia bulk embedding pipeline with staged HNSW swap | Todo | High | VER-19 |
+| VER-21 | Periodic Wikipedia delta sync | Todo | Medium | VER-20 |
+| VER-22 | Wikipedia evidence in fact-check results | Todo | Medium | VER-20 |
+| VER-23 | Terraform: scheduled wikisync task and RDS sizing readiness | In Progress | Medium | |
 
 ## Dependency Graph
 
 ```
-(no phases defined yet)
+VER-13 -> VER-6 -> VER-9 -> VER-10 -> VER-11
+VER-13 -> VER-7 -> VER-10
+VER-13 -> VER-8 -> VER-11
+VER-16 -> VER-15
+VER-{6,7,8,9,10,11} -> VER-12
+VER-19 -> VER-20 -> VER-21
+VER-20 -> VER-22
 ```
 
-## Current State (as of 2026-06-09)
+## Ready Queue (computed)
 
-Project scaffolded via /setup. Runnable skeletons in place:
+A card is READY when state is `Todo` AND every depends_on card is `Done`.
 
-- Frontend: Next.js 16 app (`stack/frontend`), Vitest configured, lint + test green
-- Backend: Go stdlib HTTP service with `/healthz` and graceful shutdown (`stack/backend`), vet + test green
-- Infra: Terraform dev/prod root modules (`stack/terraform`), S3 native-locking backend, fmt + validate green
-- CI: pr (lint+test), terraform (fmt/validate/plan, apply dev on main), deploy (build+push images to GHCR)
-- Local dev: docker-compose (frontend :3000, backend :8080)
+(empty - no card is both `Todo` and unblocked)
 
-Linear project linking is being handled separately - update the LINEAR_* fields above and in
-`.factory-state.json` once available.
+Blocked or otherwise not claimable by `/pick`:
 
-Open follow-ups (not yet ticketed):
-- Bootstrap the `truth-in-stream-tfstate` S3 bucket (versioning + encryption) before first apply
-- Create the `AWS_ROLE_ARN` IAM role (GitHub OIDC) for CI Terraform/deploy
-- Define the AWS runtime target (ECS / App Runner) and wire the deploy.yml AWS step
-- Upgrade local Go toolchain (1.20 -> 1.26) to unlock slog + ServeMux method routing
-
----
-
-## Design Decisions Log
-
-| # | Decision | Choice | Rationale |
-|---|----------|--------|-----------|
-| 1 | Terraform state locking | Native S3 `use_lockfile` | GA since TF 1.11; DynamoDB lock table deprecated, fewer resources |
-| 2 | Terraform layout | Directory-per-env (dev/prod) | True state isolation, no cross-env blast radius |
-| 3 | Frontend test runner | Vitest | Handles ESM + async Server Components; Jest does not |
-| 4 | Backend framework | None (stdlib net/http) | ServeMux method routing (1.22+) covers the need; fewer deps |
-
----
-
-## Document Maintenance
-
-```
-CREATED: 2026-06-09
-LAST_UPDATED: 2026-06-09
-DOCUMENT_OWNER: Truth in Stream Team
-AUTHORS: [TO BE FILLED]
-
-UPDATE_TRIGGERS:
-- Any phase completion or state change
-- New Linear cards created that affect this roadmap
-- Design decisions finalized
-- Implementation details changed during execution
-- Linear card rules or formatting standards change
-```
+- VER-19 (High) - `In Progress`, owned by another session
+- VER-23 (Medium) - `In Progress`, owned by another session (CLAIM winner e20df37c)
+- VER-20 (High) - blocked by VER-19
+- VER-21, VER-22 (Medium) - blocked by VER-20
+- VER-17 (Medium) - `In Review`, owned by another session
+- VER-12 (Medium) - `In Review`, owned by another session
+- VER-18 (High) - `In Progress`, owned by another session
 
 END_OF_DOCUMENT
