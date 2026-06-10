@@ -114,6 +114,9 @@ func (s *Store) Search(ctx context.Context, query []float32, topK int) ([]domain
 	if topK <= 0 || topK > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: search: topK %d out of range", topK)
 	}
+	if len(query) != domain.EmbeddingDim {
+		return nil, fmt.Errorf("postgres: search: query has %d dims, want %d", len(query), domain.EmbeddingDim)
+	}
 
 	rows, err := s.queries.SearchClaims(ctx, db.SearchClaimsParams{
 		QueryEmbedding: pgvector.NewHalfVector(query),
