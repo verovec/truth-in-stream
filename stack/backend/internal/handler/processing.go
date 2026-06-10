@@ -44,7 +44,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -99,12 +98,7 @@ const maxSubmitBodyBytes = 1 << 20
 func submitVideoHandler(svc ProcessingService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req submitRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSubmitBodyBytes)).Decode(&req); err != nil {
-			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-				httpx.Error(w, http.StatusRequestEntityTooLarge, "request body too large")
-				return
-			}
-			httpx.Error(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSONBody(w, r, maxSubmitBodyBytes, &req) {
 			return
 		}
 

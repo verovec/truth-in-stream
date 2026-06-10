@@ -141,9 +141,6 @@ module "frontend" {
   environment_variables = {
     PORT                    = "3000"
     NEXT_TELEMETRY_DISABLED = "1"
-    # Same-origin: the ALB routes /api/* to the backend. NEXT_PUBLIC_ values
-    # are baked at build time; this runtime copy covers server-side use.
-    NEXT_PUBLIC_API_URL = ""
   }
 
   cluster_id              = module.ecs.cluster_id
@@ -158,7 +155,10 @@ module "frontend" {
   listener_arn           = module.alb.listener_arn
   listener_rule_priority = 100
   path_patterns          = ["/*"]
-  health_check_path      = "/"
+  # The auth proxy 307s cookie-less requests to /login, which serves 200.
+  # Ordering: deploy a frontend image that serves /login BEFORE applying this
+  # change; the pre-auth image 404s it and the target group would go unhealthy.
+  health_check_path = "/login"
 }
 
 module "migration" {

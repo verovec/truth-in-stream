@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
@@ -46,6 +48,22 @@ func run(logger *slog.Logger) error {
 	matchCfg, err := config.LoadMatch()
 	if err != nil {
 		return err
+	}
+	authCfg, err := config.LoadAuth()
+	if err != nil {
+		return err
+	}
+	credentials, err := service.NewCredentials(authCfg.Email, authCfg.PasswordHash)
+	if err != nil {
+		return err
+	}
+	auth := handler.AuthConfig{
+		Credentials:  credentials,
+		Sessions:     service.NewSessions(authCfg.SessionSecret, authCfg.SessionTTL),
+		SecureCookie: authCfg.SecureCookie,
+		// 5 attempts then one every 30s per client: invisible to the single
+		// operator, glacial for a brute-force run.
+		LoginLimiter: middleware.NewRateLimiter(rate.Every(30*time.Second), 5),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -88,7 +106,7 @@ func run(logger *slog.Logger) error {
 		processor.Run(ctx)
 	}()
 
-	apiHandler := handler.NewMux(health, scribe, processor, cfg.DemoMediaDir, logger)
+	apiHandler := handler.NewMux(health, scribe, processor, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

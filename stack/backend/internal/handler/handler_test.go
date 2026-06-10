@@ -17,9 +17,13 @@ type fakePinger struct{ err error }
 func (f fakePinger) Ping(_ context.Context) error { return f.err }
 
 func newTestServer(storeErr error, transcriber *stubTranscriber) http.Handler {
+	return newAuthedTestServer(globalTestAuth, storeErr, transcriber, &fakeProcessing{})
+}
+
+func newAuthedTestServer(auth AuthConfig, storeErr error, transcriber *stubTranscriber, processing ProcessingService) http.Handler {
+	health := service.NewHealthChecker(fakePinger{err: storeErr})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	hc := service.NewHealthChecker(fakePinger{err: storeErr})
-	return NewMux(hc, transcriber, &fakeProcessing{}, "", logger)
+	return NewMux(health, transcriber, processing, "", auth, logger)
 }
 
 func TestHealthz(t *testing.T) {

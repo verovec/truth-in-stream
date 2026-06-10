@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -151,6 +152,126 @@ func TestLoadEmbedding(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			got, err := LoadEmbedding()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadAuth(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	required := map[string]string{
+		"AUTH_EMAIL":         "op@example.com",
+		"AUTH_PASSWORD_HASH": "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g",
+		"SESSION_SECRET":     secret,
+	}
+	withRequired := func(extra map[string]string) map[string]string {
+		env := maps.Clone(required)
+		maps.Copy(env, extra)
+		return env
+	}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Auth
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  withRequired(nil),
+			want: Auth{
+				Email:         "op@example.com",
+				PasswordHash:  "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g",
+				SessionSecret: secret,
+				SessionTTL:    24 * time.Hour,
+				SecureCookie:  true,
+			},
+		},
+		{
+			name:    "missing email fails",
+			env:     withRequired(map[string]string{"AUTH_EMAIL": ""}),
+			wantErr: true,
+		},
+		{
+			name:    "missing password hash fails",
+			env:     withRequired(map[string]string{"AUTH_PASSWORD_HASH": ""}),
+			wantErr: true,
+		},
+		{
+			name:    "missing session secret fails",
+			env:     withRequired(map[string]string{"SESSION_SECRET": ""}),
+			wantErr: true,
+		},
+		{
+			name:    "short session secret fails",
+			env:     withRequired(map[string]string{"SESSION_SECRET": "tooshort"}),
+			wantErr: true,
+		},
+		{
+			name: "ttl override applied",
+			env:  withRequired(map[string]string{"SESSION_TTL": "1h"}),
+			want: Auth{
+				Email:         "op@example.com",
+				PasswordHash:  "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g",
+				SessionSecret: secret,
+				SessionTTL:    time.Hour,
+				SecureCookie:  true,
+			},
+		},
+		{
+			name:    "non-duration ttl fails",
+			env:     withRequired(map[string]string{"SESSION_TTL": "tomorrow"}),
+			wantErr: true,
+		},
+		{
+			name:    "non-positive ttl fails",
+			env:     withRequired(map[string]string{"SESSION_TTL": "0s"}),
+			wantErr: true,
+		},
+		{
+			name: "insecure cookie flag disables the secure cookie",
+			env:  withRequired(map[string]string{"AUTH_INSECURE_COOKIE": "true"}),
+			want: Auth{
+				Email:         "op@example.com",
+				PasswordHash:  "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g",
+				SessionSecret: secret,
+				SessionTTL:    24 * time.Hour,
+				SecureCookie:  false,
+			},
+		},
+		{
+			name: "explicit false flag keeps the secure cookie",
+			env:  withRequired(map[string]string{"AUTH_INSECURE_COOKIE": "false"}),
+			want: Auth{
+				Email:         "op@example.com",
+				PasswordHash:  "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g",
+				SessionSecret: secret,
+				SessionTTL:    24 * time.Hour,
+				SecureCookie:  true,
+			},
+		},
+		{
+			name:    "invalid insecure cookie flag fails",
+			env:     withRequired(map[string]string{"AUTH_INSECURE_COOKIE": "maybe"}),
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadAuth()
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

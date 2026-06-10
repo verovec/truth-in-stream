@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,9 +44,7 @@ func (f *fakeProcessing) Results(_ context.Context, videoID string) ([]domain.Se
 }
 
 func newProcessingServer(svc ProcessingService) http.Handler {
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	hc := service.NewHealthChecker(fakePinger{})
-	return NewMux(hc, &stubTranscriber{}, svc, "", logger)
+	return newAuthedTestServer(globalTestAuth, nil, &stubTranscriber{}, svc)
 }
 
 func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
@@ -118,6 +114,7 @@ func TestSubmitVideo(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos", strings.NewReader(tc.body))
+			req.AddCookie(authCookie(t))
 			srv.ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantCode {
@@ -186,7 +183,9 @@ func TestVideoStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/status", nil))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/status", nil)
+			req.AddCookie(authCookie(t))
+			srv.ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantCode {
 				t.Fatalf("GET status = %d, want %d (body %s)", rec.Code, tc.wantCode, rec.Body.String())
@@ -283,7 +282,9 @@ func TestVideoResults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/results", nil))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/results", nil)
+			req.AddCookie(authCookie(t))
+			srv.ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantCode {
 				t.Fatalf("GET results = %d, want %d (body %s)", rec.Code, tc.wantCode, rec.Body.String())

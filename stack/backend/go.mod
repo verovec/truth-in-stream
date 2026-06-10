@@ -3,11 +3,13 @@ module github.com/verovec/truth-in-stream/backend
 go 1.26
 
 require (
+	github.com/alexedwards/argon2id v1.0.0
 	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pgvector/pgvector-go v0.4.0
 	github.com/pgvector/pgvector-go/pgx v0.4.0
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -17,5 +19,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 )
