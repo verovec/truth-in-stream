@@ -17,15 +17,23 @@ type Querier interface {
 	// checkpoint exists), so a corpus switch is detectable even after a crashed
 	// first run. Never overwrites an existing checkpoint.
 	ClaimWikiCorpus(ctx context.Context, corpus string) error
+	CountWikiChunks(ctx context.Context) (int64, error)
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
 	DeleteWikiPage(ctx context.Context, pageID int64) error
+	// Dry-run counts for the chunks still to embed beyond the staging watermark.
+	// chars feeds the token estimate (chars / Voyage's documented chars-per-token).
+	// Only unembedded chunks count, so the estimate reflects real remaining spend.
+	EstimateRemainingWikiChunks(ctx context.Context, arg EstimateRemainingWikiChunksParams) (EstimateRemainingWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
 	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error
+	// Advances the corpus checkpoint after a successful embed-and-swap, recording
+	// that the live corpus is now fully embedded at its stored dump version.
+	MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error
 	// Named arg query_embedding is referenced twice but sqlc collapses it to a
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
@@ -33,6 +41,13 @@ type Querier interface {
 	// Removes the stale tail of a page after a re-sync produced fewer chunks
 	// (from_index 0 removes the page entirely, e.g. it became a redirect).
 	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults
+	// The bulk-embedding pipeline reads pending chunks in keyset order so each
+	// super-batch loaded into staging is a clean prefix; a crash leaves staging
+	// past which the next run resumes. The order matches the staging watermark.
+	// The embedding IS NULL filter makes a re-run after a completed embed a no-op
+	// instead of re-embedding (and re-billing) the whole corpus: once the embedded
+	// staging table is swapped in, every live chunk has an embedding.
+	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
 	// Ingest never writes embeddings; the CASE keeps an existing embedding only

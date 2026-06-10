@@ -60,3 +60,37 @@ ON CONFLICT (corpus) DO UPDATE
 SELECT corpus, last_change_ts, dump_version, synced_at
 FROM wiki_sync_state
 WHERE corpus = $1;
+
+-- name: UnembeddedWikiChunks :many
+-- The bulk-embedding pipeline reads pending chunks in keyset order so each
+-- super-batch loaded into staging is a clean prefix; a crash leaves staging
+-- past which the next run resumes. The order matches the staging watermark.
+-- The embedding IS NULL filter makes a re-run after a completed embed a no-op
+-- instead of re-embedding (and re-billing) the whole corpus: once the embedded
+-- staging table is swapped in, every live chunk has an embedding.
+SELECT page_id, chunk_index, title, url, revision_id, corpus, content
+FROM wiki_chunks
+WHERE embedding IS NULL
+  AND (page_id, chunk_index) > (sqlc.arg(after_page_id)::bigint, sqlc.arg(after_chunk_index)::integer)
+ORDER BY page_id, chunk_index
+LIMIT sqlc.arg(row_limit);
+
+-- name: EstimateRemainingWikiChunks :one
+-- Dry-run counts for the chunks still to embed beyond the staging watermark.
+-- chars feeds the token estimate (chars / Voyage's documented chars-per-token).
+-- Only unembedded chunks count, so the estimate reflects real remaining spend.
+SELECT
+    count(*)::bigint AS chunks,
+    count(DISTINCT page_id)::bigint AS pages,
+    COALESCE(sum(length(content)), 0)::bigint AS chars
+FROM wiki_chunks
+WHERE embedding IS NULL
+  AND (page_id, chunk_index) > (sqlc.arg(after_page_id)::bigint, sqlc.arg(after_chunk_index)::integer);
+
+-- name: CountWikiChunks :one
+SELECT count(*)::bigint FROM wiki_chunks;
+
+-- name: MarkWikiCorpusEmbedded :exec
+-- Advances the corpus checkpoint after a successful embed-and-swap, recording
+-- that the live corpus is now fully embedded at its stored dump version.
+UPDATE wiki_sync_state SET synced_at = now() WHERE corpus = $1;
