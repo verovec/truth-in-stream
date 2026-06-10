@@ -312,6 +312,14 @@ func (s *Store) swapStaging(ctx context.Context, corpus string) error {
 	return nil
 }
 
+// EmbedInProgress reports whether a bulk embed is mid-flight. The staging table
+// exists only between a started and a completed bulk embed (the swap drops it),
+// so its presence means the live corpus is not yet fully embedded - the delta
+// sync refuses to run while one exists.
+func (s *Store) EmbedInProgress(ctx context.Context) (bool, error) {
+	return s.stagingExists(ctx)
+}
+
 // stagingExists reports whether the staging table is present.
 func (s *Store) stagingExists(ctx context.Context) (bool, error) {
 	var exists bool

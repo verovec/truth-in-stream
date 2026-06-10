@@ -69,15 +69,6 @@ func (q *Queries) CountWikiPages(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
-const deleteWikiPage = `-- name: DeleteWikiPage :exec
-DELETE FROM wiki_chunks WHERE page_id = $1
-`
-
-func (q *Queries) DeleteWikiPage(ctx context.Context, pageID int64) error {
-	_, err := q.db.Exec(ctx, deleteWikiPage, pageID)
-	return err
-}
-
 const deleteWikiPagesByTitle = `-- name: DeleteWikiPagesByTitle :exec
 DELETE FROM wiki_chunks WHERE title = ANY($1::text[])
 `

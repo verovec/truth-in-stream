@@ -16,9 +16,6 @@ ON CONFLICT (page_id, chunk_index) DO UPDATE
         END,
         synced_at = now();
 
--- name: DeleteWikiPage :exec
-DELETE FROM wiki_chunks WHERE page_id = $1;
-
 -- name: DeleteWikiPagesByTitle :exec
 -- Delta sync removes a hard-deleted page by title: RecentChanges reports a
 -- deletion with page id 0, so the stored page can only be found by its title.

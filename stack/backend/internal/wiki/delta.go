@@ -18,6 +18,12 @@ var ErrNoBaseline = errors.New("wiki: corpus has no bulk baseline; run -mode=bul
 // changes; a bulk re-ingest is required instead.
 var ErrWindowExceedsRetention = errors.New("wiki: checkpoint older than the recentchanges retention window; run -mode=bulk")
 
+// ErrBulkEmbedInProgress is returned when a delta run finds a bulk embed still
+// in flight (its staging table is present). The live corpus is not yet fully
+// embedded, so a delta run would embed - and bill - the entire corpus in place
+// instead of just the changed chunks; finish or restart the bulk embed first.
+var ErrBulkEmbedInProgress = errors.New("wiki: a bulk embed is incomplete; finish -mode=bulk before delta")
+
 // DeltaConfig tunes a delta run. RetentionDays bounds how stale the checkpoint
 // may be; BulkFraction is the change-set share of the corpus above which a bulk
 // re-run is recommended; BatchSize and Concurrency bound the embedding load,
@@ -49,6 +55,9 @@ type DeltaSource interface {
 	// StoredRevisions returns the stored revision id of each requested page that
 	// has chunks; absent pages are omitted.
 	StoredRevisions(ctx context.Context, pageIDs []int64) (map[int64]int64, error)
+	// EmbedInProgress reports whether a bulk embed is mid-flight, in which case
+	// the live corpus is not yet fully embedded and delta must not run.
+	EmbedInProgress(ctx context.Context) (bool, error)
 	// UnembeddedChunks returns up to limit live chunks lacking an embedding,
 	// ordered after cur.
 	UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
@@ -103,6 +112,17 @@ func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder 
 	}
 	if now.Sub(state.LastChangeTS) > time.Duration(cfg.RetentionDays)*24*time.Hour {
 		return DeltaStats{}, ErrWindowExceedsRetention
+	}
+	// A delta run embeds whatever live chunks lack an embedding; that is only the
+	// chunks it changes once the corpus is fully embedded. While a bulk embed is
+	// incomplete the live corpus is still unembedded, so refuse rather than embed
+	// (and bill) all of it in place.
+	inProgress, err := store.EmbedInProgress(ctx)
+	if err != nil {
+		return DeltaStats{}, fmt.Errorf("wiki: check embed state: %w", err)
+	}
+	if inProgress {
+		return DeltaStats{}, ErrBulkEmbedInProgress
 	}
 
 	changes, err := api.RecentChanges(ctx, state.LastChangeTS)
@@ -238,6 +258,8 @@ func unchangedFiltered(ctx context.Context, src DeltaSource, edits map[string]Ch
 // reports, falling back to the revision RecentChanges reported so a page is
 // never stored at revision 0 (which would refetch it every run).
 func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string) (chunks []domain.WikiChunk, trims []domain.WikiTrim, missing []string) {
+	chunks = make([]domain.WikiChunk, 0, len(extracts))
+	trims = make([]domain.WikiTrim, 0, len(extracts))
 	for _, ex := range extracts {
 		if ex.Missing {
 			missing = append(missing, ex.Title)

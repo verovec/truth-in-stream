@@ -21,7 +21,6 @@ type Querier interface {
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	CountWikiPages(ctx context.Context) (int64, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
-	DeleteWikiPage(ctx context.Context, pageID int64) error
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
 	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error

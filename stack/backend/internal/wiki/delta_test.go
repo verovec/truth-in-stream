@@ -19,13 +19,14 @@ type storedChunk struct {
 }
 
 type fakeDeltaStore struct {
-	mu          sync.Mutex
-	chunks      map[[2]int64]storedChunk
-	state       domain.WikiSyncState
-	hasState    bool
-	syncStates  []domain.WikiSyncState
-	upsertErr   error
-	setStateErr error
+	mu              sync.Mutex
+	chunks          map[[2]int64]storedChunk
+	state           domain.WikiSyncState
+	hasState        bool
+	syncStates      []domain.WikiSyncState
+	embedInProgress bool
+	upsertErr       error
+	setStateErr     error
 }
 
 func newFakeDeltaStore() *fakeDeltaStore {
@@ -40,6 +41,12 @@ func (f *fakeDeltaStore) GetSyncState(_ context.Context, _ string) (domain.WikiS
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state, f.hasState, nil
+}
+
+func (f *fakeDeltaStore) EmbedInProgress(_ context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.embedInProgress, nil
 }
 
 func (f *fakeDeltaStore) CountPages(_ context.Context) (int64, error) {
@@ -453,6 +460,22 @@ func TestRunDeltaNoChangesIsNoop(t *testing.T) {
 	}
 	if len(store.syncStates) != 0 {
 		t.Errorf("no-change run advanced the checkpoint")
+	}
+}
+
+func TestRunDeltaRefusesWhileBulkEmbedInProgress(t *testing.T) {
+	t.Parallel()
+
+	store := baselineStore(chunk(1, 0, "Paris", "Paris\n\nlead"))
+	store.embedInProgress = true
+	api := &fakeAPI{changes: []Change{{PageID: 1, Title: "Paris", RevisionID: 200, Timestamp: baseTS.Add(time.Hour)}}}
+	emb := &deltaEmbedder{}
+
+	if _, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS); !errors.Is(err, ErrBulkEmbedInProgress) {
+		t.Fatalf("err = %v, want ErrBulkEmbedInProgress", err)
+	}
+	if emb.calls != 0 || len(store.syncStates) != 0 {
+		t.Errorf("refused run still did work: embed=%d checkpoints=%d", emb.calls, len(store.syncStates))
 	}
 }
 

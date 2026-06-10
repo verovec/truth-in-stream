@@ -102,15 +102,6 @@ func (s *Store) TrimPages(ctx context.Context, trims []domain.WikiTrim) error {
 	return nil
 }
 
-// DeletePage removes every chunk of one article; the delta sync uses it when
-// a page is deleted or turns into a redirect.
-func (s *Store) DeletePage(ctx context.Context, pageID int64) error {
-	if err := s.queries.DeleteWikiPage(ctx, pageID); err != nil {
-		return fmt.Errorf("postgres: delete wiki page %d: %w", pageID, err)
-	}
-	return nil
-}
-
 // DeletePagesByTitle removes every chunk of each named page in one statement.
 // The delta sync uses it for hard deletions, which RecentChanges reports by
 // title (page id 0) rather than by page id.
