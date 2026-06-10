@@ -18,6 +18,28 @@ func testMatches() []domain.SegmentMatch {
 	}}
 }
 
+func TestSaveSegmentResultRejectsInvalidSkipReason(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	err := store.SaveSegmentResult(ctx, "vid-1", domain.SegmentResult{
+		Segment:    domain.Segment{Start: 0, End: time.Second, Text: "bad"},
+		Matches:    []domain.SegmentMatch{},
+		SkipReason: domain.SkipReason("bogus"),
+	})
+	if err == nil {
+		t.Fatal("SaveSegmentResult accepted an invalid skip reason, want rejection")
+	}
+
+	got, err := store.ListSegmentResults(ctx, "vid-1")
+	if err != nil {
+		t.Fatalf("ListSegmentResults: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("invalid skip reason was persisted (%d rows), want none", len(got))
+	}
+}
+
 func TestSegmentResultsRoundTripOrderedByStart(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

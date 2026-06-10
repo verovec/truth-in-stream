@@ -305,13 +305,13 @@ func (p *Processor) process(ctx context.Context, j *job) {
 // stored and served as "not checked" rather than as a verdict; a checked one
 // carries its ranked matches.
 //
-// A segment that clears the gate is embedded twice: once by the coverage stage
-// and once by the matcher. That is the accepted cost of keeping coverage and
-// matching as independent stages with their own thresholds - the cheap
-// claim-worthiness stage already drops most non-claims at zero embedding cost,
-// so the second embed only lands on genuine, covered claims. The batch pipeline
-// is not latency-bound; the realtime path can thread the query vector through
-// if profiling shows it matters.
+// Every checked segment is embedded twice: once by the coverage stage and
+// again by the matcher. The cheap claim-worthiness stage saves the embed only
+// on rejected non-claims; any segment that clears the gate - the common case on
+// a fact-dense stream - pays both embeds. That is the accepted cost of keeping
+// coverage and matching as independent stages with their own thresholds. The
+// batch pipeline is not latency-bound; the realtime path can thread the query
+// vector through if profiling shows the doubled Voyage spend matters.
 func (p *Processor) checkSegment(ctx context.Context, seg domain.Segment) (domain.SegmentResult, error) {
 	decision, err := p.prechecker.Evaluate(ctx, seg.Text)
 	if err != nil {

@@ -53,9 +53,7 @@ func (c MatcherConfig) validate() error {
 	switch {
 	case c.TopK < 1 || c.TopK > math.MaxInt32:
 		return fmt.Errorf("service: matcher topK must be in [1, %d], got %d", math.MaxInt32, c.TopK)
-	// The inverted comparison also rejects NaN, which would otherwise
-	// disable the threshold filter entirely.
-	case !(c.ScoreThreshold >= -1 && c.ScoreThreshold <= 1):
+	case !domain.ValidCosineThreshold(c.ScoreThreshold):
 		return fmt.Errorf("service: matcher score threshold %v outside cosine similarity range [-1, 1]", c.ScoreThreshold)
 	case c.EmbedConcurrency < 1:
 		return fmt.Errorf("service: matcher embed concurrency must be at least 1, got %d", c.EmbedConcurrency)

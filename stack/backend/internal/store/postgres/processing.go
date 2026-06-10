@@ -21,6 +21,9 @@ var _ domain.SegmentResultStore = (*Store)(nil)
 // (videoID, result.Start). Timestamps are persisted as milliseconds, the
 // precision transcription segments carry.
 func (s *Store) SaveSegmentResult(ctx context.Context, videoID string, result domain.SegmentResult) error {
+	if !result.SkipReason.Valid() {
+		return fmt.Errorf("postgres: save segment %s at %s: invalid skip reason %q", videoID, result.Start, result.SkipReason)
+	}
 	matches, err := marshalMatches(result.Matches)
 	if err != nil {
 		return fmt.Errorf("postgres: save segment %s at %s: %w", videoID, result.Start, err)
