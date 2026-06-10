@@ -52,6 +52,10 @@ func TestNewValidation(t *testing.T) {
 			name: "put ttl above sigv4 maximum",
 			cfg:  Config{Bucket: "media", PutTTL: maxPresignTTL + time.Hour, GetTTL: time.Minute},
 		},
+		{
+			name: "get ttl above sigv4 maximum",
+			cfg:  Config{Bucket: "media", PutTTL: time.Minute, GetTTL: maxPresignTTL + time.Hour},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

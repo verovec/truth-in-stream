@@ -35,7 +35,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "media" {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
-    bucket_key_enabled = true
   }
 }
 
@@ -96,7 +95,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
     }
   }
 
-  # Lifecycle config races bucket creation; serialize behind versioning so the
-  # bucket is fully settled first.
-  depends_on = [aws_s3_bucket_versioning.media]
+  # Serialize after the public-access block (always created, unlike the
+  # count-gated versioning resource) so the bucket's security settings land
+  # before the lifecycle PUT, avoiding a first-apply eventual-consistency race.
+  depends_on = [aws_s3_bucket_public_access_block.media]
 }

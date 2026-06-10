@@ -25,11 +25,6 @@ import (
 // A longer expiry produces an unusable URL, so it is rejected at construction.
 const maxPresignTTL = 7 * 24 * time.Hour
 
-// notFoundStatus is the HTTP status an object-storage HEAD returns for a
-// missing key. Some S3-compatible servers return a bare 404 with no typed
-// error body, so Exists falls back to the status code.
-const notFoundStatus = 404
-
 // Config selects the object-storage backend. An empty Endpoint targets real
 // AWS S3 and resolves credentials through the default chain (the ECS task
 // role in production); a non-empty Endpoint with static credentials and
@@ -165,18 +160,13 @@ func toPresigned(req *v4.PresignedHTTPRequest) domain.PresignedRequest {
 	}
 }
 
-// isNotFound reports whether err is a HEAD-object "object missing" signal,
-// covering the SDK's typed NotFound (the only typed error HeadObject emits for
-// a missing key) and a bare 404 from S3-compatible servers with no error body.
+// isNotFound reports whether err is a HEAD-object "object missing" signal. The
+// SDK maps any HeadObject 404 to *types.NotFound (including a bare-bodied 404
+// from S3-compatible servers, where it derives the code from the status), so
+// the typed check is exhaustive for this operation.
 func isNotFound(err error) bool {
-	if _, ok := errors.AsType[*types.NotFound](err); ok {
-		return true
-	}
-	var coder interface{ HTTPStatusCode() int }
-	if errors.As(err, &coder) && coder.HTTPStatusCode() == notFoundStatus {
-		return true
-	}
-	return false
+	_, ok := errors.AsType[*types.NotFound](err)
+	return ok
 }
 
 func validateTTL(name string, ttl time.Duration) error {
