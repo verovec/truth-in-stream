@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -61,6 +62,11 @@ var _ domain.MediaStore = (*S3Store)(nil)
 func New(ctx context.Context, cfg Config) (*S3Store, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("storage: bucket is required")
+	}
+	// Static credentials are all-or-nothing: a half-set pair would silently
+	// fall back to the default chain and hit the wrong account.
+	if (cfg.AccessKey == "") != (cfg.SecretKey == "") {
+		return nil, errors.New("storage: access key and secret key must be set together")
 	}
 	if err := validateTTL("put", cfg.PutTTL); err != nil {
 		return nil, err
@@ -148,7 +154,9 @@ func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {
 func toPresigned(req *v4.PresignedHTTPRequest) domain.PresignedRequest {
 	headers := make(map[string][]string, len(req.SignedHeader))
 	for k, v := range req.SignedHeader {
-		headers[k] = v
+		// Clone so a caller mutating the returned headers cannot reach back
+		// into the SDK's backing slices.
+		headers[k] = slices.Clone(v)
 	}
 	return domain.PresignedRequest{
 		URL:           req.URL,
@@ -158,13 +166,10 @@ func toPresigned(req *v4.PresignedHTTPRequest) domain.PresignedRequest {
 }
 
 // isNotFound reports whether err is a HEAD-object "object missing" signal,
-// covering both the SDK's typed NotFound and a bare 404 from S3-compatible
-// servers that return no error body.
+// covering the SDK's typed NotFound (the only typed error HeadObject emits for
+// a missing key) and a bare 404 from S3-compatible servers with no error body.
 func isNotFound(err error) bool {
 	if _, ok := errors.AsType[*types.NotFound](err); ok {
-		return true
-	}
-	if _, ok := errors.AsType[*types.NoSuchKey](err); ok {
 		return true
 	}
 	var coder interface{ HTTPStatusCode() int }

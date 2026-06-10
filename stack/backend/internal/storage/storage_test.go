@@ -33,6 +33,14 @@ func TestNewValidation(t *testing.T) {
 			cfg:  Config{Region: "eu-west-3", PutTTL: time.Minute, GetTTL: time.Minute},
 		},
 		{
+			name: "secret without access key",
+			cfg:  Config{Bucket: "media", SecretKey: "s", PutTTL: time.Minute, GetTTL: time.Minute},
+		},
+		{
+			name: "access key without secret",
+			cfg:  Config{Bucket: "media", AccessKey: "k", PutTTL: time.Minute, GetTTL: time.Minute},
+		},
+		{
 			name: "non-positive put ttl",
 			cfg:  Config{Bucket: "media", PutTTL: 0, GetTTL: time.Minute},
 		},

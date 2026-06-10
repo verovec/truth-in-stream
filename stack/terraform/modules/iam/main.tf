@@ -190,13 +190,15 @@ data "aws_iam_policy_document" "task_media" {
 
   statement {
     sid       = "MediaObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${var.media_bucket_arn}/*"]
   }
 
+  # ListBucket lets a HEAD on a missing key return 404 rather than 403, so the
+  # storage layer can report absence instead of an access error.
   statement {
     sid       = "MediaBucket"
-    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    actions   = ["s3:ListBucket"]
     resources = [var.media_bucket_arn]
   }
 }

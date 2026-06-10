@@ -94,6 +94,7 @@ func TestLoadStorage(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
+		// Subtests stay sequential: t.Setenv forbids t.Parallel.
 		t.Run(tc.name, func(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)

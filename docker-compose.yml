@@ -103,6 +103,15 @@ services:
       SESSION_SECRET: "${SESSION_SECRET:-}"
       # Local dev runs over plain HTTP, so the session cookie cannot be Secure.
       AUTH_INSECURE_COOKIE: "true"
+      # Object storage points at the local MinIO container (path-style, static
+      # dev credentials). Production uses the ECS task role, an empty endpoint,
+      # and virtual-hosted addressing. Consumed by the upload API.
+      STORAGE_BUCKET: "media"
+      STORAGE_ENDPOINT: "http://minio:9000"
+      STORAGE_REGION: "eu-west-3"
+      STORAGE_ACCESS_KEY: "minioadmin"
+      STORAGE_SECRET_KEY: "minioadmin"
+      STORAGE_USE_PATH_STYLE: "true"
     ports:
       - "8080:8080"
     volumes:
@@ -114,6 +123,8 @@ services:
       migrate:
         condition: service_completed_successfully
       ingest:
+        condition: service_completed_successfully
+      minio-init:
         condition: service_completed_successfully
 
   frontend:

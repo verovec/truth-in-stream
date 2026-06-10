@@ -39,11 +39,15 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "media" {
   }
 }
 
+# Only managed when enabling versioning. A fresh bucket is unversioned by
+# default, and S3 rejects setting "Suspended" on a bucket that was never
+# enabled, so leaving the resource absent is both correct and apply-safe.
 resource "aws_s3_bucket_versioning" "media" {
+  count  = var.versioning_enabled ? 1 : 0
   bucket = aws_s3_bucket.media.id
 
   versioning_configuration {
-    status = var.versioning_enabled ? "Enabled" : "Suspended"
+    status = "Enabled"
   }
 }
 

@@ -115,6 +115,10 @@ module "backend" {
 
   environment_variables = {
     PORT = "8080"
+    # Object storage uses the task role for credentials (no endpoint, no static
+    # keys); only the bucket and region are configured here.
+    STORAGE_BUCKET = module.media_storage.bucket_id
+    STORAGE_REGION = var.aws_region
   }
   secrets = {
     DATABASE_URL          = module.rds.dsn_secret_arn
