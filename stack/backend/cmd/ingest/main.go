@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -50,13 +51,13 @@ func run(logger *slog.Logger, seedPath string) error {
 
 	f, err := os.Open(seedPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("ingest: open seed %q: %w", seedPath, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	seeds, err := ingest.LoadSeed(f)
 	if err != nil {
-		return err
+		return fmt.Errorf("ingest: load seed: %w", err)
 	}
 
 	embedder := embed.New(embed.Config{APIKey: emb.APIKey, Model: emb.Model, Dim: emb.Dim})

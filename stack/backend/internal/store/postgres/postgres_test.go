@@ -227,6 +227,14 @@ func TestUpsertRejectsWrongDimension(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsWrongDimension(t *testing.T) {
+	store := setupStore(t)
+	_, err := store.Search(t.Context(), []float32{1, 2, 3}, 5)
+	if err == nil {
+		t.Fatal("Search with wrong dimension: want error, got nil")
+	}
+}
+
 func TestUpsertEmptyIsNoop(t *testing.T) {
 	store := setupStore(t)
 	if err := store.Upsert(t.Context(), nil); err != nil {

@@ -122,7 +122,7 @@ func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, segment_results, processed_videos"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 
@@ -148,6 +148,9 @@ func resetSchema(t *testing.T, ctx context.Context, dsn string) {
 // components must not exceed 1 or no unit vector exists.
 func hotVec(t *testing.T, components map[int]float64) []float32 {
 	t.Helper()
+	// fillerIndex must stay above every seed's hot index, so the filler
+	// dimension never collides with a claim dimension. Safe as long as the
+	// seed set has at most fillerIndex entries.
 	const fillerIndex = domain.EmbeddingDim - 1
 	v := make([]float32, domain.EmbeddingDim)
 	rest := 1.0
