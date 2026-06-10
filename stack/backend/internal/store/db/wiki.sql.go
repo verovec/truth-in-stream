@@ -36,6 +36,17 @@ func (q *Queries) ClaimWikiCorpus(ctx context.Context, corpus string) error {
 	return err
 }
 
+const countWikiChunks = `-- name: CountWikiChunks :one
+SELECT count(*)::bigint FROM wiki_chunks
+`
+
+func (q *Queries) CountWikiChunks(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countWikiChunks)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countWikiChunksForPage = `-- name: CountWikiChunksForPage :one
 SELECT count(*) FROM wiki_chunks WHERE page_id = $1
 `
@@ -54,6 +65,37 @@ DELETE FROM wiki_chunks WHERE page_id = $1
 func (q *Queries) DeleteWikiPage(ctx context.Context, pageID int64) error {
 	_, err := q.db.Exec(ctx, deleteWikiPage, pageID)
 	return err
+}
+
+const estimateRemainingWikiChunks = `-- name: EstimateRemainingWikiChunks :one
+SELECT
+    count(*)::bigint AS chunks,
+    count(DISTINCT page_id)::bigint AS pages,
+    COALESCE(sum(length(content)), 0)::bigint AS chars
+FROM wiki_chunks
+WHERE embedding IS NULL
+  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
+`
+
+type EstimateRemainingWikiChunksParams struct {
+	AfterPageID     int64
+	AfterChunkIndex int32
+}
+
+type EstimateRemainingWikiChunksRow struct {
+	Chunks int64
+	Pages  int64
+	Chars  int64
+}
+
+// Dry-run counts for the chunks still to embed beyond the staging watermark.
+// chars feeds the token estimate (chars / Voyage's documented chars-per-token).
+// Only unembedded chunks count, so the estimate reflects real remaining spend.
+func (q *Queries) EstimateRemainingWikiChunks(ctx context.Context, arg EstimateRemainingWikiChunksParams) (EstimateRemainingWikiChunksRow, error) {
+	row := q.db.QueryRow(ctx, estimateRemainingWikiChunks, arg.AfterPageID, arg.AfterChunkIndex)
+	var i EstimateRemainingWikiChunksRow
+	err := row.Scan(&i.Chunks, &i.Pages, &i.Chars)
+	return i, err
 }
 
 const getOtherWikiCorpus = `-- name: GetOtherWikiCorpus :one
@@ -121,6 +163,76 @@ func (q *Queries) GetWikiSyncState(ctx context.Context, corpus string) (WikiSync
 		&i.SyncedAt,
 	)
 	return i, err
+}
+
+const markWikiCorpusEmbedded = `-- name: MarkWikiCorpusEmbedded :exec
+UPDATE wiki_sync_state SET synced_at = now() WHERE corpus = $1
+`
+
+// Advances the corpus checkpoint after a successful embed-and-swap, recording
+// that the live corpus is now fully embedded at its stored dump version.
+func (q *Queries) MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error {
+	_, err := q.db.Exec(ctx, markWikiCorpusEmbedded, corpus)
+	return err
+}
+
+const unembeddedWikiChunks = `-- name: UnembeddedWikiChunks :many
+SELECT page_id, chunk_index, title, url, revision_id, corpus, content
+FROM wiki_chunks
+WHERE embedding IS NULL
+  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
+ORDER BY page_id, chunk_index
+LIMIT $3
+`
+
+type UnembeddedWikiChunksParams struct {
+	AfterPageID     int64
+	AfterChunkIndex int32
+	RowLimit        int32
+}
+
+type UnembeddedWikiChunksRow struct {
+	PageID     int64
+	ChunkIndex int32
+	Title      string
+	Url        string
+	RevisionID int64
+	Corpus     string
+	Content    string
+}
+
+// The bulk-embedding pipeline reads pending chunks in keyset order so each
+// super-batch loaded into staging is a clean prefix; a crash leaves staging
+// past which the next run resumes. The order matches the staging watermark.
+// The embedding IS NULL filter makes a re-run after a completed embed a no-op
+// instead of re-embedding (and re-billing) the whole corpus: once the embedded
+// staging table is swapped in, every live chunk has an embedding.
+func (q *Queries) UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error) {
+	rows, err := q.db.Query(ctx, unembeddedWikiChunks, arg.AfterPageID, arg.AfterChunkIndex, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnembeddedWikiChunksRow{}
+	for rows.Next() {
+		var i UnembeddedWikiChunksRow
+		if err := rows.Scan(
+			&i.PageID,
+			&i.ChunkIndex,
+			&i.Title,
+			&i.Url,
+			&i.RevisionID,
+			&i.Corpus,
+			&i.Content,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertWikiSyncState = `-- name: UpsertWikiSyncState :exec

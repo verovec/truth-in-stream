@@ -210,6 +210,88 @@ func LoadWiki() (Wiki, error) {
 	return Wiki{Corpus: corpus}, nil
 }
 
+// Bulk-embedding defaults. A 128-input batch sits well under Voyage's 1000
+// input / 320k token per-request ceilings even for the longest chunks; four
+// concurrent requests stay inside the tier-1 rate limit; six retries ride out
+// transient throttling. 512MB maintenance_work_mem builds the simplewiki HNSW
+// in memory and is safe on a small instance - raise it for enwiki - and seven
+// parallel workers matches pgvector's index-build guidance.
+const (
+	defaultWikiEmbedBatchSize          = 128
+	defaultWikiEmbedConcurrency        = 4
+	defaultWikiEmbedMaxRetries         = 6
+	defaultWikiEmbedMaintenanceWorkMem = "512MB"
+	defaultWikiEmbedMaxParallelWorkers = 7
+	// maxVoyageInputsPerRequest is Voyage's documented per-request input cap.
+	maxVoyageInputsPerRequest = 1000
+)
+
+// workMemRe matches a Postgres memory size like "512MB" or "2GB". It guards
+// the value before it reaches set_config, rejecting typos and anything that is
+// not a bare size literal.
+var workMemRe = regexp.MustCompile(`^[1-9][0-9]*(kB|MB|GB|TB)$`)
+
+// WikiEmbed holds the bulk-embedding pipeline configuration. BatchSize and
+// Concurrency bound the embedding API load; MaintenanceWorkMem and
+// MaxParallelWorkers tune the post-load HNSW index build.
+type WikiEmbed struct {
+	BatchSize          int
+	Concurrency        int
+	MaxRetries         int
+	MaintenanceWorkMem string
+	MaxParallelWorkers int
+}
+
+// LoadWikiEmbed reads the bulk-embedding configuration from the environment,
+// applying defaults and failing fast on values that would overrun the
+// embedding API limits or produce invalid index-build settings.
+func LoadWikiEmbed() (WikiEmbed, error) {
+	w := WikiEmbed{
+		BatchSize:          defaultWikiEmbedBatchSize,
+		Concurrency:        defaultWikiEmbedConcurrency,
+		MaxRetries:         defaultWikiEmbedMaxRetries,
+		MaintenanceWorkMem: defaultWikiEmbedMaintenanceWorkMem,
+		MaxParallelWorkers: defaultWikiEmbedMaxParallelWorkers,
+	}
+	var err error
+	if w.BatchSize, err = intEnv("WIKI_EMBED_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
+		return WikiEmbed{}, err
+	}
+	if w.Concurrency, err = intEnv("WIKI_EMBED_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
+		return WikiEmbed{}, err
+	}
+	if w.MaxRetries, err = intEnv("WIKI_EMBED_MAX_RETRIES", w.MaxRetries, 1, math.MaxInt32); err != nil {
+		return WikiEmbed{}, err
+	}
+	if w.MaxParallelWorkers, err = intEnv("WIKI_EMBED_MAX_PARALLEL_WORKERS", w.MaxParallelWorkers, 0, math.MaxInt32); err != nil {
+		return WikiEmbed{}, err
+	}
+	if raw := os.Getenv("WIKI_EMBED_MAINTENANCE_WORK_MEM"); raw != "" {
+		if !workMemRe.MatchString(raw) {
+			return WikiEmbed{}, fmt.Errorf("config: WIKI_EMBED_MAINTENANCE_WORK_MEM %q is not a Postgres memory size like 512MB or 2GB", raw)
+		}
+		w.MaintenanceWorkMem = raw
+	}
+	return w, nil
+}
+
+// intEnv reads an integer environment variable, applying fallback when unset
+// and enforcing an inclusive [low, high] range.
+func intEnv(key string, fallback, low, high int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	if v < low || v > high {
+		return 0, fmt.Errorf("config: %s must be in [%d, %d], got %d", key, low, high, v)
+	}
+	return v, nil
+}
+
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

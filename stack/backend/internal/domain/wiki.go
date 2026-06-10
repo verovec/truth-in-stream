@@ -5,7 +5,8 @@ import "time"
 // WikiChunk is one embedded-or-pending chunk of a Wikipedia article's lead
 // section. (PageID, ChunkIndex) within a corpus identifies it; RevisionID is
 // the article revision the text came from and drives the later delta sync.
-// The embedding is filled by the bulk-embedding pipeline, not at ingest.
+// Embedding is nil at ingest and filled by the bulk-embedding pipeline, which
+// reads the stored Content, embeds it, and loads the completed chunk.
 type WikiChunk struct {
 	PageID     int64
 	ChunkIndex int
@@ -14,6 +15,7 @@ type WikiChunk struct {
 	RevisionID int64
 	Corpus     string
 	Content    string
+	Embedding  []float32
 }
 
 // WikiTrim marks the chunks of a page that a sync run did not (re)produce:
@@ -22,6 +24,22 @@ type WikiChunk struct {
 type WikiTrim struct {
 	PageID    int64
 	FromIndex int
+}
+
+// WikiCursor is a keyset position in (page_id, chunk_index) order over
+// wiki_chunks. The zero value sorts before every real chunk - Wikipedia page
+// ids are positive - so it means "from the beginning".
+type WikiCursor struct {
+	PageID     int64
+	ChunkIndex int32
+}
+
+// WikiRemaining counts the chunks still to embed beyond a cursor: distinct
+// pages, chunks, and total content characters (the token-estimate input).
+type WikiRemaining struct {
+	Pages  int64
+	Chunks int64
+	Chars  int64
 }
 
 // WikiSyncState is the per-corpus ingestion checkpoint. LastChangeTS is the
