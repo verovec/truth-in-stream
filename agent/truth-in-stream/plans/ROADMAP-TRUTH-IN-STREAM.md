@@ -3,7 +3,7 @@
 ```
 LINEAR_TEAM: Veroveit
 LINEAR_PROJECT: Truth in Stream
-LINEAR_TICKETS: VER-6..VER-31
+LINEAR_TICKETS: VER-6..VER-32
 AGENT_INDUSTRY_VERSION: 5.0.0
 STATUS: Active
 CREATED: 2026-06-09
@@ -33,12 +33,12 @@ Ready queue.
 | VER-23 | Terraform: scheduled wikisync task and RDS sizing readiness | Done | Medium | |
 | VER-18 | Operator authentication and login (single user) | Done | High | |
 | VER-20 | Wikipedia bulk embedding pipeline with staged HNSW swap | Done | High | VER-19 |
-| VER-24 | Check-worthiness precheck gate for transcript segments | Todo | High | |
+| VER-24 | Check-worthiness precheck gate for transcript segments | Done | High | |
+| VER-27 | Object storage foundation: MinIO local + S3 on AWS | In Review | High | |
+| VER-22 | Wikipedia evidence in fact-check results | In Review | Medium | VER-20 |
+| VER-21 | Periodic Wikipedia delta sync | In Review | Medium | VER-20 |
 | VER-25 | Real-time continuous fact-check: live subtitles and verdicts | Todo | High | VER-24 |
-| VER-21 | Periodic Wikipedia delta sync | Todo | Medium | VER-20 |
-| VER-22 | Wikipedia evidence in fact-check results | Todo | Medium | VER-20 |
 | VER-26 | Upload and live-analyse video from the frontend (epic) | Todo | High | VER-27, VER-28, VER-29, VER-30, VER-31 |
-| VER-27 | Object storage foundation: MinIO local + S3 on AWS | Todo | High | |
 | VER-28 | Video metadata and presigned upload API (backend) | Todo | High | VER-27 |
 | VER-29 | Upload UI and video library/picker (frontend) | Todo | High | VER-28 |
 | VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | Todo | High | VER-28 |
@@ -65,19 +65,16 @@ VER-{27,28,29,30,31} -> VER-26
 
 A card is READY when state is `Todo` AND every depends_on card is `Done`.
 
-1. VER-27 (High) - Object storage foundation; no dependencies, unblocks the whole video-upload epic (5 downstream cards).
-2. VER-24 (High) - Check-worthiness precheck gate; no dependencies, unblocks VER-25.
-3. VER-32 (High) - Local dev data environment; no dependencies, improves the loop for all remaining work.
-4. VER-21 (Medium) - Periodic Wikipedia delta sync; VER-20 now Done.
-5. VER-22 (Medium) - Wikipedia evidence in fact-check results; VER-20 now Done.
+1. VER-25 (High) - Real-time continuous fact-check; VER-24 now Done.
+2. VER-32 (High) - Local dev data environment; no dependencies, improves the loop for all remaining work.
 
 Blocked or otherwise not claimable by `/pick`:
 
-- VER-25 (High) - blocked by VER-24
-- VER-28 (High) - blocked by VER-27
+- VER-28 (High) - blocked by VER-27 (In Review, not yet Done)
 - VER-29 (High) - blocked by VER-28
 - VER-30 (High) - blocked by VER-28
 - VER-31 (High) - blocked by VER-29, VER-30
 - VER-26 (High) - epic; tracks VER-27..VER-31, closes when all are `Done`
+- In flight (In Review, not Todo): VER-27, VER-22, VER-21
 
 END_OF_DOCUMENT
