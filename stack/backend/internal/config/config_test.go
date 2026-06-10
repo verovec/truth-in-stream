@@ -588,3 +588,49 @@ func TestLoadWikiEmbed(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWikiDelta(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    WikiDelta
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  map[string]string{},
+			want: WikiDelta{RetentionDays: 30, BulkFraction: 0.25},
+		},
+		{
+			name: "overrides applied",
+			env:  map[string]string{"WIKI_DELTA_RETENTION_DAYS": "7", "WIKI_DELTA_BULK_FRACTION": "0.5"},
+			want: WikiDelta{RetentionDays: 7, BulkFraction: 0.5},
+		},
+		{name: "retention zero rejected", env: map[string]string{"WIKI_DELTA_RETENTION_DAYS": "0"}, wantErr: true},
+		{name: "retention above api limit rejected", env: map[string]string{"WIKI_DELTA_RETENTION_DAYS": "31"}, wantErr: true},
+		{name: "retention non-numeric rejected", env: map[string]string{"WIKI_DELTA_RETENTION_DAYS": "weekly"}, wantErr: true},
+		{name: "fraction below zero rejected", env: map[string]string{"WIKI_DELTA_BULK_FRACTION": "-0.1"}, wantErr: true},
+		{name: "fraction above one rejected", env: map[string]string{"WIKI_DELTA_BULK_FRACTION": "1.5"}, wantErr: true},
+		{name: "fraction non-numeric rejected", env: map[string]string{"WIKI_DELTA_BULK_FRACTION": "half"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadWikiDelta()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

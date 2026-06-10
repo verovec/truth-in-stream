@@ -190,39 +190,6 @@ func TestUpsertChunksEmbeddingInvalidation(t *testing.T) {
 	}
 }
 
-func TestDeletePage(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-
-	chunks := []domain.WikiChunk{
-		wikiChunk(1, 0, "Paris\n\nOne."),
-		wikiChunk(1, 1, "Paris\n\nTwo."),
-		wikiChunk(2, 0, "Lyon\n\nOther page."),
-	}
-	if err := store.UpsertChunks(ctx, chunks); err != nil {
-		t.Fatalf("UpsertChunks: %v", err)
-	}
-
-	if err := store.DeletePage(ctx, 1); err != nil {
-		t.Fatalf("DeletePage: %v", err)
-	}
-
-	n, err := store.queries.CountWikiChunksForPage(ctx, 1)
-	if err != nil {
-		t.Fatalf("CountWikiChunksForPage(1): %v", err)
-	}
-	if n != 0 {
-		t.Errorf("page 1 has %d chunks after delete, want 0", n)
-	}
-	n, err = store.queries.CountWikiChunksForPage(ctx, 2)
-	if err != nil {
-		t.Fatalf("CountWikiChunksForPage(2): %v", err)
-	}
-	if n != 1 {
-		t.Errorf("page 2 has %d chunks after deleting page 1, want 1", n)
-	}
-}
-
 func TestTrimPages(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

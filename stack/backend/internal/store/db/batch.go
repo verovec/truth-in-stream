@@ -17,6 +17,61 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const setWikiChunkEmbedding = `-- name: SetWikiChunkEmbedding :batchexec
+UPDATE wiki_chunks
+SET embedding = $1, synced_at = now()
+WHERE page_id = $2 AND chunk_index = $3
+`
+
+type SetWikiChunkEmbeddingBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type SetWikiChunkEmbeddingParams struct {
+	Embedding  *pgvector.HalfVector
+	PageID     int64
+	ChunkIndex int32
+}
+
+// Delta sync writes embeddings straight into the live table: at delta volume the
+// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
+func (q *Queries) SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.Embedding,
+			a.PageID,
+			a.ChunkIndex,
+		}
+		batch.Queue(setWikiChunkEmbedding, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &SetWikiChunkEmbeddingBatchResults{br, len(arg), false}
+}
+
+func (b *SetWikiChunkEmbeddingBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *SetWikiChunkEmbeddingBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const trimWikiPageChunks = `-- name: TrimWikiPageChunks :batchexec
 DELETE FROM wiki_chunks WHERE page_id = $1 AND chunk_index >= $2
 `

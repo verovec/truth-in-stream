@@ -1,15 +1,20 @@
-// Command wikisync builds the Wikipedia corpus in the verification store.
-// Bulk mode downloads the corpus's multistream dump, extracts and chunks each
-// article's lead section, upserts the chunks, then embeds every chunk and
-// swaps the embedded corpus into place; re-running it is idempotent and an
-// interrupted embed run resumes. The corpus comes from WIKI_CORPUS (default
+// Command wikisync builds and maintains the Wikipedia corpus in the
+// verification store. Bulk mode downloads the corpus's multistream dump,
+// extracts and chunks each article's lead section, upserts the chunks, then
+// embeds every chunk and swaps the embedded corpus into place; re-running it is
+// idempotent and an interrupted embed run resumes. Delta mode asks the
+// MediaWiki RecentChanges API what changed since the stored checkpoint,
+// refetches and re-embeds only those articles in place, removes deleted pages,
+// and advances the checkpoint. The corpus comes from WIKI_CORPUS (default
 // simplewiki), the database from DATABASE_URL, and embeddings from the Voyage
-// API (EMBEDDING_API_KEY). With -dry-run it ingests and reports the embedding
-// cost estimate without calling the embedding API or swapping anything.
+// API (EMBEDDING_API_KEY). With -dry-run, bulk ingests and reports the
+// embedding cost estimate without calling the embedding API or swapping
+// anything.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -35,7 +40,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	mode := flag.String("mode", "bulk", "sync mode: bulk (delta arrives with the delta-sync work)")
+	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest) or delta (incremental catch-up)")
 	dir := flag.String("dir", os.TempDir(), "directory for downloaded dump files")
 	dryRun := flag.Bool("dry-run", false, "ingest and report the embedding cost estimate without embedding or swapping")
 	flag.Parse()
@@ -47,8 +52,8 @@ func main() {
 }
 
 func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
-	if mode != "bulk" {
-		return fmt.Errorf("wikisync: unsupported mode %q (only bulk exists yet)", mode)
+	if mode != "bulk" && mode != "delta" {
+		return fmt.Errorf("wikisync: unsupported mode %q (want bulk or delta)", mode)
 	}
 
 	cfg, err := config.Load()
@@ -59,6 +64,25 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if mode == "delta" {
+		return runDelta(ctx, logger, store, wikiCfg, dryRun)
+	}
+	return runBulk(ctx, logger, store, wikiCfg, dir, dryRun)
+}
+
+// runBulk downloads the dump, ingests it, then either reports the embedding cost
+// (dry-run) or embeds the corpus and swaps it into place.
+func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun bool) error {
 	embedCfg, err := config.LoadWikiEmbed()
 	if err != nil {
 		return err
@@ -71,15 +95,6 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
 			return err
 		}
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	store, err := postgres.Open(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 
 	logger.InfoContext(ctx, "downloading dump",
 		slog.String("corpus", wikiCfg.Corpus), slog.String("dir", dir))
@@ -116,11 +131,7 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
 		return nil
 	}
 
-	embedder := embed.WithRetry(
-		embed.New(embed.Config{APIKey: embProvider.APIKey, Model: embProvider.Model, Dim: embProvider.Dim}),
-		embed.RetryConfig{MaxAttempts: embedCfg.MaxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay},
-	)
-	embedStats, err := wiki.RunBulkEmbed(ctx, store, embedder, wiki.Config{
+	embedStats, err := wiki.RunBulkEmbed(ctx, store, newEmbedder(embProvider, embedCfg.MaxRetries), wiki.Config{
 		Corpus:             wikiCfg.Corpus,
 		BatchSize:          embedCfg.BatchSize,
 		Concurrency:        embedCfg.Concurrency,
@@ -134,4 +145,57 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
 		slog.String("corpus", wikiCfg.Corpus),
 		slog.Int("embedded_chunks", embedStats.Embedded))
 	return nil
+}
+
+// runDelta catches the corpus up to the live wiki incrementally via the
+// MediaWiki API, embedding only what changed.
+func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dryRun bool) error {
+	if dryRun {
+		return errors.New("wikisync: -dry-run is only supported for bulk mode")
+	}
+	deltaCfg, err := config.LoadWikiDelta()
+	if err != nil {
+		return err
+	}
+	embedCfg, err := config.LoadWikiEmbed()
+	if err != nil {
+		return err
+	}
+	embProvider, err := config.LoadEmbedding()
+	if err != nil {
+		return err
+	}
+
+	api := &wiki.APIClient{Corpus: wikiCfg.Corpus}
+	logger.InfoContext(ctx, "starting delta sync", slog.String("corpus", wikiCfg.Corpus))
+	stats, err := wiki.RunDelta(ctx, store, api, newEmbedder(embProvider, embedCfg.MaxRetries), wiki.DeltaConfig{
+		Corpus:        wikiCfg.Corpus,
+		RetentionDays: deltaCfg.RetentionDays,
+		BulkFraction:  deltaCfg.BulkFraction,
+		BatchSize:     embedCfg.BatchSize,
+		Concurrency:   embedCfg.Concurrency,
+	}, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if stats.RecommendBulk {
+		logger.WarnContext(ctx, "change set exceeds the bulk threshold; a -mode=bulk re-run would rebuild the index more cleanly",
+			slog.String("corpus", wikiCfg.Corpus))
+	}
+	logger.InfoContext(ctx, "delta sync complete",
+		slog.String("corpus", wikiCfg.Corpus),
+		slog.Int("pages_changed", stats.Changed),
+		slog.Int("pages_skipped", stats.Skipped),
+		slog.Int("pages_deleted", stats.Deleted),
+		slog.Int("embedded_chunks", stats.Embedded))
+	return nil
+}
+
+// newEmbedder builds the Voyage embedding client wrapped in the shared retry
+// decorator both sync modes use.
+func newEmbedder(p config.Embedding, maxRetries int) *embed.RetryClient {
+	return embed.WithRetry(
+		embed.New(embed.Config{APIKey: p.APIKey, Model: p.Model, Dim: p.Dim}),
+		embed.RetryConfig{MaxAttempts: maxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay},
+	)
 }

@@ -19,8 +19,11 @@ type Querier interface {
 	ClaimWikiCorpus(ctx context.Context, corpus string) error
 	CountWikiChunks(ctx context.Context) (int64, error)
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
+	CountWikiPages(ctx context.Context) (int64, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
-	DeleteWikiPage(ctx context.Context, pageID int64) error
+	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
+	// deletion with page id 0, so the stored page can only be found by its title.
+	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
 	// Dry-run counts for the chunks still to embed beyond the staging watermark.
 	// chars feeds the token estimate (chars / Voyage's documented chars-per-token).
 	// Only unembedded chunks count, so the estimate reflects real remaining spend.
@@ -38,6 +41,13 @@ type Querier interface {
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
+	// Delta sync writes embeddings straight into the live table: at delta volume the
+	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
+	SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults
+	// Delta sync diffs the revision RecentChanges reports against the one stored, so
+	// a page already at that revision is neither refetched nor re-embedded. A page's
+	// chunks share a revision after an upsert; max guards against a partial update.
+	StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error)
 	// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
 	// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
 	// the result regardless of the chosen plan; the HNSW index only indexes

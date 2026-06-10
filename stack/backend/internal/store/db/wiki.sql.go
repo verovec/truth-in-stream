@@ -59,12 +59,25 @@ func (q *Queries) CountWikiChunksForPage(ctx context.Context, pageID int64) (int
 	return count, err
 }
 
-const deleteWikiPage = `-- name: DeleteWikiPage :exec
-DELETE FROM wiki_chunks WHERE page_id = $1
+const countWikiPages = `-- name: CountWikiPages :one
+SELECT count(DISTINCT page_id)::bigint FROM wiki_chunks
 `
 
-func (q *Queries) DeleteWikiPage(ctx context.Context, pageID int64) error {
-	_, err := q.db.Exec(ctx, deleteWikiPage, pageID)
+func (q *Queries) CountWikiPages(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countWikiPages)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const deleteWikiPagesByTitle = `-- name: DeleteWikiPagesByTitle :exec
+DELETE FROM wiki_chunks WHERE title = ANY($1::text[])
+`
+
+// Delta sync removes a hard-deleted page by title: RecentChanges reports a
+// deletion with page id 0, so the stored page can only be found by its title.
+func (q *Queries) DeleteWikiPagesByTitle(ctx context.Context, titles []string) error {
+	_, err := q.db.Exec(ctx, deleteWikiPagesByTitle, titles)
 	return err
 }
 
@@ -177,6 +190,23 @@ func (q *Queries) MarkWikiCorpusEmbedded(ctx context.Context, corpus string) err
 	return err
 }
 
+const storedWikiRevisions = `-- name: StoredWikiRevisions :many
+SELECT page_id, max(revision_id)::bigint AS revision_id
+FROM wiki_chunks
+WHERE page_id = ANY($1::bigint[])
+GROUP BY page_id
+`
+
+type StoredWikiRevisionsRow struct {
+	PageID     int64
+	RevisionID int64
+}
+
+// Delta sync diffs the revision RecentChanges reports against the one stored, so
+// a page already at that revision is neither refetched nor re-embedded. A page's
+// chunks share a revision after an upsert; max guards against a partial update.
+func (q *Queries) StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error) {
+	rows, err := q.db.Query(ctx, storedWikiRevisions, pageIds)
 const searchWikiChunks = `-- name: SearchWikiChunks :many
 SELECT title, url, content, (embedding <=> $1)::float8 AS distance
 FROM wiki_chunks
@@ -209,6 +239,10 @@ func (q *Queries) SearchWikiChunks(ctx context.Context, arg SearchWikiChunksPara
 		return nil, err
 	}
 	defer rows.Close()
+	items := []StoredWikiRevisionsRow{}
+	for rows.Next() {
+		var i StoredWikiRevisionsRow
+		if err := rows.Scan(&i.PageID, &i.RevisionID); err != nil {
 	items := []SearchWikiChunksRow{}
 	for rows.Next() {
 		var i SearchWikiChunksRow
