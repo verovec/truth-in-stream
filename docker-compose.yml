@@ -65,10 +65,13 @@ services:
       # From the root .env (see .env.example); the server fails fast if unset.
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
-      # The browser loads the app from :3000 and calls the API at :8080, so the
-      # backend must allow that origin. In production both share an origin and
-      # this is left unset.
-      CORS_ALLOWED_ORIGIN: "http://localhost:3000"
+      # No CORS origin: the browser talks to the API same-origin through the
+      # frontend proxy so the SameSite=Strict session cookie can ride along.
+      AUTH_EMAIL: "${AUTH_EMAIL:-}"
+      AUTH_PASSWORD_HASH: "${AUTH_PASSWORD_HASH:-}"
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      # Local dev runs over plain HTTP, so the session cookie cannot be Secure.
+      AUTH_INSECURE_COOKIE: "true"
     ports:
       - "8080:8080"
     volumes:
@@ -88,7 +91,10 @@ services:
     command: sh -c "npm ci && npm run dev"
     environment:
       NEXT_TELEMETRY_DISABLED: "1"
-      NEXT_PUBLIC_API_URL: "http://localhost:8080"
+      # Server-side rewrite target for the same-origin /api proxy. The
+      # browser must never call the backend cross-origin: the session cookie
+      # is SameSite=Strict and only rides same-origin /api requests.
+      BACKEND_URL: "http://backend:8080"
     ports:
       - "3000:3000"
     volumes:

@@ -44,22 +44,44 @@ interpolates `.env` into the service environments.
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
 | `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 speech-to-text |
 | `EMBEDDING_API_KEY` | yes | Voyage AI `voyage-4` embeddings - used by both `ingest` and query |
+| `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
+| `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |
+| `SESSION_SECRET` | yes | HMAC key for session cookies, at least 32 bytes |
+| `SESSION_TTL` | no (default `24h`) | Session lifetime (Go duration) |
+| `AUTH_INSECURE_COOKIE` | no (compose sets `true`) | Allow a non-Secure cookie, plain-HTTP local dev only |
+| `BACKEND_URL` | no (compose sets it) | Frontend-side rewrite target for the same-origin `/api` and `/demo` proxy |
 | `PORT` | no (default `8080`) | Backend listen port |
-| `CORS_ALLOWED_ORIGIN` | no (compose sets the dev frontend origin) | Browser origin allowed to call the API cross-origin; unset in production (same-origin) |
+| `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
 | `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
 | `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
 The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
 `voyage-4`) and the pinned 1024-dim index are shared by both paths.
 
+Generate the operator credential secrets - only the hash and the secret are ever configured,
+never the plaintext password:
+
+```bash
+cd stack/backend
+printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH
+openssl rand -hex 32                                  # -> SESSION_SECRET
+```
+
+In `.env`, single-quote the hash so docker-compose does not expand its `$` signs.
+
+Sessions are stateless HMAC tokens: logout clears the browser cookie but cannot revoke a
+stolen token. To invalidate every outstanding session immediately, rotate `SESSION_SECRET`
+and restart the backend.
+
 ## Demo
 
 The bundled demo clip (`stack/backend/demo/`) narrates several well-known claims. The backend
-serves it at `/demo/<file>` so the browser plays exactly the file the pipeline transcribes;
-the panel shows each segment's nearest curated claims with a `corroborates`, `contradicts`, or
-`unclear` verdict and source links, in sync with playback. Seeded claims live in
-`stack/backend/seed/claims.json`; re-running `ingest` is idempotent. If a provider call fails,
-the panel shows the error with a **Try again** button.
+serves it at `/demo/<file>` (sign in first - demo media sits behind the session gate, and the
+frontend proxies the path same-origin) so the browser plays exactly the file the pipeline
+transcribes; the panel shows each segment's nearest curated claims with a `corroborates`,
+`contradicts`, or `unclear` verdict and source links, in sync with playback. Seeded claims
+live in `stack/backend/seed/claims.json`; re-running `ingest` is idempotent. If a provider
+call fails, the panel shows the error with a **Try again** button.
 
 ## Tests
 

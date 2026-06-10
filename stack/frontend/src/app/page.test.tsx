@@ -10,6 +10,8 @@ import Home from "./page";
 
 vi.mock("react-player", () => import("@/test/react-player-mock"));
 
+vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
+
 describe("Home", () => {
   test("renders the watch screen with player and fact-check panel", async () => {
     stubBackend([
@@ -21,6 +23,9 @@ describe("Home", () => {
 
     expect(
       screen.getByRole("heading", { level: 1, name: "Truth in Stream" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(

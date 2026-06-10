@@ -64,6 +64,7 @@ func postTranscript(t *testing.T, srv http.Handler, target, filename, content st
 	body, contentType := multipartBody(t, filename, content)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
 	req.Header.Set("Content-Type", contentType)
+	req.AddCookie(authCookie(t))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	return rec
@@ -137,6 +138,7 @@ func TestPostTranscriptRejectsMissingFile(t *testing.T) {
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/transcripts", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(authCookie(t))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -151,6 +153,7 @@ func TestPostTranscriptRejectsNonMultipart(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/transcripts", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(authCookie(t))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -217,10 +220,19 @@ func TestGetTranscriptsIsMethodNotAllowed(t *testing.T) {
 	t.Parallel()
 	srv := newTranscriptServer(&stubTranscriber{})
 
+	// Unauthenticated requests get a uniform 401 before method resolution,
+	// so the route table leaks nothing; the 405 needs a session.
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/transcripts", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated code = %d, want 401", rec.Code)
+	}
 
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/transcripts", nil)
+	req.AddCookie(authCookie(t))
+	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("code = %d, want 405", rec.Code)
+		t.Fatalf("authenticated code = %d, want 405", rec.Code)
 	}
 }
