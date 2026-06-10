@@ -33,7 +33,7 @@ func (q *Queries) GetProcessedVideoSegmentCount(ctx context.Context, videoID str
 }
 
 const listSegmentResults = `-- name: ListSegmentResults :many
-SELECT video_id, start_ms, end_ms, content, matches
+SELECT video_id, start_ms, end_ms, content, matches, skip_reason
 FROM segment_results
 WHERE video_id = $1
 ORDER BY start_ms
@@ -54,6 +54,7 @@ func (q *Queries) ListSegmentResults(ctx context.Context, videoID string) ([]Seg
 			&i.EndMs,
 			&i.Content,
 			&i.Matches,
+			&i.SkipReason,
 		); err != nil {
 			return nil, err
 		}
@@ -84,20 +85,22 @@ func (q *Queries) MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessed
 }
 
 const upsertSegmentResult = `-- name: UpsertSegmentResult :exec
-INSERT INTO segment_results (video_id, start_ms, end_ms, content, matches)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO segment_results (video_id, start_ms, end_ms, content, matches, skip_reason)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (video_id, start_ms) DO UPDATE
-    SET end_ms  = EXCLUDED.end_ms,
-        content = EXCLUDED.content,
-        matches = EXCLUDED.matches
+    SET end_ms      = EXCLUDED.end_ms,
+        content     = EXCLUDED.content,
+        matches     = EXCLUDED.matches,
+        skip_reason = EXCLUDED.skip_reason
 `
 
 type UpsertSegmentResultParams struct {
-	VideoID string
-	StartMs int64
-	EndMs   int64
-	Content string
-	Matches []byte
+	VideoID    string
+	StartMs    int64
+	EndMs      int64
+	Content    string
+	Matches    []byte
+	SkipReason string
 }
 
 func (q *Queries) UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error {
@@ -107,6 +110,7 @@ func (q *Queries) UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResu
 		arg.EndMs,
 		arg.Content,
 		arg.Matches,
+		arg.SkipReason,
 	)
 	return err
 }

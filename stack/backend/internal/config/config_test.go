@@ -389,6 +389,71 @@ func TestLoadMatch(t *testing.T) {
 	}
 }
 
+func TestLoadPrecheck(t *testing.T) {
+	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Precheck
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "all overrides applied",
+			env: map[string]string{
+				"PRECHECK_ENABLED":            "false",
+				"PRECHECK_MIN_WORDS":          "6",
+				"PRECHECK_COVERAGE_THRESHOLD": "0.6",
+			},
+			want: Precheck{Enabled: false, MinWords: 6, CoverageThreshold: 0.6},
+		},
+		{
+			name:    "non-bool enabled fails",
+			env:     map[string]string{"PRECHECK_ENABLED": "sometimes"},
+			wantErr: true,
+		},
+		{
+			name:    "zero min words fails",
+			env:     map[string]string{"PRECHECK_MIN_WORDS": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "threshold above cosine range fails",
+			env:     map[string]string{"PRECHECK_COVERAGE_THRESHOLD": "1.5"},
+			wantErr: true,
+		},
+		{
+			name:    "NaN threshold fails",
+			env:     map[string]string{"PRECHECK_COVERAGE_THRESHOLD": "NaN"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadPrecheck()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadWiki(t *testing.T) {
 	tests := []struct {
 		name    string

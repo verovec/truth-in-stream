@@ -218,6 +218,11 @@ func TestVideoResults(t *testing.T) {
 			Segment: domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: "world"},
 			Matches: []domain.SegmentMatch{},
 		},
+		{
+			Segment:    domain.Segment{Start: 5 * time.Second, End: 6 * time.Second, Text: "what time is it"},
+			Matches:    []domain.SegmentMatch{},
+			SkipReason: domain.SkipReasonNotAClaim,
+		},
 	}
 	wantBody := map[string]any{
 		"video_id": "abc",
@@ -235,11 +240,21 @@ func TestVideoResults(t *testing.T) {
 					},
 				},
 			},
+			// Checked segment with no confident match: no skip_reason key, so a
+			// client can tell it apart from a skipped one.
 			map[string]any{
 				"start":   3.0,
 				"end":     4.0,
 				"text":    "world",
 				"matches": []any{},
+			},
+			// Skipped segment: carries skip_reason and no verdict.
+			map[string]any{
+				"start":       5.0,
+				"end":         6.0,
+				"text":        "what time is it",
+				"matches":     []any{},
+				"skip_reason": "not_a_claim",
 			},
 		},
 	}

@@ -33,10 +33,17 @@ package handler
 //	          "sources": [{"title": "...", "url": "https://..."}],
 //	          "similarity": 0.92          // higher is more similar
 //	        }
-//	      ]
+//	      ],
+//	      "skip_reason": "not_a_claim" | "not_covered"  // only when skipped
 //	    }
 //	  ]
 //	}
+//
+// A segment carries skip_reason only when the check-worthiness gate declined to
+// check it: the segment is not a verifiable claim ("not_a_claim") or the corpus
+// does not cover it ("not_covered"). When skip_reason is absent the segment was
+// checked and matches is authoritative - an empty matches then means "checked,
+// no confident match", which is distinct from "not checked".
 //
 // Segments are ordered by start time and keyed by it. This object is exactly
 // what the future live mode will emit incrementally per segment, so clients
@@ -83,12 +90,15 @@ type resultsResponse struct {
 }
 
 // segmentJSON is the wire form of one domain.SegmentResult: timestamps as
-// seconds, matches served verbatim from their persisted shape.
+// seconds, matches served verbatim from their persisted shape. SkipReason is
+// present only when the gate skipped the segment; its absence means the segment
+// was checked and Matches (possibly empty) is authoritative.
 type segmentJSON struct {
-	Start   float64               `json:"start"`
-	End     float64               `json:"end"`
-	Text    string                `json:"text"`
-	Matches []domain.SegmentMatch `json:"matches"`
+	Start      float64               `json:"start"`
+	End        float64               `json:"end"`
+	Text       string                `json:"text"`
+	Matches    []domain.SegmentMatch `json:"matches"`
+	SkipReason string                `json:"skip_reason,omitempty"`
 }
 
 // maxSubmitBodyBytes bounds the submit request body; a video source
@@ -163,10 +173,11 @@ func toResultsResponse(videoID string, results []domain.SegmentResult) resultsRe
 			matches = []domain.SegmentMatch{}
 		}
 		segments = append(segments, segmentJSON{
-			Start:   r.Start.Seconds(),
-			End:     r.End.Seconds(),
-			Text:    r.Text,
-			Matches: matches,
+			Start:      r.Start.Seconds(),
+			End:        r.End.Seconds(),
+			Text:       r.Text,
+			Matches:    matches,
+			SkipReason: string(r.SkipReason),
 		})
 	}
 	return resultsResponse{VideoID: videoID, Segments: segments}

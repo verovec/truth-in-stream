@@ -80,6 +80,23 @@ func (f *fakeMatcher) setErrOn(text string) {
 	f.errOn = text
 }
 
+// fakePrechecker returns a fixed decision per segment text, defaulting to
+// checkable for any text not in the map.
+type fakePrechecker struct {
+	decisions map[string]domain.PrecheckDecision
+	err       error
+}
+
+func (f *fakePrechecker) Evaluate(_ context.Context, text string) (domain.PrecheckDecision, error) {
+	if f.err != nil {
+		return domain.PrecheckDecision{}, f.err
+	}
+	if d, ok := f.decisions[text]; ok {
+		return d, nil
+	}
+	return domain.Checkable(), nil
+}
+
 type memStore struct {
 	mu        sync.Mutex
 	results   map[string]map[int64]domain.SegmentResult
@@ -715,4 +732,95 @@ func TestProcessedVideoServedFromStoreAcrossRestarts(t *testing.T) {
 	if len(results) != 1 || results[0].Text != "hello" {
 		t.Errorf("results = %+v, want the seeded segment", results)
 	}
+}
+
+func TestPipelineSkipsUncheckableSegments(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		segs := []domain.Segment{
+			{Start: 0, End: time.Second, Text: "the earth orbits the sun"},
+			{Start: time.Second, End: 2 * time.Second, Text: "what do you think"},
+			{Start: 2 * time.Second, End: 3 * time.Second, Text: "obscure uncovered talk"},
+		}
+		store := newMemStore()
+		// The matcher errors on either non-checkable text, so a gate leak would
+		// fail the run instead of silently matching skipped speech.
+		matcher := &fakeMatcher{matches: testMatches()}
+		matcher.setErrOn("what do you think")
+		p := NewProcessor(ProcessorConfig{
+			Transcriber: &fakeTranscriber{segs: segs},
+			Matcher:     matcher,
+			Prechecker: &fakePrechecker{decisions: map[string]domain.PrecheckDecision{
+				"what do you think":      domain.Skipped(domain.SkipReasonNotAClaim),
+				"obscure uncovered talk": domain.Skipped(domain.SkipReasonNotCovered),
+			}},
+			Store:  store,
+			Logger: testLogger(),
+		})
+		startRun(t, p)
+
+		sub, err := p.Submit(t.Context(), "v")
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		synctest.Wait()
+
+		results, err := p.Results(t.Context(), sub.VideoID)
+		if err != nil {
+			t.Fatalf("Results: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("got %d results, want 3", len(results))
+		}
+
+		// Checked claim: matched, no skip reason.
+		if results[0].SkipReason != domain.SkipReasonNone {
+			t.Errorf("checked segment skip reason = %q, want none", results[0].SkipReason)
+		}
+		if diff := cmp.Diff(testMatches(), results[0].Matches); diff != "" {
+			t.Errorf("checked segment matches mismatch (-want +got):\n%s", diff)
+		}
+		// Skipped segments: skip reason set, never matched.
+		if results[1].SkipReason != domain.SkipReasonNotAClaim {
+			t.Errorf("segment 1 skip reason = %q, want not_a_claim", results[1].SkipReason)
+		}
+		if results[2].SkipReason != domain.SkipReasonNotCovered {
+			t.Errorf("segment 2 skip reason = %q, want not_covered", results[2].SkipReason)
+		}
+		for _, i := range []int{1, 2} {
+			if len(results[i].Matches) != 0 {
+				t.Errorf("skipped segment %d carries %d matches, want none", i, len(results[i].Matches))
+			}
+		}
+	})
+}
+
+func TestPipelineFailsOnPrecheckError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemStore()
+		p := NewProcessor(ProcessorConfig{
+			Transcriber: &fakeTranscriber{segs: testSegments(1)},
+			Matcher:     &fakeMatcher{matches: testMatches()},
+			Prechecker:  &fakePrechecker{err: errors.New("retrieval down")},
+			Store:       store,
+			Logger:      testLogger(),
+		})
+		startRun(t, p)
+
+		sub, err := p.Submit(t.Context(), "v")
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		synctest.Wait()
+
+		prog, err := p.Progress(t.Context(), sub.VideoID)
+		if err != nil {
+			t.Fatalf("Progress: %v", err)
+		}
+		if prog.Status != StatusFailed {
+			t.Errorf("status = %q, want failed when the precheck errors", prog.Status)
+		}
+		if store.isProcessed(sub.VideoID) {
+			t.Error("video marked processed despite a precheck failure")
+		}
+	})
 }
