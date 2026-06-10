@@ -30,3 +30,22 @@ type SegmentResult struct {
 	Content string
 	Matches []byte
 }
+
+type WikiChunk struct {
+	PageID     int64
+	ChunkIndex int32
+	Title      string
+	Url        string
+	RevisionID int64
+	Corpus     string
+	Content    string
+	Embedding  *pgvector.HalfVector
+	SyncedAt   pgtype.Timestamptz
+}
+
+type WikiSyncState struct {
+	Corpus       string
+	LastChangeTs pgtype.Timestamptz
+	DumpVersion  pgtype.Text
+	SyncedAt     pgtype.Timestamptz
+}

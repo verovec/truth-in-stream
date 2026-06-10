@@ -93,20 +93,30 @@ func (s *Store) Upsert(ctx context.Context, claims []domain.Claim) error {
 		}
 	}
 
-	// The generated Exec drains every batched statement, reports each error
-	// through the callback, and closes the underlying BatchResults itself, so
-	// we capture the first error here and do not Close again.
-	br := s.queries.UpsertClaim(ctx, params)
+	if err := firstBatchError(s.queries.UpsertClaim(ctx, params)); err != nil {
+		return fmt.Errorf("postgres: upsert: %w", err)
+	}
+	return nil
+}
+
+// batchExecer is the surface shared by every sqlc-generated *BatchResults
+// type for :batchexec queries.
+type batchExecer interface {
+	Exec(func(int, error))
+}
+
+// firstBatchError drains a generated batch and returns its first error. The
+// generated Exec runs every batched statement, reports each error through the
+// callback, and closes the underlying BatchResults itself, so the caller must
+// not Close again.
+func firstBatchError(br batchExecer) error {
 	var execErr error
 	br.Exec(func(_ int, err error) {
 		if err != nil && execErr == nil {
 			execErr = err
 		}
 	})
-	if execErr != nil {
-		return fmt.Errorf("postgres: upsert: %w", execErr)
-	}
-	return nil
+	return execErr
 }
 
 // Search returns the topK claims closest to query by cosine distance.

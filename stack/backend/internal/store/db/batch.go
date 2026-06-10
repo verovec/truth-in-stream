@@ -17,6 +17,57 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const trimWikiPageChunks = `-- name: TrimWikiPageChunks :batchexec
+DELETE FROM wiki_chunks WHERE page_id = $1 AND chunk_index >= $2
+`
+
+type TrimWikiPageChunksBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type TrimWikiPageChunksParams struct {
+	PageID     int64
+	ChunkIndex int32
+}
+
+// Removes the stale tail of a page after a re-sync produced fewer chunks
+// (from_index 0 removes the page entirely, e.g. it became a redirect).
+func (q *Queries) TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.PageID,
+			a.ChunkIndex,
+		}
+		batch.Queue(trimWikiPageChunks, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &TrimWikiPageChunksBatchResults{br, len(arg), false}
+}
+
+func (b *TrimWikiPageChunksBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *TrimWikiPageChunksBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const upsertClaim = `-- name: UpsertClaim :batchexec
 INSERT INTO claims (id, content, verdict, sources, embedding)
 VALUES ($1, $2, $3, $4, $5)
@@ -74,6 +125,80 @@ func (b *UpsertClaimBatchResults) Exec(f func(int, error)) {
 }
 
 func (b *UpsertClaimBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
+const upsertWikiChunk = `-- name: UpsertWikiChunk :batchexec
+INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (page_id, chunk_index) DO UPDATE
+    SET title = EXCLUDED.title,
+        url = EXCLUDED.url,
+        revision_id = EXCLUDED.revision_id,
+        corpus = EXCLUDED.corpus,
+        content = EXCLUDED.content,
+        embedding = CASE
+            WHEN wiki_chunks.content = EXCLUDED.content THEN wiki_chunks.embedding
+            ELSE NULL
+        END,
+        synced_at = now()
+`
+
+type UpsertWikiChunkBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type UpsertWikiChunkParams struct {
+	PageID     int64
+	ChunkIndex int32
+	Title      string
+	Url        string
+	RevisionID int64
+	Corpus     string
+	Content    string
+}
+
+// Ingest never writes embeddings; the CASE keeps an existing embedding only
+// while the content it was computed from is unchanged, so re-ingesting a
+// changed revision invalidates the stale vector instead of serving it.
+func (q *Queries) UpsertWikiChunk(ctx context.Context, arg []UpsertWikiChunkParams) *UpsertWikiChunkBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.PageID,
+			a.ChunkIndex,
+			a.Title,
+			a.Url,
+			a.RevisionID,
+			a.Corpus,
+			a.Content,
+		}
+		batch.Queue(upsertWikiChunk, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &UpsertWikiChunkBatchResults{br, len(arg), false}
+}
+
+func (b *UpsertWikiChunkBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *UpsertWikiChunkBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }

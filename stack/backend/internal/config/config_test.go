@@ -267,3 +267,58 @@ func TestLoadMatch(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWiki(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Wiki
+		wantErr bool
+	}{
+		{
+			name: "default corpus",
+			env:  map[string]string{},
+			want: Wiki{Corpus: "simplewiki"},
+		},
+		{
+			name: "corpus override",
+			env:  map[string]string{"WIKI_CORPUS": "enwiki"},
+			want: Wiki{Corpus: "enwiki"},
+		},
+		{
+			name:    "corpus must be a wiki dump name",
+			env:     map[string]string{"WIKI_CORPUS": "not a dump"},
+			wantErr: true,
+		},
+		{
+			name:    "non-wikipedia project rejected",
+			env:     map[string]string{"WIKI_CORPUS": "frwiktionary"},
+			wantErr: true,
+		},
+		{
+			name:    "underscore dump name rejected",
+			env:     map[string]string{"WIKI_CORPUS": "zh_yuewiki"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadWiki()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
