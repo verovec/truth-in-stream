@@ -218,6 +218,16 @@ func LoadMatch() (Match, error) {
 	}
 	if m.ScoreThreshold, err = thresholdEnv("MATCH_SCORE_THRESHOLD", m.ScoreThreshold); err != nil {
 		return Match{}, err
+  }
+	if raw := os.Getenv("MATCH_SCORE_THRESHOLD"); raw != "" {
+		threshold, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return Match{}, fmt.Errorf("config: MATCH_SCORE_THRESHOLD %q: %w", raw, err)
+		}
+		if !domain.ValidCosineThreshold(threshold) {
+			return Match{}, fmt.Errorf("config: MATCH_SCORE_THRESHOLD %v outside cosine similarity range [-1, 1]", threshold)
+		}
+		m.ScoreThreshold = threshold
 	}
 	if m.EvidenceTopK, err = intEnv("MATCH_EVIDENCE_TOP_K", m.EvidenceTopK, 0, math.MaxInt32); err != nil {
 		return Match{}, err
@@ -282,9 +292,7 @@ func LoadPrecheck() (Precheck, error) {
 		if err != nil {
 			return Precheck{}, fmt.Errorf("config: PRECHECK_COVERAGE_THRESHOLD %q: %w", raw, err)
 		}
-		// The inverted comparison also rejects NaN, which ParseFloat accepts and
-		// which would make every segment fall through as not covered.
-		if !(threshold >= -1 && threshold <= 1) {
+		if !domain.ValidCosineThreshold(threshold) {
 			return Precheck{}, fmt.Errorf("config: PRECHECK_COVERAGE_THRESHOLD %v outside cosine similarity range [-1, 1]", threshold)
 		}
 		p.CoverageThreshold = threshold

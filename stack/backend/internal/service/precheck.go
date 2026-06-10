@@ -45,9 +45,7 @@ type Gate struct {
 // NewGate builds a Gate, rejecting a coverage threshold outside cosine
 // similarity's [-1, 1] range, which would make the coverage stage meaningless.
 func NewGate(classifier ClaimClassifier, retriever CorpusRetriever, cfg GateConfig) (*Gate, error) {
-	// The inverted comparison also rejects NaN, which would otherwise let every
-	// segment fall through as not covered.
-	if !(cfg.CoverageThreshold >= -1 && cfg.CoverageThreshold <= 1) {
+	if !domain.ValidCosineThreshold(cfg.CoverageThreshold) {
 		return nil, fmt.Errorf("service: gate coverage threshold %v outside cosine similarity range [-1, 1]", cfg.CoverageThreshold)
 	}
 	return &Gate{
