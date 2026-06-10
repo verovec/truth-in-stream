@@ -24,7 +24,7 @@ type stubTranscriber struct {
 	err      error
 }
 
-func (s *stubTranscriber) TranscribeFile(ctx context.Context, audio io.Reader, opts transcribe.Options) (transcribe.Transcript, error) {
+func (s *stubTranscriber) TranscribeFile(_ context.Context, audio io.Reader, opts transcribe.Options) (transcribe.Transcript, error) {
 	b, err := io.ReadAll(audio)
 	if err != nil {
 		return transcribe.Transcript{}, err
@@ -34,7 +34,7 @@ func (s *stubTranscriber) TranscribeFile(ctx context.Context, audio io.Reader, o
 	return s.tr, s.err
 }
 
-func (s *stubTranscriber) TranscribeStream(ctx context.Context, chunks <-chan []byte, opts transcribe.Options) (<-chan transcribe.TranscriptEvent, error) {
+func (s *stubTranscriber) TranscribeStream(_ context.Context, _ <-chan []byte, _ transcribe.Options) (<-chan transcribe.TranscriptEvent, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -62,7 +62,7 @@ func multipartBody(t *testing.T, filename, content string) (*bytes.Buffer, strin
 func postTranscript(t *testing.T, srv http.Handler, target, filename, content string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, contentType := multipartBody(t, filename, content)
-	req := httptest.NewRequest(http.MethodPost, target, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
 	req.Header.Set("Content-Type", contentType)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -135,7 +135,7 @@ func TestPostTranscriptRejectsMissingFile(t *testing.T) {
 	if err := mw.Close(); err != nil {
 		t.Fatalf("close form: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/transcripts", &buf)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/transcripts", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -149,7 +149,7 @@ func TestPostTranscriptRejectsNonMultipart(t *testing.T) {
 	t.Parallel()
 	srv := newTranscriptServer(&stubTranscriber{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/transcripts", bytes.NewBufferString(`{}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/transcripts", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -218,7 +218,7 @@ func TestGetTranscriptsIsMethodNotAllowed(t *testing.T) {
 	srv := newTranscriptServer(&stubTranscriber{})
 
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/transcripts", nil))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/transcripts", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("code = %d, want 405", rec.Code)

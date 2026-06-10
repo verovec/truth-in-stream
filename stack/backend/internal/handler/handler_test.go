@@ -14,7 +14,7 @@ import (
 
 type fakePinger struct{ err error }
 
-func (f fakePinger) Ping(ctx context.Context) error { return f.err }
+func (f fakePinger) Ping(_ context.Context) error { return f.err }
 
 func newTestServer(storeErr error, transcriber *stubTranscriber) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -35,7 +35,7 @@ func TestHealthz(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newTestServer(tc.storeErr, &stubTranscriber{})
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 			if rec.Code != tc.wantCode {
 				t.Fatalf("GET /healthz = %d, want %d", rec.Code, tc.wantCode)
 			}
@@ -46,7 +46,7 @@ func TestHealthz(t *testing.T) {
 func TestUnknownRouteIs404(t *testing.T) {
 	srv := newTestServer(nil, &stubTranscriber{})
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/nope", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET /nope = %d, want 404", rec.Code)
 	}

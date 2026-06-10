@@ -117,7 +117,7 @@ func TestSubmitVideo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/videos", strings.NewReader(tc.body))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos", strings.NewReader(tc.body))
 			srv.ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantCode {
@@ -186,7 +186,7 @@ func TestVideoStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/videos/abc/status", nil))
+			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/status", nil))
 
 			if rec.Code != tc.wantCode {
 				t.Fatalf("GET status = %d, want %d (body %s)", rec.Code, tc.wantCode, rec.Body.String())
@@ -283,7 +283,7 @@ func TestVideoResults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newProcessingServer(tc.svc)
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/videos/abc/results", nil))
+			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/abc/results", nil))
 
 			if rec.Code != tc.wantCode {
 				t.Fatalf("GET results = %d, want %d (body %s)", rec.Code, tc.wantCode, rec.Body.String())

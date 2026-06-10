@@ -10,11 +10,11 @@ import (
 )
 
 func TestRequestIDSetsHeader(t *testing.T) {
-	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 
 	if rec.Header().Get("X-Request-Id") == "" {
 		t.Fatal("expected X-Request-Id header to be set")
@@ -23,12 +23,12 @@ func TestRequestIDSetsHeader(t *testing.T) {
 
 func TestRecoverTurnsPanicInto500(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	h := Recover(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Recover(logger)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom")
 	}))
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil)) // must not panic
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)) // must not panic
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d, want 500", rec.Code)
@@ -38,7 +38,7 @@ func TestRecoverTurnsPanicInto500(t *testing.T) {
 func TestLoggingWriterSupportsDeadlines(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	var readErr, writeErr error
-	h := Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		rc := http.NewResponseController(w)
 		deadline := time.Now().Add(time.Minute)
 		readErr = rc.SetReadDeadline(deadline)
@@ -47,7 +47,11 @@ func TestLoggingWriterSupportsDeadlines(t *testing.T) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	resp, err := srv.Client().Get(srv.URL)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}

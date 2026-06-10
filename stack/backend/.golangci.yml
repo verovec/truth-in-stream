@@ -1,0 +1,33 @@
+# golangci-lint v2 config. Runner version is pinned in .golangci-lint-version
+# and resolved by the CI action; keep the two in sync.
+#
+# Enforces the documented backend lint standard: the v2 `standard` set
+# (errcheck, govet, ineffassign, staticcheck, unused) plus the additions below.
+# wrapcheck is intentionally NOT enabled - it is too noisy at boundaries; adding
+# it, or any nolint, needs a written decision in the PR description.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose # response bodies must be closed
+    - gocritic # opinionated correctness and style diagnostics
+    - godot # doc comments end with a period
+    - misspell # spelling in comments and strings
+    - noctx # HTTP requests must carry a context
+    - prealloc # preallocate slices of known size
+    - revive # broad golint-style ruleset
+    - unparam # unused function parameters and results
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    # Exclude sqlc-generated code (internal/store/db) by the canonical
+    # "// Code generated ... DO NOT EDIT." header only.
+    generated: strict
+
+issues:
+  # Never silently cap the gate: the defaults (50 per linter, 3 per message)
+  # would hide real findings in future code. 0 disables both caps.
+  max-issues-per-linter: 0
+  max-same-issues: 0
