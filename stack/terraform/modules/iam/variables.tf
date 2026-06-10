@@ -45,3 +45,9 @@ variable "ssm_parameter_arns" {
   default     = []
   description = "SSM parameters the deploy role may read (network config for run-task)."
 }
+
+variable "media_bucket_arn" {
+  type        = string
+  default     = ""
+  description = "S3 media bucket ARN the application task role may read and write. Empty disables the grant."
+}

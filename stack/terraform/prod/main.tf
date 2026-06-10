@@ -57,6 +57,15 @@ resource "aws_secretsmanager_secret" "transcription_api_key" {
   description = "ElevenLabs API key. Value set manually, never in Terraform."
 }
 
+module "media_storage" {
+  source = "../modules/s3"
+
+  project     = local.project
+  environment = var.environment
+
+  cors_allowed_origins = var.media_cors_allowed_origins
+}
+
 module "iam" {
   source = "../modules/iam"
 
@@ -68,6 +77,7 @@ module "iam" {
 
   ecr_repository_arns = module.ecr.repository_arns
   cluster_arn         = module.ecs.cluster_id
+  media_bucket_arn    = module.media_storage.bucket_arn
   secret_arns = [
     module.rds.dsn_secret_arn,
     aws_secretsmanager_secret.embedding_api_key.arn,
@@ -105,6 +115,10 @@ module "backend" {
 
   environment_variables = {
     PORT = "8080"
+    # Object storage uses the task role for credentials (no endpoint, no static
+    # keys); only the bucket and region are configured here.
+    STORAGE_BUCKET = module.media_storage.bucket_id
+    STORAGE_REGION = var.aws_region
   }
   secrets = {
     DATABASE_URL          = module.rds.dsn_secret_arn

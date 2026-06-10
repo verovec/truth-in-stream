@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -384,6 +385,93 @@ func LoadWikiEmbed() (WikiEmbed, error) {
 		w.MaintenanceWorkMem = raw
 	}
 	return w, nil
+}
+
+// Storage presign defaults: a 15-minute upload window is long enough for a
+// browser PUT of a large video yet short enough to limit a leaked URL, and a
+// 1-hour playback window covers a viewing session without constant re-signing.
+// The eu-west-3 default matches the project's deployment region.
+const (
+	defaultStoragePutTTL = 15 * time.Minute
+	defaultStorageGetTTL = time.Hour
+	defaultStorageRegion = "eu-west-3"
+	// maxStoragePresignTTL is the SigV4 ceiling for a presigned URL (7 days).
+	maxStoragePresignTTL = 7 * 24 * time.Hour
+)
+
+// Storage holds the object-storage configuration for uploaded media. An empty
+// Endpoint targets real AWS S3 and resolves credentials through the default
+// chain (the ECS task role in production); a non-empty Endpoint with static
+// credentials and UsePathStyle targets a MinIO container in local development.
+type Storage struct {
+	Endpoint     string
+	Region       string
+	Bucket       string
+	AccessKey    string
+	SecretKey    string
+	UsePathStyle bool
+	PutTTL       time.Duration
+	GetTTL       time.Duration
+}
+
+// LoadStorage reads the object-storage configuration from the environment.
+// STORAGE_BUCKET is required; the region defaults to eu-west-3 and the presign
+// TTLs to 15m (upload) and 1h (playback). Static credentials are all-or-nothing
+// so a half-set pair fails fast rather than silently falling back to the
+// default credential chain.
+func LoadStorage() (Storage, error) {
+	bucket, err := requireEnv("STORAGE_BUCKET")
+	if err != nil {
+		return Storage{}, err
+	}
+	s := Storage{
+		Endpoint:  os.Getenv("STORAGE_ENDPOINT"),
+		Region:    getenv("STORAGE_REGION", defaultStorageRegion),
+		Bucket:    bucket,
+		AccessKey: os.Getenv("STORAGE_ACCESS_KEY"),
+		SecretKey: os.Getenv("STORAGE_SECRET_KEY"),
+		PutTTL:    defaultStoragePutTTL,
+		GetTTL:    defaultStorageGetTTL,
+	}
+	if (s.AccessKey == "") != (s.SecretKey == "") {
+		return Storage{}, errors.New("config: STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY must be set together")
+	}
+	if s.UsePathStyle, err = boolEnv("STORAGE_USE_PATH_STYLE", false); err != nil {
+		return Storage{}, err
+	}
+	if s.PutTTL, err = boundedDurationEnv("STORAGE_PRESIGN_PUT_TTL", s.PutTTL, maxStoragePresignTTL); err != nil {
+		return Storage{}, err
+	}
+	if s.GetTTL, err = boundedDurationEnv("STORAGE_PRESIGN_GET_TTL", s.GetTTL, maxStoragePresignTTL); err != nil {
+		return Storage{}, err
+	}
+	return s, nil
+}
+
+// boolEnv reads a boolean environment variable, applying fallback when unset.
+func boolEnv(key string, fallback bool) (bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	return v, nil
+}
+
+// boundedDurationEnv reads a positive Go duration, applying fallback when unset
+// and rejecting values above maximum.
+func boundedDurationEnv(key string, fallback, maximum time.Duration) (time.Duration, error) {
+	d, err := positiveDurationEnv(key, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if d > maximum {
+		return 0, fmt.Errorf("config: %s %s exceeds the maximum %s", key, d, maximum)
+	}
+	return d, nil
 }
 
 // intEnv reads an integer environment variable, applying fallback when unset

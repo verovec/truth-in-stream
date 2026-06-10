@@ -14,6 +14,12 @@ variable "environment" {
   }
 }
 
+variable "media_cors_allowed_origins" {
+  type        = list(string)
+  default     = ["*"]
+  description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Defaults to any origin while there is no fixed frontend domain; restrict to the app origin once one exists."
+}
+
 variable "enable_wiki_sync" {
   type        = bool
   default     = false
