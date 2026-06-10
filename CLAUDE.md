@@ -15,7 +15,9 @@ lives under `stack/`.
 - Local dev: `docker-compose.yml` (postgres :5432, backend :8080, frontend :3000)
 
 ## Always-on rules
-- Never commit, push, or deploy on your own. Always ask for explicit approval first.
+- Never merge or deploy on your own; always ask for explicit approval first. Pushing a feature
+  branch and opening its PR after a passing code-review needs no approval (see the
+  `ship-after-review` skill); only merge and deploy stay human-gated.
 - Best practice and long-term maintainability first.
 - Before integrating a new library/pattern/tool, verify current best practice and latest
   stable version via Context7 (web search if needed) before writing code.
