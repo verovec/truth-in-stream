@@ -113,11 +113,18 @@ type SegmentWire = {
 type ResultsWire = { video_id: string; segments: SegmentWire[] };
 
 function normalizeMatch(wire: MatchWire): SegmentMatch {
-  if (wire.kind === "evidence" && wire.article) {
+  // Discriminate on kind alone: evidence must never fall through to the claim
+  // branch, or a missing attribution would fabricate an "unclear" verdict on
+  // content the corpus cannot adjudicate. A malformed evidence payload without
+  // an article degrades to a generic Wikipedia credit rather than a verdict.
+  if (wire.kind === "evidence") {
     return {
       kind: "evidence",
       excerpt: wire.claim ?? "",
-      article: wire.article,
+      article: wire.article ?? {
+        title: "Wikipedia",
+        url: "https://www.wikipedia.org",
+      },
       similarity: wire.similarity,
     };
   }

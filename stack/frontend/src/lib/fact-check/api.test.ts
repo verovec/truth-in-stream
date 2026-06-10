@@ -197,6 +197,52 @@ describe("fetchVideoResults", () => {
     });
   });
 
+  test("keeps a malformed evidence match as evidence, never a fabricated verdict", async () => {
+    mockFetch(200, {
+      video_id: "abc123",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              claim: "The Great Wall of China is a series of fortifications.",
+              sources: [],
+              similarity: 0.74,
+            },
+          ],
+        },
+      ],
+    });
+
+    const outcome = await fetchVideoResults("abc123");
+
+    expect(outcome).toEqual({
+      kind: "complete",
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: "the great wall",
+          matches: [
+            {
+              kind: "evidence",
+              excerpt:
+                "The Great Wall of China is a series of fortifications.",
+              article: {
+                title: "Wikipedia",
+                url: "https://www.wikipedia.org",
+              },
+              similarity: 0.74,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   test("reads a legacy match without a kind as a claim", async () => {
     mockFetch(200, {
       video_id: "abc123",
