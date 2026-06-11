@@ -9,18 +9,23 @@ import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import type { LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
-import {
-  LIVE_ROW_BASE_CLASS,
-  LIVE_ROW_EMPHASIZED_CLASS,
-} from "./live-row-classes";
+
+// speakerLabel renders the diarized speaker label as a reader-facing tag. The
+// provider emits a bare identifier (e.g. "A"); the "Speaker" prefix makes it
+// legible without the consumer knowing the provider's convention.
+function speakerLabel(speaker: string): string {
+  return `Speaker ${speaker}`;
+}
 
 // LiveStatementList is the subtitle region: the running transcript of finalised
-// statements. Verdicts live in the decoupled fact-check list below, so each row
-// here carries only the spoken text plus a light status marker (analysing,
-// could-not-check, skipped, or no-match). Two scroll drivers coexist without
-// fighting: the active row tracks the playback clock, and a row selected from
-// the fact-check list scrolls into view on demand. Memoized so a caption-only
-// update of the parent panel (every interim word) does not re-render the list.
+// statements, rendered as one continuous, borderless flow (not boxed cards) so
+// it reads like a transcript. Each line carries its speaker label (when
+// diarized) and timestamp above the spoken text, plus a light status marker
+// (analysing, could-not-check, skipped, or no-match); verdicts live in the
+// decoupled fact-check list below. Two scroll drivers coexist without fighting:
+// the active line tracks the playback clock, and a line selected from the
+// fact-check list scrolls into view on demand. Memoized so a caption-only update
+// of the parent panel (every interim word) does not re-render the list.
 export const LiveStatementList = memo(function LiveStatementList({
   statements,
   selectedStatementId,
@@ -62,7 +67,7 @@ export const LiveStatementList = memo(function LiveStatementList({
   return (
     <ol
       aria-label="Subtitle transcript"
-      className="-mr-2 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-2"
+      className="-mr-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-2"
     >
       {statements.map((statement, index) => {
         const active = index === activeIndex;
@@ -79,29 +84,34 @@ export const LiveStatementList = memo(function LiveStatementList({
               }
             }}
             aria-current={active ? "true" : undefined}
-            className={`rounded-lg border transition-colors ${
-              active ? LIVE_ROW_EMPHASIZED_CLASS : LIVE_ROW_BASE_CLASS
-            } ${
-              selected
-                ? "ring-2 ring-sky-400 ring-offset-1 dark:ring-sky-500/60 dark:ring-offset-zinc-950"
-                : ""
-            }`}
+            className={`border-l-2 pl-3 transition-colors ${
+              active
+                ? "border-sky-400 dark:border-sky-500/70"
+                : "border-transparent"
+            } ${selected ? "bg-sky-50/70 dark:bg-sky-500/10" : ""}`}
           >
             <button
               type="button"
               onClick={() => store.seekTo(statement.start)}
-              className="flex w-full flex-col gap-1 rounded-lg px-3 py-2 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+              className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
             >
-              <span
-                className={`font-mono text-[11px] tabular-nums ${
-                  active
-                    ? "text-sky-700 dark:text-sky-300"
-                    : "text-zinc-500 dark:text-zinc-400"
-                }`}
-              >
-                {formatTime(statement.start)} – {formatTime(statement.end)}
+              <span className="flex items-baseline gap-2 text-[11px]">
+                {statement.speaker ? (
+                  <span className="font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-300">
+                    {speakerLabel(statement.speaker)}
+                  </span>
+                ) : null}
+                <span
+                  className={`font-mono tabular-nums ${
+                    active
+                      ? "text-sky-700 dark:text-sky-300"
+                      : "text-zinc-400 dark:text-zinc-500"
+                  }`}
+                >
+                  {formatTime(statement.start)} – {formatTime(statement.end)}
+                </span>
               </span>
-              <span className="text-sm leading-5 text-zinc-800 dark:text-zinc-200">
+              <span className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">
                 {statement.text}
               </span>
             </button>
@@ -136,7 +146,7 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
     return (
       <p
         role="status"
-        className="flex items-center gap-2 px-3 pb-2 text-xs text-zinc-500 dark:text-zinc-400"
+        className="flex items-center gap-2 pb-1 text-xs text-zinc-500 dark:text-zinc-400"
       >
         <span
           aria-hidden="true"
@@ -149,7 +159,7 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
 
   if (statement.error) {
     return (
-      <p className="px-3 pb-2 text-xs text-amber-700 dark:text-amber-400">
+      <p className="pb-1 text-xs text-amber-700 dark:text-amber-400">
         This statement could not be checked.
       </p>
     );
@@ -157,7 +167,7 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
 
   if (statement.skipReason) {
     return (
-      <p className="px-3 pb-2 text-xs italic text-zinc-400 dark:text-zinc-500">
+      <p className="pb-1 text-xs italic text-zinc-400 dark:text-zinc-500">
         Not checked - {skipLabel(statement.skipReason)}.
       </p>
     );
@@ -165,7 +175,7 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
 
   if (statement.matches.length === 0) {
     return (
-      <p className="px-3 pb-2 text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="pb-1 text-xs text-zinc-500 dark:text-zinc-400">
         No confident match.
       </p>
     );

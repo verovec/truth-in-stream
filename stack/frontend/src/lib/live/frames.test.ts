@@ -21,6 +21,34 @@ describe("parseLiveFrame", () => {
     });
   });
 
+  test("parses a subtitle frame's diarized speaker when present", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "subtitle",
+        id: "1",
+        start: 0,
+        end: 1,
+        text: "hello",
+        speaker: "A",
+      }),
+    );
+    expect(frame).toMatchObject({ type: "subtitle", speaker: "A" });
+  });
+
+  test("omits an empty speaker rather than carrying a blank label", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "subtitle",
+        id: "1",
+        start: 0,
+        end: 1,
+        text: "hello",
+        speaker: "",
+      }),
+    );
+    expect(frame).not.toHaveProperty("speaker");
+  });
+
   test("parses a result frame and normalizes its segment", () => {
     const frame = parseLiveFrame(
       JSON.stringify({

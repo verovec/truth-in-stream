@@ -64,6 +64,28 @@ describe("LiveFactCheckPanel", () => {
     ).toBeInTheDocument();
   });
 
+  test("offers a labelled resizable divider between the two regions", () => {
+    renderPanel({ statements: [], caption: "", status: "idle" });
+    expect(
+      screen.getByRole("separator", {
+        name: /resize subtitles and fact checks/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  test("arrow keys repartition the two regions through the divider", async () => {
+    renderPanel({ statements: [], caption: "", status: "idle" });
+    const separator = screen.getByRole("separator", {
+      name: /resize subtitles and fact checks/i,
+    });
+    const before = Number(separator.getAttribute("aria-valuenow"));
+    separator.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(Number(separator.getAttribute("aria-valuenow"))).toBeGreaterThan(
+      before,
+    );
+  });
+
   test("shows the idle hint before the stream starts", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     expect(
