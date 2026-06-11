@@ -6,7 +6,7 @@ MIGRATE_IMAGE := migrate/migrate:v4.18.3
 # Override for a real target, e.g. make migrate-up DATABASE_URL=postgres://...
 DATABASE_URL  ?= postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest wikisync
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest wikisync digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -46,3 +46,6 @@ ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_AP
 
 wikisync: ## Download and ingest the Wikipedia corpus (WIKI_CORPUS, DATABASE_URL)
 	go run ./cmd/wikisync
+
+digest: ## Post the daily development digest to Slack (needs SLACK_DIGEST_WEBHOOK_URL)
+	go run ./cmd/digest
