@@ -273,9 +273,10 @@ func TestRetryLogsBackoffBeforeRetrying(t *testing.T) {
 		var backoffs int
 		for line := range bytes.Lines(buf.Bytes()) {
 			var rec struct {
-				Level  string `json:"level"`
-				Msg    string `json:"msg"`
-				Reason string `json:"reason"`
+				Level   string `json:"level"`
+				Msg     string `json:"msg"`
+				Reason  string `json:"reason"`
+				Elapsed *int64 `json:"elapsed"`
 			}
 			if err := json.Unmarshal(line, &rec); err != nil {
 				t.Fatalf("log line is not JSON: %q: %v", line, err)
@@ -289,6 +290,9 @@ func TestRetryLogsBackoffBeforeRetrying(t *testing.T) {
 			}
 			if rec.Reason != "rate_limited" {
 				t.Errorf("backoff reason = %q, want rate_limited", rec.Reason)
+			}
+			if rec.Elapsed == nil {
+				t.Error("backoff line missing elapsed; the failed request's duration must be logged")
 			}
 		}
 		// Three attempts, two of them retried, so two backoff lines.
