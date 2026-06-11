@@ -173,7 +173,10 @@ func pingLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Co
 
 // writeEvents serializes each live event to a JSON text frame until the event
 // stream ends or a write fails. A write failure cancels the session so the
-// reader unwinds and no goroutine leaks.
+// reader unwinds and no goroutine leaks. Every write is bounded by
+// liveWriteTimeout, so a failure - including an interim that the client could not
+// accept within the deadline - means the connection is broken or wedged and the
+// session is torn down at once rather than burning a per-frame timeout on it.
 func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, events <-chan service.LiveEvent, logger *slog.Logger, videoID string) {
 	for ev := range events {
 		if err := writeEvent(ctx, conn, ev); err != nil {

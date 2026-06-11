@@ -5,12 +5,16 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -171,6 +175,55 @@ func TestClassify(t *testing.T) {
 				t.Errorf("classify() event = %+v, want %+v", event, tc.wantEvent)
 			}
 		})
+	}
+}
+
+func TestTranscribeStreamReadsOversizedCommittedTranscript(t *testing.T) {
+	t.Parallel()
+	// A committed transcript for a long utterance exceeds coder/websocket's 32 KiB
+	// default read limit. Without raising the limit the read fails fatally
+	// ("message too big") and the live session dies mid-stream; the client must
+	// read the message and emit its event.
+	bigText := strings.Repeat("alpha ", 10000) // ~60 KiB, over the 32 KiB default
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		if err := wsjson.Write(r.Context(), conn, map[string]any{
+			"message_type": msgCommittedTranscript,
+			"text":         bigText,
+		}); err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	t.Cleanup(srv.Close)
+
+	client := New(Config{
+		APIKey:      "k",
+		RealtimeURL: "ws" + strings.TrimPrefix(srv.URL, "http"),
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	events, err := client.TranscribeStream(ctx, make(chan []byte), Options{})
+	if err != nil {
+		t.Fatalf("TranscribeStream: %v", err)
+	}
+
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("event channel closed with no event - the oversized message was rejected")
+		}
+		if !ev.Final || ev.Segment.Text != bigText {
+			t.Errorf("got final=%v text-len=%d, want a final committed transcript carrying the full text", ev.Final, len(ev.Segment.Text))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the committed transcript event")
 	}
 }
 

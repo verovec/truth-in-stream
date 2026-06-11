@@ -213,6 +213,22 @@ describe("useLiveAnalysis", () => {
     expect(h.analysis().caption).toBe("");
   });
 
+  test("ignores a trailing interim that arrives after leaving the live state", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("mid utteran")));
+    expect(h.analysis().caption).toBe("mid utteran");
+
+    pause(h.store());
+    expect(h.analysis().caption).toBe("");
+
+    // Pause leaves the socket open; a late interim on it must NOT re-show the
+    // caption under the now-paused panel.
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("late partial")));
+    expect(h.analysis().caption).toBe("");
+  });
+
   test("forwards captured PCM frames to the open socket", () => {
     const h = harness();
     play(h.store());
