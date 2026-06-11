@@ -12,6 +12,7 @@ func TestSkipReasonValid(t *testing.T) {
 		{"checked (none)", SkipReasonNone, true},
 		{"not a claim", SkipReasonNotAClaim, true},
 		{"not covered", SkipReasonNotCovered, true},
+		{"not checked", SkipReasonNotChecked, true},
 		{"unknown", SkipReason("bogus"), false},
 	}
 	for _, tc := range tests {
@@ -28,7 +29,7 @@ func TestSkipReasonDisjointFromVerdict(t *testing.T) {
 	t.Parallel()
 	// A skip reason must never collide with a verdict value, or a skipped
 	// segment could be read back as a fact-check outcome.
-	for _, r := range []SkipReason{SkipReasonNotAClaim, SkipReasonNotCovered} {
+	for _, r := range []SkipReason{SkipReasonNotAClaim, SkipReasonNotCovered, SkipReasonNotChecked} {
 		if Verdict(r).Valid() {
 			t.Errorf("skip reason %q overlaps a valid verdict", r)
 		}

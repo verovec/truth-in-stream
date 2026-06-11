@@ -25,9 +25,12 @@ export type ClaimMatch = {
   similarity: number;
 };
 
-// SkipReason is why the check-worthiness gate declined to fact-check a segment.
-// It is distinct from a Verdict: a skipped segment carries no verdict at all.
-export type SkipReason = "not_a_claim" | "not_covered";
+// SkipReason is why a segment was not fact-checked. It is distinct from a
+// Verdict: a skipped segment carries no verdict at all. "not_a_claim" and
+// "not_covered" are the check-worthiness gate's decisions; "not_checked" is the
+// live path's capacity signal - the statement was transcribed but left unscored
+// because the verdict workers were saturated.
+export type SkipReason = "not_a_claim" | "not_covered" | "not_checked";
 
 // A Wikipedia evidence match is supporting context: an article excerpt with
 // attribution and no verdict. CC BY-SA 4.0 requires showing the article title

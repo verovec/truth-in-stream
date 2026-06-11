@@ -47,8 +47,8 @@ type LiveEvent struct {
 
 // defaultLiveConcurrency bounds in-flight per-segment analyses. Subtitles emit
 // in order regardless; this caps how many verdicts compute at once so a burst of
-// speech cannot spawn unbounded work, while letting a slow match overlap with
-// later statements rather than stalling the live transcript.
+// speech cannot spawn unbounded work. Speech beyond the bound is surfaced as a
+// subtitle and reported not_checked rather than stalling the live transcript.
 const defaultLiveConcurrency = 4
 
 // LiveAnalyzerConfig wires a LiveAnalyzer. Stream and Matcher are required;
@@ -119,9 +119,11 @@ func (a *LiveAnalyzer) Run(ctx context.Context, audio <-chan []byte) (<-chan Liv
 }
 
 // analyzeLoop emits a subtitle per finalized segment in order and dispatches the
-// verdict computation under a concurrency bound, so a slow match overlaps later
-// statements instead of stalling the transcript. It closes out only after every
-// dispatched worker has finished, so no event is ever sent on a closed channel.
+// verdict computation under a concurrency bound. Subtitle emission never waits
+// on a worker slot: when every worker is busy the statement is reported
+// not_checked at once, so a slow match overlaps later statements instead of
+// stalling the transcript. It closes out only after every dispatched worker has
+// finished, so no event is ever sent on a closed channel.
 func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, segments <-chan domain.Segment, out chan<- LiveEvent) {
 	defer close(out)
 
@@ -141,17 +143,31 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, segments <-chan domain.S
 		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventSubtitle, ID: id, Segment: seg}) {
 			return
 		}
+		// Score only when a worker slot is free, so a slow match never stalls the
+		// subtitle stream. When every worker is busy the statement keeps its
+		// subtitle and is reported unscored rather than holding back later speech.
+		// The skip is best-effort and final: the statement is not re-queued, so
+		// sustained saturation simply leaves more statements unscored.
 		select {
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
+			wg.Add(1)
+			go func(id string, seg domain.Segment) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				sendEvent(ctx, out, a.analyze(ctx, id, seg))
+			}(id, seg)
+		default:
+			if !sendEvent(ctx, out, LiveEvent{
+				Kind:       LiveEventResult,
+				ID:         id,
+				Segment:    seg,
+				SkipReason: domain.SkipReasonNotChecked,
+			}) {
+				return
+			}
 		}
-		wg.Add(1)
-		go func(id string, seg domain.Segment) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			sendEvent(ctx, out, a.analyze(ctx, id, seg))
-		}(id, seg)
 	}
 }
 
