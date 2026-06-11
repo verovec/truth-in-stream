@@ -16,6 +16,11 @@ var ErrVideoNotFound = errors.New("video not found")
 // link a no-op: the caller resolves and returns the existing record instead.
 var ErrDuplicateSource = errors.New("video source already ingested")
 
+// ErrIngestNotRetriable is returned when a retry is attempted on a record that is
+// not in the failed state. It lets the ingest path claim a failed record for
+// retry atomically: only the caller that flips failed->pending re-runs the work.
+var ErrIngestNotRetriable = errors.New("video ingest is not in a retriable state")
+
 // VideoKind distinguishes operator uploads from curated sample clips. Both
 // surface through one library listing so the frontend renders samples and
 // uploads in a single grid.

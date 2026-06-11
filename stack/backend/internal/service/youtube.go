@@ -59,6 +59,7 @@ type mediaUploader interface {
 type ingestStore interface {
 	CreateYouTubeVideo(ctx context.Context, v domain.Video) (domain.Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID string) (domain.Video, error)
+	RetryFailedVideo(ctx context.Context, id string) (domain.Video, error)
 	SetVideoReady(ctx context.Context, id, title string, sizeBytes, durationMS int64) (domain.Video, error)
 	SetVideoFailed(ctx context.Context, id, reason string) (domain.Video, error)
 }
@@ -143,12 +144,24 @@ func (s *IngestService) Submit(ctx context.Context, rawURL string) (domain.Video
 			return domain.Video{}, fmt.Errorf("youtube: resolve duplicate %s: %w", id, gErr)
 		}
 		// Re-submitting retries a previously failed ingest (which left no
-		// object); a pending or ready record is returned unchanged so the same
-		// link never re-downloads while one is in flight or already stored.
-		if existing.Status == domain.VideoStatusFailed {
-			s.spawn(func() { s.process(existing) })
+		// object). The retry is claimed atomically: only the caller that flips
+		// failed->pending re-runs the work, so two concurrent re-submissions
+		// cannot both re-download. A pending or ready record is returned
+		// unchanged so the same link never re-downloads while one is in flight
+		// or already stored.
+		if existing.Status != domain.VideoStatusFailed {
+			return existing, nil
 		}
-		return existing, nil
+		retried, rErr := s.store.RetryFailedVideo(ctx, existing.ID)
+		if errors.Is(rErr, domain.ErrIngestNotRetriable) {
+			// Another re-submission claimed the retry first; return the record.
+			return existing, nil
+		}
+		if rErr != nil {
+			return domain.Video{}, fmt.Errorf("youtube: retry %s: %w", id, rErr)
+		}
+		s.spawn(func() { s.process(retried) })
+		return retried, nil
 	}
 	if err != nil {
 		return domain.Video{}, fmt.Errorf("youtube: create %s: %w", id, err)

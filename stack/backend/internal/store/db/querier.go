@@ -49,6 +49,10 @@ type Querier interface {
 	// Advances the corpus checkpoint after a successful embed-and-swap, recording
 	// that the live corpus is now fully embedded at its stored dump version.
 	MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error
+	// Atomically claim a failed ingest for retry: flip it back to pending only if it
+	// is currently failed, so two concurrent re-submissions cannot both re-download.
+	// The guard returns no row (and thus no claim) when the record is not failed.
+	RetryFailedVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	// Named arg query_embedding is referenced twice but sqlc collapses it to a
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).

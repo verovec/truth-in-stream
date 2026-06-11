@@ -129,6 +129,20 @@ func (f *fakeVideoStore) GetVideoBySourceID(_ context.Context, sourceID string) 
 	return domain.Video{}, domain.ErrVideoNotFound
 }
 
+func (f *fakeVideoStore) RetryFailedVideo(_ context.Context, id string) (domain.Video, error) {
+	if f.setErr != nil {
+		return domain.Video{}, f.setErr
+	}
+	v, ok := f.videos[id]
+	if !ok || v.Status != domain.VideoStatusFailed {
+		return domain.Video{}, domain.ErrIngestNotRetriable
+	}
+	v.Status = domain.VideoStatusPending
+	v.Error = ""
+	f.videos[id] = v
+	return v, nil
+}
+
 func (f *fakeVideoStore) SetVideoReady(_ context.Context, id, title string, sizeBytes, durationMS int64) (domain.Video, error) {
 	if f.setErr != nil {
 		return domain.Video{}, f.setErr

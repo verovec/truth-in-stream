@@ -177,6 +177,25 @@ func (s *Store) SetVideoReady(ctx context.Context, id, title string, sizeBytes, 
 	return videoFromRow(row), nil
 }
 
+// RetryFailedVideo atomically flips a failed record back to pending so it can be
+// re-ingested, returning the claimed record. A record that is not currently
+// failed (already pending, ready, or gone) yields domain.ErrIngestNotRetriable,
+// so two concurrent re-submissions cannot both re-download.
+func (s *Store) RetryFailedVideo(ctx context.Context, id string) (domain.Video, error) {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.Video{}, domain.ErrIngestNotRetriable
+	}
+	row, err := s.queries.RetryFailedVideo(ctx, uid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Video{}, domain.ErrIngestNotRetriable
+	}
+	if err != nil {
+		return domain.Video{}, fmt.Errorf("postgres: retry failed video %s: %w", id, err)
+	}
+	return videoFromRow(row), nil
+}
+
 // SetVideoFailed records the reason an ingest failed and flips the record to
 // failed, or returns domain.ErrVideoNotFound.
 func (s *Store) SetVideoFailed(ctx context.Context, id, reason string) (domain.Video, error) {

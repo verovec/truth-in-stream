@@ -59,3 +59,12 @@ UPDATE videos
 SET status = 'failed', error = $2, updated_at = now()
 WHERE id = $1
 RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error;
+
+-- name: RetryFailedVideo :one
+-- Atomically claim a failed ingest for retry: flip it back to pending only if it
+-- is currently failed, so two concurrent re-submissions cannot both re-download.
+-- The guard returns no row (and thus no claim) when the record is not failed.
+UPDATE videos
+SET status = 'pending', error = NULL, updated_at = now()
+WHERE id = $1 AND status = 'failed'
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error;

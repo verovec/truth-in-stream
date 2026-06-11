@@ -95,6 +95,39 @@ func TestSetVideoFailedRecordsReason(t *testing.T) {
 	}
 }
 
+func TestRetryFailedVideoClaimsOnlyFailed(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	created, err := store.CreateYouTubeVideo(ctx, pendingYouTube("retryVideo01"))
+	if err != nil {
+		t.Fatalf("CreateYouTubeVideo: %v", err)
+	}
+
+	// A pending record cannot be retried.
+	if _, err := store.RetryFailedVideo(ctx, created.ID); !errors.Is(err, domain.ErrIngestNotRetriable) {
+		t.Fatalf("retry of pending err = %v, want ErrIngestNotRetriable", err)
+	}
+
+	if _, err := store.SetVideoFailed(ctx, created.ID, "boom"); err != nil {
+		t.Fatalf("SetVideoFailed: %v", err)
+	}
+
+	// The first retry claims it (failed -> pending, error cleared).
+	claimed, err := store.RetryFailedVideo(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("RetryFailedVideo: %v", err)
+	}
+	if claimed.Status != domain.VideoStatusPending || claimed.Error != "" {
+		t.Errorf("claimed record = %+v, want pending with no error", claimed)
+	}
+
+	// A concurrent second retry finds it already pending and does not claim it.
+	if _, err := store.RetryFailedVideo(ctx, created.ID); !errors.Is(err, domain.ErrIngestNotRetriable) {
+		t.Fatalf("second retry err = %v, want ErrIngestNotRetriable", err)
+	}
+}
+
 func TestListVideosCarriesYouTubeFields(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

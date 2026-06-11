@@ -22,17 +22,15 @@ type fakeDownloader struct {
 	writeBytes []byte
 	err        error
 
-	mu      sync.Mutex
-	calls   int
-	gotURL  string
-	gotDest string
+	mu     sync.Mutex
+	calls  int
+	gotURL string
 }
 
 func (d *fakeDownloader) Download(_ context.Context, videoURL, destDir string) (domain.DownloadResult, error) {
 	d.mu.Lock()
 	d.calls++
 	d.gotURL = videoURL
-	d.gotDest = destDir
 	d.mu.Unlock()
 	if d.err != nil {
 		return domain.DownloadResult{}, d.err
@@ -53,6 +51,12 @@ func (d *fakeDownloader) callCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.calls
+}
+
+func (d *fakeDownloader) lastURL() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.gotURL
 }
 
 // fakeUploader records the last server-side upload.
@@ -194,6 +198,10 @@ func TestIngestSubmitDownloadsAndStores(t *testing.T) {
 	}
 	if video.ObjectKey != "youtube/"+id+".mp4" {
 		t.Errorf("object key = %q, want youtube/%s.mp4", video.ObjectKey, id)
+	}
+	// The downloader is handed the canonical watch URL, not the submitted form.
+	if got := dl.lastURL(); got != "https://www.youtube.com/watch?v="+id {
+		t.Errorf("downloader url = %q, want canonical watch url", got)
 	}
 
 	// The inline worker has run: the upload happened and the record is ready.
