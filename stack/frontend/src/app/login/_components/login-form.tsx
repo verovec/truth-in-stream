@@ -40,7 +40,7 @@ export function LoginForm() {
         setPending(false);
         return;
       }
-      router.push("/");
+      router.replace("/app");
       router.refresh();
     } catch {
       setError("Cannot reach the server. Try again.");
