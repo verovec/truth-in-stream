@@ -271,6 +271,45 @@ func LoadMatch() (Match, error) {
 	return m, nil
 }
 
+// Debug-search defaults: 10 neighbors is enough to eyeball corpus coverage
+// without flooding the bar, and 10s bounds one embed-plus-search round trip.
+const (
+	defaultDebugSearchTopK    = 10
+	defaultDebugSearchTimeout = 10 * time.Second
+)
+
+// DebugSearch holds the developer wiki-search probe configuration. Enabled is
+// off unless DEBUG_WIKI_SEARCH opts in; the route and its WebSocket only exist
+// when it is true, so the probe is unreachable in production. TopK caps the
+// neighbors returned and Timeout bounds one query.
+type DebugSearch struct {
+	Enabled bool
+	TopK    int
+	Timeout time.Duration
+}
+
+// LoadDebugSearch reads the developer wiki-search configuration from the
+// environment. DEBUG_WIKI_SEARCH gates the whole feature (default off);
+// DEBUG_WIKI_SEARCH_TOP_K and DEBUG_WIKI_SEARCH_TIMEOUT tune it when enabled.
+func LoadDebugSearch() (DebugSearch, error) {
+	enabled, err := boolEnv("DEBUG_WIKI_SEARCH", false)
+	if err != nil {
+		return DebugSearch{}, err
+	}
+	d := DebugSearch{
+		Enabled: enabled,
+		TopK:    defaultDebugSearchTopK,
+		Timeout: defaultDebugSearchTimeout,
+	}
+	if d.TopK, err = intEnv("DEBUG_WIKI_SEARCH_TOP_K", d.TopK, 1, math.MaxInt32); err != nil {
+		return DebugSearch{}, err
+	}
+	if d.Timeout, err = positiveDurationEnv("DEBUG_WIKI_SEARCH_TIMEOUT", d.Timeout); err != nil {
+		return DebugSearch{}, err
+	}
+	return d, nil
+}
+
 // Precheck defaults: a 4-word minimum drops bare fragments while keeping short
 // real claims, and a 0.4 cosine coverage floor sits below the 0.5 match
 // threshold so coverage only skips clearly-uncovered claims - a covered claim

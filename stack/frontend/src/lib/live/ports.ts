@@ -2,10 +2,12 @@
 // WebSocket and the Web Audio capture graph; tests inject fakes so the hook's
 // orchestration is exercised without a network or an AudioContext.
 
-// LiveSocket is the transport the hook sends PCM frames over. close() is the
-// hook's intentional teardown; the peer closing is reported via onClose.
+// LiveSocket is the transport the hook sends frames over: binary PCM for the
+// live audio stream, or a JSON text frame for the developer wiki-search probe
+// that reuses this same transport. close() is the caller's intentional teardown;
+// the peer closing is reported via onClose.
 export type LiveSocket = {
-  send: (frame: ArrayBuffer) => void;
+  send: (frame: ArrayBuffer | string) => void;
   close: () => void;
 };
 

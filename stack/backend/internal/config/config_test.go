@@ -441,6 +441,66 @@ func TestLoadMatch(t *testing.T) {
 	}
 }
 
+func TestLoadDebugSearch(t *testing.T) {
+	defaults := DebugSearch{Enabled: false, TopK: 10, Timeout: 10 * time.Second}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    DebugSearch
+		wantErr bool
+	}{
+		{
+			name: "disabled by default",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "enabled with overrides",
+			env: map[string]string{
+				"DEBUG_WIKI_SEARCH":         "true",
+				"DEBUG_WIKI_SEARCH_TOP_K":   "25",
+				"DEBUG_WIKI_SEARCH_TIMEOUT": "5s",
+			},
+			want: DebugSearch{Enabled: true, TopK: 25, Timeout: 5 * time.Second},
+		},
+		{
+			name:    "non-boolean enable fails",
+			env:     map[string]string{"DEBUG_WIKI_SEARCH": "maybe"},
+			wantErr: true,
+		},
+		{
+			name:    "zero top k fails",
+			env:     map[string]string{"DEBUG_WIKI_SEARCH_TOP_K": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "non-positive timeout fails",
+			env:     map[string]string{"DEBUG_WIKI_SEARCH_TIMEOUT": "0s"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadDebugSearch()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadPrecheck(t *testing.T) {
 	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4}
 	tests := []struct {
