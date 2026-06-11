@@ -44,6 +44,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	liveTranscription, err := config.LoadLiveTranscription()
+	if err != nil {
+		return err
+	}
 	embedding, err := config.LoadEmbedding()
 	if err != nil {
 		return err
@@ -177,7 +181,7 @@ func run(logger *slog.Logger) error {
 	}()
 
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
-		Stream:     transcribe.NewStreamSegmenter(scribe, transcribe.Options{}),
+		Stream:     liveStream(liveTranscription, logger),
 		Matcher:    segmentMatcher,
 		Prechecker: prechecker,
 		Logger:     logger,
@@ -244,6 +248,29 @@ func liveAllowedOrigins(corsOrigin string) []string {
 		return nil
 	}
 	return []string{u.Host}
+}
+
+// liveStream selects the live (realtime) transcription provider from config and
+// adapts it to the live pipeline's segment stream. AssemblyAI Universal-3 Pro is
+// the default because it diarizes inline; ElevenLabs Scribe v2 Realtime is the
+// non-diarizing fallback. Batch (VOD) transcription stays on ElevenLabs Scribe
+// regardless, wired separately above.
+func liveStream(cfg config.LiveTranscription, logger *slog.Logger) service.SegmentStream {
+	if cfg.Provider == config.LiveProviderElevenLabs {
+		client := transcribe.New(transcribe.Config{
+			APIKey:        cfg.APIKey,
+			RealtimeModel: cfg.Model,
+			Logger:        logger,
+		})
+		return transcribe.NewStreamSegmenter(client, transcribe.Options{})
+	}
+	client := transcribe.NewAssemblyAI(transcribe.AssemblyAIConfig{
+		APIKey:      cfg.APIKey,
+		Model:       cfg.Model,
+		MaxSpeakers: cfg.MaxSpeakers,
+		Logger:      logger,
+	})
+	return transcribe.NewStreamSegmenter(client, transcribe.Options{})
 }
 
 // buildPrechecker assembles the check-worthiness gate from config. A disabled

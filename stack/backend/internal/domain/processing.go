@@ -9,10 +9,16 @@ import (
 // Segment is one ordered, timestamped span of transcribed speech. Timestamps
 // are millisecond precision: transcription APIs emit milliseconds and the
 // store persists milliseconds, so finer durations would not round-trip.
+//
+// Speaker is the diarized speaker label, set only on the live path where the
+// provider emits per-turn speaker labels; it is empty on the batch path, which
+// does not diarize. The live analyzer groups consecutive same-speaker segments
+// into one analysis unit so a verdict never blends two speakers.
 type Segment struct {
-	Start time.Duration
-	End   time.Duration
-	Text  string
+	Start   time.Duration
+	End     time.Duration
+	Text    string
+	Speaker string
 }
 
 // LiveTranscript is one transcript revision from the live speech provider: an

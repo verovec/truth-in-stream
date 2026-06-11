@@ -182,6 +182,12 @@ services:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       # From the root .env (see .env.example); the server fails fast if unset.
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
+      # Live (realtime) speech-to-text key. Live analysis defaults to AssemblyAI
+      # Universal-3 Pro streaming for inline diarization; this is the AssemblyAI
+      # key. Set LIVE_TRANSCRIPTION_PROVIDER=elevenlabs to fall back to Scribe v2
+      # Realtime (no diarization). The server fails fast if unset.
+      LIVE_TRANSCRIPTION_API_KEY: "${LIVE_TRANSCRIPTION_API_KEY:-}"
+      LIVE_TRANSCRIPTION_PROVIDER: "${LIVE_TRANSCRIPTION_PROVIDER:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default

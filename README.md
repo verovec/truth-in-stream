@@ -8,7 +8,7 @@ Real-time fact-checking for live streams.
 |-------|------|----------|
 | Frontend | Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) | `stack/frontend` |
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
-| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4` embeddings, ElevenLabs Scribe v2 transcription | `stack/backend` |
+| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4` embeddings, ElevenLabs Scribe v2 batch transcription, AssemblyAI Universal-3 Pro live transcription | `stack/backend` |
 | Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
 
 ## Quick start
@@ -20,7 +20,7 @@ stack up and play the demo**. Set the operator login, then start everything with
 ```bash
 cp .env.example .env
 # set AUTH_EMAIL / AUTH_PASSWORD_HASH / SESSION_SECRET (see Configuration);
-# TRANSCRIPTION_API_KEY and EMBEDDING_API_KEY can stay empty for the demo.
+# the transcription, live, and embedding keys can stay empty for the demo.
 make up
 # frontend -> http://localhost:3000
 # backend  -> http://localhost:8080/healthz
@@ -41,7 +41,8 @@ interpolates `.env` into the service environments.
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
-| `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 speech-to-text |
+| `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 batch (VOD/file) speech-to-text |
+| `LIVE_TRANSCRIPTION_API_KEY` | yes | Live (realtime) speech-to-text. Defaults to AssemblyAI Universal-3 Pro streaming (`u3-rt-pro`) for inline speaker diarization; this is the AssemblyAI key. Set `LIVE_TRANSCRIPTION_PROVIDER=elevenlabs` to fall back to Scribe v2 Realtime (no diarization). Optional: `LIVE_TRANSCRIPTION_MODEL`, `LIVE_TRANSCRIPTION_MAX_SPEAKERS` |
 | `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4` embeddings. Seeding reads the committed cache offline; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
 | `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
 | `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |

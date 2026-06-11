@@ -117,6 +117,33 @@ https://api.elevenlabs.io/v1/speech-to-text`, auth header `xi-api-key` (NOT Bear
   most statuses but an ARRAY on 422.
 - Key from `TRANSCRIPTION_API_KEY` via `config.LoadTranscription`; fail fast, never log it.
 
+## Live transcription (AssemblyAI Universal-3 Pro streaming, via internal/transcribe)
+
+The live (realtime) path defaults to AssemblyAI, not ElevenLabs: ElevenLabs Scribe v2 Realtime
+has no live diarization (per-word `speaker_id` is always null on the realtime socket), and the
+fact-checker must never blend two speakers into one verdict. ElevenLabs stays the batch/VOD
+file transcriber unchanged. Verified 2026-06 against assemblyai.com/docs streaming v3:
+
+- Endpoint `wss://streaming.assemblyai.com/v3/ws` (EU: `wss://streaming.eu.assemblyai.com/v3/ws`).
+  Query params: `speech_model=u3-rt-pro`, `sample_rate=16000`, `encoding=pcm_s16le`,
+  `speaker_labels=true`, optional `max_speakers`. Auth is the raw API key in the
+  `Authorization` header (NOT `Bearer`, NOT `xi-api-key`); a `?token=` temp-token flow also
+  exists but the server holds the key, so the header path is used.
+- Audio is sent as raw BINARY WebSocket frames of PCM s16le bytes - NOT base64-in-JSON like the
+  Scribe client. Server messages are JSON text frames: `Begin` (session start), `Turn`
+  (`end_of_turn=false` partial, `end_of_turn=true` committed), `Termination`. A `Turn` carries
+  `transcript`, `speaker_label`, and `words[]` with INTEGER MILLISECOND `start`/`end`,
+  `word_is_final`, and per-word `speaker`. Convert ms to `time.Duration` (`*time.Millisecond`),
+  not the float-seconds Scribe uses. Fatal errors arrive as a non-1000 WebSocket close with a
+  reason string, not a data-channel error message; send `{"type":"Terminate"}` to end cleanly.
+- No official Go SDK; the direct `coder/websocket` adapter in `internal/transcribe` is the
+  sanctioned integration. Implement only the streaming half (`TranscribeStream`) of the
+  `Transcriber` contract; the batch half is ElevenLabs-only.
+- Provider/key from `config.LoadLiveTranscription` (`LIVE_TRANSCRIPTION_PROVIDER` default
+  `assemblyai`, `LIVE_TRANSCRIPTION_API_KEY`, `LIVE_TRANSCRIPTION_MODEL` default `u3-rt-pro`,
+  optional `LIVE_TRANSCRIPTION_MAX_SPEAKERS`); fail fast, never log the key. coder/websocket
+  pinned at v1.8.14.
+
 ## Testing
 
 - Table-driven with `t.Run(tc.name, ...)`; `t.Parallel()` wherever tests are independent; `t.Context()` instead of `context.Background()`.
