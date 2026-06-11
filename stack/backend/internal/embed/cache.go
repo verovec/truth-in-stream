@@ -2,6 +2,7 @@ package embed
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -138,7 +139,7 @@ func (c *Cache) Save(path string) error {
 	}
 	slices.Sort(keys)
 
-	var buf strings.Builder
+	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	for _, k := range keys {
 		if err := enc.Encode(cacheEntry{Key: k, Vector: c.vectors[k]}); err != nil {
@@ -147,7 +148,7 @@ func (c *Cache) Save(path string) error {
 	}
 	// Write to a temp file in the same directory and rename into place, so a
 	// crash mid-write never leaves the committed cache truncated and undecodable.
-	if err := writeFileAtomic(path, []byte(buf.String())); err != nil {
+	if err := writeFileAtomic(path, buf.Bytes()); err != nil {
 		return fmt.Errorf("embed: write cache %q: %w", path, err)
 	}
 	c.dirty = false
