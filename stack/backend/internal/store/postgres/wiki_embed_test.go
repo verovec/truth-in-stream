@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -172,7 +173,7 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 	})
 
 	emb := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, store, emb, bulkConfig())
+	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestBulkEmbedRerunAfterCompletionIsNoop(t *testing.T) {
 	})
 
 	first := &vecEmbedder{}
-	if _, err := wiki.RunBulkEmbed(ctx, store, first, bulkConfig()); err != nil {
+	if _, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, first, bulkConfig()); err != nil {
 		t.Fatalf("RunBulkEmbed (first): %v", err)
 	}
 	if first.count() != 2 {
@@ -225,7 +226,7 @@ func TestBulkEmbedRerunAfterCompletionIsNoop(t *testing.T) {
 	// Re-running on the already-embedded corpus must embed nothing (no double
 	// billing) and leave no staging table behind.
 	second := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, store, second, bulkConfig())
+	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, second, bulkConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed (rerun): %v", err)
 	}
@@ -263,7 +264,7 @@ func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	}
 
 	emb := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, store, emb, bulkConfig())
+	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed (resume): %v", err)
 	}
