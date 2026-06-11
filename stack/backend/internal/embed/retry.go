@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"time"
 )
@@ -26,10 +27,13 @@ type docEmbedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// RetryClient decorates a document embedder with exponential backoff on Voyage
-// rate-limit (HTTP 429) responses. Every other error - including other 4xx and
-// 5xx statuses - is returned immediately, since only throttling is safely
-// retriable without risking duplicate or wasted spend.
+// RetryClient decorates a document embedder with exponential backoff on
+// transient failures: Voyage rate-limit (HTTP 429) responses and network
+// timeouts (a single slow request must not abort a long resumable run). Every
+// other error - including other 4xx and 5xx statuses - is returned immediately,
+// since only throttling and timeouts are safely retriable for an idempotent
+// embed without risking a wrong-cause retry. Cancellation or expiry of the
+// caller's context outranks any retry and is surfaced at once.
 type RetryClient struct {
 	inner docEmbedder
 	cfg   RetryConfig
@@ -57,8 +61,9 @@ func WithRetry(inner docEmbedder, cfg RetryConfig) *RetryClient {
 	return &RetryClient{inner: inner, cfg: cfg}
 }
 
-// EmbedDocuments calls the wrapped embedder, retrying on rate-limit responses
-// until it succeeds, the attempts are exhausted, or the context is canceled.
+// EmbedDocuments calls the wrapped embedder, retrying on transient failures
+// (rate-limit responses and network timeouts) until it succeeds, the attempts
+// are exhausted, or the context is canceled.
 func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
 	var lastErr error
 	for attempt := 1; attempt <= r.cfg.MaxAttempts; attempt++ {
@@ -66,7 +71,14 @@ func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]f
 		if err == nil {
 			return out, nil
 		}
-		if !isRateLimited(err) {
+		// An expired or canceled caller context (a -max-duration budget or an
+		// interrupt) outranks any retry: a request timeout that fires because the
+		// parent deadline already passed must surface as the context error, not be
+		// retried into a dead context.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !isRetriable(err) {
 			return nil, err
 		}
 		lastErr = err
@@ -77,7 +89,7 @@ func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]f
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("embed: rate-limited after %d attempts: %w", r.cfg.MaxAttempts, lastErr)
+	return nil, fmt.Errorf("embed: giving up after %d attempts: %w", r.cfg.MaxAttempts, lastErr)
 }
 
 // backoff returns the jittered delay before the attempt+1 try. The base delay
@@ -98,10 +110,28 @@ func (r *RetryClient) backoff(attempt int) time.Duration {
 	return time.Duration(rand.Int64N(int64(delay) + 1))
 }
 
+// isRetriable reports whether err is a transient failure worth another attempt:
+// a Voyage rate-limit response or a network timeout. The embed call is
+// idempotent, so retrying a timeout risks only wasted spend, never bad data.
+func isRetriable(err error) bool {
+	return isRateLimited(err) || isTimeout(err)
+}
+
 // isRateLimited reports whether err is a Voyage 429 response.
 func isRateLimited(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
+}
+
+// isTimeout reports whether err is a network timeout, including the
+// http.Client.Timeout that fires while awaiting response headers. Detecting it
+// via net.Error.Timeout is robust across Go versions, where such errors also
+// satisfy errors.Is(err, context.DeadlineExceeded). A timeout produced because
+// the caller's context already expired also matches here, so this MUST run
+// after the ctx.Err() guard in EmbedDocuments, which short-circuits that case.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // sleep waits for d or until ctx is canceled, returning the context error in

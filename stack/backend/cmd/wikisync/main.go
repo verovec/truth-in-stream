@@ -62,11 +62,35 @@ func main() {
 	}
 }
 
-// stoppedEarly reports whether err is the context cancellation a -max-duration
-// budget or an interrupt signal produces. Both leave the corpus mid-build but
-// resumable, so the next run continues rather than the process reporting failure.
+// errStoppedEarly marks a run the owned context (a -max-duration budget or an
+// interrupt) cut short. The committed prefix is resumable, so this is a clean
+// stop, not a failure.
+var errStoppedEarly = errors.New("budget or interrupt stop")
+
+// stoppedEarly reports whether err is the clean, resumable stop classifyStop
+// produces when the owned context is canceled mid-run.
 func stoppedEarly(err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	return errors.Is(err, errStoppedEarly)
+}
+
+// classifyStop folds the owned context's state into a run's error. It reports a
+// clean, resumable stop only when work was left unfinished (workErr != nil) and
+// the owned context was canceled (ctxErr != nil) - a -max-duration budget or an
+// interrupt cut the run short, so the committed prefix resumes next run. A run
+// that finished (workErr == nil) is a success even if the budget expired at the
+// buzzer: the corpus is fully built and there is nothing to resume. Any other
+// error is returned unchanged. The decision is keyed on the owned context,
+// never on the error shape: a transient provider timeout also satisfies
+// errors.Is(err, context.DeadlineExceeded), so error-sniffing would silently
+// swallow a real failure as a clean stop.
+func classifyStop(workErr, ctxErr error) error {
+	if workErr == nil {
+		return nil
+	}
+	if ctxErr != nil {
+		return fmt.Errorf("%w: %w", errStoppedEarly, ctxErr)
+	}
+	return workErr
 }
 
 func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Duration) error {
@@ -100,10 +124,13 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Du
 	}
 	defer store.Close()
 
+	var workErr error
 	if mode == "delta" {
-		return runDelta(ctx, logger, store, wikiCfg, dryRun)
+		workErr = runDelta(ctx, logger, store, wikiCfg, dryRun)
+	} else {
+		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun)
 	}
-	return runBulk(ctx, logger, store, wikiCfg, dir, dryRun)
+	return classifyStop(workErr, ctx.Err())
 }
 
 // runBulk downloads the dump, ingests it, then either reports the embedding cost
