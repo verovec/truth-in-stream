@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useLiveAnalysis } from "@/hooks/use-live-analysis";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
@@ -23,8 +23,13 @@ export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
     id: string;
     tick: number;
   } | null>(null);
-  const selectFactCheck = (statementId: string) =>
-    setSelection((prev) => ({ id: statementId, tick: (prev?.tick ?? 0) + 1 }));
+  // Stable identity (the updater is functional, no external deps) so the
+  // memoized fact-check list does not re-render on every interim caption word.
+  const selectFactCheck = useCallback(
+    (statementId: string) =>
+      setSelection((prev) => ({ id: statementId, tick: (prev?.tick ?? 0) + 1 })),
+    [],
+  );
   // Derived from the same statements that drive the subtitles, so the two can
   // never disagree. Memoized (the React compiler is not enabled) so the interim
   // caption updating on every spoken word does not re-derive or re-render the

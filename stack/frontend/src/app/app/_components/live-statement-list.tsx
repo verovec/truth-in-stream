@@ -122,9 +122,10 @@ const SKIP_LABELS: Record<SkipReason, string> = {
 
 // skipLabel tolerates a skip reason the backend may add before the frontend
 // knows it. The parameter is widened to string on purpose: the value crosses the
-// wire unchecked.
+// wire unchecked. The fallback is a tail clause so the caller's "Not checked - "
+// prefix never reads as "Not checked - Not checked".
 function skipLabel(reason: string): string {
-  return SKIP_LABELS[reason as SkipReason] ?? "Not checked";
+  return SKIP_LABELS[reason as SkipReason] ?? "an unrecognised reason";
 }
 
 // SubtitleStatus is the light per-row marker. It never shows a verdict (those
