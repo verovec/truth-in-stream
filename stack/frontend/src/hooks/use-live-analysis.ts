@@ -114,6 +114,10 @@ export function useLiveAnalysis(
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSeqRef = useRef(0);
   const baseTimeRef = useRef(0);
+  // Tracks whether the stream is actively live, read by the frame callback to
+  // gate interim captions: pause/seek leave the socket open, so a trailing
+  // interim must not repopulate the caption once the stream has left "live".
+  const liveRef = useRef(false);
 
   // Latest factories/values for the long-lived dispatch closure, refreshed after
   // each render so the controller (created once) always calls the current ones.
@@ -124,6 +128,7 @@ export function useLiveAnalysis(
     socketFactoryRef.current = socketFactory;
     captureFactoryRef.current = captureFactory;
     videoIdRef.current = videoId;
+    liveRef.current = status === "live";
   });
 
   const dispatchRef = useRef<(event: LiveSessionEvent) => void>(() => {});
@@ -135,7 +140,11 @@ export function useLiveAnalysis(
         return;
       }
       if (frame.type === "interim") {
-        setCaption(frame.text);
+        // Only while live: pause/seek leave the socket open, so a late interim
+        // would otherwise re-show the caption the status change just cleared.
+        if (liveRef.current) {
+          setCaption(frame.text);
+        }
         return;
       }
       // A subtitle commits the current utterance to a statement, so the live
