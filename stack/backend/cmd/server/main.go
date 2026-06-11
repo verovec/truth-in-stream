@@ -116,9 +116,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if err := videoSvc.EnsureSamples(ctx); err != nil {
-		return err
-	}
 
 	youtubeSvc, err := service.NewIngestService(store, mediaStore, ytdlp.New(ytdlp.Config{
 		BinaryPath: youtubeCfg.BinaryPath,

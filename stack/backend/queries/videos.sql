@@ -20,12 +20,15 @@ WHERE id = $1
 RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error;
 
 -- name: UpsertSampleVideo :one
+-- size_bytes keeps a known size against a zero reseed: an offline reseed with no
+-- cached media seeds the record with size 0, which must not clobber the real
+-- size recorded when the media was last uploaded (the object still exists).
 INSERT INTO videos (title, object_key, content_type, size_bytes, status, kind)
 VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (object_key) DO UPDATE
     SET title        = EXCLUDED.title,
         content_type = EXCLUDED.content_type,
-        size_bytes   = EXCLUDED.size_bytes,
+        size_bytes   = CASE WHEN EXCLUDED.size_bytes > 0 THEN EXCLUDED.size_bytes ELSE videos.size_bytes END,
         status       = EXCLUDED.status,
         kind         = EXCLUDED.kind,
         updated_at   = now()

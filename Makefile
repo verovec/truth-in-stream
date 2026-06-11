@@ -20,7 +20,7 @@ WIKI_EMBED_CONCURRENCY  ?= 2
 WIKI_EMBED_HTTP_TIMEOUT ?= 300s
 WIKI_ENV := WIKI_CORPUS=$(WIKI_CORPUS) WIKI_MAX_DURATION=$(WIKI_MAX_DURATION) WIKI_EMBED_BATCH_SIZE=$(WIKI_EMBED_BATCH_SIZE) WIKI_EMBED_CONCURRENCY=$(WIKI_EMBED_CONCURRENCY) WIKI_EMBED_HTTP_TIMEOUT=$(WIKI_EMBED_HTTP_TIMEOUT)
 
-.PHONY: help up down reset reset-hard seed seed-claims seed-wiki seed-demo refresh-embeddings wiki-populate wiki-update migrate logs ps
+.PHONY: help up down reset reset-hard seed seed-claims seed-wiki seed-demo seed-videos refresh-embeddings wiki-populate wiki-update migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -42,7 +42,7 @@ reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything fr
 	$(COMPOSE) up -d --build
 	@echo "hard reset complete: fresh volume, migrated and seeded"
 
-seed: ## Seed every dataset (claims, wiki, demo) from the committed cache; idempotent
+seed: ## Seed every dataset (claims, wiki, demo, sample videos) from the committed cache; idempotent
 	$(COMPOSE) run --rm seed
 
 seed-claims: ## Seed only the curated claims
@@ -53,6 +53,9 @@ seed-wiki: ## Seed only the Wikipedia evidence subset
 
 seed-demo: ## Seed only the demo-video results
 	$(COMPOSE) run --rm seed go run ./cmd/seed -demo
+
+seed-videos: ## Seed only the curated sample videos (records + best-effort media); SAMPLE_VIDEO_URL overrides the clip
+	$(COMPOSE) run --rm seed go run ./cmd/seed -videos
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh

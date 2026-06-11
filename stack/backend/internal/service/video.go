@@ -47,20 +47,6 @@ var contentTypeExtensions = map[string]string{
 	"video/quicktime": ".mov",
 }
 
-// defaultSampleVideos is the curated sample set seeded by EnsureSamples. Sample
-// objects live under the samples/ prefix in the bucket; SizeBytes is unknown at
-// seed time (the object is populated by the data-seeding tooling) and is left 0.
-var defaultSampleVideos = []domain.Video{
-	{
-		Title:       "Common Myths",
-		ObjectKey:   "samples/common-myths.mp4",
-		ContentType: "video/mp4",
-		SizeBytes:   0,
-		Status:      domain.VideoStatusReady,
-		Kind:        domain.VideoKindSample,
-	},
-}
-
 // UploadRequest is the input to RequestUpload: the operator-supplied title, the
 // declared content type, and the declared size in bytes.
 type UploadRequest struct {
@@ -90,8 +76,8 @@ type VideoConfig struct {
 }
 
 // VideoService owns the video-record lifecycle: it mints presigned uploads,
-// confirms completed uploads against storage, lists and resolves records, and
-// seeds curated samples. It holds no HTTP types. newObjectKey is a field rather
+// confirms completed uploads against storage, and lists and resolves records.
+// It holds no HTTP types. newObjectKey is a field rather
 // than a direct call so tests can inject a deterministic key; it is unexported
 // and set only by the constructor, so no caller can bypass validation.
 type VideoService struct {
@@ -207,17 +193,6 @@ func (s *VideoService) Get(ctx context.Context, id string) (PlayableVideo, error
 		return PlayableVideo{}, fmt.Errorf("video: get %s: %w", id, err)
 	}
 	return PlayableVideo{Video: video, Playback: presigned}, nil
-}
-
-// EnsureSamples seeds the curated sample records idempotently. It is safe to run
-// on every startup: samples upsert by object key, keeping a stable id.
-func (s *VideoService) EnsureSamples(ctx context.Context) error {
-	for _, sample := range defaultSampleVideos {
-		if _, err := s.store.UpsertSampleVideo(ctx, sample); err != nil {
-			return fmt.Errorf("video: ensure sample %q: %w", sample.ObjectKey, err)
-		}
-	}
-	return nil
 }
 
 // uploadObjectKey mints a unique storage key for an upload of contentType under

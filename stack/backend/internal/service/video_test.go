@@ -445,52 +445,6 @@ func TestListPassesThrough(t *testing.T) {
 	}
 }
 
-func TestEnsureSamplesIsIdempotent(t *testing.T) {
-	t.Parallel()
-	store := newFakeVideoStore()
-	svc := newTestService(t, store, &fakeMediaStore{})
-
-	if err := svc.EnsureSamples(t.Context()); err != nil {
-		t.Fatalf("EnsureSamples first: %v", err)
-	}
-	if err := svc.EnsureSamples(t.Context()); err != nil {
-		t.Fatalf("EnsureSamples second: %v", err)
-	}
-	if want := len(defaultSampleVideos); len(store.videos) != want {
-		t.Fatalf("stored %d sample records after two runs, want %d (idempotent)", len(store.videos), want)
-	}
-}
-
-func TestEnsureSamplesPropagatesError(t *testing.T) {
-	t.Parallel()
-	store := newFakeVideoStore()
-	store.upsertErr = errors.New("boom")
-	svc := newTestService(t, store, &fakeMediaStore{})
-	if err := svc.EnsureSamples(t.Context()); err == nil {
-		t.Fatal("want upsert error, got nil")
-	}
-}
-
-// defaultSampleVideos must be valid records so EnsureSamples never trips the
-// store's kind/status validation.
-func TestDefaultSamplesAreValid(t *testing.T) {
-	t.Parallel()
-	if len(defaultSampleVideos) == 0 {
-		t.Fatal("no default samples defined")
-	}
-	for _, s := range defaultSampleVideos {
-		if !s.Kind.Valid() || s.Kind != domain.VideoKindSample {
-			t.Errorf("sample %q kind = %q, want sample", s.ObjectKey, s.Kind)
-		}
-		if !s.Status.Valid() || s.Status != domain.VideoStatusReady {
-			t.Errorf("sample %q status = %q, want ready", s.ObjectKey, s.Status)
-		}
-		if s.Title == "" || s.ObjectKey == "" || s.ContentType == "" {
-			t.Errorf("sample %q missing required fields: %+v", s.ObjectKey, s)
-		}
-	}
-}
-
 func TestUploadObjectKeyShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

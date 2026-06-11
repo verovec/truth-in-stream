@@ -37,11 +37,16 @@ services:
         condition: service_healthy
 
   # One-shot: loads the local dataset - curated claims, the Wikipedia evidence
-  # subset, and the precomputed demo-video results - into pgvector, then exits.
-  # Idempotent (everything upserts by id). Embeddings come from the committed
-  # cache (stack/backend/seed/embeddings.cache.jsonl), so this needs no API key;
-  # EMBEDDING_API_KEY is only consulted to fill a cache miss after a fixture edit.
-  # The backend waits for it so the stores are populated before the first match.
+  # subset, the precomputed demo-video results, and the curated sample video
+  # gallery (records plus best-effort media) - into pgvector and object storage,
+  # then exits. Idempotent (everything upserts by id/object key). Embeddings come
+  # from the committed cache (stack/backend/seed/embeddings.cache.jsonl), so this
+  # needs no API key; EMBEDDING_API_KEY is only consulted to fill a cache miss
+  # after a fixture edit. Sample media is fetched once from SAMPLE_VIDEO_URL
+  # (default a public test clip) and cached under seed/media-cache (bind-mounted,
+  # so it survives reseeds); an unreachable host with no cache seeds the records
+  # without media rather than failing. The backend waits for this so the stores
+  # and gallery are populated before the first request - no restart needed.
   seed:
     build:
       context: ./stack/backend
@@ -51,6 +56,18 @@ services:
     environment:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Object storage for the sample-video media; mirrors the backend's STORAGE_*
+      # so seeded samples upload to the same MinIO bucket the API serves from.
+      STORAGE_BUCKET: "media"
+      STORAGE_ENDPOINT: "http://minio:9000"
+      STORAGE_REGION: "eu-west-3"
+      STORAGE_ACCESS_KEY: "minioadmin"
+      STORAGE_SECRET_KEY: "minioadmin"
+      STORAGE_USE_PATH_STYLE: "true"
+      # Media bytes for the curated sample. Empty falls back to the binary default
+      # (a public BigBuckBunny clip). It will not match the demo transcript; point
+      # this at a clip matching demo_results.json for matching fact-checks.
+      SAMPLE_VIDEO_URL: "${SAMPLE_VIDEO_URL:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
       # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
@@ -63,6 +80,8 @@ services:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      minio-init:
         condition: service_completed_successfully
 
   # Opt-in (profile "wiki"), not part of `docker compose up`: bulk-ingests and
