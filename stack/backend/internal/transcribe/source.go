@@ -52,12 +52,17 @@ func (s *SourceTranscriber) Transcribe(ctx context.Context, source string) ([]do
 	if err != nil {
 		return nil, fmt.Errorf("transcribe source %q: %w", source, err)
 	}
+	return toSegments(transcript), nil
+}
 
+// toSegments maps a provider transcript to the pipeline's domain segments,
+// shared by every source resolver so the projection lives in one place.
+func toSegments(transcript Transcript) []domain.Segment {
 	segments := make([]domain.Segment, 0, len(transcript.Segments))
 	for _, seg := range transcript.Segments {
 		segments = append(segments, domain.Segment{Start: seg.Start, End: seg.End, Text: seg.Text})
 	}
-	return segments, nil
+	return segments
 }
 
 // safeMediaName accepts only a bare filename, rejecting empty input and any

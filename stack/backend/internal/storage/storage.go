@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"time"
 
@@ -126,6 +127,39 @@ func (s *S3Store) PresignDownload(ctx context.Context, key string) (domain.Presi
 		return domain.PresignedRequest{}, fmt.Errorf("storage: presign download %q: %w", key, err)
 	}
 	return toPresigned(req), nil
+}
+
+// Upload writes body to key server-side. This is the path taken when the
+// backend itself holds the bytes - a video downloaded from a YouTube link -
+// rather than the browser pushing them through a presigned PUT. size is the
+// exact content length so storage can stream a single object; contentType is
+// recorded on the object for playback.
+func (s *S3Store) Upload(ctx context.Context, key string, body io.Reader, contentType string, size int64) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(size),
+	})
+	if err != nil {
+		return fmt.Errorf("storage: put object %q: %w", key, err)
+	}
+	return nil
+}
+
+// Download opens key for server-side reading, the path that feeds a stored
+// object back into the transcription pipeline. The caller owns the returned
+// reader and MUST close it.
+func (s *S3Store) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage: get object %q: %w", key, err)
+	}
+	return out.Body, nil
 }
 
 // Exists reports whether key is present in the bucket. A missing object is not

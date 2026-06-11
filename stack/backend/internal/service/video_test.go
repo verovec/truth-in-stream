@@ -101,6 +101,79 @@ func (f *fakeVideoStore) UpsertSampleVideo(_ context.Context, v domain.Video) (d
 	return v, nil
 }
 
+func (f *fakeVideoStore) CreateYouTubeVideo(_ context.Context, v domain.Video) (domain.Video, error) {
+	if f.createErr != nil {
+		return domain.Video{}, f.createErr
+	}
+	for _, existing := range f.videos {
+		if existing.SourceID != "" && existing.SourceID == v.SourceID {
+			return domain.Video{}, domain.ErrDuplicateSource
+		}
+	}
+	f.nextID++
+	v.ID = fmt.Sprintf("video-%d", f.nextID)
+	f.videos[v.ID] = v
+	f.created = append(f.created, v)
+	return v, nil
+}
+
+func (f *fakeVideoStore) GetVideoBySourceID(_ context.Context, sourceID string) (domain.Video, error) {
+	if f.getErr != nil {
+		return domain.Video{}, f.getErr
+	}
+	for _, v := range f.videos {
+		if v.SourceID == sourceID {
+			return v, nil
+		}
+	}
+	return domain.Video{}, domain.ErrVideoNotFound
+}
+
+func (f *fakeVideoStore) RetryFailedVideo(_ context.Context, id string) (domain.Video, error) {
+	if f.setErr != nil {
+		return domain.Video{}, f.setErr
+	}
+	v, ok := f.videos[id]
+	if !ok || v.Status != domain.VideoStatusFailed {
+		return domain.Video{}, domain.ErrIngestNotRetriable
+	}
+	v.Status = domain.VideoStatusPending
+	v.Error = ""
+	f.videos[id] = v
+	return v, nil
+}
+
+func (f *fakeVideoStore) SetVideoReady(_ context.Context, id, title string, sizeBytes, durationMS int64) (domain.Video, error) {
+	if f.setErr != nil {
+		return domain.Video{}, f.setErr
+	}
+	v, ok := f.videos[id]
+	if !ok {
+		return domain.Video{}, domain.ErrVideoNotFound
+	}
+	v.Status = domain.VideoStatusReady
+	v.Title = title
+	v.SizeBytes = sizeBytes
+	v.DurationMS = durationMS
+	v.Error = ""
+	f.videos[id] = v
+	return v, nil
+}
+
+func (f *fakeVideoStore) SetVideoFailed(_ context.Context, id, reason string) (domain.Video, error) {
+	if f.setErr != nil {
+		return domain.Video{}, f.setErr
+	}
+	v, ok := f.videos[id]
+	if !ok {
+		return domain.Video{}, domain.ErrVideoNotFound
+	}
+	v.Status = domain.VideoStatusFailed
+	v.Error = reason
+	f.videos[id] = v
+	return v, nil
+}
+
 // fakeMediaStore is a domain.MediaStore that records keys and returns canned
 // presigned requests.
 type fakeMediaStore struct {

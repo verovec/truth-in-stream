@@ -114,6 +114,10 @@ services:
       STORAGE_ACCESS_KEY: "minioadmin"
       STORAGE_SECRET_KEY: "minioadmin"
       STORAGE_USE_PATH_STYLE: "true"
+      # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
+      # yt-dlp and ffmpeg, so the defaults work as-is. Optional overrides:
+      # YOUTUBE_DOWNLOADER_PATH (default "yt-dlp"), YOUTUBE_MAX_DOWNLOAD_BYTES
+      # (default 2 GiB), YOUTUBE_DOWNLOAD_TIMEOUT (default 15m).
     ports:
       - "8080:8080"
     volumes:

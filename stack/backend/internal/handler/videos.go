@@ -11,6 +11,7 @@ package handler
 //
 //	POST /api/videos/uploads      mint a presigned PUT and a pending record
 //	POST /api/videos/{id}/confirm verify the object landed, mark the record ready
+//	POST /api/videos/youtube      ingest a video from a YouTube link (202, async)
 //	GET  /api/videos              list curated samples and uploads together
 //	GET  /api/videos/{id}         metadata plus a presigned playback URL
 
@@ -32,6 +33,13 @@ type VideoService interface {
 	Confirm(ctx context.Context, id string) (domain.Video, error)
 	List(ctx context.Context) ([]domain.Video, error)
 	Get(ctx context.Context, id string) (service.PlayableVideo, error)
+}
+
+// YouTubeService is the slice of the ingest service the YouTube endpoint
+// consumes, satisfied by *service.IngestService. Submit returns immediately with
+// a pending record; the download runs in the background.
+type YouTubeService interface {
+	Submit(ctx context.Context, url string) (domain.Video, error)
 }
 
 // maxVideoBodyBytes bounds the upload-request body; the JSON metadata is tiny.
@@ -60,6 +68,8 @@ type uploadResponse struct {
 
 // videoJSON is the wire form of one domain.Video. ObjectKey is intentionally
 // omitted: clients address a video by id and never need the storage key.
+// SourceURL, DurationMS, and Error are only meaningful for ingested videos and
+// are omitted when zero, so an upload's wire form is unchanged.
 type videoJSON struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
@@ -67,6 +77,9 @@ type videoJSON struct {
 	Kind        string    `json:"kind"`
 	ContentType string    `json:"content_type"`
 	SizeBytes   int64     `json:"size_bytes"`
+	SourceURL   string    `json:"source_url,omitzero"`
+	DurationMS  int64     `json:"duration_ms,omitzero"`
+	Error       string    `json:"error,omitzero"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -128,6 +141,31 @@ func confirmVideoHandler(svc VideoService) http.HandlerFunc {
 	}
 }
 
+type ingestYouTubeBody struct {
+	URL string `json:"url"`
+}
+
+// ingestYouTubeHandler accepts a YouTube link and returns 202 with the pending
+// record; the download proceeds in the background. An unparseable link is 400.
+func ingestYouTubeHandler(svc YouTubeService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body ingestYouTubeBody
+		if !decodeJSONBody(w, r, maxVideoBodyBytes, &body) {
+			return
+		}
+
+		video, err := svc.Submit(r.Context(), body.URL)
+		switch {
+		case errors.Is(err, service.ErrInvalidYouTubeURL):
+			httpx.Error(w, http.StatusBadRequest, "not a valid youtube video url")
+		case err != nil:
+			httpx.Error(w, http.StatusInternalServerError, "internal error")
+		default:
+			httpx.JSON(w, http.StatusAccepted, toVideoJSON(video))
+		}
+	}
+}
+
 func listVideosHandler(svc VideoService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		videos, err := svc.List(r.Context())
@@ -168,6 +206,9 @@ func toVideoJSON(v domain.Video) videoJSON {
 		Kind:        string(v.Kind),
 		ContentType: v.ContentType,
 		SizeBytes:   v.SizeBytes,
+		SourceURL:   v.SourceURL,
+		DurationMS:  v.DurationMS,
+		Error:       v.Error,
 		CreatedAt:   v.CreatedAt,
 		UpdatedAt:   v.UpdatedAt,
 	}

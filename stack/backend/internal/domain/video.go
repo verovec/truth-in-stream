@@ -11,6 +11,16 @@ import (
 // transport type.
 var ErrVideoNotFound = errors.New("video not found")
 
+// ErrDuplicateSource is returned when creating a video whose canonical source id
+// already exists. The YouTube ingest path uses it to make re-submitting the same
+// link a no-op: the caller resolves and returns the existing record instead.
+var ErrDuplicateSource = errors.New("video source already ingested")
+
+// ErrIngestNotRetriable is returned when a retry is attempted on a record that is
+// not in the failed state. It lets the ingest path claim a failed record for
+// retry atomically: only the caller that flips failed->pending re-runs the work.
+var ErrIngestNotRetriable = errors.New("video ingest is not in a retriable state")
+
 // VideoKind distinguishes operator uploads from curated sample clips. Both
 // surface through one library listing so the frontend renders samples and
 // uploads in a single grid.
@@ -21,12 +31,15 @@ const (
 	VideoKindUpload VideoKind = "upload"
 	// VideoKindSample is a curated clip seeded with the application.
 	VideoKindSample VideoKind = "sample"
+	// VideoKindYouTube is a video the backend downloaded from a YouTube link and
+	// wrote to storage server-side.
+	VideoKindYouTube VideoKind = "youtube"
 )
 
 // Valid reports whether k is a known video kind.
 func (k VideoKind) Valid() bool {
 	switch k {
-	case VideoKindUpload, VideoKindSample:
+	case VideoKindUpload, VideoKindSample, VideoKindYouTube:
 		return true
 	default:
 		return false
@@ -68,8 +81,39 @@ type Video struct {
 	SizeBytes   int64
 	Status      VideoStatus
 	Kind        VideoKind
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// SourceURL is the operator-submitted origin (the YouTube watch URL) for an
+	// ingested video; empty for uploads and samples.
+	SourceURL string
+	// SourceID is the canonical id of the source (the YouTube video id), unique
+	// across the catalog so the same link is never ingested twice; empty for
+	// uploads and samples.
+	SourceID string
+	// DurationMS is the probed media length in milliseconds; 0 when unknown.
+	DurationMS int64
+	// Error is the reason a failed ingest will never become playable; empty
+	// otherwise.
+	Error     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// DownloadResult is the outcome of fetching a video from a source: the path to
+// the single downloaded file plus the metadata probed alongside it. It is a
+// plain data carrier shared by the downloader adapter (which produces it) and
+// the ingest service (which consumes it), so neither imports the other.
+type DownloadResult struct {
+	// FilePath is the absolute path to the downloaded file inside the
+	// caller-provided destination directory.
+	FilePath string
+	// Title is the source's title.
+	Title string
+	// DurationMS is the source's length in milliseconds; 0 when unknown.
+	DurationMS int64
+	// SizeBytes is the size of the downloaded file.
+	SizeBytes int64
+	// ContentType is the MIME type of the downloaded file; consumers fall back
+	// to video/mp4 when empty.
+	ContentType string
 }
 
 // VideoStore is the persistence port for video records, implemented by

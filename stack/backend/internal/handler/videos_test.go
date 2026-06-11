@@ -65,6 +65,88 @@ func (f *fakeVideoService) Get(_ context.Context, id string) (service.PlayableVi
 
 var _ VideoService = (*fakeVideoService)(nil)
 
+// fakeYouTubeService is a handler.YouTubeService stand-in. submitErr, when set,
+// makes Submit fail; lastURL records the forwarded link.
+type fakeYouTubeService struct {
+	video     domain.Video
+	submitErr error
+	lastURL   string
+}
+
+func (f *fakeYouTubeService) Submit(_ context.Context, url string) (domain.Video, error) {
+	f.lastURL = url
+	if f.submitErr != nil {
+		return domain.Video{}, f.submitErr
+	}
+	return f.video, nil
+}
+
+var _ YouTubeService = (*fakeYouTubeService)(nil)
+
+func TestIngestYouTubeHandlerAccepted(t *testing.T) {
+	t.Parallel()
+	svc := &fakeYouTubeService{video: domain.Video{
+		ID:        "vid-1",
+		Title:     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		Status:    domain.VideoStatusPending,
+		Kind:      domain.VideoKindYouTube,
+		SourceURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+	}}
+	h := ingestYouTubeHandler(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos/youtube",
+		strings.NewReader(`{"url":"https://youtu.be/dQw4w9WgXcQ"}`))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body %s", rec.Code, rec.Body)
+	}
+	if svc.lastURL != "https://youtu.be/dQw4w9WgXcQ" {
+		t.Errorf("forwarded url = %q", svc.lastURL)
+	}
+	var got videoJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ID != "vid-1" || got.Status != string(domain.VideoStatusPending) {
+		t.Errorf("body = %+v, want pending vid-1", got)
+	}
+	if got.Kind != string(domain.VideoKindYouTube) {
+		t.Errorf("kind = %q, want youtube", got.Kind)
+	}
+}
+
+func TestIngestYouTubeHandlerInvalidURL(t *testing.T) {
+	t.Parallel()
+	svc := &fakeYouTubeService{submitErr: service.ErrInvalidYouTubeURL}
+	h := ingestYouTubeHandler(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos/youtube",
+		strings.NewReader(`{"url":"https://example.com/x"}`))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestIngestYouTubeHandlerInternalError(t *testing.T) {
+	t.Parallel()
+	svc := &fakeYouTubeService{submitErr: errors.New("db down")}
+	h := ingestYouTubeHandler(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos/youtube",
+		strings.NewReader(`{"url":"https://youtu.be/dQw4w9WgXcQ"}`))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
 func TestRequestUploadHandlerSuccess(t *testing.T) {
 	t.Parallel()
 	svc := &fakeVideoService{ticket: service.UploadTicket{
