@@ -101,20 +101,11 @@ func run(logger *slog.Logger) error {
 	return seedAll(ctx, logger, sel, *seedDir, *cachePath, *mediaCacheDir)
 }
 
-// embeddingModel returns the embedding model name used for cache keys, honoring
-// EMBEDDING_MODEL and defaulting to voyage-4-large.
-func embeddingModel() string {
-	if m := os.Getenv("EMBEDDING_MODEL"); m != "" {
-		return m
-	}
-	return config.DefaultEmbeddingModel
-}
-
 // refreshCache re-embeds every fixture document text from scratch and writes the
 // cache file. With -offline it uses deterministic placeholder vectors; otherwise
 // it calls Voyage and requires EMBEDDING_API_KEY.
 func refreshCache(ctx context.Context, logger *slog.Logger, seedDir, cachePath string, offline bool) error {
-	model := embeddingModel()
+	model := config.EmbeddingModel()
 	filler, err := refreshFiller(offline)
 	if err != nil {
 		return err
@@ -210,7 +201,7 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 		if err != nil {
 			return err
 		}
-		model := embeddingModel()
+		model := config.EmbeddingModel()
 		embedder := seedEmbedder(cache, model)
 		if sel.claims {
 			if err := seedClaims(ctx, logger, store, embedder, seedDir); err != nil {
@@ -253,13 +244,17 @@ func seedEmbedder(cache *embed.Cache, model string) *embed.Cached {
 // EMBEDDING_MODEL no longer matches the model the committed cache was built
 // under. Other errors pass through unchanged.
 func cacheMissHint(err error, model string) error {
-	if errors.Is(err, embed.ErrCacheMiss) {
-		return fmt.Errorf("%w\nno committed embedding for that fixture under model %q: "+
-			"a fixture's text changed, or EMBEDDING_MODEL no longer matches the model the committed "+
-			"cache was built under (its default is %q) - run `make refresh-embeddings` (needs a valid "+
-			"EMBEDDING_API_KEY) to rebuild the cache", err, model, config.DefaultEmbeddingModel)
+	if !errors.Is(err, embed.ErrCacheMiss) {
+		return err
 	}
-	return err
+	cause := "a fixture's text changed, or EMBEDDING_MODEL no longer matches the model the committed cache was built under"
+	// Only point at the default when the active model is an override; when they
+	// are equal, naming the default twice reads as a mismatch that does not exist.
+	if model != config.DefaultEmbeddingModel {
+		cause += fmt.Sprintf(" (unset EMBEDDING_MODEL to use the default %q)", config.DefaultEmbeddingModel)
+	}
+	return fmt.Errorf("%w\nno committed embedding for that fixture under model %q: %s - "+
+		"run `make refresh-embeddings` (needs a valid EMBEDDING_API_KEY) to rebuild the cache", err, model, cause)
 }
 
 func seedClaims(ctx context.Context, logger *slog.Logger, store *postgres.Store, embedder *embed.Cached, seedDir string) error {

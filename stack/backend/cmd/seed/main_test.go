@@ -23,35 +23,38 @@ func TestSeedEmbedderIsOfflineOnly(t *testing.T) {
 }
 
 // TestCacheMissHintGuidesRefresh checks that a committed-cache miss is wrapped
-// with the named model and actionable guidance, while unrelated errors pass
-// through untouched.
+// with the offending model AND the default, plus actionable guidance, while
+// unrelated errors pass through untouched. It passes an override model distinct
+// from (and not a substring of) the default so each assertion can only pass if
+// that exact string is surfaced - a regression that drops either is caught.
 func TestCacheMissHintGuidesRefresh(t *testing.T) {
-	hinted := cacheMissHint(embed.ErrCacheMiss, config.DefaultEmbeddingModel)
+	const overrideModel = "voyage-3.5" // distinct from, and not a substring of, the default
+	if overrideModel == config.DefaultEmbeddingModel || strings.Contains(config.DefaultEmbeddingModel, overrideModel) {
+		t.Fatalf("test needs a model distinct from and disjoint with the default %q", config.DefaultEmbeddingModel)
+	}
+
+	hinted := cacheMissHint(embed.ErrCacheMiss, overrideModel)
 	if !errors.Is(hinted, embed.ErrCacheMiss) {
 		t.Fatalf("hinted error no longer wraps ErrCacheMiss: %v", hinted)
 	}
-	for _, want := range []string{config.DefaultEmbeddingModel, "refresh-embeddings", "EMBEDDING_MODEL"} {
+	for _, want := range []string{overrideModel, config.DefaultEmbeddingModel, "refresh-embeddings", "EMBEDDING_MODEL"} {
 		if !strings.Contains(hinted.Error(), want) {
 			t.Errorf("hint %q missing %q", hinted.Error(), want)
 		}
 	}
 
 	other := errors.New("connection refused")
-	if got := cacheMissHint(other, config.DefaultEmbeddingModel); got != other {
+	if got := cacheMissHint(other, overrideModel); got != other {
 		t.Errorf("cacheMissHint mangled a non-miss error: got %v, want %v", got, other)
 	}
 }
 
-// TestEmbeddingModelDefault pins the offline default to the single source of
-// truth so it cannot silently drift from the model the committed cache is keyed
-// under, and confirms EMBEDDING_MODEL overrides it.
-func TestEmbeddingModelDefault(t *testing.T) {
-	t.Setenv("EMBEDDING_MODEL", "")
-	if got := embeddingModel(); got != config.DefaultEmbeddingModel {
-		t.Errorf("embeddingModel() = %q, want %q", got, config.DefaultEmbeddingModel)
-	}
-	t.Setenv("EMBEDDING_MODEL", "voyage-4")
-	if got := embeddingModel(); got != "voyage-4" {
-		t.Errorf("embeddingModel() with override = %q, want voyage-4", got)
+// TestCacheMissHintOmitsDefaultWhenActive confirms the default-model suggestion
+// is suppressed when the active model already is the default, so the message
+// does not name the same string twice as if there were a mismatch.
+func TestCacheMissHintOmitsDefaultWhenActive(t *testing.T) {
+	msg := cacheMissHint(embed.ErrCacheMiss, config.DefaultEmbeddingModel).Error()
+	if strings.Contains(msg, "unset EMBEDDING_MODEL") {
+		t.Errorf("hint suggests unsetting EMBEDDING_MODEL when the active model already is the default: %q", msg)
 	}
 }
