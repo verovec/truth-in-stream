@@ -191,6 +191,7 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 
 	embedStats, err := wiki.RunBulkEmbed(ctx, logger, store, newEmbedder(logger, embProvider, embedCfg), wiki.Config{
 		Corpus:             wikiCfg.Corpus,
+		DumpVersion:        files.Version,
 		BatchSize:          embedCfg.BatchSize,
 		Concurrency:        embedCfg.Concurrency,
 		MaintenanceWorkMem: embedCfg.MaintenanceWorkMem,

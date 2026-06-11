@@ -74,10 +74,33 @@ type fakeEmbedStore struct {
 	copied    []domain.WikiChunk
 	finalized string
 	copyErr   error
+
+	// stagingPresent models a staging table left by a prior run; stagingVersion
+	// is the dump it was stamped for. discarded records whether DiscardStagingIfStale
+	// dropped it this run.
+	stagingPresent bool
+	stagingVersion string
+	discarded      bool
 }
 
-func (f *fakeEmbedStore) CreateStaging(context.Context) error {
+func (f *fakeEmbedStore) DiscardStagingIfStale(_ context.Context, dumpVersion string) (bool, error) {
+	if !f.stagingPresent || f.stagingVersion == dumpVersion {
+		return false, nil
+	}
+	// Mirror the store: dropping staging clears the resume state so the run
+	// re-embeds the whole corpus from a zero watermark.
+	f.stagingPresent = false
+	f.stagingVersion = ""
+	f.watermark = domain.WikiCursor{}
+	f.copied = nil
+	f.discarded = true
+	return true, nil
+}
+
+func (f *fakeEmbedStore) CreateStaging(_ context.Context, dumpVersion string) error {
 	f.created = true
+	f.stagingPresent = true
+	f.stagingVersion = dumpVersion
 	return nil
 }
 
@@ -335,6 +358,77 @@ func TestRunBulkEmbedResumeWithEverythingStagedStillFinalizes(t *testing.T) {
 	}
 	if store.finalized != "simplewiki" {
 		t.Error("a fully-staged resume must still finalize and swap")
+	}
+}
+
+func TestRunBulkEmbedDiscardsStagingFromDifferentDump(t *testing.T) {
+	t.Parallel()
+	// A prior run staged a prefix for dump V1, then a newer dump V2 was ingested.
+	// Resuming from V1's watermark would strand V2 chunks below it, so the run
+	// must drop the stale staging and re-embed the whole corpus from scratch.
+	store := &fakeEmbedStore{
+		live:           sampleChunks(3),
+		watermark:      domain.WikiCursor{PageID: 2, ChunkIndex: 0},
+		stagingPresent: true,
+		stagingVersion: "V1",
+	}
+	embedder := &fakeEmbedder{}
+	cfg := testConfig()
+	cfg.DumpVersion = "V2"
+
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, cfg)
+	if err != nil {
+		t.Fatalf("RunBulkEmbed: %v", err)
+	}
+	if !store.discarded {
+		t.Error("staging built for V1 must be discarded when embedding V2")
+	}
+	if stats.Embedded != 6 {
+		t.Errorf("embedded = %d, want 6 (full corpus re-embedded after discard)", stats.Embedded)
+	}
+	if len(store.copied) != 6 {
+		t.Fatalf("copied %d, want 6", len(store.copied))
+	}
+	if first := store.copied[0]; first.PageID != 1 || first.ChunkIndex != 0 {
+		t.Errorf("first re-embedded chunk = (%d,%d), want (1,0)", first.PageID, first.ChunkIndex)
+	}
+	if store.stagingVersion != "V2" {
+		t.Errorf("staging stamped %q, want fresh stamp V2", store.stagingVersion)
+	}
+	if store.finalized != "simplewiki" {
+		t.Error("re-embed must still finalize and swap")
+	}
+}
+
+func TestRunBulkEmbedKeepsStagingFromSameDump(t *testing.T) {
+	t.Parallel()
+	// Staging from the same dump is a valid resume target: keep it and embed only
+	// the remainder, exactly as an ordinary interrupted-run resume.
+	store := &fakeEmbedStore{
+		live:           sampleChunks(3),
+		watermark:      domain.WikiCursor{PageID: 2, ChunkIndex: 0},
+		stagingPresent: true,
+		stagingVersion: "V1",
+	}
+	embedder := &fakeEmbedder{}
+	cfg := testConfig()
+	cfg.DumpVersion = "V1"
+
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, cfg)
+	if err != nil {
+		t.Fatalf("RunBulkEmbed: %v", err)
+	}
+	if store.discarded {
+		t.Error("staging from the same dump must not be discarded")
+	}
+	if stats.Embedded != 3 {
+		t.Errorf("embedded = %d, want 3 (resume skips the staged prefix)", stats.Embedded)
+	}
+	if first := store.copied[0]; first.PageID != 2 || first.ChunkIndex != 1 {
+		t.Errorf("first resumed chunk = (%d,%d), want (2,1)", first.PageID, first.ChunkIndex)
+	}
+	if store.finalized != "simplewiki" {
+		t.Error("resume must still finalize and swap")
 	}
 }
 
