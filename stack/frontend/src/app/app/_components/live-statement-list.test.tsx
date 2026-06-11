@@ -2,6 +2,7 @@ import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { renderWithPlayback } from "@/test/playback";
+import type { SkipReason } from "@/lib/fact-check/api";
 import type { LiveStatement } from "@/lib/live/statements";
 import { LiveStatementList } from "./live-statement-list";
 
@@ -88,6 +89,23 @@ describe("LiveStatementList", () => {
     );
 
     expect(screen.getByText(/no verifiable claim/i)).toBeInTheDocument();
+  });
+
+  test("reads cleanly for a skip reason the frontend does not recognise", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("0", 0, "mystery", {
+            skipReason: "brand_new_reason" as SkipReason,
+          }),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(
+      screen.getByText(/not checked - an unrecognised reason/i),
+    ).toBeInTheDocument();
   });
 
   test("notes when a checked statement found no confident match", () => {

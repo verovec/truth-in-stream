@@ -4,8 +4,8 @@ import type { ClaimMatch, EvidenceMatch, SegmentMatch } from "@/lib/fact-check/a
 import { VerdictBadge } from "./verdict-badge";
 
 // One ranked match - a curated claim verdict with its citation sources, or a
-// Wikipedia evidence excerpt with attribution. Shared by the decoupled live
-// fact-check list so its rendering stays identical to the source of truth.
+// Wikipedia evidence excerpt with attribution. Rendered by the decoupled live
+// fact-check list, one row per resolved match.
 
 function SimilarityScore({ similarity }: { similarity: number }) {
   return (
