@@ -273,19 +273,20 @@ func TestAAIStreamSessionEmitsUntilServerClose(t *testing.T) {
 	}
 }
 
-// maxAAIChunkBytes is AssemblyAI streaming v3's per-frame upper bound (1000 ms)
-// in bytes of 16 kHz mono signed-16-bit PCM (32 bytes/ms); a frame above it is
-// rejected with WebSocket close code 3007. The lower bound is the production
-// constant assemblyAIMinChunkBytes. The client must keep every coalesced frame
-// inside [assemblyAIMinChunkBytes, maxAAIChunkBytes].
-const maxAAIChunkBytes = 1000 * 32 // 32000
+// maxAAIChunkBytes is AssemblyAI streaming v3's per-frame upper bound (1000 ms);
+// a frame above it is rejected with WebSocket close code 3007. It is derived
+// from the production bytes-per-ms so it cannot drift if the sample rate changes.
+// The lower bound is the production constant assemblyAIMinChunkBytes. The client
+// must keep every coalesced frame inside [assemblyAIMinChunkBytes, maxAAIChunkBytes].
+const maxAAIChunkBytes = 1000 * assemblyAIBytesPerMilli
 
 func TestAAIStreamSessionCoalescesAudioToProviderChunkSize(t *testing.T) {
 	t.Parallel()
 
-	// The live pipeline emits tiny frames (~3 ms each). Feed 3200 bytes (100 ms)
-	// as 40 80-byte frames, all below the 50 ms minimum on their own.
-	const frameBytes, frameCount = 80, 40
+	// The live pipeline emits tiny frames (~3 ms each), each below the 50 ms
+	// minimum on its own. Feed 8000 bytes (250 ms) as 100 80-byte frames so the
+	// writer must emit multiple full frames and flush a >= 50 ms tail.
+	const frameBytes, frameCount = 80, 100
 	sock := &scriptedAAISocket{blockRead: true}
 	chunks := make(chan []byte, frameCount)
 	sent := make([]byte, 0, frameBytes*frameCount)
@@ -308,8 +309,8 @@ func TestAAIStreamSessionCoalescesAudioToProviderChunkSize(t *testing.T) {
 	}
 
 	binary := sock.capturedBinary()
-	if len(binary) == 0 {
-		t.Fatal("no audio written; coalesced frames were dropped")
+	if len(binary) < 2 {
+		t.Fatalf("expected multiple coalesced frames, got %d", len(binary))
 	}
 	var got []byte
 	for i, frame := range binary {

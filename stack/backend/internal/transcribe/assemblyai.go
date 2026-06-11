@@ -267,10 +267,12 @@ func (c *AssemblyAIClient) streamSession(ctx context.Context, sock aaiSocket, ch
 // fills at roughly real time, keeping within the transmission-rate limit too. On
 // a clean end-of-stream a trailing buffer is flushed if it meets the 50 ms
 // minimum, else dropped; on a canceled teardown the flush write no-ops and the
-// sub-frame tail is dropped, the accepted tail loss. A write failure after
-// cancellation is the expected teardown race and is not logged.
+// sub-frame tail is dropped, the accepted tail loss. A write failure is logged
+// unless ctx is already canceled, the expected teardown race.
 func (c *AssemblyAIClient) writeAudio(ctx context.Context, sock aaiSocket, chunks <-chan []byte) {
-	buf := make([]byte, 0, assemblyAIChunkBytes)
+	// Capacity holds a full frame plus the carry-over tail, so the steady state
+	// never reallocates.
+	buf := make([]byte, 0, 2*assemblyAIChunkBytes)
 	for {
 		select {
 		case <-ctx.Done():
@@ -278,21 +280,29 @@ func (c *AssemblyAIClient) writeAudio(ctx context.Context, sock aaiSocket, chunk
 		case chunk, ok := <-chunks:
 			if !ok {
 				if len(buf) >= assemblyAIMinChunkBytes {
-					_ = sock.writeBinary(ctx, buf)
+					if err := sock.writeBinary(ctx, buf); err != nil && ctx.Err() == nil {
+						c.logger.ErrorContext(ctx, "assemblyai: write audio", slog.Any("err", err))
+					}
 				}
 				return
 			}
 			buf = append(buf, chunk...)
-			for len(buf) >= assemblyAIChunkBytes {
-				if err := sock.writeBinary(ctx, buf[:assemblyAIChunkBytes]); err != nil {
+			// Emit every full frame at an advancing offset, then compact the tail
+			// once. Reading frames in place keeps the loop O(n) for an oversized
+			// chunk, and the single trailing copy is non-overlapping (sent is a
+			// multiple of the frame size, so it is at least the tail length).
+			sent := 0
+			for len(buf)-sent >= assemblyAIChunkBytes {
+				if err := sock.writeBinary(ctx, buf[sent:sent+assemblyAIChunkBytes]); err != nil {
 					if ctx.Err() == nil {
 						c.logger.ErrorContext(ctx, "assemblyai: write audio", slog.Any("err", err))
 					}
 					return
 				}
-				// Compact the carry-over to the front; copy is memmove-safe for the
-				// overlapping source after a large chunk produced multiple frames.
-				buf = buf[:copy(buf, buf[assemblyAIChunkBytes:])]
+				sent += assemblyAIChunkBytes
+			}
+			if sent > 0 {
+				buf = buf[:copy(buf, buf[sent:])]
 			}
 		}
 	}
