@@ -32,3 +32,8 @@ output "dsn_secret_arn" {
   value       = module.rds.dsn_secret_arn
   description = "Secrets Manager ARN holding DATABASE_URL."
 }
+
+output "db_backup_bucket" {
+  value       = module.db_backup_storage.bucket_id
+  description = "Database backup bucket; export as DB_BACKUP_BUCKET for make backup/restore."
+}
