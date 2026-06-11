@@ -84,13 +84,18 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
       # Embed tuning for a slow or rate-limited Voyage tier (all unset here, so
-      # the binary's defaults apply: 120s timeout, batch 128, concurrency 4).
-      # The per-batch "embed_duration" log shows real request latency; when it
-      # nears the timeout, lower the batch and/or concurrency or raise the
-      # timeout. WIKI_MAX_DURATION=0 runs to completion instead of the 15m box.
+      # the binary's defaults apply: 30s timeout, batch 128, concurrency 4,
+      # unpaced). The per-batch "embed_duration" log shows real request latency;
+      # when it nears the timeout, lower the batch and/or concurrency or raise the
+      # timeout. WIKI_EMBED_RPM caps outbound requests per minute (0 = unpaced) so
+      # a constrained tier is not overrun - set it to your tier's RPM. Note: the
+      # free Voyage tier (3 RPM / 10k TPM) cannot embed a full corpus in any
+      # reasonable time; a paid tier is required. WIKI_MAX_DURATION=0 runs to
+      # completion instead of the 15m box.
       WIKI_EMBED_HTTP_TIMEOUT: "${WIKI_EMBED_HTTP_TIMEOUT:-}"
       WIKI_EMBED_BATCH_SIZE: "${WIKI_EMBED_BATCH_SIZE:-}"
       WIKI_EMBED_CONCURRENCY: "${WIKI_EMBED_CONCURRENCY:-}"
+      WIKI_EMBED_RPM: "${WIKI_EMBED_RPM:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod

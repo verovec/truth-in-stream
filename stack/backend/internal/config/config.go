@@ -350,17 +350,21 @@ func LoadWiki() (Wiki, error) {
 // Bulk-embedding defaults. A 128-input batch sits well under Voyage's 1000
 // input / 320k token per-request ceilings even for the longest chunks; four
 // concurrent requests stay inside the tier-1 rate limit; six retries ride out
-// transient throttling. A 120s per-request HTTP timeout suits the bulk path: a
-// full 128-input batch can take far longer to embed than a single live query,
-// so the patient bulk job uses a far more generous ceiling than the embed
-// client's 30s query default. 512MB maintenance_work_mem builds the simplewiki
-// HNSW in memory and is safe on a small instance - raise it for enwiki - and
-// seven parallel workers matches pgvector's index-build guidance.
+// transient throttling. A 30s per-request HTTP timeout is generous for a
+// healthy batch (Voyage returns a 128-input request in seconds) yet surfaces a
+// throttling stall fast, instead of burning two minutes on each hung request
+// before the retry. RequestsPerMinute is off by default (0 = unpaced, right for
+// a paid tier whose limit is thousands of RPM); set it to pace a run onto a
+// constrained tier's request budget rather than bursting past it and stalling.
+// 512MB maintenance_work_mem builds the simplewiki HNSW in memory and is safe on
+// a small instance - raise it for enwiki - and seven parallel workers matches
+// pgvector's index-build guidance.
 const (
 	defaultWikiEmbedBatchSize          = 128
 	defaultWikiEmbedConcurrency        = 4
 	defaultWikiEmbedMaxRetries         = 6
-	defaultWikiEmbedHTTPTimeout        = 120 * time.Second
+	defaultWikiEmbedHTTPTimeout        = 30 * time.Second
+	defaultWikiEmbedRequestsPerMinute  = 0
 	defaultWikiEmbedMaintenanceWorkMem = "512MB"
 	defaultWikiEmbedMaxParallelWorkers = 7
 	// maxVoyageInputsPerRequest is Voyage's documented per-request input cap.
@@ -373,13 +377,15 @@ const (
 var workMemRe = regexp.MustCompile(`^[1-9][0-9]*(kB|MB|GB|TB)$`)
 
 // WikiEmbed holds the bulk-embedding pipeline configuration. BatchSize and
-// Concurrency bound the embedding API load; HTTPTimeout bounds each Voyage
-// request on the bulk path; MaintenanceWorkMem and MaxParallelWorkers tune the
-// post-load HNSW index build.
+// Concurrency bound the embedding API load; RequestsPerMinute optionally paces
+// outbound embedding requests onto a tier's budget (0 = unpaced); HTTPTimeout
+// bounds each Voyage request on the bulk path; MaintenanceWorkMem and
+// MaxParallelWorkers tune the post-load HNSW index build.
 type WikiEmbed struct {
 	BatchSize          int
 	Concurrency        int
 	MaxRetries         int
+	RequestsPerMinute  int
 	HTTPTimeout        time.Duration
 	MaintenanceWorkMem string
 	MaxParallelWorkers int
@@ -393,6 +399,7 @@ func LoadWikiEmbed() (WikiEmbed, error) {
 		BatchSize:          defaultWikiEmbedBatchSize,
 		Concurrency:        defaultWikiEmbedConcurrency,
 		MaxRetries:         defaultWikiEmbedMaxRetries,
+		RequestsPerMinute:  defaultWikiEmbedRequestsPerMinute,
 		HTTPTimeout:        defaultWikiEmbedHTTPTimeout,
 		MaintenanceWorkMem: defaultWikiEmbedMaintenanceWorkMem,
 		MaxParallelWorkers: defaultWikiEmbedMaxParallelWorkers,
@@ -405,6 +412,11 @@ func LoadWikiEmbed() (WikiEmbed, error) {
 		return WikiEmbed{}, err
 	}
 	if w.MaxRetries, err = intEnv("WIKI_EMBED_MAX_RETRIES", w.MaxRetries, 1, math.MaxInt32); err != nil {
+		return WikiEmbed{}, err
+	}
+	// 0 disables pacing; a positive value caps outbound requests per minute so a
+	// constrained tier is not overrun.
+	if w.RequestsPerMinute, err = intEnv("WIKI_EMBED_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
 		return WikiEmbed{}, err
 	}
 	if w.HTTPTimeout, err = positiveDurationEnv("WIKI_EMBED_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
