@@ -46,6 +46,11 @@ services:
     environment:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Embedding model for ingest and query - must be the SAME everywhere or
+      # similarity is meaningless. Empty falls back to the binary default
+      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
+      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
@@ -82,6 +87,11 @@ services:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       # Required for the real embed run; the program fails fast if unset.
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Embedding model for ingest and query - must be the SAME everywhere or
+      # similarity is meaningless. Empty falls back to the binary default
+      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
+      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
       # Embed tuning for a slow or rate-limited Voyage tier (all unset here, so
       # the binary's defaults apply: 30s timeout, batch 128, concurrency 4,
@@ -149,6 +159,11 @@ services:
       # From the root .env (see .env.example); the server fails fast if unset.
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Embedding model for ingest and query - must be the SAME everywhere or
+      # similarity is meaningless. Empty falls back to the binary default
+      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
+      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
       # carries Origin: http://localhost:3000 while the proxy rewrites Host to the

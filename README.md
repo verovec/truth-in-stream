@@ -52,7 +52,7 @@ interpolates `.env` into the service environments.
 | `PORT` | no (default `8080`) | Backend listen port |
 | `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
 | `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
-| `EMBEDDING_MODEL` | no (default `voyage-4`) | Voyage embedding model; the same value must be used for ingest and query |
+| `EMBEDDING_MODEL` | no (default `voyage-4`) | Voyage embedding model; the **same value must be used for ingest and query** (different models are different vector spaces). All `voyage-4*`/`voyage-3.5` models output 1024 dims, matching the pinned index. Note: base `voyage-4`'s batch endpoint is currently broken on Voyage's side (single inputs return, but any 2+ input batch hangs) - set `EMBEDDING_MODEL=voyage-4-large` (also 1024 dims) to batch normally, with `WIKI_EMBED_BATCH_SIZE` low enough that a batch stays under voyage-4-large's 120k-token-per-request cap (≈64 for Wikipedia lead chunks) |
 | `EMBEDDING_DIM` | no | If set, must equal the pinned index dimension (1024); a mismatch fails fast rather than silently re-ingesting |
 | `TRANSCRIPTION_MODEL` | no (default `scribe_v2`) | ElevenLabs batch speech-to-text model |
 | `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
