@@ -11,7 +11,7 @@ export function UploadTile({
   onDismiss: () => void;
 }) {
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
       <VideoPoster seed={job.id} title={job.title}>
         <div className="absolute inset-0 bg-black/35" />
         <div className="absolute inset-x-0 bottom-0 p-2">

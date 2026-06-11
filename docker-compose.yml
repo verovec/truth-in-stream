@@ -148,6 +148,11 @@ services:
       # and virtual-hosted addressing. Consumed by the upload API.
       STORAGE_BUCKET: "media"
       STORAGE_ENDPOINT: "http://minio:9000"
+      # The browser issues the presigned playback GET and upload PUT directly, so
+      # those URLs are signed against the host-published MinIO address it can
+      # reach (localhost:9000), not the Docker-internal STORAGE_ENDPOINT. Empty in
+      # production, where the real S3 URL is already browser-reachable.
+      STORAGE_PUBLIC_ENDPOINT: "http://localhost:9000"
       STORAGE_REGION: "eu-west-3"
       STORAGE_ACCESS_KEY: "minioadmin"
       STORAGE_SECRET_KEY: "minioadmin"

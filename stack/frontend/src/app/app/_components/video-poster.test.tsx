@@ -24,6 +24,34 @@ describe("VideoPoster", () => {
     expect(video).toHaveAttribute("aria-hidden", "true");
   });
 
+  test("shows a loading spinner while a captured frame is not yet seekable", () => {
+    const { container } = render(
+      <VideoPoster seed="vid-1" title="Common Myths" frameSrc="frame-url" />,
+    );
+
+    expect(container.querySelector(".animate-spin")).not.toBeNull();
+  });
+
+  test("replaces the loading spinner with the play overlay once seeked", () => {
+    const { container } = render(
+      <VideoPoster seed="vid-1" title="Common Myths" frameSrc="frame-url" />,
+    );
+    const video = container.querySelector("video") as HTMLVideoElement;
+
+    fireEvent.loadedMetadata(video);
+    fireEvent.seeked(video);
+
+    expect(container.querySelector(".animate-spin")).toBeNull();
+  });
+
+  test("shows no spinner when there is no captured frame", () => {
+    const { container } = render(
+      <VideoPoster seed="vid-1" title="Common Myths" />,
+    );
+
+    expect(container.querySelector(".animate-spin")).toBeNull();
+  });
+
   test("seeks the frame and shows the duration badge once seekable", () => {
     const { container } = render(
       <VideoPoster seed="vid-1" title="Common Myths" frameSrc="frame-url" />,

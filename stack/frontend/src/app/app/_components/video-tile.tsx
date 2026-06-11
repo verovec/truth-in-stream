@@ -26,7 +26,7 @@ export function VideoTile({
       onClick={onSelect}
       disabled={!selectable}
       aria-pressed={selected}
-      className={`group flex flex-col overflow-hidden rounded-xl border text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed ${
+      className={`group flex h-full w-full flex-col overflow-hidden rounded-xl border text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed ${
         selected
           ? "border-sky-500 ring-2 ring-sky-500/40"
           : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"

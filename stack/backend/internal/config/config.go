@@ -428,15 +428,20 @@ const (
 // Endpoint targets real AWS S3 and resolves credentials through the default
 // chain (the ECS task role in production); a non-empty Endpoint with static
 // credentials and UsePathStyle targets a MinIO container in local development.
+// PublicEndpoint, when set, is the browser-facing host the presigned upload and
+// playback URLs are signed against; it only differs from Endpoint in local
+// development, where the backend reaches MinIO at a Docker hostname the browser
+// cannot resolve.
 type Storage struct {
-	Endpoint     string
-	Region       string
-	Bucket       string
-	AccessKey    string
-	SecretKey    string
-	UsePathStyle bool
-	PutTTL       time.Duration
-	GetTTL       time.Duration
+	Endpoint       string
+	PublicEndpoint string
+	Region         string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+	UsePathStyle   bool
+	PutTTL         time.Duration
+	GetTTL         time.Duration
 }
 
 // LoadStorage reads the object-storage configuration from the environment.
@@ -450,13 +455,14 @@ func LoadStorage() (Storage, error) {
 		return Storage{}, err
 	}
 	s := Storage{
-		Endpoint:  os.Getenv("STORAGE_ENDPOINT"),
-		Region:    getenv("STORAGE_REGION", defaultStorageRegion),
-		Bucket:    bucket,
-		AccessKey: os.Getenv("STORAGE_ACCESS_KEY"),
-		SecretKey: os.Getenv("STORAGE_SECRET_KEY"),
-		PutTTL:    defaultStoragePutTTL,
-		GetTTL:    defaultStorageGetTTL,
+		Endpoint:       os.Getenv("STORAGE_ENDPOINT"),
+		PublicEndpoint: os.Getenv("STORAGE_PUBLIC_ENDPOINT"),
+		Region:         getenv("STORAGE_REGION", defaultStorageRegion),
+		Bucket:         bucket,
+		AccessKey:      os.Getenv("STORAGE_ACCESS_KEY"),
+		SecretKey:      os.Getenv("STORAGE_SECRET_KEY"),
+		PutTTL:         defaultStoragePutTTL,
+		GetTTL:         defaultStorageGetTTL,
 	}
 	if (s.AccessKey == "") != (s.SecretKey == "") {
 		return Storage{}, errors.New("config: STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY must be set together")

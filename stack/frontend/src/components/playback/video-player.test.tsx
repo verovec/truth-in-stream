@@ -145,4 +145,44 @@ describe("VideoPlayer", () => {
     expect(play).not.toHaveBeenCalled();
     input.remove();
   });
+
+  test("shows a buffering overlay until the media can play", () => {
+    const { media } = renderPlayer();
+    const region = screen.getByRole("region", { name: "Sample video" });
+
+    expect(region).toHaveAttribute("aria-busy", "true");
+
+    fireEvent.canPlay(media);
+
+    expect(region).toHaveAttribute("aria-busy", "false");
+  });
+
+  test("re-shows the buffering overlay when playback stalls", () => {
+    const { media } = renderPlayer();
+    const region = screen.getByRole("region", { name: "Sample video" });
+
+    fireEvent.playing(media);
+    expect(region).toHaveAttribute("aria-busy", "false");
+
+    fireEvent.waiting(media);
+    expect(region).toHaveAttribute("aria-busy", "true");
+  });
+
+  test("surfaces a media error instead of a blank player", () => {
+    const { media } = renderPlayer();
+    const region = screen.getByRole("region", { name: "Sample video" });
+
+    fireEvent.error(media);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This video could not be played.",
+    );
+    expect(region).toHaveAttribute("aria-busy", "false");
+
+    // An error is terminal for the source: a late stall event must not revert it
+    // to a buffering spinner that would hide the cause.
+    fireEvent.waiting(media);
+    expect(region).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
 });
