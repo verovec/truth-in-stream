@@ -11,9 +11,8 @@ import {
   type PlayableVideo,
   submitYoutubeUrl,
 } from "@/lib/video/api";
-import { factCheckSourceFor } from "@/lib/video/fact-check-source";
 import type { PutUploader } from "@/lib/video/upload";
-import { FactCheckPanel } from "./fact-check-panel";
+import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { VideoGallery } from "./video-gallery";
 import { VideoUploader } from "./video-uploader";
 import { YoutubeUrlForm } from "./youtube-url-form";
@@ -256,10 +255,6 @@ export function LibraryExperience({
 
   const active = resolveActive(selectedVideo, resolved);
 
-  const factCheckSource = selectedVideo
-    ? factCheckSourceFor(selectedVideo)
-    : null;
-
   return (
     <PlaybackProvider>
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
@@ -282,8 +277,11 @@ export function LibraryExperience({
             />
           </section>
         </div>
-        {factCheckSource ? (
-          <FactCheckPanel key={factCheckSource} source={factCheckSource} />
+        {active.status === "ready" ? (
+          <LiveFactCheckPanel
+            key={active.playable.id}
+            videoId={active.playable.id}
+          />
         ) : (
           <FactCheckPlaceholder />
         )}

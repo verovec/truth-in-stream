@@ -1,99 +1,33 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import {
-  usePlayback,
-  usePlaybackStore,
-} from "@/components/playback/playback-provider";
 import type {
   ClaimMatch,
   EvidenceMatch,
   FactCheckSegment,
   SkipReason,
 } from "@/lib/fact-check/api";
-import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
-import { formatTime } from "@/lib/playback/format-time";
 import { VerdictBadge } from "./verdict-badge";
 
-export function SegmentList({ segments }: { segments: FactCheckSegment[] }) {
-  const store = usePlaybackStore();
-  const activeIndex = usePlayback((snapshot) =>
-    findActiveSegmentIndex(segments, snapshot.currentTime),
-  );
-  const activeItemRef = useRef<HTMLLIElement>(null);
-
-  useEffect(() => {
-    activeItemRef.current?.scrollIntoView({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  }, [activeIndex]);
-
-  return (
-    <ol
-      aria-label="Fact-checked segments"
-      className="-mr-2 flex max-h-[70svh] min-h-0 flex-col gap-3 overflow-y-auto pr-2"
-    >
-      {segments.map((segment, index) => {
-        const active = index === activeIndex;
-        return (
-          <li
-            key={segment.start}
-            ref={active ? activeItemRef : undefined}
-            aria-current={active ? "true" : undefined}
-            className={`rounded-lg border transition-colors ${
-              active
-                ? "border-sky-400 bg-sky-50 dark:border-sky-500/60 dark:bg-sky-500/10"
-                : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() => store.seekTo(segment.start)}
-              className="flex w-full flex-col gap-1 rounded-t-lg px-3 py-2 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
-            >
-              <span
-                className={`font-mono text-[11px] tabular-nums ${
-                  active
-                    ? "text-sky-700 dark:text-sky-300"
-                    : "text-zinc-500 dark:text-zinc-400"
-                }`}
-              >
-                {formatTime(segment.start)} – {formatTime(segment.end)}
-              </span>
-              <span className="text-sm leading-5 text-zinc-800 dark:text-zinc-200">
-                {segment.text}
-              </span>
-            </button>
-            <SegmentDetail segment={segment} />
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
+// Per-segment presentation shared by the batch results list and the live
+// statement list: a skip notice when the gate declined the segment, a neutral
+// notice when nothing matched, or the ranked matches. The three states are
+// visually and textually distinct so a skipped segment is never read as a
+// verdict.
 
 // SKIP_LABELS explains, per skip reason, why a segment was not fact-checked.
-// The wording keeps "not checked" categorically separate from a verdict or a
-// no-confident-match result.
 const SKIP_LABELS: Record<SkipReason, string> = {
   not_a_claim: "Not checked - no verifiable claim",
   not_covered: "Not checked - not covered by the reference corpus",
 };
 
 // skipLabel tolerates a skip reason the backend may add before the frontend
-// knows it, falling back to a generic notice rather than rendering blank. The
-// parameter is widened to string on purpose: the value crosses the wire
-// unchecked, so it is not guaranteed to be a known SkipReason at runtime.
+// knows it, falling back to a generic notice. The parameter is widened to
+// string on purpose: the value crosses the wire unchecked.
 function skipLabel(reason: string): string {
   return SKIP_LABELS[reason as SkipReason] ?? "Not checked";
 }
 
-// SegmentDetail renders the body under a segment: a skip notice when the gate
-// declined the segment, a neutral notice when it was checked but nothing
-// matched, or the ranked matches otherwise. The three states are visually and
-// textually distinct so a skipped segment is never read as a verdict.
-function SegmentDetail({ segment }: { segment: FactCheckSegment }) {
+export function SegmentDetail({ segment }: { segment: FactCheckSegment }) {
   if (segment.skipReason) {
     return (
       <p className="border-t border-dashed border-zinc-200 px-3 py-2 text-xs italic text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">

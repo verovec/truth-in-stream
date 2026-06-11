@@ -41,18 +41,6 @@ const getVideoRoute = (id: string, body: unknown): BackendRoute => ({
   responses: [json(200, body)],
 });
 
-const factCheckRoutes: BackendRoute[] = [
-  {
-    match: (url, init) =>
-      url.endsWith("/api/videos") && init?.method === "POST",
-    responses: [json(200, { video_id: "fc-1", status: "complete" })],
-  },
-  {
-    match: (url) => url.endsWith("/results"),
-    responses: [json(200, { video_id: "fc-1", segments: [] })],
-  },
-];
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -64,7 +52,6 @@ describe("LibraryExperience", () => {
         "vid-1",
         playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
       ),
-      ...factCheckRoutes,
     ]);
 
     render(<LibraryExperience loadVideos={async () => [videoRecord()]} />);
@@ -75,12 +62,12 @@ describe("LibraryExperience", () => {
         "https://storage/play/vid-1",
       );
     });
+    // The live fact-check panel mounts for the ready video, waiting to stream.
     expect(
       screen.getByRole("complementary", { name: /fact checks/i }),
     ).toBeInTheDocument();
-    // The batch fact-check cycle runs for the curated sample end to end.
     expect(
-      await screen.findByText(/no speech segments were found/i),
+      await screen.findByText(/fact checks stream here while the video plays/i),
     ).toBeInTheDocument();
   });
 
@@ -94,7 +81,6 @@ describe("LibraryExperience", () => {
         "vid-2",
         playableWire("vid-2", "My Upload", "upload", "https://storage/play/vid-2"),
       ),
-      ...factCheckRoutes,
     ]);
 
     render(
@@ -213,7 +199,6 @@ describe("LibraryExperience", () => {
           }),
         ],
       },
-      ...factCheckRoutes,
     ]);
     const uploader: PutUploader = async (_p, _f, onProgress) => {
       onProgress(10, 10);
@@ -316,7 +301,6 @@ describe("LibraryExperience", () => {
         "vid-yt",
         playableWire("vid-yt", "Town Hall", "youtube", "https://storage/play/vid-yt"),
       ),
-      ...factCheckRoutes,
     ]);
     const existing = videoRecord({
       id: "vid-yt",
@@ -370,7 +354,6 @@ describe("LibraryExperience", () => {
         "vid-1",
         playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
       ),
-      ...factCheckRoutes,
     ]);
 
     render(<LibraryExperience loadVideos={loadVideos} />);
