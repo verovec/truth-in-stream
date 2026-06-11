@@ -21,6 +21,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
+	"github.com/verovec/truth-in-stream/backend/internal/ytdlp"
 )
 
 func main() {
@@ -82,6 +83,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	youtubeCfg, err := config.LoadYouTube()
+	if err != nil {
+		return err
+	}
 
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -113,13 +118,31 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	youtubeSvc, err := service.NewIngestService(store, mediaStore, ytdlp.New(ytdlp.Config{
+		BinaryPath: youtubeCfg.BinaryPath,
+		MaxBytes:   youtubeCfg.MaxBytes,
+	}), service.IngestConfig{
+		MaxDownloadBytes: youtubeCfg.MaxBytes,
+		DownloadTimeout:  youtubeCfg.Timeout,
+	}, logger)
+	if err != nil {
+		return err
+	}
+
 	health := service.NewHealthChecker(store)
 
 	scribe := transcribe.New(transcribe.Config{
 		APIKey: transcription.APIKey,
 		Model:  transcription.Model,
 	})
-	transcriber := transcribe.NewSourceTranscriber(scribe, cfg.DemoMediaDir)
+	// Route a processing source to the resolver that can read it: a bundled demo
+	// filename to the media root, an object key (uploads, samples, youtube) to
+	// object storage. A cataloged video processes through its object key with no
+	// re-upload.
+	transcriber := transcribe.NewRouter(
+		transcribe.NewSourceTranscriber(scribe, cfg.DemoMediaDir),
+		transcribe.NewObjectTranscriber(scribe, mediaStore),
+	)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
 	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
@@ -153,7 +176,7 @@ func run(logger *slog.Logger) error {
 		processor.Run(ctx)
 	}()
 
-	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

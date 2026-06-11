@@ -43,6 +43,10 @@ type Video struct {
 	Kind        string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+	SourceUrl   pgtype.Text
+	SourceID    pgtype.Text
+	DurationMs  int64
+	Error       pgtype.Text
 }
 
 type WikiChunk struct {

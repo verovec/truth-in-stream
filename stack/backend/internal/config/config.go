@@ -500,6 +500,50 @@ func LoadUpload() (Upload, error) {
 	return Upload{MaxBytes: maxBytes}, nil
 }
 
+// YouTube ingest defaults: a 2 GiB download cap matches the upload cap; a
+// 15-minute timeout covers a long clip over a slow connection without letting a
+// stuck download pin a worker indefinitely; the downloader defaults to yt-dlp on
+// PATH.
+const (
+	defaultYouTubeMaxBytes int64 = 2 << 30
+	defaultYouTubeTimeout        = 15 * time.Minute
+	defaultYouTubeBinary         = "yt-dlp"
+)
+
+// YouTube holds the YouTube ingest configuration. BinaryPath is the yt-dlp
+// executable; MaxBytes bounds a single download; Timeout bounds the whole
+// download-upload run.
+type YouTube struct {
+	BinaryPath string
+	MaxBytes   int64
+	Timeout    time.Duration
+}
+
+// LoadYouTube reads the YouTube ingest configuration from the environment,
+// applying defaults and failing fast on a non-positive size bound or timeout.
+func LoadYouTube() (YouTube, error) {
+	y := YouTube{
+		BinaryPath: getenv("YOUTUBE_DOWNLOADER_PATH", defaultYouTubeBinary),
+		MaxBytes:   defaultYouTubeMaxBytes,
+		Timeout:    defaultYouTubeTimeout,
+	}
+	if raw := os.Getenv("YOUTUBE_MAX_DOWNLOAD_BYTES"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return YouTube{}, fmt.Errorf("config: YOUTUBE_MAX_DOWNLOAD_BYTES %q: %w", raw, err)
+		}
+		if v <= 0 {
+			return YouTube{}, fmt.Errorf("config: YOUTUBE_MAX_DOWNLOAD_BYTES must be positive, got %d", v)
+		}
+		y.MaxBytes = v
+	}
+	var err error
+	if y.Timeout, err = positiveDurationEnv("YOUTUBE_DOWNLOAD_TIMEOUT", y.Timeout); err != nil {
+		return YouTube{}, err
+	}
+	return y, nil
+}
+
 // boolEnv reads a boolean environment variable, applying fallback when unset.
 func boolEnv(key string, fallback bool) (bool, error) {
 	raw := os.Getenv(key)

@@ -1,10 +1,13 @@
 package storage
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -183,6 +186,121 @@ func TestExists(t *testing.T) {
 			}
 		})
 	}
+}
+
+// objectServer is a minimal path-style object store: PUT records bytes and
+// content type under the request path, GET serves them back, so the Upload and
+// Download round trips exercise the real SDK request without a live S3.
+type objectServer struct {
+	mu      sync.Mutex
+	objects map[string]storedObject
+}
+
+type storedObject struct {
+	body        []byte
+	contentType string
+}
+
+func newObjectServer() *objectServer {
+	return &objectServer{objects: map[string]storedObject{}}
+}
+
+func (o *objectServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPut:
+		body, _ := io.ReadAll(r.Body)
+		o.mu.Lock()
+		o.objects[r.URL.Path] = storedObject{body: body, contentType: r.Header.Get("Content-Type")}
+		o.mu.Unlock()
+		w.Header().Set("ETag", `"fixed"`)
+		w.WriteHeader(http.StatusOK)
+	case http.MethodGet:
+		o.mu.Lock()
+		obj, ok := o.objects[r.URL.Path]
+		o.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if obj.contentType != "" {
+			w.Header().Set("Content-Type", obj.contentType)
+		}
+		_, _ = w.Write(obj.body)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (o *objectServer) get(path string) (storedObject, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	obj, ok := o.objects[path]
+	return obj, ok
+}
+
+func TestUploadStoresObject(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newObjectServerHandler(t))
+	defer srv.Close()
+	objects := srv.Config.Handler.(*objectServer)
+
+	store, err := New(t.Context(), validConfig(srv.URL, true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	want := []byte("fake video bytes")
+	if err := store.Upload(t.Context(), "youtube/abc.mp4", bytes.NewReader(want), "video/mp4", int64(len(want))); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	got, ok := objects.get("/media/youtube/abc.mp4")
+	if !ok {
+		t.Fatal("object was not stored at the expected key")
+	}
+	if !bytes.Equal(got.body, want) {
+		t.Errorf("stored body = %q, want %q", got.body, want)
+	}
+	if got.contentType != "video/mp4" {
+		t.Errorf("content type = %q, want video/mp4", got.contentType)
+	}
+}
+
+func TestDownloadStreamsObject(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newObjectServerHandler(t))
+	defer srv.Close()
+
+	store, err := New(t.Context(), validConfig(srv.URL, true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	want := []byte("downloadable bytes")
+	if err := store.Upload(t.Context(), "youtube/dl.mp4", bytes.NewReader(want), "video/mp4", int64(len(want))); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	rc, err := store.Download(t.Context(), "youtube/dl.mp4")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("downloaded body = %q, want %q", got, want)
+	}
+}
+
+// newObjectServerHandler returns a fresh objectServer; the helper exists so each
+// test gets isolated storage while keeping the concrete type reachable for
+// assertions via the server's Handler field.
+func newObjectServerHandler(t *testing.T) *objectServer {
+	t.Helper()
+	return newObjectServer()
 }
 
 func mustParse(t *testing.T, raw string) *url.URL {

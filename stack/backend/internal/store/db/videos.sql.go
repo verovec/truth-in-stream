@@ -9,12 +9,13 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createVideo = `-- name: CreateVideo :one
 INSERT INTO videos (title, object_key, content_type, size_bytes, status, kind)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 `
 
 type CreateVideoParams struct {
@@ -46,12 +47,69 @@ func (q *Queries) CreateVideo(ctx context.Context, arg CreateVideoParams) (Video
 		&i.Kind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
+	)
+	return i, err
+}
+
+const createYouTubeVideo = `-- name: CreateYouTubeVideo :one
+INSERT INTO videos (title, object_key, content_type, size_bytes, status, kind, source_url, source_id, duration_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (source_id) DO NOTHING
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
+`
+
+type CreateYouTubeVideoParams struct {
+	Title       string
+	ObjectKey   string
+	ContentType string
+	SizeBytes   int64
+	Status      string
+	Kind        string
+	SourceUrl   pgtype.Text
+	SourceID    pgtype.Text
+	DurationMs  int64
+}
+
+// Insert a pending YouTube ingest. source_id is the canonical video id; the
+// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
+// row and the caller resolves the existing record by source id instead.
+func (q *Queries) CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error) {
+	row := q.db.QueryRow(ctx, createYouTubeVideo,
+		arg.Title,
+		arg.ObjectKey,
+		arg.ContentType,
+		arg.SizeBytes,
+		arg.Status,
+		arg.Kind,
+		arg.SourceUrl,
+		arg.SourceID,
+		arg.DurationMs,
+	)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.Status,
+		&i.Kind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
 	)
 	return i, err
 }
 
 const getVideo = `-- name: GetVideo :one
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 FROM videos
 WHERE id = $1
 `
@@ -69,12 +127,43 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 		&i.Kind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
+	)
+	return i, err
+}
+
+const getVideoBySourceID = `-- name: GetVideoBySourceID :one
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
+FROM videos
+WHERE source_id = $1
+`
+
+func (q *Queries) GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error) {
+	row := q.db.QueryRow(ctx, getVideoBySourceID, sourceID)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.Status,
+		&i.Kind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
 	)
 	return i, err
 }
 
 const listVideos = `-- name: ListVideos :many
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 FROM videos
 ORDER BY created_at DESC, id
 `
@@ -98,6 +187,10 @@ func (q *Queries) ListVideos(ctx context.Context) ([]Video, error) {
 			&i.Kind,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SourceUrl,
+			&i.SourceID,
+			&i.DurationMs,
+			&i.Error,
 		); err != nil {
 			return nil, err
 		}
@@ -109,11 +202,87 @@ func (q *Queries) ListVideos(ctx context.Context) ([]Video, error) {
 	return items, nil
 }
 
+const setVideoFailed = `-- name: SetVideoFailed :one
+UPDATE videos
+SET status = 'failed', error = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
+`
+
+type SetVideoFailedParams struct {
+	ID    uuid.UUID
+	Error pgtype.Text
+}
+
+// A failed ingest: record the reason and flip the record to failed.
+func (q *Queries) SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error) {
+	row := q.db.QueryRow(ctx, setVideoFailed, arg.ID, arg.Error)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.Status,
+		&i.Kind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
+	)
+	return i, err
+}
+
+const setVideoReady = `-- name: SetVideoReady :one
+UPDATE videos
+SET status = 'ready', title = $2, size_bytes = $3, duration_ms = $4, error = NULL, updated_at = now()
+WHERE id = $1
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
+`
+
+type SetVideoReadyParams struct {
+	ID         uuid.UUID
+	Title      string
+	SizeBytes  int64
+	DurationMs int64
+}
+
+// A completed ingest: record the probed title, size, and duration, clear any
+// prior error, and flip the record to ready.
+func (q *Queries) SetVideoReady(ctx context.Context, arg SetVideoReadyParams) (Video, error) {
+	row := q.db.QueryRow(ctx, setVideoReady,
+		arg.ID,
+		arg.Title,
+		arg.SizeBytes,
+		arg.DurationMs,
+	)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.Status,
+		&i.Kind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
+	)
+	return i, err
+}
+
 const setVideoStatus = `-- name: SetVideoStatus :one
 UPDATE videos
 SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 `
 
 type SetVideoStatusParams struct {
@@ -134,6 +303,10 @@ func (q *Queries) SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) 
 		&i.Kind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
 	)
 	return i, err
 }
@@ -148,7 +321,7 @@ ON CONFLICT (object_key) DO UPDATE
         status       = EXCLUDED.status,
         kind         = EXCLUDED.kind,
         updated_at   = now()
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 `
 
 type UpsertSampleVideoParams struct {
@@ -180,6 +353,10 @@ func (q *Queries) UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoPa
 		&i.Kind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
 	)
 	return i, err
 }

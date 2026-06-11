@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -23,6 +24,10 @@ type Querier interface {
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	CountWikiPages(ctx context.Context) (int64, error)
 	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
+	// Insert a pending YouTube ingest. source_id is the canonical video id; the
+	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
+	// row and the caller resolves the existing record by source id instead.
+	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
 	DeleteWikiPage(ctx context.Context, pageID int64) error
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
@@ -35,6 +40,7 @@ type Querier interface {
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
+	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
@@ -54,6 +60,11 @@ type Querier interface {
 	// referenced twice but sqlc collapses it to one parameter, so the index still
 	// drives the ORDER BY.
 	SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error)
+	// A failed ingest: record the reason and flip the record to failed.
+	SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error)
+	// A completed ingest: record the probed title, size, and duration, clear any
+	// prior error, and flip the record to ready.
+	SetVideoReady(ctx context.Context, arg SetVideoReadyParams) (Video, error)
 	SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) (Video, error)
 	// Delta sync writes embeddings straight into the live table: at delta volume the
 	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
