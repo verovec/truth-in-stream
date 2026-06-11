@@ -200,11 +200,11 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 	}
 	defer store.Close()
 
-	// Only the text datasets need the embedding cache; seeding videos alone
-	// must not require the committed cache to be present.
-	var cache *embed.Cache
+	// Only the text datasets need the embedding cache; seeding videos alone must
+	// not require the committed cache to be present, so the cache lifetime stays
+	// local to this branch (load, fill during seeding, persist if dirty).
 	if sel.claims || sel.wiki {
-		cache, err = embed.LoadCache(cachePath)
+		cache, err := embed.LoadCache(cachePath)
 		if err != nil {
 			return err
 		}
@@ -222,6 +222,12 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 				return err
 			}
 		}
+		if cache.Dirty() {
+			if err := cache.Save(cachePath); err != nil {
+				return err
+			}
+			logger.InfoContext(ctx, "embedding cache updated with new entries", slog.String("cache", cachePath))
+		}
 	}
 	if sel.demo {
 		if err := seedDemo(ctx, logger, store, seedDir); err != nil {
@@ -232,13 +238,6 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 		if err := seedVideos(ctx, logger, store, mediaCacheDir); err != nil {
 			return err
 		}
-	}
-
-	if cache != nil && cache.Dirty() {
-		if err := cache.Save(cachePath); err != nil {
-			return err
-		}
-		logger.InfoContext(ctx, "embedding cache updated with new entries", slog.String("cache", cachePath))
 	}
 	return nil
 }
