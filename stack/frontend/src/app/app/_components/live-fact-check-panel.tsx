@@ -9,7 +9,7 @@ import { LiveStatementList } from "./live-statement-list";
 // for the selected video: it opens the WebSocket and renders incremental
 // subtitles and verdicts as the video plays, keyed to the playback clock.
 export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
-  const { statements, status } = useLiveAnalysis(videoId);
+  const { statements, caption, status } = useLiveAnalysis(videoId);
 
   return (
     <aside
@@ -31,10 +31,32 @@ export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
       <ConnectionNotice status={status} />
       {statements.length > 0 ? (
         <LiveStatementList statements={statements} />
-      ) : (
+      ) : caption ? null : (
         <EmptyHint status={status} />
       )}
+      <LiveCaption text={caption} />
     </aside>
+  );
+}
+
+// LiveCaption shows the current utterance as it is spoken, before it commits to
+// a statement, so the transcript is visible word by word rather than appearing
+// only when a statement finalizes. It renders nothing between utterances.
+function LiveCaption({ text }: { text: string }) {
+  if (!text) {
+    return null;
+  }
+  return (
+    <p
+      aria-live="polite"
+      className="mt-auto flex items-start gap-2 border-t border-dashed border-zinc-200 pt-3 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+    >
+      <span
+        aria-hidden="true"
+        className="mt-1.5 size-1.5 shrink-0 animate-pulse rounded-full bg-rose-500"
+      />
+      {text}
+    </p>
   );
 }
 

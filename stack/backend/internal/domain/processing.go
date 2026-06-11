@@ -15,6 +15,16 @@ type Segment struct {
 	Text  string
 }
 
+// LiveTranscript is one transcript revision from the live speech provider: an
+// interim (partial) caption still being revised while the speaker talks, or a
+// finalized statement once the provider commits it on a detected pause. Both are
+// surfaced as live captions; only a finalized transcript carries timestamps and
+// is fact-checked. A partial's Segment holds only Text.
+type LiveTranscript struct {
+	Segment Segment
+	Final   bool
+}
+
 // MatchKind distinguishes a curated claim match (which carries a verdict) from
 // a Wikipedia evidence match (supporting context with attribution, never a
 // verdict). It is the discriminator the frontend switches on.

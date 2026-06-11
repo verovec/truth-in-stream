@@ -152,6 +152,40 @@ func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
 	}
 }
 
+func TestLiveHandlerForwardsInterimCaption(t *testing.T) {
+	t.Parallel()
+	// An interim event is the live caption: it serializes to a text-only frame
+	// with no id and no timestamps, distinct from a committed subtitle.
+	seg := domain.Segment{Text: "the earth is"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventInterim, Segment: seg},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "interim" || frame.Text != seg.Text {
+		t.Errorf("interim frame = %+v, want type interim with text %q", frame, seg.Text)
+	}
+	if frame.ID != "" {
+		t.Errorf("interim frame should carry no id, got %q", frame.ID)
+	}
+}
+
 func TestLiveHandlerAcceptsAllowlistedCrossOrigin(t *testing.T) {
 	t.Parallel()
 	// Behind the dev frontend proxy the browser Origin (localhost:3000) differs

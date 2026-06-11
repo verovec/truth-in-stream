@@ -1,7 +1,8 @@
 // Wire decoding for the live fact-check WebSocket. The backend
-// (stack/backend internal/handler/live.go) pushes two JSON text frame kinds per
-// statement, both tagged with a correlation id: a "subtitle" the moment the
-// statement is transcribed, then a "result" once its verdict is ready. The
+// (stack/backend internal/handler/live.go) pushes three JSON text frame kinds:
+// an "interim" caption (text only, no id) for the utterance still being spoken,
+// then per finalized statement a "subtitle" the moment it is transcribed and a
+// "result" once its verdict is ready, both tagged with a correlation id. The
 // result frame embeds the batch per-segment shape, so it reuses the batch
 // normalizer and the live and batch result types never drift.
 import {
@@ -9,6 +10,14 @@ import {
   normalizeSegment,
   type SegmentWire,
 } from "@/lib/fact-check/api";
+
+// InterimFrame is the live, still-revised caption for the current utterance,
+// before the provider commits a statement. It carries only text - no id, no
+// timestamps, no verdict - and the next interim or subtitle supersedes it.
+export type InterimFrame = {
+  type: "interim";
+  text: string;
+};
 
 // SubtitleFrame is a statement's text the moment it is transcribed, before any
 // verdict. Timestamps are stream-relative seconds; the caller offsets them to
@@ -31,7 +40,7 @@ export type ResultFrame = {
   error?: string;
 };
 
-export type LiveFrame = SubtitleFrame | ResultFrame;
+export type LiveFrame = InterimFrame | SubtitleFrame | ResultFrame;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -56,6 +65,13 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
   }
   if (!isRecord(value)) {
     return null;
+  }
+
+  if (value.type === "interim") {
+    if (typeof value.text !== "string") {
+      return null;
+    }
+    return { type: "interim", text: value.text };
   }
 
   if (value.type === "subtitle") {

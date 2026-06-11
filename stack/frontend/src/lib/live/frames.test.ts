@@ -82,6 +82,17 @@ describe("parseLiveFrame", () => {
     });
   });
 
+  test("parses an interim frame (text only, no id or timestamps)", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({ type: "interim", text: "the earth is" }),
+    );
+    expect(frame).toEqual({ type: "interim", text: "the earth is" });
+  });
+
+  test("returns null for an interim frame missing its text", () => {
+    expect(parseLiveFrame(JSON.stringify({ type: "interim" }))).toBeNull();
+  });
+
   test("returns null for a non-JSON payload", () => {
     expect(parseLiveFrame("not json")).toBeNull();
   });

@@ -13,11 +13,11 @@ type streamClient interface {
 }
 
 // StreamSegmenter adapts the streaming provider Transcriber to the live
-// pipeline's finalized-segment port. It drops non-final (partial) events and
-// maps each committed transcript to a domain.Segment: partials are interim
-// revisions the fact-check pipeline cannot act on, so only finalized segments
-// cross into the service layer. It mirrors SourceTranscriber, which adapts the
-// batch path to the same domain shape.
+// pipeline's transcript port. It maps every transcript event to a
+// domain.LiveTranscript, tagging committed events Final and partials non-final:
+// the live pipeline surfaces partials as interim captions and only fact-checks
+// the finalized ones. It mirrors SourceTranscriber, which adapts the batch path
+// to the same domain shape.
 type StreamSegmenter struct {
 	client streamClient
 	opts   Options
@@ -29,25 +29,27 @@ func NewStreamSegmenter(client streamClient, opts Options) *StreamSegmenter {
 	return &StreamSegmenter{client: client, opts: opts}
 }
 
-// StreamSegments transcribes audio as it arrives and emits one domain.Segment
-// per finalized transcript. The returned channel closes when audio closes, the
-// provider ends the session, or ctx is canceled.
-func (s *StreamSegmenter) StreamSegments(ctx context.Context, audio <-chan []byte) (<-chan domain.Segment, error) {
+// StreamSegments transcribes audio as it arrives and emits one
+// domain.LiveTranscript per transcript event - partials as they are revised,
+// committed segments as the provider finalizes them. The returned channel closes
+// when audio closes, the provider ends the session, or ctx is canceled.
+func (s *StreamSegmenter) StreamSegments(ctx context.Context, audio <-chan []byte) (<-chan domain.LiveTranscript, error) {
 	events, err := s.client.TranscribeStream(ctx, audio, s.opts)
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan domain.Segment)
+	out := make(chan domain.LiveTranscript)
 	go func() {
 		defer close(out)
 		for ev := range events {
-			if !ev.Final {
-				continue
+			tr := domain.LiveTranscript{
+				Segment: domain.Segment{Start: ev.Segment.Start, End: ev.Segment.End, Text: ev.Segment.Text},
+				Final:   ev.Final,
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case out <- domain.Segment{Start: ev.Segment.Start, End: ev.Segment.End, Text: ev.Segment.Text}:
+			case out <- tr:
 			}
 		}
 	}()
