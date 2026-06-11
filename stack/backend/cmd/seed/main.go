@@ -1,7 +1,7 @@
 // Command seed loads the local-development dataset - curated claims, a small
-// Wikipedia evidence subset, and a precomputed demo-video result set - into the
-// store. It reads embeddings from a committed cache so a full reseed needs no
-// external API key; -refresh regenerates that cache from the fixtures.
+// Wikipedia evidence subset, and the curated sample videos - into the store. It
+// reads embeddings from a committed cache so a full reseed needs no external API
+// key; -refresh regenerates that cache from the fixtures.
 //
 // Usage:
 //
@@ -32,7 +32,6 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/ingest"
 	"github.com/verovec/truth-in-stream/backend/internal/seed"
-	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
@@ -49,7 +48,6 @@ const (
 	sampleMediaFetchTimeout = 5 * time.Minute
 	claimsFile              = "claims.json"
 	wikiFile                = "wiki_chunks.json"
-	demoFile                = "demo_results.json"
 )
 
 // datasets selects which fixtures to seed. When none are requested on the
@@ -57,11 +55,10 @@ const (
 type datasets struct {
 	claims bool
 	wiki   bool
-	demo   bool
 	videos bool
 }
 
-func (d datasets) any() bool { return d.claims || d.wiki || d.demo || d.videos }
+func (d datasets) any() bool { return d.claims || d.wiki || d.videos }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -77,16 +74,15 @@ func run(logger *slog.Logger) error {
 	offline := flag.Bool("offline", false, "with -refresh, fill the cache with deterministic placeholder vectors instead of calling Voyage (no API key); has no effect when seeding, which is always offline")
 	doClaims := flag.Bool("claims", false, "seed curated claims")
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
-	doDemo := flag.Bool("demo", false, "seed the demo-video results")
 	doVideos := flag.Bool("videos", false, "seed the curated sample videos (records plus best-effort media)")
 	seedDir := flag.String("seed-dir", defaultSeedDir, "directory holding the seed fixtures")
 	cachePath := flag.String("cache", defaultCachePath, "embedding cache file")
 	mediaCacheDir := flag.String("media-cache", defaultMediaCacheDir, "directory caching fetched sample media across reseeds")
 	flag.Parse()
 
-	sel := datasets{claims: *doClaims, wiki: *doWiki, demo: *doDemo, videos: *doVideos}
+	sel := datasets{claims: *doClaims, wiki: *doWiki, videos: *doVideos}
 	if !sel.any() {
-		sel = datasets{claims: true, wiki: true, demo: true, videos: true}
+		sel = datasets{claims: true, wiki: true, videos: true}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -214,11 +210,6 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 			}
 		}
 	}
-	if sel.demo {
-		if err := seedDemo(ctx, logger, store, seedDir); err != nil {
-			return err
-		}
-	}
 	if sel.videos {
 		if err := seedVideos(ctx, logger, store, mediaCacheDir); err != nil {
 			return err
@@ -292,34 +283,12 @@ func seedWiki(ctx context.Context, logger *slog.Logger, store *postgres.Store, e
 	return nil
 }
 
-func seedDemo(ctx context.Context, logger *slog.Logger, store *postgres.Store, seedDir string) error {
-	f, err := os.Open(filepath.Join(seedDir, demoFile))
-	if err != nil {
-		return fmt.Errorf("seed: open demo fixture: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	demo, err := seed.LoadDemoResults(f)
-	if err != nil {
-		return err
-	}
-	videoID := service.VideoID(demo.Source)
-	if err := seed.InsertDemoResults(ctx, store, videoID, demo.Segments); err != nil {
-		return err
-	}
-	logger.InfoContext(ctx, "seeded demo results",
-		slog.String("source", demo.Source),
-		slog.String("video_id", videoID),
-		slog.Int("segments", len(demo.Segments)))
-	return nil
-}
-
 // seedVideos upserts the curated sample records and best-effort places their
-// media in object storage. The records are keyed by their UUID id and are
-// independent of the demo results, which key segment results by the processing
-// id derived from the demo source filename (service.VideoID) and have no videos
-// row; the two stay separate on purpose. Storage configuration is required (the
-// media bytes need somewhere to go); the external clip fetch is best-effort and
-// SAMPLE_VIDEO_URL overrides the default clip.
+// media in object storage. The records are keyed by their UUID id; played in
+// the analyser they stream live exactly like an uploaded or YouTube source.
+// Storage configuration is required (the media bytes need somewhere to go); the
+// external clip fetch is best-effort and SAMPLE_VIDEO_URL overrides the default
+// clip.
 func seedVideos(ctx context.Context, logger *slog.Logger, store *postgres.Store, mediaCacheDir string) error {
 	storageCfg, err := config.LoadStorage()
 	if err != nil {

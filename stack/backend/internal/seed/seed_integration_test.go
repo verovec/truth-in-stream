@@ -17,7 +17,6 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/ingest"
 	"github.com/verovec/truth-in-stream/backend/internal/seed"
-	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
 
@@ -177,89 +176,6 @@ func TestSeedWikiChunksIdempotent(t *testing.T) {
 	}
 	if want := int64(7); pages != want {
 		t.Errorf("distinct pages = %d, want %d (reseed must not duplicate)", pages, want)
-	}
-}
-
-func TestSeedDemoResultsServed(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-
-	demo, err := seed.LoadDemoResults(openFixture(t, "demo_results.json"))
-	if err != nil {
-		t.Fatalf("LoadDemoResults: %v", err)
-	}
-	videoID := service.VideoID(demo.Source)
-	if err := seed.InsertDemoResults(ctx, store, videoID, demo.Segments); err != nil {
-		t.Fatalf("SeedDemoResults: %v", err)
-	}
-
-	count, processed, err := store.ProcessedSegmentCount(ctx, videoID)
-	if err != nil {
-		t.Fatalf("ProcessedSegmentCount: %v", err)
-	}
-	if !processed {
-		t.Fatal("demo video not marked processed")
-	}
-	if count != len(demo.Segments) {
-		t.Errorf("segment count = %d, want %d", count, len(demo.Segments))
-	}
-
-	results, err := store.ListSegmentResults(ctx, videoID)
-	if err != nil {
-		t.Fatalf("ListSegmentResults: %v", err)
-	}
-	if len(results) != len(demo.Segments) {
-		t.Fatalf("listed %d results, want %d", len(results), len(demo.Segments))
-	}
-	// First segment is a checked claim with both a claim and an evidence match.
-	first := results[0]
-	if first.SkipReason != domain.SkipReasonNone {
-		t.Errorf("first segment skip reason = %q, want none", first.SkipReason)
-	}
-	if len(first.Matches) != 2 {
-		t.Fatalf("first segment has %d matches, want 2", len(first.Matches))
-	}
-	if first.Matches[0].Kind != domain.MatchKindClaim || first.Matches[1].Kind != domain.MatchKindEvidence {
-		t.Errorf("match kinds = %q,%q, want claim,evidence", first.Matches[0].Kind, first.Matches[1].Kind)
-	}
-	if first.Matches[1].Article == nil {
-		t.Error("evidence match lost its article attribution")
-	}
-	// The skipped segment carries its reason and no matches.
-	var sawSkip bool
-	for _, r := range results {
-		if r.SkipReason == domain.SkipReasonNotAClaim {
-			sawSkip = true
-			if len(r.Matches) != 0 {
-				t.Errorf("skipped segment has %d matches, want 0", len(r.Matches))
-			}
-		}
-	}
-	if !sawSkip {
-		t.Error("no skipped segment found in seeded demo results")
-	}
-}
-
-func TestSeedDemoResultsIdempotent(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-
-	demo, err := seed.LoadDemoResults(openFixture(t, "demo_results.json"))
-	if err != nil {
-		t.Fatalf("LoadDemoResults: %v", err)
-	}
-	videoID := service.VideoID(demo.Source)
-	for range 2 {
-		if err := seed.InsertDemoResults(ctx, store, videoID, demo.Segments); err != nil {
-			t.Fatalf("SeedDemoResults: %v", err)
-		}
-	}
-	results, err := store.ListSegmentResults(ctx, videoID)
-	if err != nil {
-		t.Fatalf("ListSegmentResults: %v", err)
-	}
-	if len(results) != len(demo.Segments) {
-		t.Errorf("listed %d results after reseed, want %d (must not duplicate)", len(results), len(demo.Segments))
 	}
 }
 

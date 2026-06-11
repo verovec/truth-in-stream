@@ -48,8 +48,8 @@ Go 1.26 (go.mod `go 1.26`; local and CI on 1.26.x). Use the modern APIs - reachi
 
 Dynamic behavior comes from *interfaces selected at wiring time*, never from reflection or `any`. The open-closed test: adding a variant must mean adding a new file/implementation, not editing existing switch arms.
 
-- **Strategy**: one consumer interface, N implementations, chosen in `main.go` from config. House example: `Transcriber` - batch REST (v1) and Scribe v2 Realtime WS are two implementations behind one interface; callers cannot tell which is live.
-- **Adapter**: every third-party API (Voyage, ElevenLabs) is wrapped behind a domain interface at the boundary; their wire types never leak past the adapter package. Swapping a vendor touches one package.
+- **Strategy**: one consumer interface, N implementations, chosen in `main.go` from config. House example: the check-worthiness gate - `buildPrechecker` wires the classifier-plus-coverage gate when enabled and the allow-all prechecker when disabled, behind one `SegmentPrechecker`; the pipeline cannot tell which is live.
+- **Adapter**: every third-party API (Voyage, AssemblyAI) is wrapped behind a domain interface at the boundary; their wire types never leak past the adapter package. Swapping a vendor touches one package.
 - **Decorator**: middleware (`func(http.Handler) http.Handler`) and store wrappers (logging/metrics around `domain.VectorStore`) layer behavior without touching the wrapped code.
 - **Registry/data-driven dispatch**: when variants share a shape, a `map[string]Handler` populated at wiring beats a switch ladder - new variant, new entry, zero edits elsewhere.
 - **Banned for "flexibility"**: `reflect`, `any`-typed parameters, `map[string]any` as an internal data model (it is allowed only at the jsonb boundary), runtime type switches as routing. If you need that, the design is missing an interface.
@@ -98,51 +98,41 @@ All SQL goes through sqlc - hand-written query strings and ORMs are both banned.
 - pgvector gotchas (hard-won, keep): `halfvec` needs a per-**column** override to `pgvector.HalfVector` (not `db_type`) - every new vector column gets one. Use `sqlc.arg(query_embedding)` in both SELECT and ORDER BY so sqlc emits one param and HNSW drives the order (sqlc #3496). Cast distance `(... <=> ...)::float8` to get `float64`, not `interface{}`. Nil `map[string]any` encodes as SQL NULL - coerce to `{}` before insert (`metadata` is NOT NULL). Batch writes use `:batchexec` (pgx `SendBatch`). Register vector types and `SET hnsw.ef_search` in `cfg.AfterConnect`.
 - Migrations: `migrations/000N_*.{up,down}.sql`, applied by golang-migrate (`make migrate-up`; compose runs a one-shot migrate service; prod applies on deploy).
 
-## Transcription (ElevenLabs Scribe, via internal/transcribe)
+## Transcription (AssemblyAI Universal-3 Pro streaming, via internal/transcribe)
 
-Verified 2026-06 against elevenlabs.io/docs/api-reference/speech-to-text: batch is `POST
-https://api.elevenlabs.io/v1/speech-to-text`, auth header `xi-api-key` (NOT Bearer), model
-`scribe_v2`; realtime is `wss://api.elevenlabs.io/v1/speech-to-text/realtime`, model
-`scribe_v2_realtime`. No official Go SDK exists - the direct net/http adapter in
-`internal/transcribe` is the sanctioned integration; community SDKs are banned.
-
-- All callers go through the `transcribe.Transcriber` interface - never construct provider
-  requests elsewhere. `TranscribeStream` is the reserved live-mode method; implement it
-  against Scribe v2 Realtime without changing the interface.
-- Requests are multipart with explicit `model_id`, `timestamps_granularity=word`,
-  `diarize=false`, `tag_audio_events=false`; the audio streams through `io.Pipe` - never
-  buffer the upload in memory.
-- Response words are typed `word` / `spacing` / `audio_event`; `start`/`end` are null on
-  spacing entries, so the wire type uses `*float64`. Error bodies: `detail` is an object on
-  most statuses but an ARRAY on 422.
-- Key from `TRANSCRIPTION_API_KEY` via `config.LoadTranscription`; fail fast, never log it.
-
-## Live transcription (AssemblyAI Universal-3 Pro streaming, via internal/transcribe)
-
-The live (realtime) path defaults to AssemblyAI, not ElevenLabs: ElevenLabs Scribe v2 Realtime
-has no live diarization (per-word `speaker_id` is always null on the realtime socket), and the
-fact-checker must never blend two speakers into one verdict. ElevenLabs stays the batch/VOD
-file transcriber unchanged. Verified 2026-06 against assemblyai.com/docs streaming v3:
+AssemblyAI Universal-3 Pro streaming is the SINGLE speech-to-text provider, for both live
+streams and imported videos (uploads, YouTube, bundled samples): every source streams its
+playback audio over the realtime WebSocket and is transcribed and diarized live - there is no
+batch transcript wait. There is NO batch transcriber and NO provider toggle. ElevenLabs Scribe
+was removed entirely (its realtime path cannot diarize, and a fact-check must never blend two
+speakers into one verdict). No official Go SDK exists; the direct `coder/websocket` adapter in
+`internal/transcribe` is the sanctioned integration (pinned v1.8.14); community SDKs are banned.
+Verified 2026-06 against assemblyai.com/docs streaming v3:
 
 - Endpoint `wss://streaming.assemblyai.com/v3/ws` (EU: `wss://streaming.eu.assemblyai.com/v3/ws`).
   Query params: `speech_model=u3-rt-pro`, `sample_rate=16000`, `encoding=pcm_s16le`,
-  `speaker_labels=true`, optional `max_speakers`. Auth is the raw API key in the
-  `Authorization` header (NOT `Bearer`, NOT `xi-api-key`); a `?token=` temp-token flow also
-  exists but the server holds the key, so the header path is used.
-- Audio is sent as raw BINARY WebSocket frames of PCM s16le bytes - NOT base64-in-JSON like the
-  Scribe client. Server messages are JSON text frames: `Begin` (session start), `Turn`
-  (`end_of_turn=false` partial, `end_of_turn=true` committed), `Termination`. A `Turn` carries
-  `transcript`, `speaker_label`, and `words[]` with INTEGER MILLISECOND `start`/`end`,
-  `word_is_final`, and per-word `speaker`. Convert ms to `time.Duration` (`*time.Millisecond`),
-  not the float-seconds Scribe uses. Fatal errors arrive as a non-1000 WebSocket close with a
-  reason string, not a data-channel error message; send `{"type":"Terminate"}` to end cleanly.
-- No official Go SDK; the direct `coder/websocket` adapter in `internal/transcribe` is the
-  sanctioned integration. Implement only the streaming half (`TranscribeStream`) of the
-  `Transcriber` contract; the batch half is ElevenLabs-only.
-- Provider/key from `config.LoadLiveTranscription` (`LIVE_TRANSCRIPTION_PROVIDER` default
-  `assemblyai`, `LIVE_TRANSCRIPTION_API_KEY`, `LIVE_TRANSCRIPTION_MODEL` default `u3-rt-pro`,
-  optional `LIVE_TRANSCRIPTION_MAX_SPEAKERS`); fail fast, never log the key. coder/websocket
-  pinned at v1.8.14.
+  `speaker_labels=true`, optional `max_speakers`. Auth is the raw API key in the `Authorization`
+  header (NOT `Bearer`, NOT `xi-api-key`). The docs also list `encoding=linear16` and a `?token=`
+  temp-token flow as alternatives; the server accepts the header + `pcm_s16le` form the client
+  uses, so do NOT change a working dial without re-verifying against a live socket.
+- Audio is sent as raw BINARY WebSocket frames of PCM s16le bytes - NEVER base64-in-JSON. Server
+  messages are JSON text frames: `Begin` (session start), `Turn` (`end_of_turn=false` partial,
+  `end_of_turn=true` committed), `Termination`. A `Turn` carries `transcript`, `speaker_label`,
+  and `words[]` with INTEGER MILLISECOND `start`/`end`, `word_is_final`, and per-word `speaker`;
+  convert ms to `time.Duration` (`*time.Millisecond`). Fatal errors arrive as a non-1000
+  WebSocket close with a reason string, not a data-channel message; send `{"type":"Terminate"}`
+  to end cleanly.
+- The inbound read limit MUST be raised above coder/websocket's 32 KiB default (`SetReadLimit`,
+  4 MiB): a formatted `Turn` for a long utterance carries a per-word array that exceeds it, and
+  the default turns that into a fatal read error that kills the live session.
+- The `transcribe` package exposes ONLY the streaming contract (the `streamClient` consumer
+  interface: `TranscribeStream(ctx, chunks, opts) (<-chan TranscriptEvent, error)`); there is no
+  `TranscribeFile` or two-method `Transcriber` interface. `StreamSegmenter` adapts it to the
+  service layer's `SegmentStream` port.
+- Key/model/speakers from `config.LoadTranscription` (`TRANSCRIPTION_API_KEY` required,
+  `TRANSCRIPTION_MODEL` default `u3-rt-pro`, optional `TRANSCRIPTION_MAX_SPEAKERS`); fail fast,
+  never log the key. Exactly ONE transcription secret exists across `.env`, docker-compose, and
+  Terraform Secrets Manager.
 
 ## Testing
 

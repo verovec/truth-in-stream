@@ -57,7 +57,7 @@ resource "aws_secretsmanager_secret" "embedding_api_key" {
 
 resource "aws_secretsmanager_secret" "transcription_api_key" {
   name                    = "${local.project}/${var.environment}/app/transcription-api-key"
-  description             = "ElevenLabs API key. Value set manually, never in Terraform."
+  description             = "AssemblyAI API key. Value set manually, never in Terraform."
   recovery_window_in_days = 0
 }
 

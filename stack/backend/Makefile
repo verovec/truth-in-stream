@@ -54,7 +54,7 @@ build: ## Static build of the server
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest
 
-seed: ## Load the local dataset (claims, wiki, demo) offline from the committed cache (DATABASE_URL; no API key)
+seed: ## Load the local dataset (claims, wiki, sample videos) offline from the committed cache (DATABASE_URL; no API key)
 	go run ./cmd/seed
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)

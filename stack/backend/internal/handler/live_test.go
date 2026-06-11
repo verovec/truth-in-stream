@@ -235,7 +235,7 @@ func TestLiveRouteRequiresAuth(t *testing.T) {
 	t.Parallel()
 	// The live route sits under the /api guard, so an unauthenticated upgrade is
 	// rejected with 401 before any WebSocket handshake.
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/vid1/live", nil)
 	srv.ServeHTTP(rec, req)

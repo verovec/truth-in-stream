@@ -6,18 +6,17 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// streamClient is the slice of *Client the live adapter consumes: the streaming
-// half of the Transcriber contract.
+// streamClient is the slice of the streaming provider the live adapter
+// consumes: audio chunks in, transcript events out.
 type streamClient interface {
 	TranscribeStream(ctx context.Context, chunks <-chan []byte, opts Options) (<-chan TranscriptEvent, error)
 }
 
-// StreamSegmenter adapts the streaming provider Transcriber to the live
-// pipeline's transcript port. It maps every transcript event to a
-// domain.LiveTranscript, tagging committed events Final and partials non-final:
-// the live pipeline surfaces partials as interim captions and only fact-checks
-// the finalized ones. It mirrors SourceTranscriber, which adapts the batch path
-// to the same domain shape.
+// StreamSegmenter adapts the streaming provider to the live pipeline's
+// transcript port. It maps every transcript event to a domain.LiveTranscript,
+// tagging committed events Final and partials non-final: the live pipeline
+// surfaces partials as interim captions and only fact-checks the finalized
+// ones.
 type StreamSegmenter struct {
 	client streamClient
 	opts   Options

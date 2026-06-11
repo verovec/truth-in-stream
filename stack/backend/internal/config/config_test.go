@@ -78,12 +78,22 @@ func TestLoadTranscription(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{"TRANSCRIPTION_API_KEY": "k"},
-			want: Transcription{APIKey: "k", Model: "scribe_v2"},
+			want: Transcription{APIKey: "k", Model: "u3-rt-pro"},
 		},
 		{
-			name: "model override",
-			env:  map[string]string{"TRANSCRIPTION_API_KEY": "k", "TRANSCRIPTION_MODEL": "scribe_v1"},
-			want: Transcription{APIKey: "k", Model: "scribe_v1"},
+			name: "model and max speakers override",
+			env:  map[string]string{"TRANSCRIPTION_API_KEY": "k", "TRANSCRIPTION_MODEL": "u3-rt", "TRANSCRIPTION_MAX_SPEAKERS": "3"},
+			want: Transcription{APIKey: "k", Model: "u3-rt", MaxSpeakers: 3},
+		},
+		{
+			name:    "negative max speakers fails",
+			env:     map[string]string{"TRANSCRIPTION_API_KEY": "k", "TRANSCRIPTION_MAX_SPEAKERS": "-1"},
+			wantErr: true,
+		},
+		{
+			name:    "non-numeric max speakers fails",
+			env:     map[string]string{"TRANSCRIPTION_API_KEY": "k", "TRANSCRIPTION_MAX_SPEAKERS": "two"},
+			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
@@ -92,71 +102,6 @@ func TestLoadTranscription(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			got, err := LoadTranscription()
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestLoadLiveTranscription(t *testing.T) {
-	tests := []struct {
-		name    string
-		env     map[string]string
-		want    LiveTranscription
-		wantErr bool
-	}{
-		{
-			name:    "missing api key fails",
-			env:     map[string]string{"LIVE_TRANSCRIPTION_API_KEY": ""},
-			wantErr: true,
-		},
-		{
-			name: "assemblyai defaults applied",
-			env:  map[string]string{"LIVE_TRANSCRIPTION_API_KEY": "k"},
-			want: LiveTranscription{Provider: "assemblyai", APIKey: "k", Model: "u3-rt-pro"},
-		},
-		{
-			name: "elevenlabs provider uses its default model",
-			env:  map[string]string{"LIVE_TRANSCRIPTION_PROVIDER": "elevenlabs", "LIVE_TRANSCRIPTION_API_KEY": "k"},
-			want: LiveTranscription{Provider: "elevenlabs", APIKey: "k", Model: "scribe_v2_realtime"},
-		},
-		{
-			name: "model and max speakers override",
-			env:  map[string]string{"LIVE_TRANSCRIPTION_API_KEY": "k", "LIVE_TRANSCRIPTION_MODEL": "u3-rt", "LIVE_TRANSCRIPTION_MAX_SPEAKERS": "3"},
-			want: LiveTranscription{Provider: "assemblyai", APIKey: "k", Model: "u3-rt", MaxSpeakers: 3},
-		},
-		{
-			name:    "unknown provider fails",
-			env:     map[string]string{"LIVE_TRANSCRIPTION_PROVIDER": "whisper", "LIVE_TRANSCRIPTION_API_KEY": "k"},
-			wantErr: true,
-		},
-		{
-			name:    "negative max speakers fails",
-			env:     map[string]string{"LIVE_TRANSCRIPTION_API_KEY": "k", "LIVE_TRANSCRIPTION_MAX_SPEAKERS": "-1"},
-			wantErr: true,
-		},
-		{
-			name:    "non-numeric max speakers fails",
-			env:     map[string]string{"LIVE_TRANSCRIPTION_API_KEY": "k", "LIVE_TRANSCRIPTION_MAX_SPEAKERS": "two"},
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			got, err := LoadLiveTranscription()
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
