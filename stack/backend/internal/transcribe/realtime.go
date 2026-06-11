@@ -236,6 +236,9 @@ func (c *Client) classify(ctx context.Context, msg serverMessage) (event Transcr
 		}
 		return TranscriptEvent{Segment: Segment{Text: msg.Text}, Final: false}, true, false
 	case msgCommittedTranscript, msgCommittedWithTimestamps:
+		// One committed message per finalized statement: the connection requests
+		// include_timestamps, so the provider sends the timestamped variant;
+		// the plain variant is handled too for a timestamp-disabled fallback.
 		return TranscriptEvent{Segment: committedSegment(msg), Final: true}, true, false
 	case msgSessionStarted:
 		return TranscriptEvent{}, false, false
@@ -283,11 +286,14 @@ func committedSegment(msg serverMessage) Segment {
 
 // isFatalMessage reports whether a provider message type ends the session: the
 // connection cannot recover from an auth failure, exhausted quota, session
-// time limit, internal transcriber failure, or unaccepted terms.
+// time limit, internal transcriber failure, or unaccepted terms. Both observed
+// spellings of the terms error are matched. This is a fast path only: a fatal
+// provider error is followed by a WebSocket close, which readEvents ends on
+// regardless, so an unlisted fatal type still terminates the stream.
 func isFatalMessage(messageType string) bool {
 	switch messageType {
 	case "auth_error", "quota_exceeded", "session_time_limit_exceeded",
-		"transcriber_error", "unaccepted_terms":
+		"transcriber_error", "unaccepted_terms", "unaccepted_terms_error":
 		return true
 	default:
 		return false

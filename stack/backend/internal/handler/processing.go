@@ -168,17 +168,25 @@ func videoResultsHandler(svc ProcessingService) http.HandlerFunc {
 func toResultsResponse(videoID string, results []domain.SegmentResult) resultsResponse {
 	segments := make([]segmentJSON, 0, len(results))
 	for _, r := range results {
-		matches := r.Matches
-		if matches == nil {
-			matches = []domain.SegmentMatch{}
-		}
-		segments = append(segments, segmentJSON{
-			Start:      r.Start.Seconds(),
-			End:        r.End.Seconds(),
-			Text:       r.Text,
-			Matches:    matches,
-			SkipReason: string(r.SkipReason),
-		})
+		segments = append(segments, toSegmentJSON(r))
 	}
 	return resultsResponse{VideoID: videoID, Segments: segments}
+}
+
+// toSegmentJSON is the single home of the per-segment wire shaping shared by the
+// batch results endpoint and the live result frame, so both render identically
+// and cannot drift. Nil matches become an empty array: an empty matches under no
+// skip reason means "checked, no confident match", distinct from "not checked".
+func toSegmentJSON(r domain.SegmentResult) segmentJSON {
+	matches := r.Matches
+	if matches == nil {
+		matches = []domain.SegmentMatch{}
+	}
+	return segmentJSON{
+		Start:      r.Start.Seconds(),
+		End:        r.End.Seconds(),
+		Text:       r.Text,
+		Matches:    matches,
+		SkipReason: string(r.SkipReason),
+	}
 }

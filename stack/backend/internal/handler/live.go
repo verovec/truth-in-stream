@@ -55,6 +55,14 @@ const (
 	livePingTimeout  = 10 * time.Second
 )
 
+// liveAudioBuffer bounds how many inbound frames may queue between the socket
+// reader and the analyzer. A small buffer absorbs transient analysis stalls so
+// readAudio keeps returning to conn.Read (where the library services pong
+// frames), which keeps the keepalive ping from mistaking backpressure for a
+// dead peer. It also bounds memory; sustained overload still applies
+// backpressure once the buffer fills. At ~100 ms/frame this is a few seconds.
+const liveAudioBuffer = 32
+
 // subtitleFrame is the wire form of a subtitle event: a statement's text the
 // moment it is transcribed, before any verdict.
 type subtitleFrame struct {
@@ -66,18 +74,14 @@ type subtitleFrame struct {
 }
 
 // resultFrame is the wire form of a result event: the batch per-segment shape
-// plus the correlation id and an optional non-fatal analysis error. Matches is
-// always present (empty means "checked, no confident match"); skip_reason is set
-// only when the gate declined to check the statement.
+// (embedded segmentJSON, so the live and batch result shapes are the same type
+// by construction and cannot drift) plus the correlation id and an optional
+// non-fatal analysis error.
 type resultFrame struct {
-	Type       string                `json:"type"`
-	ID         string                `json:"id"`
-	Start      float64               `json:"start"`
-	End        float64               `json:"end"`
-	Text       string                `json:"text"`
-	Matches    []domain.SegmentMatch `json:"matches"`
-	SkipReason string                `json:"skip_reason,omitempty"`
-	Error      string                `json:"error,omitempty"`
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	segmentJSON
+	Error string `json:"error,omitempty"`
 }
 
 // liveHandler upgrades the request to a WebSocket and bridges it to the live
@@ -98,7 +102,7 @@ func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, logger *slog.Lo
 		defer cancel()
 
 		videoID := r.PathValue("id")
-		audio := make(chan []byte)
+		audio := make(chan []byte, liveAudioBuffer)
 		go readAudio(ctx, cancel, conn, audio)
 		go pingLoop(ctx, cancel, conn, livePingInterval, livePingTimeout)
 
@@ -187,18 +191,10 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 			Text:  ev.Segment.Text,
 		})
 	}
-	matches := ev.Matches
-	if matches == nil {
-		matches = []domain.SegmentMatch{}
-	}
 	return wsjson.Write(ctx, conn, resultFrame{
-		Type:       string(ev.Kind),
-		ID:         ev.ID,
-		Start:      ev.Segment.Start.Seconds(),
-		End:        ev.Segment.End.Seconds(),
-		Text:       ev.Segment.Text,
-		Matches:    matches,
-		SkipReason: string(ev.SkipReason),
-		Error:      ev.Err,
+		Type:        string(ev.Kind),
+		ID:          ev.ID,
+		segmentJSON: toSegmentJSON(domain.SegmentResult{Segment: ev.Segment, Matches: ev.Matches, SkipReason: ev.SkipReason}),
+		Error:       ev.Err,
 	})
 }
