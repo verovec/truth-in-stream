@@ -43,7 +43,7 @@ Ready queue.
 | VER-33 | Public landing page and login-modal entry into the analyser | In Review | High | VER-18 |
 | VER-34 | Ingest a YouTube video by link (download, store, catalog) | In Progress | High | VER-28 |
 | VER-26 | Upload and live-analyse video from the frontend (epic) | Todo | High | VER-28, VER-29, VER-30, VER-31 |
-| VER-29 | Upload UI and video library/picker (frontend) | In Progress | High | VER-28 |
+| VER-29 | Upload UI and video library/picker (frontend) | In Review | High | VER-28 |
 | VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | In Progress | High | VER-28 |
 | VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Todo | High | VER-29, VER-30 |
 
