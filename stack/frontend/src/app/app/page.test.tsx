@@ -1,11 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import {
-  json,
-  resultsRoute,
-  stubBackend,
-  submitRoute,
-} from "@/test/fact-check";
+import { json, stubBackend } from "@/test/fact-check";
 import Home from "./page";
 
 vi.mock("react-player", () => import("@/test/react-player-mock"));
@@ -13,10 +8,13 @@ vi.mock("react-player", () => import("@/test/react-player-mock"));
 vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
 
 describe("Home", () => {
-  test("renders the watch screen with player and fact-check panel", async () => {
+  test("renders the header and the video library", async () => {
     stubBackend([
-      submitRoute(json(200, { video_id: "v1", status: "complete" })),
-      resultsRoute(json(200, { video_id: "v1", segments: [] })),
+      {
+        match: (url, init) =>
+          url.endsWith("/api/videos") && (init?.method ?? "GET") === "GET",
+        responses: [json(200, { videos: [] })],
+      },
     ]);
 
     render(<Home />);
@@ -28,15 +26,8 @@ describe("Home", () => {
       screen.getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(
-      screen.getByRole("region", { name: /common myths/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("complementary", { name: /fact checks/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("media")).toHaveAttribute("src");
-    expect(
-      await screen.findByText(/no speech segments were found/i),
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+    });
   });
 });
