@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -344,7 +346,10 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, memb
 		return
 	}
 	for _, m := range members {
-		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason, Matches: matches}) {
+		// Each member gets its own copy of the verdict's matches so the per-member
+		// events stay independent: a consumer that mutates one result's matches
+		// (sort, filter) cannot corrupt its siblings through a shared backing array.
+		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason, Matches: slices.Clone(matches)}) {
 			return
 		}
 	}
@@ -372,31 +377,33 @@ func sameSpeaker(incoming, current string) bool {
 // so an unpunctuated monologue flushes instead of growing without bound.
 const maxWordsPerSentence = 25
 
-// sentenceCount estimates how many sentences a segment holds. It counts runs of
-// terminal punctuation and falls back to a word-count estimate, taking the
-// larger, so both well-punctuated speech and an unpunctuated run are bounded.
+// sentenceCount estimates how many sentences a segment holds in a single
+// allocation-free pass. It counts groups of terminal punctuation (so "?!" or an
+// ellipsis is one boundary, not several) and, as a fallback for unpunctuated
+// speech, the word count divided by maxWordsPerSentence, taking the larger so
+// both well-punctuated speech and a long unpunctuated run are bounded. Empty or
+// whitespace-only text holds no sentences.
 func sentenceCount(text string) int {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return 0
-	}
-	byWords := (len(strings.Fields(trimmed)) + maxWordsPerSentence - 1) / maxWordsPerSentence
-	return max(1, max(sentenceTerminators(trimmed), byWords))
-}
-
-// sentenceTerminators counts groups of sentence-ending punctuation, so a run
-// like "?!" or "..." counts as one boundary rather than several.
-func sentenceTerminators(text string) int {
-	count := 0
-	prevTerm := false
+	terminators, words := 0, 0
+	prevTerm, inWord := false, false
 	for _, r := range text {
+		if unicode.IsSpace(r) {
+			inWord = false
+		} else if !inWord {
+			inWord = true
+			words++
+		}
 		term := r == '.' || r == '!' || r == '?' || r == '…'
 		if term && !prevTerm {
-			count++
+			terminators++
 		}
 		prevTerm = term
 	}
-	return count
+	if words == 0 {
+		return 0
+	}
+	byWords := (words + maxWordsPerSentence - 1) / maxWordsPerSentence
+	return max(1, max(terminators, byWords))
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the

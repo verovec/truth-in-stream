@@ -314,7 +314,9 @@ func (c *AssemblyAIClient) classify(ctx context.Context, msg aaiMessage) (event 
 // word's onset and End is the latest word end, so a trailing in-progress word
 // with a zero end (a committed Turn can still carry one) cannot truncate the
 // span. The speaker is the turn-level diarization label. With no words the span
-// is zero and only the text and speaker carry information.
+// is zero and only the text and speaker carry information. End is clamped to at
+// least Start so a turn whose only word has a zero end never yields an inverted
+// span.
 func aaiSegment(msg aaiMessage) Segment {
 	seg := Segment{Text: msg.Transcript, Speaker: msg.SpeakerLabel}
 	for i, w := range msg.Words {
@@ -324,6 +326,9 @@ func aaiSegment(msg aaiMessage) Segment {
 		if end := millis(w.End); end > seg.End {
 			seg.End = end
 		}
+	}
+	if seg.End < seg.Start {
+		seg.End = seg.Start
 	}
 	return seg
 }
