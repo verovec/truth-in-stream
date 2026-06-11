@@ -72,16 +72,16 @@ func TestAssemblyAIURLOmitsUnsetOptions(t *testing.T) {
 	}
 }
 
-func TestAAISegment(t *testing.T) {
+func TestAAISegments(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
 		msg  aaiMessage
-		want Segment
+		want []Segment
 	}{
 		{
-			name: "spans first and last word with speaker",
+			name: "uniform speaker keeps the formatted transcript as one segment",
 			msg: aaiMessage{
 				Transcript:   "the earth is round",
 				SpeakerLabel: "A",
@@ -91,12 +91,44 @@ func TestAAISegment(t *testing.T) {
 					{Text: "round", Start: 1600, End: 2000, Speaker: "A"},
 				},
 			},
-			want: Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"},
+			want: []Segment{{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}},
 		},
 		{
-			name: "no words leaves a text-only segment with speaker",
+			name: "speaker change splits the turn into one segment per run",
+			msg: aaiMessage{
+				Transcript:   "i agree no you are wrong",
+				SpeakerLabel: "A",
+				Words: []aaiWord{
+					{Text: "i", Start: 1000, End: 1200, Speaker: "A"},
+					{Text: "agree", Start: 1200, End: 1600, Speaker: "A"},
+					{Text: "no", Start: 2000, End: 2200, Speaker: "B"},
+					{Text: "you", Start: 2200, End: 2500, Speaker: "B"},
+					{Text: "are", Start: 2500, End: 2800, Speaker: "B"},
+					{Text: "wrong", Start: 2800, End: 3000, Speaker: "B"},
+				},
+			},
+			want: []Segment{
+				{Start: time.Second, End: 1600 * time.Millisecond, Text: "i agree", Speaker: "A"},
+				{Start: 2 * time.Second, End: 3 * time.Second, Text: "no you are wrong", Speaker: "B"},
+			},
+		},
+		{
+			name: "an empty mid-run speaker continues the current run, no split",
+			msg: aaiMessage{
+				Transcript:   "the earth is round",
+				SpeakerLabel: "A",
+				Words: []aaiWord{
+					{Text: "the", Start: 1000, End: 1200, Speaker: "A"},
+					{Text: "earth", Start: 1200, End: 1600, Speaker: ""},
+					{Text: "round", Start: 1600, End: 2000, Speaker: "A"},
+				},
+			},
+			want: []Segment{{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}},
+		},
+		{
+			name: "no words leaves a text-only segment with the turn speaker",
 			msg:  aaiMessage{Transcript: "no timestamps", SpeakerLabel: "B"},
-			want: Segment{Text: "no timestamps", Speaker: "B"},
+			want: []Segment{{Text: "no timestamps", Speaker: "B"}},
 		},
 		{
 			name: "trailing zero end is clamped to start, never inverted",
@@ -105,14 +137,14 @@ func TestAAISegment(t *testing.T) {
 				SpeakerLabel: "A",
 				Words:        []aaiWord{{Text: "uh", Start: 1500, End: 0}},
 			},
-			want: Segment{Start: 1500 * time.Millisecond, End: 1500 * time.Millisecond, Text: "uh", Speaker: "A"},
+			want: []Segment{{Start: 1500 * time.Millisecond, End: 1500 * time.Millisecond, Text: "uh", Speaker: "A"}},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := aaiSegment(tc.msg); got != tc.want {
-				t.Errorf("aaiSegment() = %+v, want %+v", got, tc.want)
+			if diff := cmp.Diff(tc.want, aaiSegments(tc.msg)); diff != "" {
+				t.Errorf("aaiSegments() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -124,25 +156,22 @@ func TestAAIClassify(t *testing.T) {
 	c := silentAssemblyAI()
 	ctx := t.Context()
 	tests := []struct {
-		name      string
-		msg       aaiMessage
-		wantEvent TranscriptEvent
-		wantOK    bool
-		wantEnd   bool
+		name       string
+		msg        aaiMessage
+		wantEvents []TranscriptEvent
+		wantEnd    bool
 	}{
 		{
-			name:      "in-progress turn emits non-final with speaker",
-			msg:       aaiMessage{Type: aaiMsgTurn, Transcript: "the earth", SpeakerLabel: "A", EndOfTurn: false},
-			wantEvent: TranscriptEvent{Segment: Segment{Text: "the earth", Speaker: "A"}, Final: false},
-			wantOK:    true,
+			name:       "in-progress turn emits one non-final event with the turn speaker",
+			msg:        aaiMessage{Type: aaiMsgTurn, Transcript: "the earth", SpeakerLabel: "A", EndOfTurn: false},
+			wantEvents: []TranscriptEvent{{Segment: Segment{Text: "the earth", Speaker: "A"}, Final: false}},
 		},
 		{
-			name:   "empty turn is absorbed",
-			msg:    aaiMessage{Type: aaiMsgTurn, Transcript: "", EndOfTurn: true},
-			wantOK: false,
+			name: "empty turn is absorbed",
+			msg:  aaiMessage{Type: aaiMsgTurn, Transcript: "", EndOfTurn: true},
 		},
 		{
-			name: "committed turn emits final with speaker",
+			name: "uniform committed turn emits one final event",
 			msg: aaiMessage{
 				Type:         aaiMsgTurn,
 				Transcript:   "the earth is round",
@@ -150,13 +179,30 @@ func TestAAIClassify(t *testing.T) {
 				EndOfTurn:    true,
 				Words:        []aaiWord{{Text: "the", Start: 1000, End: 2000, Speaker: "A"}},
 			},
-			wantEvent: TranscriptEvent{Segment: Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}, Final: true},
-			wantOK:    true,
+			wantEvents: []TranscriptEvent{{Segment: Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}, Final: true}},
 		},
 		{
-			name:   "begin is absorbed",
-			msg:    aaiMessage{Type: aaiMsgBegin},
-			wantOK: false,
+			name: "mixed committed turn emits one final event per speaker run",
+			msg: aaiMessage{
+				Type:         aaiMsgTurn,
+				Transcript:   "i agree no wrong",
+				SpeakerLabel: "A",
+				EndOfTurn:    true,
+				Words: []aaiWord{
+					{Text: "i", Start: 1000, End: 1200, Speaker: "A"},
+					{Text: "agree", Start: 1200, End: 1600, Speaker: "A"},
+					{Text: "no", Start: 2000, End: 2200, Speaker: "B"},
+					{Text: "wrong", Start: 2200, End: 2600, Speaker: "B"},
+				},
+			},
+			wantEvents: []TranscriptEvent{
+				{Segment: Segment{Start: time.Second, End: 1600 * time.Millisecond, Text: "i agree", Speaker: "A"}, Final: true},
+				{Segment: Segment{Start: 2 * time.Second, End: 2600 * time.Millisecond, Text: "no wrong", Speaker: "B"}, Final: true},
+			},
+		},
+		{
+			name: "begin is absorbed",
+			msg:  aaiMessage{Type: aaiMsgBegin},
 		},
 		{
 			name:    "termination ends the stream",
@@ -169,20 +215,19 @@ func TestAAIClassify(t *testing.T) {
 			wantEnd: true,
 		},
 		{
-			name:   "unknown message is absorbed",
-			msg:    aaiMessage{Type: "SomethingNew", Transcript: "ignored"},
-			wantOK: false,
+			name: "unknown message is absorbed",
+			msg:  aaiMessage{Type: "SomethingNew", Transcript: "ignored"},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			event, ok, end := c.classify(ctx, tc.msg)
-			if ok != tc.wantOK || end != tc.wantEnd {
-				t.Fatalf("classify() ok=%v end=%v, want ok=%v end=%v", ok, end, tc.wantOK, tc.wantEnd)
+			events, end := c.classify(ctx, tc.msg)
+			if end != tc.wantEnd {
+				t.Fatalf("classify() end=%v, want %v", end, tc.wantEnd)
 			}
-			if tc.wantOK && event != tc.wantEvent {
-				t.Errorf("classify() event = %+v, want %+v", event, tc.wantEvent)
+			if diff := cmp.Diff(tc.wantEvents, events); diff != "" {
+				t.Errorf("classify() events mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
