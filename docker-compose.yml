@@ -94,11 +94,12 @@ services:
   # subset, no key), this calls the paid Voyage embedding API and is long, so it
   # runs only on demand and the backend never waits for it:
   #   docker compose --profile wiki run --rm wiki-populate
-  # Each run is time-boxed by WIKI_MAX_DURATION (default 15m) and stops cleanly
-  # at the budget; the embedded prefix is committed and re-running resumes. The
-  # corpus only goes live (atomic swap) once a run finishes the whole embed. The
-  # downloaded dump lives in a named volume so resumes reuse it. Override with
-  # WIKI_MAX_DURATION (0 = run to completion) and WIKI_CORPUS (default simplewiki).
+  # Each run goes to completion by default (WIKI_MAX_DURATION=0); set it to box a
+  # session, e.g. 15m, and the run stops cleanly at the budget with its embedded
+  # prefix committed so re-running resumes. The corpus only goes live (atomic
+  # swap) once a run finishes the whole embed. The downloaded dump lives in a
+  # named volume and is reused across runs (conditional refresh). Override
+  # WIKI_MAX_DURATION and WIKI_CORPUS (default simplewiki) via .env or the shell.
   wiki-populate:
     profiles: ["wiki"]
     build:
