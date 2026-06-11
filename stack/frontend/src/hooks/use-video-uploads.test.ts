@@ -114,6 +114,32 @@ describe("useVideoUploads", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  test("dismiss aborts an in-flight upload and removes the job", async () => {
+    stubBackend(uploadRoutes());
+    let captured: AbortSignal | undefined;
+    const uploader: PutUploader = (_p, _f, _onProgress, signal) =>
+      new Promise(() => {
+        captured = signal;
+      });
+
+    const { result } = renderHook(() => useVideoUploads({ uploader }));
+    act(() => {
+      result.current.startUploads([mp4()]);
+    });
+
+    await waitFor(() => {
+      expect(result.current.jobs[0].state.status).toBe("uploading");
+    });
+
+    const { id } = result.current.jobs[0];
+    act(() => {
+      result.current.dismiss(id);
+    });
+
+    expect(result.current.jobs).toHaveLength(0);
+    expect(captured?.aborted).toBe(true);
+  });
+
   test("surfaces a transport failure as an error job", async () => {
     stubBackend(uploadRoutes());
     const uploader: PutUploader = () =>

@@ -57,6 +57,19 @@ export function useVideoUploads({
     callbacks.current = { uploader, onUploaded };
   });
 
+  // One AbortController per in-flight job, so dismiss and unmount cancel the
+  // request/upload/confirm chain instead of letting it write state after the
+  // job is gone.
+  const controllers = useRef(new Map<string, AbortController>());
+  useEffect(() => {
+    const inFlight = controllers.current;
+    return () => {
+      for (const controller of inFlight.values()) {
+        controller.abort();
+      }
+    };
+  }, []);
+
   const setState = useCallback((id: string, state: UploadJobState) => {
     setJobs((prev) =>
       prev.map((job) => (job.id === id ? { ...job, state } : job)),
@@ -65,12 +78,14 @@ export function useVideoUploads({
 
   const run = useCallback(
     async (id: string, title: string, file: File) => {
+      const controller = new AbortController();
+      controllers.current.set(id, controller);
+      let confirmed: LibraryVideo | null = null;
       try {
-        const ticket = await requestUpload({
-          title,
-          contentType: file.type,
-          sizeBytes: file.size,
-        });
+        const ticket = await requestUpload(
+          { title, contentType: file.type, sizeBytes: file.size },
+          controller.signal,
+        );
         setState(id, { status: "uploading", progress: 0 });
         await callbacks.current.uploader(
           ticket.upload,
@@ -81,13 +96,26 @@ export function useVideoUploads({
               progress: total > 0 ? loaded / total : 0,
             });
           },
+          controller.signal,
         );
         setState(id, { status: "confirming" });
-        const video = await confirmVideo(ticket.videoId);
-        setState(id, { status: "ready", video });
-        callbacks.current.onUploaded?.(video);
+        confirmed = await confirmVideo(ticket.videoId, controller.signal);
+        setState(id, { status: "ready", video: confirmed });
       } catch (err) {
-        setState(id, { status: "error", message: errorMessage(err) });
+        // A cancelled job has already been removed; do not resurrect it as an
+        // error.
+        if (!controller.signal.aborted) {
+          setState(id, { status: "error", message: errorMessage(err) });
+        }
+        return;
+      } finally {
+        controllers.current.delete(id);
+      }
+      // Notify outside the try so a throw in onUploaded cannot reclassify a
+      // genuinely succeeded upload as failed. confirmed is non-null only on the
+      // success path (the catch always returns).
+      if (confirmed) {
+        callbacks.current.onUploaded?.(confirmed);
       }
     },
     [setState],
@@ -131,6 +159,7 @@ export function useVideoUploads({
   );
 
   const dismiss = useCallback((id: string) => {
+    controllers.current.get(id)?.abort();
     setJobs((prev) => prev.filter((job) => job.id !== id));
   }, []);
 

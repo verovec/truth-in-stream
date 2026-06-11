@@ -55,28 +55,34 @@ export const putWithProgress: PutUploader = (
       xhr.setRequestHeader("Content-Type", file.type);
     }
 
+    // Tear down the abort listener on every terminal path so a reused signal
+    // does not accumulate listeners (and the XHR closures they capture).
+    const onAbort = () => xhr.abort();
+    const settle = (finish: () => void) => {
+      signal?.removeEventListener("abort", onAbort);
+      finish();
+    };
+
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         onProgress(event.loaded, event.total);
       }
     };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-        return;
-      }
-      reject(new ApiError(`upload failed with status ${xhr.status}`, xhr.status));
-    };
-    xhr.onerror = () => reject(new Error("upload failed: network error"));
-    xhr.onabort = () => reject(new Error("upload aborted"));
+    xhr.onload = () =>
+      settle(() => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+          return;
+        }
+        reject(
+          new ApiError(`upload failed with status ${xhr.status}`, xhr.status),
+        );
+      });
+    xhr.onerror = () =>
+      settle(() => reject(new Error("upload failed: network error")));
+    xhr.onabort = () => settle(() => reject(new Error("upload aborted")));
 
-    if (signal) {
-      if (signal.aborted) {
-        xhr.abort();
-      } else {
-        signal.addEventListener("abort", () => xhr.abort(), { once: true });
-      }
-    }
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     xhr.send(file);
   });

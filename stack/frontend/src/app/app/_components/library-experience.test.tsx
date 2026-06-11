@@ -78,6 +78,10 @@ describe("LibraryExperience", () => {
     expect(
       screen.getByRole("complementary", { name: /fact checks/i }),
     ).toBeInTheDocument();
+    // The batch fact-check cycle runs for the curated sample end to end.
+    expect(
+      await screen.findByText(/no speech segments were found/i),
+    ).toBeInTheDocument();
   });
 
   test("selecting another video loads it into the player", async () => {

@@ -65,7 +65,7 @@ export function LibraryExperience({
   loadVideos = listVideos,
   uploader,
 }: {
-  loadVideos?: () => Promise<LibraryVideo[]>;
+  loadVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
   uploader?: PutUploader;
 }) {
   const [videos, setVideos] = useState<LibraryVideo[]>([]);
@@ -90,14 +90,15 @@ export function LibraryExperience({
   });
 
   // The library loads on the client (like the rest of this app's data) and
-  // reloads when reloadToken changes. Every state write happens in an async
-  // callback, never synchronously in the effect body.
+  // reloads when reloadToken changes. The fetch is aborted on unmount/reload so
+  // a stale response cannot land; every state write happens asynchronously,
+  // never synchronously in the effect body.
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     loadVideosRef
-      .current()
+      .current(controller.signal)
       .then((loaded) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
           return;
         }
         setVideos(loaded);
@@ -105,7 +106,7 @@ export function LibraryExperience({
         setListState({ status: "loaded" });
       })
       .catch((err: unknown) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
           return;
         }
         setListState({
@@ -114,9 +115,7 @@ export function LibraryExperience({
             err instanceof Error ? err.message : "Could not load the library.",
         });
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [reloadToken]);
 
   const retryLibrary = useCallback(() => {
