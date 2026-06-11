@@ -128,6 +128,26 @@ describe("createMediaElementCapture", () => {
     expect(onFrame).toHaveBeenCalledTimes(2);
   });
 
+  test("stop() after an operator pause is a no-op on the context", async () => {
+    const onFrame = vi.fn();
+    const { capture, node, context } = await build(onFrame);
+
+    // Realistic path: streaming -> pause (suspend) -> the session then closes
+    // while paused (stopCapture).
+    capture.resume();
+    capture.suspend();
+    expect(context.suspendCalls).toBe(1);
+
+    capture.stop();
+
+    // stop() must not re-suspend, resume, or otherwise touch the context, and
+    // the frame gate stays closed.
+    expect(context.suspendCalls).toBe(1);
+    expect(context.resumeCalls).toBe(1);
+    node.emit(block());
+    expect(onFrame).not.toHaveBeenCalled();
+  });
+
   test("does not forward frames before resume()", async () => {
     const onFrame = vi.fn();
     const { node } = await build(onFrame);
