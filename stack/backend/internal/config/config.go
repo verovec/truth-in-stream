@@ -65,6 +65,15 @@ type Embedding struct {
 	Dim    int
 }
 
+// EmbeddingModel resolves the embedding model name from the environment:
+// EMBEDDING_MODEL when set, otherwise DefaultEmbeddingModel. It needs no API key
+// so the offline seed tooling (which embeds from the committed cache) and
+// LoadEmbedding share one resolution rule - they can never key the cache under a
+// different string than the running stack embeds with.
+func EmbeddingModel() string {
+	return getenv("EMBEDDING_MODEL", DefaultEmbeddingModel)
+}
+
 // LoadEmbedding reads the embedding provider configuration from the
 // environment. EMBEDDING_API_KEY is required; the model defaults to
 // voyage-4-large and the dimension is pinned to the claim store's EmbeddingDim. An
@@ -77,7 +86,7 @@ func LoadEmbedding() (Embedding, error) {
 	}
 	e := Embedding{
 		APIKey: apiKey,
-		Model:  getenv("EMBEDDING_MODEL", DefaultEmbeddingModel),
+		Model:  EmbeddingModel(),
 		Dim:    domain.EmbeddingDim,
 	}
 	if raw := os.Getenv("EMBEDDING_DIM"); raw != "" {

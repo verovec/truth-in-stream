@@ -233,6 +233,22 @@ func TestLoadEmbedding(t *testing.T) {
 	}
 }
 
+// TestEmbeddingModel pins the keyless resolver: the default is asserted against
+// the literal "voyage-4-large" (an independent oracle, so an unintended change to
+// DefaultEmbeddingModel is caught), an override is honored, and resolution works
+// with no EMBEDDING_API_KEY set - the property the offline seed path relies on.
+func TestEmbeddingModel(t *testing.T) {
+	t.Setenv("EMBEDDING_API_KEY", "")
+	t.Setenv("EMBEDDING_MODEL", "")
+	if got := EmbeddingModel(); got != "voyage-4-large" {
+		t.Errorf("EmbeddingModel() default = %q, want voyage-4-large", got)
+	}
+	t.Setenv("EMBEDDING_MODEL", "voyage-4")
+	if got := EmbeddingModel(); got != "voyage-4" {
+		t.Errorf("EmbeddingModel() override = %q, want voyage-4", got)
+	}
+}
+
 func TestLoadAuth(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	required := map[string]string{
