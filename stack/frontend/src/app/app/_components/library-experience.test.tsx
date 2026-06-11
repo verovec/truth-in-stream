@@ -77,6 +77,10 @@ describe("LibraryExperience", () => {
     expect(
       within(summary).getByText(/findings appear here/i),
     ).toBeInTheDocument();
+    // The playing video's title is surfaced as a heading above the library.
+    expect(
+      screen.getByRole("heading", { name: "Common Myths" }),
+    ).toBeInTheDocument();
   });
 
   test("shows a loading skeleton while the library is being fetched", () => {

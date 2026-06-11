@@ -37,12 +37,13 @@ func TestAssemblyAIURL(t *testing.T) {
 	}
 	q := u.Query()
 	for key, want := range map[string]string{
-		"speech_model":   "u3-rt-pro",
-		"sample_rate":    "16000",
-		"encoding":       "pcm_s16le",
-		"speaker_labels": "true",
-		"max_speakers":   "3",
-		"language":       "en",
+		"speech_model":     "u3-rt-pro",
+		"sample_rate":      "16000",
+		"encoding":         "pcm_s16le",
+		"speaker_labels":   "true",
+		"max_speakers":     "3",
+		"language":         "en",
+		"max_turn_silence": "500",
 	} {
 		if q.Get(key) != want {
 			t.Errorf("query %q = %q, want %q", key, q.Get(key), want)

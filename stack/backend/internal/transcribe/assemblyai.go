@@ -49,6 +49,13 @@ const (
 	assemblyAIBytesPerMilli = assemblyAISampleRateHz * 2 / 1000
 	assemblyAIChunkBytes    = 100 * assemblyAIBytesPerMilli
 	assemblyAIMinChunkBytes = 50 * assemblyAIBytesPerMilli
+	// assemblyAIMaxTurnSilenceMs shortens end-of-turn detection from the provider's
+	// 1000 ms default so a speaker's pause commits a turn sooner. Subtitles then
+	// land promptly and stay short rather than arriving as one multi-second block,
+	// and because a speaker change carries a pause, a turn ends at it - keeping each
+	// committed segment within one speaker. It sits well above a mid-sentence
+	// micro-pause, so it shortens turns without fragmenting a single sentence.
+	assemblyAIMaxTurnSilenceMs = 500
 )
 
 // Server message types received from AssemblyAI streaming v3. The type field is
@@ -211,10 +218,11 @@ func assemblyAIURL(base, model string, maxSpeakers int, language string) (string
 		return "", fmt.Errorf("assemblyai: parse streaming url: %w", err)
 	}
 	q := url.Values{
-		"speech_model":   {model},
-		"sample_rate":    {strconv.Itoa(assemblyAISampleRateHz)},
-		"encoding":       {assemblyAIEncoding},
-		"speaker_labels": {"true"},
+		"speech_model":     {model},
+		"sample_rate":      {strconv.Itoa(assemblyAISampleRateHz)},
+		"encoding":         {assemblyAIEncoding},
+		"speaker_labels":   {"true"},
+		"max_turn_silence": {strconv.Itoa(assemblyAIMaxTurnSilenceMs)},
 	}
 	if maxSpeakers > 0 {
 		q.Set("max_speakers", strconv.Itoa(maxSpeakers))

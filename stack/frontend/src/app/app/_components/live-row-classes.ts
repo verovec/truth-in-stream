@@ -1,6 +1,6 @@
-// Shared row styling for the two linked live regions, so the subtitle "active"
-// row and the fact-check "selected" row stay visually in lockstep instead of
-// drifting when one is restyled.
+// Card styling for the fact-check region's rows. The subtitle region renders as
+// a borderless continuous transcript, so these boxed styles are now scoped to
+// the fact-check list alone, where a selected row is emphasized over the base.
 export const LIVE_ROW_BASE_CLASS =
   "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950";
 

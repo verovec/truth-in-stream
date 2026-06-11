@@ -14,6 +14,7 @@ export type LiveStatement =
       start: number;
       end: number;
       text: string;
+      speaker?: string;
       status: "analysing";
     }
   | {
@@ -21,6 +22,7 @@ export type LiveStatement =
       start: number;
       end: number;
       text: string;
+      speaker?: string;
       status: "checked";
       matches: SegmentMatch[];
       skipReason?: SkipReason;
@@ -51,12 +53,14 @@ function checkedFromResult(
   id: string,
   segment: FactCheckSegment,
   error: string | undefined,
+  speaker: string | undefined,
 ): LiveStatement {
   return {
     id,
     start: segment.start,
     end: segment.end,
     text: segment.text,
+    speaker,
     status: "checked",
     matches: segment.matches,
     skipReason: segment.skipReason,
@@ -88,19 +92,30 @@ export function applyFrame(
     byId.delete(incumbent);
   }
 
+  const existing = byId.get(frame.id);
   if (frame.type === "subtitle") {
-    const existing = byId.get(frame.id);
     if (!existing || existing.status !== "checked") {
       byId.set(frame.id, {
         id: frame.id,
         start: frame.start,
         end: frame.end,
         text: frame.text,
+        speaker: frame.speaker,
         status: "analysing",
       });
+    } else if (frame.speaker && !existing.speaker) {
+      // The verdict landed before its subtitle (out-of-order delivery or a
+      // reconnect replay): keep the resolved statement but backfill the speaker
+      // the subtitle carries, which the result frame could not supply.
+      byId.set(frame.id, { ...existing, speaker: frame.speaker });
     }
   } else {
-    byId.set(frame.id, checkedFromResult(frame.id, frame.segment, frame.error));
+    // The result frame carries no speaker (diarization lands on the subtitle), so
+    // the verdict inherits the label its subtitle already established.
+    byId.set(
+      frame.id,
+      checkedFromResult(frame.id, frame.segment, frame.error, existing?.speaker),
+    );
   }
 
   byStart.set(key, frame.id);

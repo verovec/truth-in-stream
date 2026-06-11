@@ -21,13 +21,15 @@ export type InterimFrame = {
 
 // SubtitleFrame is a statement's text the moment it is transcribed, before any
 // verdict. Timestamps are stream-relative seconds; the caller offsets them to
-// the playback clock.
+// the playback clock. speaker is the diarized speaker label (e.g. "A", "B") when
+// the provider supplies one; it is absent for unattributed speech.
 export type SubtitleFrame = {
   type: "subtitle";
   id: string;
   start: number;
   end: number;
   text: string;
+  speaker?: string;
 };
 
 // ResultFrame is the fact-check outcome for a statement, sharing the subtitle's
@@ -83,13 +85,19 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     ) {
       return null;
     }
-    return {
+    const frame: SubtitleFrame = {
       type: "subtitle",
       id: value.id,
       start: value.start,
       end: value.end,
       text: value.text,
     };
+    // speaker is additive and omitted when empty, so a stream without diarization
+    // (or an unattributed turn) leaves the field absent rather than blank.
+    if (typeof value.speaker === "string" && value.speaker.length > 0) {
+      frame.speaker = value.speaker;
+    }
+    return frame;
   }
 
   if (value.type === "result") {

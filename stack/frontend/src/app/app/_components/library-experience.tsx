@@ -257,6 +257,16 @@ export function LibraryExperience({
 
   const active = resolveActive(selectedVideo, resolved);
   const activeVideoId = active.status === "ready" ? active.playable.id : null;
+  // The title of the video on the player, surfaced above the library so the
+  // operator always sees what is playing. Resolved from the ready playback shape
+  // when available, else the selected record (still loading or errored); absent
+  // only when nothing is selected.
+  const nowPlayingTitle =
+    active.status === "ready"
+      ? active.playable.title
+      : active.status === "idle"
+        ? null
+        : active.video.title;
 
   return (
     <PlaybackProvider>
@@ -271,6 +281,11 @@ export function LibraryExperience({
             <div className="flex flex-col gap-4">
               <PlayerStage active={active} />
               <section className="flex flex-col gap-3">
+                {nowPlayingTitle ? (
+                  <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+                    {nowPlayingTitle}
+                  </h2>
+                ) : null}
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
                   Library
                 </h2>

@@ -40,6 +40,37 @@ describe("LiveStatementList", () => {
     expect(screen.getByText(/checking this statement/i)).toBeInTheDocument();
   });
 
+  test("labels a statement with its diarized speaker when present", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          {
+            id: "0",
+            start: 0,
+            end: 2,
+            text: "the earth is round",
+            speaker: "A",
+            status: "analysing",
+          },
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(screen.getByText(/speaker a/i)).toBeInTheDocument();
+  });
+
+  test("omits the speaker tag for an unattributed statement", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[analysing("0", 0, "the earth is round")]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(screen.queryByText(/speaker/i)).not.toBeInTheDocument();
+  });
+
   test("does not render verdicts inline; those live in the fact-check region", () => {
     renderWithPlayback(
       <LiveStatementList

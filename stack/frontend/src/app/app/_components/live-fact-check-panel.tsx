@@ -2,6 +2,10 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
+import {
+  type SeparatorProps,
+  useVerticalSplit,
+} from "@/hooks/use-vertical-split";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveStatement } from "@/lib/live/statements";
@@ -52,6 +56,12 @@ export function LiveFactCheckPanel() {
   // memoized fact-check list.
   const entries = useMemo(() => deriveFactChecks(statements), [statements]);
 
+  // The operator can drag (or arrow-key) the divider to trade height between the
+  // transcript and the fact-check list, so a long transcript and a long verdict
+  // list can each be given room without the panel growing.
+  const { containerRef, topGrow, bottomGrow, separatorProps } =
+    useVerticalSplit("Resize subtitles and fact checks");
+
   return (
     <aside
       aria-labelledby="live-analysis-heading"
@@ -71,34 +81,59 @@ export function LiveFactCheckPanel() {
       </header>
       <ConnectionNotice status={status} />
 
-      <section
-        aria-label="Live subtitles"
-        className="flex min-h-0 flex-1 flex-col gap-2"
-      >
-        <RegionHeading>Subtitles</RegionHeading>
-        {statements.length > 0 && (
-          <LiveStatementList
-            statements={statements}
-            selectedStatementId={selection?.id ?? null}
-            selectionTick={selection?.tick ?? 0}
-          />
-        )}
-        {statements.length === 0 && !caption && <EmptyHint status={status} />}
-        <LiveCaption text={caption} />
-      </section>
+      {/* The two regions split the remaining height by the draggable divider's
+          ratio. flexGrow is an inline style, not a class, because it is a dynamic
+          numeric weight Tailwind cannot express; everything else stays in
+          classes. */}
+      <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
+        <section
+          aria-label="Live subtitles"
+          style={{ flexGrow: topGrow, flexBasis: 0 }}
+          className="flex min-h-0 flex-col gap-2 overflow-hidden"
+        >
+          <RegionHeading>Subtitles</RegionHeading>
+          {statements.length > 0 && (
+            <LiveStatementList
+              statements={statements}
+              selectedStatementId={selection?.id ?? null}
+              selectionTick={selection?.tick ?? 0}
+            />
+          )}
+          {statements.length === 0 && !caption && <EmptyHint status={status} />}
+          <LiveCaption text={caption} />
+        </section>
 
-      <section
-        aria-label="Fact checks"
-        className="flex min-h-0 flex-1 flex-col gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800"
-      >
-        <RegionHeading>Fact checks</RegionHeading>
-        <LiveFactCheckList
-          entries={entries}
-          selectedStatementId={selection?.id ?? null}
-          onSelect={selectFactCheck}
-        />
-      </section>
+        <PanelSeparator {...separatorProps} />
+
+        <section
+          aria-label="Fact checks"
+          style={{ flexGrow: bottomGrow, flexBasis: 0 }}
+          className="flex min-h-0 flex-col gap-2 overflow-hidden pt-3"
+        >
+          <RegionHeading>Fact checks</RegionHeading>
+          <LiveFactCheckList
+            entries={entries}
+            selectedStatementId={selection?.id ?? null}
+            onSelect={selectFactCheck}
+          />
+        </section>
+      </div>
     </aside>
+  );
+}
+
+// PanelSeparator is the draggable divider between the transcript and the
+// fact-check list. It is the only resize affordance: a grip-marked line with a
+// row-resize cursor that the hook makes operable by pointer and keyboard.
+function PanelSeparator(props: SeparatorProps) {
+  return (
+    <div
+      {...props}
+      className="group relative flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sky-500"
+    >
+      <span className="h-px w-full bg-zinc-200 transition-colors group-hover:bg-sky-400 dark:bg-zinc-800 dark:group-hover:bg-sky-500/60" />
+      <span className="absolute h-1 w-10 rounded-full bg-zinc-300 transition-colors group-hover:bg-sky-400 dark:bg-zinc-700 dark:group-hover:bg-sky-500/60" />
+    </div>
   );
 }
 

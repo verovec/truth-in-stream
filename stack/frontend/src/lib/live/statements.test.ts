@@ -35,6 +35,58 @@ describe("statements store", () => {
     ]);
   });
 
+  test("a subtitle carries its diarized speaker onto the statement", () => {
+    const state = applyFrame(emptyStatements(), {
+      type: "subtitle",
+      id: "0",
+      start: 1,
+      end: 2,
+      text: "hello",
+      speaker: "A",
+    });
+    expect(listStatements(state)[0]).toMatchObject({
+      speaker: "A",
+      status: "analysing",
+    });
+  });
+
+  test("a resolved verdict keeps the speaker its subtitle established", () => {
+    // The result frame carries no speaker, so the checked statement must inherit
+    // the label the subtitle set rather than dropping it.
+    let state = applyFrame(emptyStatements(), {
+      type: "subtitle",
+      id: "0",
+      start: 1,
+      end: 2,
+      text: "hello",
+      speaker: "B",
+    });
+    state = applyFrame(state, result("0", 1, "hello"));
+    expect(listStatements(state)[0]).toMatchObject({
+      status: "checked",
+      speaker: "B",
+    });
+  });
+
+  test("backfills the speaker when the verdict arrived before its subtitle", () => {
+    // Out-of-order delivery: the result resolves the statement first (no speaker
+    // on the result frame), then the subtitle arrives carrying the label. The
+    // checked statement must adopt it rather than the guard dropping it.
+    let state = applyFrame(emptyStatements(), result("0", 1, "hello"));
+    state = applyFrame(state, {
+      type: "subtitle",
+      id: "0",
+      start: 1,
+      end: 2,
+      text: "hello",
+      speaker: "A",
+    });
+    expect(listStatements(state)[0]).toMatchObject({
+      status: "checked",
+      speaker: "A",
+    });
+  });
+
   test("a result reconciles to its subtitle by id and resolves it", () => {
     let state = applyFrame(emptyStatements(), subtitle("0", 1, "hello"));
     state = applyFrame(
