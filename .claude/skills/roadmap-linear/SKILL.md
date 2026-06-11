@@ -16,6 +16,28 @@ Identity comes from `.factory-state.json`: `linear_team_id`, `linear_project` (a
 - Create every card directly in `Todo`, never `Backlog` - `/pick` only claims `Todo` cards.
   Set the state at creation (or flip it with `update_issue_state` right after) so the card
   enters the Ready queue immediately.
+- Only `Todo` (and unstarted `Backlog`) cards may be edited. A card in any started state
+  (`In Progress`, `In Review`, or anything past `Todo`) is being processed by an agent right
+  now; NEVER edit its title, description, scope, or dependencies on the fly - the change races
+  the running agent and corrupts its working assumptions. To change in-progress work, leave the
+  card alone and open a new follow-up card instead.
+
+## Sizing cards to avoid merge conflicts
+Each card is delivered by its own agent, in parallel, in an isolated worktree. Two cards that
+touch the same files collide at merge time. Size cards so concurrently-runnable cards do not
+overlap on files - prefer one larger conflict-free card over several small cards that race on
+the same area. Granularity is not the goal; clean parallelism is.
+- Before creating a set of cards, map each candidate to the files/areas it will touch. If two
+  candidates would edit the same files AND could run in parallel (neither must reach `Done`
+  before the other starts), do NOT create them as separate cards. Merge them into one larger
+  card scoped to that shared area, folding the smaller one's outcome, criteria, and todos into
+  the right host card.
+- The only legitimate way to split work that overlaps on files is a hard dependency: if B must
+  not start until A is `Done`, record it in `depends_on` so they never run concurrently. Use
+  this only when the ordering is real, not to dodge merging.
+- This sizing decision happens at creation. Once a card leaves `Todo` it cannot be re-sliced
+  (see the editing rule above), so fold any newly-found overlap into a still-`Todo` card or a
+  brand-new card - never into a started one.
 
 ## Card structure
 Every card MUST contain these seven sections, in order. Bold headings (not `#`), inline code
