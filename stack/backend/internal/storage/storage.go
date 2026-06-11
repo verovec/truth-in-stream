@@ -30,15 +30,23 @@ const maxPresignTTL = 7 * 24 * time.Hour
 // AWS S3 and resolves credentials through the default chain (the ECS task
 // role in production); a non-empty Endpoint with static credentials and
 // UsePathStyle targets a MinIO container in local development.
+//
+// PublicEndpoint is the browser-facing host the presigned upload and playback
+// URLs are signed against. It only differs from Endpoint in local development,
+// where the backend reaches MinIO over the Docker network (Endpoint, e.g.
+// http://minio:9000) but the browser must reach it on the host (PublicEndpoint,
+// e.g. http://localhost:9000). Empty means "sign against Endpoint", which is
+// correct for real S3 because that URL is already reachable from the browser.
 type Config struct {
-	Endpoint     string
-	Region       string
-	Bucket       string
-	AccessKey    string
-	SecretKey    string
-	UsePathStyle bool
-	PutTTL       time.Duration
-	GetTTL       time.Duration
+	Endpoint       string
+	PublicEndpoint string
+	Region         string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+	UsePathStyle   bool
+	PutTTL         time.Duration
+	GetTTL         time.Duration
 }
 
 // S3Store is the S3/MinIO-backed implementation of domain.MediaStore.
@@ -82,23 +90,42 @@ func New(ctx context.Context, cfg Config) (*S3Store, error) {
 		return nil, fmt.Errorf("storage: load aws config: %w", err)
 	}
 
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		if cfg.Endpoint != "" {
-			o.BaseEndpoint = aws.String(cfg.Endpoint)
-		}
-		o.UsePathStyle = cfg.UsePathStyle
-		// MinIO rejects the SDK's default aws-chunked checksum trailers; only
-		// compute a request checksum when the operation actually requires one.
-		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-	})
+	// Server-side operations (Upload, Download, Exists) run from the backend, so
+	// they address storage at cfg.Endpoint.
+	client := newClient(awsCfg, cfg.Endpoint, cfg.UsePathStyle)
+
+	// Presigning is signed against the browser-facing host when one is set: the
+	// upload PUT and playback GET are issued by the browser, and SigV4 binds the
+	// host into the signature, so the public host must be chosen before signing
+	// rather than rewritten after. With no public endpoint, presigning reuses the
+	// server client (correct for real S3, whose URLs are already reachable from
+	// the browser).
+	presignClient := client
+	if cfg.PublicEndpoint != "" {
+		presignClient = newClient(awsCfg, cfg.PublicEndpoint, cfg.UsePathStyle)
+	}
 
 	return &S3Store{
 		client:    client,
-		presigner: s3.NewPresignClient(client),
+		presigner: s3.NewPresignClient(presignClient),
 		bucket:    cfg.Bucket,
 		putTTL:    cfg.PutTTL,
 		getTTL:    cfg.GetTTL,
 	}, nil
+}
+
+// newClient builds an S3 client bound to endpoint (empty selects real AWS S3)
+// with the path-style and checksum behavior MinIO and S3 both require.
+func newClient(awsCfg aws.Config, endpoint string, usePathStyle bool) *s3.Client {
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+		}
+		o.UsePathStyle = usePathStyle
+		// MinIO rejects the SDK's default aws-chunked checksum trailers; only
+		// compute a request checksum when the operation actually requires one.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
 }
 
 // PresignUpload returns a presigned PUT request the browser uses to upload an

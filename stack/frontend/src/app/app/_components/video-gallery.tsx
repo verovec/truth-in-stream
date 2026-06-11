@@ -11,6 +11,10 @@ type VideoGalleryProps = {
   onDismiss: (jobId: string) => void;
 };
 
+// GALLERY_GRID_CLASS is the library grid layout, shared so the loading skeleton
+// reserves exactly the gallery's columns and gaps and cannot drift from it.
+export const GALLERY_GRID_CLASS = "grid grid-cols-2 gap-3 sm:grid-cols-3";
+
 // VideoGallery is the library grid: in-flight uploads first, then every video.
 // A ready job is represented by its confirmed library row, so it is filtered out
 // here to avoid showing the same video twice.
@@ -32,7 +36,7 @@ export function VideoGallery({
   }
 
   return (
-    <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+    <ul className={GALLERY_GRID_CLASS}>
       {inFlight.map((job) => (
         <li key={job.id}>
           <UploadTile job={job} onDismiss={() => onDismiss(job.id)} />

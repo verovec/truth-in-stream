@@ -96,14 +96,15 @@ func run(logger *slog.Logger) error {
 	defer store.Close()
 
 	mediaStore, err := storage.New(ctx, storage.Config{
-		Endpoint:     storageCfg.Endpoint,
-		Region:       storageCfg.Region,
-		Bucket:       storageCfg.Bucket,
-		AccessKey:    storageCfg.AccessKey,
-		SecretKey:    storageCfg.SecretKey,
-		UsePathStyle: storageCfg.UsePathStyle,
-		PutTTL:       storageCfg.PutTTL,
-		GetTTL:       storageCfg.GetTTL,
+		Endpoint:       storageCfg.Endpoint,
+		PublicEndpoint: storageCfg.PublicEndpoint,
+		Region:         storageCfg.Region,
+		Bucket:         storageCfg.Bucket,
+		AccessKey:      storageCfg.AccessKey,
+		SecretKey:      storageCfg.SecretKey,
+		UsePathStyle:   storageCfg.UsePathStyle,
+		PutTTL:         storageCfg.PutTTL,
+		GetTTL:         storageCfg.GetTTL,
 	})
 	if err != nil {
 		return err

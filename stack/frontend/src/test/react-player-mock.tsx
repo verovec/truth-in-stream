@@ -9,6 +9,10 @@ export type MockReactPlayerProps = {
   playbackRate?: number;
   onTimeUpdate?: MediaEventHandler;
   onDurationChange?: MediaEventHandler;
+  onWaiting?: MediaEventHandler;
+  onCanPlay?: MediaEventHandler;
+  onPlaying?: MediaEventHandler;
+  onError?: MediaEventHandler;
   onPlay?: MediaEventHandler;
   onPause?: MediaEventHandler;
   onSeeked?: MediaEventHandler;
@@ -27,6 +31,10 @@ export default function MockReactPlayer({
   playbackRate,
   onTimeUpdate,
   onDurationChange,
+  onWaiting,
+  onCanPlay,
+  onPlaying,
+  onError,
   onPlay,
   onPause,
   onSeeked,
@@ -41,6 +49,10 @@ export default function MockReactPlayer({
       playbackRate,
       onTimeUpdate,
       onDurationChange,
+      onWaiting,
+      onCanPlay,
+      onPlaying,
+      onError,
       onPlay,
       onPause,
       onSeeked,
@@ -56,6 +68,10 @@ export default function MockReactPlayer({
       src={src}
       onTimeUpdate={onTimeUpdate}
       onDurationChange={onDurationChange}
+      onWaiting={onWaiting}
+      onCanPlay={onCanPlay}
+      onPlaying={onPlaying}
+      onError={onError}
       onPlay={onPlay}
       onPause={onPause}
       onSeeked={onSeeked}

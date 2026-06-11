@@ -1,15 +1,17 @@
 "use client";
 
 import { type ReactNode, useRef, useState } from "react";
+import { LoadingSpinner } from "@/components/loading-spinner";
 import { formatTime } from "@/lib/playback/format-time";
 import { posterGradient, posterInitials } from "@/lib/video/poster";
 import { seekTarget } from "@/lib/video/thumbnail";
 
 // VideoPoster paints a library tile's thumbnail. A real captured frame is layered
 // over a stable gradient monogram: the gradient is always present underneath so
-// there is no flash or layout shift, and the frame fades in once it is seekable.
-// Anything missing or failing (no frame URL, decode/seek error) leaves the
-// gradient visible. children overlays badges on top of the art.
+// there is no flash or layout shift, a spinner shows while the frame loads, and
+// the frame fades in once it is seekable. Anything missing or failing (no frame
+// URL, decode/seek error) leaves the gradient visible. children overlays badges
+// on top of the art.
 export function VideoPoster({
   seed,
   title,
@@ -104,7 +106,12 @@ function ThumbnailFrame({ src, onError }: { src: string; onError: () => void }) 
           seeked ? "opacity-100" : "opacity-0"
         }`}
       />
-      {seeked ? <PlayOverlay /> : null}
+      {/* The spinner covers the window between a ready tile starting its frame
+          capture and the frame becoming seekable, so the tile reads as "loading
+          a preview" rather than "this is the final art". It is removed the moment
+          the frame seeks (replaced by the play overlay) or the capture fails
+          (ThumbnailFrame unmounts and the gradient alone remains). */}
+      {seeked ? <PlayOverlay /> : <LoadingSpinner size="sm" />}
       {seeked && durationLabel ? <DurationBadge label={durationLabel} /> : null}
     </>
   );

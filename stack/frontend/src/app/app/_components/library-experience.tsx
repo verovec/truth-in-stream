@@ -13,7 +13,7 @@ import {
 } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
-import { VideoGallery } from "./video-gallery";
+import { GALLERY_GRID_CLASS, VideoGallery } from "./video-gallery";
 import { VideoUploader } from "./video-uploader";
 import { YoutubeUrlForm } from "./youtube-url-form";
 
@@ -310,11 +310,7 @@ function LibrarySection({
   onDismiss,
 }: LibrarySectionProps) {
   if (listState.status === "loading") {
-    return (
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        Loading library…
-      </p>
-    );
+    return <LibrarySkeleton />;
   }
   if (listState.status === "error") {
     return (
@@ -343,6 +339,33 @@ function LibrarySection({
       onSelect={onSelect}
       onDismiss={onDismiss}
     />
+  );
+}
+
+// LIBRARY_SKELETON_TILES is the placeholder count while the catalog loads: enough
+// to fill the first couple of grid rows without implying an exact library size.
+const LIBRARY_SKELETON_TILES = 6;
+
+// LibrarySkeleton mirrors the gallery grid with shimmer tiles so the library
+// reserves its space and reads as loading rather than empty, with no layout shift
+// when the real tiles replace it. It is a status region so assistive tech hears
+// "Loading library" instead of nothing.
+function LibrarySkeleton() {
+  return (
+    <ul role="status" aria-label="Loading library" className={GALLERY_GRID_CLASS}>
+      {Array.from({ length: LIBRARY_SKELETON_TILES }, (_, index) => (
+        <li
+          key={index}
+          aria-hidden
+          className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800"
+        >
+          <div className="aspect-video w-full animate-pulse bg-zinc-200 dark:bg-zinc-800" />
+          <div className="px-3 py-2">
+            <div className="h-4 w-3/4 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

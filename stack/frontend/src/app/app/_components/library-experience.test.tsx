@@ -71,6 +71,20 @@ describe("LibraryExperience", () => {
     ).toBeInTheDocument();
   });
 
+  test("shows a loading skeleton while the library is being fetched", () => {
+    // A promise that never resolves holds the list in its loading state so the
+    // skeleton is what the operator sees first.
+    render(
+      <LibraryExperience
+        loadVideos={() => new Promise<LibraryVideo[]>(() => {})}
+      />,
+    );
+
+    expect(
+      screen.getByRole("status", { name: "Loading library" }),
+    ).toBeInTheDocument();
+  });
+
   test("selecting another video loads it into the player", async () => {
     stubBackend([
       getVideoRoute(

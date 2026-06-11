@@ -320,3 +320,71 @@ func hasSignedHeader(headers map[string][]string, name string) bool {
 	}
 	return false
 }
+
+// TestPresignPublicEndpoint proves the browser-issued upload and playback URLs
+// are signed against PublicEndpoint, not the internal Endpoint the backend uses
+// to reach storage. This is what lets a browser play a clip in local dev, where
+// Endpoint is a Docker hostname the browser cannot resolve.
+func TestPresignPublicEndpoint(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig("http://minio:9000", true)
+	cfg.PublicEndpoint = "http://localhost:9000"
+	store, err := New(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	upload, err := store.PresignUpload(t.Context(), "videos/clip.mp4")
+	if err != nil {
+		t.Fatalf("presign upload: %v", err)
+	}
+	if host := mustParse(t, upload.URL).Host; host != "localhost:9000" {
+		t.Errorf("upload host = %q, want localhost:9000", host)
+	}
+
+	download, err := store.PresignDownload(t.Context(), "videos/clip.mp4")
+	if err != nil {
+		t.Fatalf("presign download: %v", err)
+	}
+	if host := mustParse(t, download.URL).Host; host != "localhost:9000" {
+		t.Errorf("download host = %q, want localhost:9000", host)
+	}
+	// The public host is signed, so the URL cannot be repointed after the fact.
+	if !hasSignedHeader(download.SignedHeaders, "host") {
+		t.Errorf("signed headers %v missing host", download.SignedHeaders)
+	}
+}
+
+// TestServerSideOpsIgnorePublicEndpoint proves Upload and Download address the
+// internal Endpoint even when a PublicEndpoint is configured: the public host is
+// only for browser-issued presigned URLs. The public endpoint points at a dead
+// port, so a successful round trip can only mean the internal endpoint was used.
+func TestServerSideOpsIgnorePublicEndpoint(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newObjectServerHandler(t))
+	defer srv.Close()
+
+	cfg := validConfig(srv.URL, true)
+	cfg.PublicEndpoint = "http://127.0.0.1:0"
+	store, err := New(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	want := []byte("server-side bytes")
+	if err := store.Upload(t.Context(), "youtube/srv.mp4", bytes.NewReader(want), "video/mp4", int64(len(want))); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	rc, err := store.Download(t.Context(), "youtube/srv.mp4")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("downloaded body = %q, want %q", got, want)
+	}
+}
