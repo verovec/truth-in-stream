@@ -141,8 +141,14 @@ services:
       # From the root .env (see .env.example); the server fails fast if unset.
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
-      # No CORS origin: the browser talks to the API same-origin through the
-      # frontend proxy so the SameSite=Strict session cookie can ride along.
+      # The browser's real origin. HTTP /api rides the same-origin frontend proxy
+      # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
+      # carries Origin: http://localhost:3000 while the proxy rewrites Host to the
+      # backend - a mismatch coder/websocket rejects with 403 unless the origin is
+      # allow-listed. This both seeds that allow-list and reflects the CORS header;
+      # neither affects the same-origin cookie flow. Empty in prod (the ALB keeps
+      # Host, so Origin == Host and same-origin is enforced).
+      CORS_ALLOWED_ORIGIN: "http://localhost:3000"
       AUTH_EMAIL: "${AUTH_EMAIL:-}"
       AUTH_PASSWORD_HASH: "${AUTH_PASSWORD_HASH:-}"
       SESSION_SECRET: "${SESSION_SECRET:-}"

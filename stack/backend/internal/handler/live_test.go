@@ -152,6 +152,28 @@ func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
 	}
 }
 
+func TestLiveHandlerAcceptsAllowlistedCrossOrigin(t *testing.T) {
+	t.Parallel()
+	// Behind the dev frontend proxy the browser Origin (localhost:3000) differs
+	// from the backend Host, so the upgrade is cross-origin to the server. An
+	// allow-listed origin must still be accepted - this is the handshake dev's
+	// CORS_ALLOWED_ORIGIN enables, distinct from the same-Host happy path.
+	wsURL := liveTestServer(t, stubLiveAnalyzer{}, []string{"localhost:3000"})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {"http://localhost:3000"}},
+	})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("allow-listed cross-origin handshake rejected: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+}
+
 func TestLiveHandlerRejectsDisallowedOrigin(t *testing.T) {
 	t.Parallel()
 
