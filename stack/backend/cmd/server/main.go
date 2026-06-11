@@ -56,6 +56,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	debugSearchCfg, err := config.LoadDebugSearch()
+	if err != nil {
+		return err
+	}
 	authCfg, err := config.LoadAuth()
 	if err != nil {
 		return err
@@ -149,6 +153,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	debugSearch, err := buildDebugSearch(debugSearchCfg, embedder, store)
+	if err != nil {
+		return err
+	}
+
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
 		Stream:     liveStream(transcription, logger),
@@ -166,7 +175,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugSearch, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -229,6 +238,24 @@ func liveStream(cfg config.Transcription, logger *slog.Logger) service.SegmentSt
 		Logger:      logger,
 	})
 	return transcribe.NewStreamSegmenter(client, transcribe.Options{})
+}
+
+// buildDebugSearch assembles the developer wiki-search probe from config. A
+// disabled flag returns a nil searcher, which NewMux reads as "do not register
+// the route", so the endpoint does not exist in production. An enabled flag
+// builds a probe over the same embedder and evidence store the matcher uses.
+func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, evidence service.EvidenceSearcher) (handler.WikiSearcher, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	search, err := service.NewWikiSearch(embedder, evidence, service.WikiSearchConfig{
+		TopK:    cfg.TopK,
+		Timeout: cfg.Timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return search, nil
 }
 
 // buildPrechecker assembles the check-worthiness gate from config. A disabled

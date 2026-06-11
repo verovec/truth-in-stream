@@ -217,6 +217,10 @@ services:
       # neither affects the same-origin cookie flow. Empty in prod (the ALB keeps
       # Host, so Origin == Host and same-origin is enforced).
       CORS_ALLOWED_ORIGIN: "http://localhost:3000"
+      # Dev-only debug search bar: exposes a WebSocket probe over the embedded
+      # wiki corpus at /api/debug/wiki-search and renders the bar in the web UI.
+      # Unset in production, where the route is never registered.
+      DEBUG_WIKI_SEARCH: "true"
       AUTH_EMAIL: "${AUTH_EMAIL:-}"
       AUTH_PASSWORD_HASH: "${AUTH_PASSWORD_HASH:-}"
       SESSION_SECRET: "${SESSION_SECRET:-}"

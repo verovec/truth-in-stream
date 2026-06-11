@@ -14,7 +14,7 @@ import { type LiveAnalysis, useLiveAnalysis } from "./use-live-analysis";
 type FakeSocket = {
   url: string;
   handlers: LiveSocketHandlers;
-  send: ReturnType<typeof vi.fn<(frame: ArrayBuffer) => void>>;
+  send: ReturnType<typeof vi.fn<(frame: ArrayBuffer | string) => void>>;
   close: ReturnType<typeof vi.fn<() => void>>;
 };
 
@@ -33,7 +33,7 @@ function harness(videoId = "vid-1") {
     const socket: FakeSocket = {
       url,
       handlers,
-      send: vi.fn<(frame: ArrayBuffer) => void>(),
+      send: vi.fn<(frame: ArrayBuffer | string) => void>(),
       close: vi.fn<() => void>(),
     };
     sockets.push(socket);

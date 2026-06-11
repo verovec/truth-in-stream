@@ -1,3 +1,5 @@
+import { WikiSearchBar } from "@/components/debug/wiki-search-bar";
+
 import { LibraryExperience } from "./_components/library-experience";
 import { LogoutButton } from "./_components/logout-button";
 
@@ -13,6 +15,8 @@ export default function Home() {
       <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
         <LibraryExperience />
       </main>
+      {/* Dev-only probe over the embedded corpus; renders to nothing in production. */}
+      <WikiSearchBar />
     </div>
   );
 }

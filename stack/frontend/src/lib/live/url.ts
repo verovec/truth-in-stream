@@ -1,7 +1,7 @@
-// Builds the live fact-check WebSocket URL. In production the frontend and API
-// share an origin (the ALB serves /api/* same-origin), so the socket derives
-// from the page origin; in local dev NEXT_PUBLIC_API_URL points at the backend
-// container and is converted from http(s) to ws(s).
+// Builds backend WebSocket URLs. In production the frontend and API share an
+// origin (the ALB serves /api/* same-origin), so the socket derives from the
+// page origin; in local dev NEXT_PUBLIC_API_URL points at the backend container
+// and is converted from http(s) to ws(s).
 import { API_BASE } from "@/lib/http";
 
 const WS_SCHEME: Record<string, string> = {
@@ -9,24 +9,39 @@ const WS_SCHEME: Record<string, string> = {
   "https:": "wss:",
 };
 
-type SocketUrlOptions = {
+export type SocketUrlOptions = {
   apiBase?: string;
   origin?: string;
 };
 
+// apiWsUrl resolves a backend path to a ws(s) URL. apiBase and origin are
+// injectable for tests; they default to the configured API base and the current
+// page origin. Every backend socket URL is built here so they share one
+// scheme-conversion rule.
+function apiWsUrl(pathname: string, options: SocketUrlOptions): string {
+  const apiBase = options.apiBase ?? API_BASE;
+  const origin = options.origin ?? window.location.origin;
+  const url = new URL(apiBase || origin);
+  url.protocol = WS_SCHEME[url.protocol] ?? url.protocol;
+  url.pathname = pathname;
+  return url.toString();
+}
+
 /**
  * Returns the ws(s) URL for a video's live analysis stream. The video id is
- * path-encoded. apiBase and origin are injectable for tests; they default to
- * the configured API base and the current page origin.
+ * path-encoded.
  */
 export function liveSocketUrl(
   videoId: string,
   options: SocketUrlOptions = {},
 ): string {
-  const apiBase = options.apiBase ?? API_BASE;
-  const origin = options.origin ?? window.location.origin;
-  const url = new URL(apiBase || origin);
-  url.protocol = WS_SCHEME[url.protocol] ?? url.protocol;
-  url.pathname = `/api/videos/${encodeURIComponent(videoId)}/live`;
-  return url.toString();
+  return apiWsUrl(`/api/videos/${encodeURIComponent(videoId)}/live`, options);
+}
+
+/**
+ * Returns the ws(s) URL for the developer wiki-search probe (dev only). The
+ * route exists on the backend only when the debug flag is on.
+ */
+export function debugSearchUrl(options: SocketUrlOptions = {}): string {
+  return apiWsUrl("/api/debug/wiki-search", options);
 }
