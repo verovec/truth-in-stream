@@ -1,11 +1,12 @@
 // PCM conversion for the live audio path. The browser captures Float32 samples
 // from the playing video at the AudioContext's native rate (typically 44.1 or
-// 48 kHz); Scribe v2 Realtime requires signed 16-bit little-endian mono PCM at
-// 16 kHz (see stack/backend internal/transcribe/realtime.go). These pure
-// functions do the resample and quantization on the main thread so the logic is
-// unit-testable, keeping the AudioWorklet a thin Float32 forwarder.
+// 48 kHz); AssemblyAI Universal-3 Pro streaming requires signed 16-bit
+// little-endian mono PCM at 16 kHz (see stack/backend
+// internal/transcribe/assemblyai.go). These pure functions do the resample and
+// quantization on the main thread so the logic is unit-testable, keeping the
+// AudioWorklet a thin Float32 forwarder.
 
-// TARGET_SAMPLE_RATE is the rate Scribe v2 Realtime expects.
+// TARGET_SAMPLE_RATE is the rate the AssemblyAI streaming endpoint expects.
 export const TARGET_SAMPLE_RATE = 16_000;
 
 /**

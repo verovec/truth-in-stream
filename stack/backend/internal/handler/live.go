@@ -11,8 +11,7 @@ package handler
 // frames per statement: a "subtitle" the moment the statement is transcribed,
 // then a "result" once its verdict is ready. Both share an "id" so a verdict
 // that lands after its subtitle reconciles to the right statement. A result
-// frame mirrors the batch per-segment shape (start, end, text, matches,
-// skip_reason) so a client written against batch results handles it unchanged.
+// frame carries the per-segment shape (start, end, text, matches, skip_reason).
 
 import (
 	"context"
@@ -84,10 +83,9 @@ type subtitleFrame struct {
 	Speaker string  `json:"speaker,omitempty"`
 }
 
-// resultFrame is the wire form of a result event: the batch per-segment shape
-// (embedded segmentJSON, so the live and batch result shapes are the same type
-// by construction and cannot drift) plus the correlation id and an optional
-// non-fatal analysis error.
+// resultFrame is the wire form of a result event: the shared per-segment shape
+// (embedded segmentJSON, the single home of the verdict wire shaping) plus the
+// correlation id and an optional non-fatal analysis error.
 type resultFrame struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`

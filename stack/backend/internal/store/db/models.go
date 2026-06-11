@@ -18,21 +18,6 @@ type Claim struct {
 	Embedding pgvector.HalfVector
 }
 
-type ProcessedVideo struct {
-	VideoID      string
-	SegmentCount int32
-	CompletedAt  pgtype.Timestamptz
-}
-
-type SegmentResult struct {
-	VideoID    string
-	StartMs    int64
-	EndMs      int64
-	Content    string
-	Matches    []byte
-	SkipReason string
-}
-
 type Video struct {
 	ID          uuid.UUID
 	Title       string

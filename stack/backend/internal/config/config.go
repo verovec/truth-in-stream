@@ -23,8 +23,10 @@ import (
 // cache miss (the failure this card fixed).
 const DefaultEmbeddingModel = "voyage-4-large"
 
-// defaultTranscriptionModel is the ElevenLabs batch speech-to-text model.
-const defaultTranscriptionModel = "scribe_v2"
+// defaultTranscriptionModel is the AssemblyAI Universal-3 Pro streaming model.
+// AssemblyAI is the sole speech-to-text provider: live streams and imported
+// videos alike are transcribed over its realtime diarizing WebSocket.
+const defaultTranscriptionModel = "u3-rt-pro"
 
 // defaultDemoMediaDir is where the server reads and serves the bundled demo
 // clip from, relative to the working directory.
@@ -101,91 +103,33 @@ func LoadEmbedding() (Embedding, error) {
 	return e, nil
 }
 
-// Transcription holds the configuration for the ElevenLabs speech-to-text
-// provider.
+// Transcription holds the configuration for the AssemblyAI Universal-3 Pro
+// streaming speech-to-text provider, the single transcriber for both live
+// streams and imported videos. MaxSpeakers, when positive, hints the diarizer
+// at the expected speaker count; zero leaves it provider-default.
 type Transcription struct {
-	APIKey string
-	Model  string
-}
-
-// LoadTranscription reads the transcription provider configuration from the
-// environment. TRANSCRIPTION_API_KEY is required; the model defaults to
-// scribe_v2.
-func LoadTranscription() (Transcription, error) {
-	apiKey, err := requireEnv("TRANSCRIPTION_API_KEY")
-	if err != nil {
-		return Transcription{}, err
-	}
-	return Transcription{
-		APIKey: apiKey,
-		Model:  getenv("TRANSCRIPTION_MODEL", defaultTranscriptionModel),
-	}, nil
-}
-
-// Live transcription provider identifiers and per-provider default models. The
-// live (realtime) path defaults to AssemblyAI Universal-3 Pro because it
-// diarizes inline; ElevenLabs Scribe v2 Realtime stays available as a
-// non-diarizing fallback.
-const (
-	// LiveProviderAssemblyAI and LiveProviderElevenLabs are the supported live
-	// (realtime) transcription providers, selected at wiring time.
-	LiveProviderAssemblyAI     = "assemblyai"
-	LiveProviderElevenLabs     = "elevenlabs"
-	defaultLiveProvider        = LiveProviderAssemblyAI
-	defaultLiveModelAssemblyAI = "u3-rt-pro"
-	defaultLiveModelElevenLabs = "scribe_v2_realtime"
-)
-
-// LiveTranscription holds the configuration for the live (realtime)
-// speech-to-text provider. It is separate from Transcription, which stays the
-// ElevenLabs batch transcriber, so the live diarizing provider can differ from
-// the batch one. MaxSpeakers, when positive, hints the diarizer at the expected
-// speaker count; zero leaves it provider-default.
-type LiveTranscription struct {
-	Provider    string
 	APIKey      string
 	Model       string
 	MaxSpeakers int
 }
 
-// LoadLiveTranscription reads the live transcription configuration from the
-// environment. LIVE_TRANSCRIPTION_PROVIDER defaults to assemblyai and must be a
-// known provider; LIVE_TRANSCRIPTION_API_KEY is required; LIVE_TRANSCRIPTION_MODEL
-// defaults to the provider's model; LIVE_TRANSCRIPTION_MAX_SPEAKERS is optional
-// and must be non-negative.
-func LoadLiveTranscription() (LiveTranscription, error) {
-	provider := getenv("LIVE_TRANSCRIPTION_PROVIDER", defaultLiveProvider)
-	defaultModel, err := defaultLiveModel(provider)
+// LoadTranscription reads the transcription configuration from the environment.
+// TRANSCRIPTION_API_KEY is required; TRANSCRIPTION_MODEL defaults to u3-rt-pro;
+// TRANSCRIPTION_MAX_SPEAKERS is optional and must be non-negative.
+func LoadTranscription() (Transcription, error) {
+	apiKey, err := requireEnv("TRANSCRIPTION_API_KEY")
 	if err != nil {
-		return LiveTranscription{}, err
+		return Transcription{}, err
 	}
-	apiKey, err := requireEnv("LIVE_TRANSCRIPTION_API_KEY")
+	maxSpeakers, err := intEnv("TRANSCRIPTION_MAX_SPEAKERS", 0, 0, math.MaxInt32)
 	if err != nil {
-		return LiveTranscription{}, err
+		return Transcription{}, err
 	}
-	maxSpeakers, err := intEnv("LIVE_TRANSCRIPTION_MAX_SPEAKERS", 0, 0, math.MaxInt32)
-	if err != nil {
-		return LiveTranscription{}, err
-	}
-	return LiveTranscription{
-		Provider:    provider,
+	return Transcription{
 		APIKey:      apiKey,
-		Model:       getenv("LIVE_TRANSCRIPTION_MODEL", defaultModel),
+		Model:       getenv("TRANSCRIPTION_MODEL", defaultTranscriptionModel),
 		MaxSpeakers: maxSpeakers,
 	}, nil
-}
-
-// defaultLiveModel maps a provider to its default model, rejecting an unknown
-// provider so a typo fails fast rather than dialing a bogus endpoint.
-func defaultLiveModel(provider string) (string, error) {
-	switch provider {
-	case LiveProviderAssemblyAI:
-		return defaultLiveModelAssemblyAI, nil
-	case LiveProviderElevenLabs:
-		return defaultLiveModelElevenLabs, nil
-	default:
-		return "", fmt.Errorf("config: LIVE_TRANSCRIPTION_PROVIDER %q is not a known provider (%s, %s)", provider, LiveProviderAssemblyAI, LiveProviderElevenLabs)
-	}
 }
 
 // Session defaults: 24h keeps the single operator signed in for a working day

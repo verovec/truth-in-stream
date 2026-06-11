@@ -68,8 +68,9 @@ services:
       STORAGE_SECRET_KEY: "minioadmin"
       STORAGE_USE_PATH_STYLE: "true"
       # Media bytes for the curated sample. Empty falls back to the binary default
-      # (a public BigBuckBunny clip). It will not match the demo transcript; point
-      # this at a clip matching demo_results.json for matching fact-checks.
+      # (a public BigBuckBunny clip). Sample videos stream live through the
+      # AssemblyAI pipeline when played, so any clip produces fact-checks; point
+      # this at a clip whose claims overlap the seeded corpus for the best verdicts.
       SAMPLE_VIDEO_URL: "${SAMPLE_VIDEO_URL:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
@@ -192,14 +193,14 @@ services:
       PORT: "8080"
       # Dev-only credentials; production DATABASE_URL comes from Secrets Manager.
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
-      # From the root .env (see .env.example); the server fails fast if unset.
+      # AssemblyAI API key from the root .env (see .env.example); the sole
+      # transcriber (Universal-3 Pro streaming) for both live streams and
+      # imported videos. The server fails fast if unset. Optional tuning falls
+      # back to the binary defaults when empty: TRANSCRIPTION_MODEL (u3-rt-pro)
+      # and TRANSCRIPTION_MAX_SPEAKERS (provider-decided).
       TRANSCRIPTION_API_KEY: "${TRANSCRIPTION_API_KEY:-}"
-      # Live (realtime) speech-to-text key. Live analysis defaults to AssemblyAI
-      # Universal-3 Pro streaming for inline diarization; this is the AssemblyAI
-      # key. Set LIVE_TRANSCRIPTION_PROVIDER=elevenlabs to fall back to Scribe v2
-      # Realtime (no diarization). The server fails fast if unset.
-      LIVE_TRANSCRIPTION_API_KEY: "${LIVE_TRANSCRIPTION_API_KEY:-}"
-      LIVE_TRANSCRIPTION_PROVIDER: "${LIVE_TRANSCRIPTION_PROVIDER:-}"
+      TRANSCRIPTION_MODEL: "${TRANSCRIPTION_MODEL:-}"
+      TRANSCRIPTION_MAX_SPEAKERS: "${TRANSCRIPTION_MAX_SPEAKERS:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default

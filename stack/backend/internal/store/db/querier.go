@@ -28,7 +28,6 @@ type Querier interface {
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
 	// row and the caller resolves the existing record by source id instead.
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
-	DeleteSegmentResults(ctx context.Context, videoID string) error
 	DeleteWikiPage(ctx context.Context, pageID int64) error
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
@@ -38,14 +37,11 @@ type Querier interface {
 	// Only unembedded chunks count, so the estimate reflects real remaining spend.
 	EstimateRemainingWikiChunks(ctx context.Context, arg EstimateRemainingWikiChunksParams) (EstimateRemainingWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
-	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
-	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
 	ListVideos(ctx context.Context) ([]Video, error)
-	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error
 	// Advances the corpus checkpoint after a successful embed-and-swap, recording
 	// that the live corpus is now fully embedded at its stored dump version.
 	MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error
@@ -92,7 +88,6 @@ type Querier interface {
 	// cached media seeds the record with size 0, which must not clobber the real
 	// size recorded when the media was last uploaded (the object still exists).
 	UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error)
-	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
 	// Ingest never writes embeddings; the CASE keeps an existing embedding only
 	// while the content it was computed from is unchanged, so re-ingesting a
 	// changed revision invalidates the stale vector instead of serving it.

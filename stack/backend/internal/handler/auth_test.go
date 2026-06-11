@@ -115,7 +115,7 @@ func TestLogin(t *testing.T) {
 			wantCode: http.StatusRequestEntityTooLarge,
 		},
 	}
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestLogin(t *testing.T) {
 }
 
 func TestLoginErrorIsGeneric(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	bodyFor := func(body string) string {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", strings.NewReader(body)))
@@ -156,7 +156,7 @@ func TestLoginErrorIsGeneric(t *testing.T) {
 }
 
 func TestLoginCookieAttributes(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	cookie := loginSessionCookie(t, srv)
 
 	if cookie.Value == "" {
@@ -182,7 +182,7 @@ func TestLoginCookieAttributes(t *testing.T) {
 func TestLoginInsecureCookieFlag(t *testing.T) {
 	auth := globalTestAuth
 	auth.SecureCookie = false
-	srv := newAuthedTestServer(auth, nil, &stubTranscriber{}, &fakeProcessing{})
+	srv := newAuthedTestServer(auth, nil)
 
 	cookie := loginSessionCookie(t, srv)
 	if cookie.Secure {
@@ -193,7 +193,7 @@ func TestLoginInsecureCookieFlag(t *testing.T) {
 func TestLoginRateLimited(t *testing.T) {
 	auth := globalTestAuth
 	auth.LoginLimiter = middleware.NewRateLimiter(rate.Every(10*time.Minute), 2)
-	srv := newAuthedTestServer(auth, nil, &stubTranscriber{}, &fakeProcessing{})
+	srv := newAuthedTestServer(auth, nil)
 
 	codes := make([]int, 0, 3)
 	for range 3 {
@@ -246,7 +246,7 @@ func TestLoginRateLimitIgnoresForgedForwardedFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			auth := globalTestAuth
 			auth.LoginLimiter = middleware.NewRateLimiter(rate.Every(10*time.Minute), 2)
-			srv := newAuthedTestServer(auth, nil, &stubTranscriber{}, &fakeProcessing{})
+			srv := newAuthedTestServer(auth, nil)
 
 			codes := make([]int, 0, 3)
 			for i := range 3 {
@@ -268,7 +268,7 @@ func TestLoginRateLimitIgnoresForgedForwardedFor(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	cookie := loginSessionCookie(t, srv)
 
 	rec := httptest.NewRecorder()
@@ -296,7 +296,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestLogoutWithoutCookieIsNoOp(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 
 	// A cross-site forced-logout POST never carries the SameSite=Strict
 	// cookie; it must not receive a clearing Set-Cookie either.
@@ -311,7 +311,7 @@ func TestLogoutWithoutCookieIsNoOp(t *testing.T) {
 }
 
 func TestProtectedRoutes(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	valid := loginSessionCookie(t, srv)
 
 	routes := []struct {
@@ -351,7 +351,7 @@ func TestProtectedRoutes(t *testing.T) {
 }
 
 func TestUnregisteredAPIRoutesAreDeniedByDefault(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/__unregistered__", nil))
@@ -391,7 +391,7 @@ func TestSessionCookieNameMatchesFrontendProxy(t *testing.T) {
 }
 
 func TestHealthzIsNotProtected(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {

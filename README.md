@@ -8,7 +8,7 @@ Real-time fact-checking for live streams.
 |-------|------|----------|
 | Frontend | Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) | `stack/frontend` |
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
-| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4-large` embeddings, ElevenLabs Scribe v2 batch transcription, AssemblyAI Universal-3 Pro live transcription | `stack/backend` |
+| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4-large` embeddings, AssemblyAI Universal-3 Pro streaming transcription (the single transcriber, for live streams and imported videos alike) | `stack/backend` |
 | Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
 
 ## Quick start
@@ -41,8 +41,7 @@ interpolates `.env` into the service environments.
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
-| `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 batch (VOD/file) speech-to-text |
-| `LIVE_TRANSCRIPTION_API_KEY` | yes | Live (realtime) speech-to-text. Defaults to AssemblyAI Universal-3 Pro streaming (`u3-rt-pro`) for inline speaker diarization; this is the AssemblyAI key. Set `LIVE_TRANSCRIPTION_PROVIDER=elevenlabs` to fall back to Scribe v2 Realtime (no diarization). Optional: `LIVE_TRANSCRIPTION_MODEL`, `LIVE_TRANSCRIPTION_MAX_SPEAKERS` |
+| `TRANSCRIPTION_API_KEY` | yes | AssemblyAI key. AssemblyAI Universal-3 Pro streaming (`u3-rt-pro`) is the single transcriber: live streams and imported videos alike stream their audio over its realtime diarizing WebSocket. Optional tuning: `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_MAX_SPEAKERS` |
 | `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4-large` embeddings. Seeding is strictly offline (the committed cache is the source of truth) and never calls Voyage, so a stale value cannot break it; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
 | `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
 | `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |
@@ -52,10 +51,11 @@ interpolates `.env` into the service environments.
 | `BACKEND_URL` | no (compose sets it) | Frontend-side rewrite target for the same-origin `/api` and `/demo` proxy |
 | `PORT` | no (default `8080`) | Backend listen port |
 | `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
-| `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
+| `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves the bundled demo clip from (played and streamed live in the analyser) |
 | `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Voyage embedding model; the **same value must be used for ingest and query** (different models are different vector spaces), and the committed seed cache is keyed under this value, so changing it requires `make refresh-embeddings`. The default `voyage-4-large` outputs 1024 dims (matching the pinned index) and batches normally, where base `voyage-4`'s batch endpoint is currently broken on Voyage's side (single inputs return, but any 2+ input batch hangs). Keep `WIKI_EMBED_BATCH_SIZE` low enough that a batch stays under voyage-4-large's 120k-token-per-request cap (≈64 for Wikipedia lead chunks) |
 | `EMBEDDING_DIM` | no | If set, must equal the pinned index dimension (1024); a mismatch fails fast rather than silently re-ingesting |
-| `TRANSCRIPTION_MODEL` | no (default `scribe_v2`) | ElevenLabs batch speech-to-text model |
+| `TRANSCRIPTION_MODEL` | no (default `u3-rt-pro`) | AssemblyAI streaming speech-to-text model |
+| `TRANSCRIPTION_MAX_SPEAKERS` | no | Optional diarization hint: expected number of speakers |
 | `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
 The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
@@ -80,13 +80,13 @@ and restart the backend.
 
 The bundled demo clip (`stack/backend/demo/`) narrates several well-known claims. The backend
 serves it at `/demo/<file>` (sign in first - demo media sits behind the session gate, and the
-frontend proxies the path same-origin) so the browser plays exactly the file the pipeline
-transcribes; the panel shows each segment's nearest curated claims with a `corroborates`,
-`contradicts`, or `unclear` verdict and source links, in sync with playback. In the seeded
-local environment the panel is served from precomputed results
-(`stack/backend/seed/demo_results.json`), so the demo works with no API keys; against a real
-upload the same panel is filled by the live transcribe-embed-match pipeline, and a failed
-provider call shows the error with a **Try again** button.
+frontend proxies the path same-origin) so the browser plays exactly the file it analyses. On
+play the clip streams its audio live through the same AssemblyAI pipeline as an uploaded or
+YouTube video: subtitles and verdicts arrive progressively, the panel shows each segment's
+nearest curated claims with a `corroborates`, `contradicts`, or `unclear` verdict and source
+links in sync with playback, and a failed provider call shows the error with a **Try again**
+button. Live analysis needs the transcription and embedding keys (the seeded claims and
+Wikipedia corpus are offline; only the live transcribe-and-query-embed step calls a provider).
 
 ## Local development data
 
@@ -114,10 +114,10 @@ The datasets and their fixtures (`stack/backend/seed/`):
 - **Curated claims** - `claims.json`, matched against spoken segments.
 - **Wikipedia evidence subset** - `wiki_chunks.json`, a small set of chunks overlapping the
   demo so evidence lookups return something meaningful.
-- **Demo-video results** - `demo_results.json`, precomputed `processed_videos` +
-  `segment_results` keyed to the SHA-256 of the demo source string `common-myths.mp4`
-  (video id `f0db671448289655a8b20f317a6336f4b53dc407448f5d5b2eb64b78c6577d80`), so the player
-  and panel work end to end with no keys.
+- **Sample videos** - the curated sample video records (and their best-effort media bytes),
+  upserted into the gallery so a freshly seeded environment has something to play. Played in
+  the analyser they stream live through the AssemblyAI pipeline like any imported source;
+  `SAMPLE_VIDEO_URL` overrides the default clip.
 
 **Embeddings without an API key.** Each fixture's vector lives in a committed cache
 (`embeddings.cache.jsonl`, keyed by model + input type + normalized text), so a full reseed is

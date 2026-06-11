@@ -129,6 +129,31 @@ describe("useLiveAnalysis", () => {
     expect(h.analysis().status).toBe("live");
   });
 
+  test("an imported video streams live: it opens the live socket on play and renders a streamed subtitle", () => {
+    // VER-43 retired batch processing - an imported (uploaded/youtube/sample)
+    // video now streams over the same live socket as a live stream. The hook is
+    // source-agnostic: the video id is opaque, so an imported id opens the same
+    // /api/videos/{id}/live socket and folds in subtitle frames identically.
+    const h = harness("upload-vid-42");
+    play(h.store());
+
+    expect(h.sockets).toHaveLength(1);
+    expect(h.sockets[0].url).toContain("/api/videos/upload-vid-42/live");
+
+    act(() => h.sockets[0].handlers.onOpen());
+    expect(h.analysis().status).toBe("live");
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        subtitleFrame("0", 1, "the imported clip is streaming"),
+      ),
+    );
+
+    const list = h.analysis().statements;
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ text: "the imported clip is streaming" });
+  });
+
   test("renders an incremental result aligned to the playback position", () => {
     const h = harness();
     act(() => h.store().update({ currentTime: 10 }));

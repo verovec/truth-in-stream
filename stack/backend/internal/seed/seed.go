@@ -1,8 +1,8 @@
 // Package seed loads the local-development fixtures - curated claims, a small
-// Wikipedia evidence subset, and a precomputed demo-video result set - into the
-// store, reading embeddings from a committed cache so a full reseed needs no
-// external API key. It wires stores directly (the cmd -> store layer) and holds
-// no HTTP types.
+// Wikipedia evidence subset, and the curated sample videos - into the store,
+// reading embeddings from a committed cache so a full reseed needs no external
+// API key. It wires stores directly (the cmd -> store layer) and holds no HTTP
+// types.
 package seed
 
 import (
@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -124,134 +123,6 @@ func InsertWikiChunks(ctx context.Context, store WikiStore, embedder Embedder, c
 	}
 	if err := store.SetChunkEmbeddings(ctx, embedded); err != nil {
 		return fmt.Errorf("seed: wiki chunks: set embeddings: %w", err)
-	}
-	return nil
-}
-
-// DemoResults is the parsed demo-video fixture: the source identifier the
-// frontend submits and the precomputed per-segment results.
-type DemoResults struct {
-	Source   string
-	Segments []domain.SegmentResult
-}
-
-type demoFile struct {
-	Source   string        `json:"source"`
-	Segments []demoSegment `json:"segments"`
-}
-
-type demoSegment struct {
-	StartMs    int64                 `json:"start_ms"`
-	EndMs      int64                 `json:"end_ms"`
-	Content    string                `json:"content"`
-	SkipReason domain.SkipReason     `json:"skip_reason"`
-	Matches    []domain.SegmentMatch `json:"matches"`
-}
-
-// LoadDemoResults decodes and validates the demo-video result fixture. Each
-// segment is either checked (no skip reason, with its matches) or skipped (a
-// known reason and no matches); validation mirrors the store invariants so a bad
-// fixture is rejected before any insert.
-func LoadDemoResults(r io.Reader) (DemoResults, error) {
-	var file demoFile
-	dec := json.NewDecoder(r)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&file); err != nil {
-		return DemoResults{}, fmt.Errorf("seed: decode demo results: %w", err)
-	}
-	if file.Source == "" {
-		return DemoResults{}, fmt.Errorf("seed: demo results: empty source")
-	}
-	if len(file.Segments) == 0 {
-		return DemoResults{}, fmt.Errorf("seed: demo results: no segments")
-	}
-
-	segments := make([]domain.SegmentResult, len(file.Segments))
-	for i, s := range file.Segments {
-		if err := validateDemoSegment(i, s); err != nil {
-			return DemoResults{}, err
-		}
-		matches := s.Matches
-		if matches == nil {
-			matches = []domain.SegmentMatch{}
-		}
-		segments[i] = domain.SegmentResult{
-			Segment: domain.Segment{
-				Start: time.Duration(s.StartMs) * time.Millisecond,
-				End:   time.Duration(s.EndMs) * time.Millisecond,
-				Text:  s.Content,
-			},
-			Matches:    matches,
-			SkipReason: s.SkipReason,
-		}
-	}
-	return DemoResults{Source: file.Source, Segments: segments}, nil
-}
-
-func validateDemoSegment(i int, s demoSegment) error {
-	switch {
-	case s.StartMs < 0:
-		return fmt.Errorf("seed: demo segment %d: negative start %d", i, s.StartMs)
-	case s.EndMs < s.StartMs:
-		return fmt.Errorf("seed: demo segment %d: end %d before start %d", i, s.EndMs, s.StartMs)
-	case s.Content == "":
-		return fmt.Errorf("seed: demo segment %d: empty content", i)
-	case !s.SkipReason.Valid():
-		return fmt.Errorf("seed: demo segment %d: invalid skip reason %q", i, s.SkipReason)
-	case s.SkipReason != domain.SkipReasonNone && len(s.Matches) > 0:
-		return fmt.Errorf("seed: demo segment %d: skipped segment must carry no matches", i)
-	}
-	for j, m := range s.Matches {
-		if err := validateDemoMatch(i, j, m); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateDemoMatch(seg, idx int, m domain.SegmentMatch) error {
-	if !m.Kind.Valid() {
-		return fmt.Errorf("seed: demo segment %d match %d: invalid kind %q", seg, idx, m.Kind)
-	}
-	if m.Claim == "" {
-		return fmt.Errorf("seed: demo segment %d match %d: empty claim text", seg, idx)
-	}
-	if m.Similarity < 0 || m.Similarity > 1 {
-		return fmt.Errorf("seed: demo segment %d match %d: similarity %v outside [0,1]", seg, idx, m.Similarity)
-	}
-	switch m.Kind {
-	case domain.MatchKindClaim:
-		if !m.Verdict.Valid() {
-			return fmt.Errorf("seed: demo segment %d match %d: claim match needs a valid verdict, got %q", seg, idx, m.Verdict)
-		}
-	case domain.MatchKindEvidence:
-		if m.Article == nil || m.Article.Title == "" || m.Article.URL == "" {
-			return fmt.Errorf("seed: demo segment %d match %d: evidence match needs an article title and url", seg, idx)
-		}
-	}
-	return nil
-}
-
-// InsertDemoResults replaces any prior results for videoID, persists each
-// segment, and marks the video processed, so the player and fact-check panel
-// serve the demo without running the pipeline. It is idempotent.
-func InsertDemoResults(ctx context.Context, store domain.SegmentResultStore, videoID string, segments []domain.SegmentResult) error {
-	if videoID == "" {
-		return fmt.Errorf("seed: demo results: empty video id")
-	}
-	if len(segments) == 0 {
-		return fmt.Errorf("seed: demo results: no segments")
-	}
-	if err := store.DeleteSegmentResults(ctx, videoID); err != nil {
-		return fmt.Errorf("seed: demo results: %w", err)
-	}
-	for _, seg := range segments {
-		if err := store.SaveSegmentResult(ctx, videoID, seg); err != nil {
-			return fmt.Errorf("seed: demo results: save segment at %s: %w", seg.Start, err)
-		}
-	}
-	if err := store.MarkVideoProcessed(ctx, videoID, len(segments)); err != nil {
-		return fmt.Errorf("seed: demo results: mark processed: %w", err)
 	}
 	return nil
 }

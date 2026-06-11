@@ -14,13 +14,14 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// AssemblyAI Universal-3 Pro streaming is the live diarizing speech-to-text
-// provider. Verified 2026-06 against assemblyai.com/docs streaming v3: connect
-// to wss://streaming.assemblyai.com/v3/ws with the API key in the Authorization
+// AssemblyAI Universal-3 Pro streaming is the single diarizing speech-to-text
+// provider, for live streams and imported videos alike. Verified 2026-06
+// against assemblyai.com/docs streaming v3: connect to
+// wss://streaming.assemblyai.com/v3/ws with the API key in the Authorization
 // header (NOT Bearer); audio is sent as raw binary PCM s16le frames; the server
 // returns JSON Turn messages whose end_of_turn flag commits a turn and whose
-// speaker_label diarizes it. ElevenLabs Scribe stays the batch transcriber: its
-// realtime path cannot diarize, which is why live moved here.
+// speaker_label diarizes it. It diarizes inline, which the fact-checker needs so
+// a verdict never blends two speakers.
 const (
 	defaultAssemblyAIURL   = "wss://streaming.assemblyai.com/v3/ws"
 	defaultAssemblyAIModel = "u3-rt-pro"
@@ -62,9 +63,9 @@ const (
 	aaiMsgError = "Error"
 )
 
-// aaiWord is one word in a Turn. Timestamps are integer milliseconds (unlike
-// Scribe's float seconds); speaker is the per-word diarization label, populated
-// on committed words when speaker_labels is enabled.
+// aaiWord is one word in a Turn. Timestamps are integer milliseconds; speaker
+// is the per-word diarization label, populated on committed words when
+// speaker_labels is enabled.
 type aaiWord struct {
 	Text        string `json:"text"`
 	Start       int64  `json:"start"`
@@ -130,9 +131,8 @@ type AssemblyAIConfig struct {
 }
 
 // AssemblyAIClient streams audio to AssemblyAI Universal-3 Pro and emits
-// diarized transcript events. It implements only the streaming half of the
-// Transcriber contract: live mode is its sole job, so batch file transcription
-// stays with ElevenLabs Scribe.
+// diarized transcript events. It satisfies the streaming contract the live
+// pipeline consumes (TranscribeStream); there is no batch transcriber.
 type AssemblyAIClient struct {
 	apiKey      string
 	model       string
@@ -235,8 +235,8 @@ func assemblyAIURL(base, model string, maxSpeakers int, language string) (string
 // On end-of-audio the reader is canceled at once (the audio source closing is
 // itself driven by the session ending), so a turn the provider has not yet
 // committed for trailing sub-pause audio is not emitted. That tail loss is the
-// accepted cost of turn-based segmentation, mirroring the Scribe realtime client;
-// the live aggregator's idle flush still scores a buffered short turn.
+// accepted cost of turn-based segmentation; the live aggregator's idle flush
+// still scores a buffered short turn.
 func (c *AssemblyAIClient) streamSession(ctx context.Context, sock aaiSocket, chunks <-chan []byte, out chan<- TranscriptEvent) {
 	defer close(out)
 	defer sock.close()
@@ -398,4 +398,12 @@ func aaiSegment(msg aaiMessage) Segment {
 // millis converts an integer-millisecond provider timestamp to a Duration.
 func millis(ms int64) time.Duration {
 	return time.Duration(ms) * time.Millisecond
+}
+
+// isNormalClose reports whether err is a clean WebSocket close (the provider
+// ended the session), so an expected end of stream is not logged as a read
+// error.
+func isNormalClose(err error) bool {
+	status := websocket.CloseStatus(err)
+	return status == websocket.StatusNormalClosure || status == websocket.StatusGoingAway
 }

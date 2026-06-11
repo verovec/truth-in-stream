@@ -10,8 +10,9 @@ lives under `stack/`.
 - Data: Postgres + pgvector (vector store, `DATABASE_URL`) + embeddings via Voyage AI `voyage-4-large`
   API (`EMBEDDING_API_KEY`), index pinned to 1024 dims (`halfvec(1024)`, HNSW cosine). Same model
   for ingest (`input_type=document`) and query (`input_type=query`)
-- Speech-to-text: ElevenLabs Scribe v2 API (`TRANSCRIPTION_API_KEY`). Batch REST for v1,
-  Scribe v2 Realtime WebSocket for live. Both sit behind one `Transcriber` interface.
+- Speech-to-text: AssemblyAI Universal-3 Pro streaming (`TRANSCRIPTION_API_KEY`), the single
+  transcriber. Live streams and imported videos alike stream their audio over its realtime
+  diarizing WebSocket; there is no batch transcription path.
 - Local dev: `docker-compose.yml` (postgres :5432, backend :8080, frontend :3000)
 
 ## Always-on rules

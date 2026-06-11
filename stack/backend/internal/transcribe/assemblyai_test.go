@@ -454,3 +454,24 @@ func TestAssemblyAITranscribeStreamReadsOversizedTurn(t *testing.T) {
 		t.Fatal("timed out waiting for the committed turn event")
 	}
 }
+
+// collectEvents drains the event channel until it closes, failing if it does
+// not within a bounded window so a stuck stream surfaces as a test failure
+// rather than a hang.
+func collectEvents(t *testing.T, out <-chan TranscriptEvent) []TranscriptEvent {
+	t.Helper()
+	var events []TranscriptEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range out {
+			events = append(events, ev)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event channel to close")
+	}
+	return events
+}

@@ -1,8 +1,9 @@
-// Typed client for the video processing API (stack/backend
-// internal/handler/processing.go).
-import { API_BASE, ApiError, toApiError } from "@/lib/http";
-
-export { ApiError };
+// Shared fact-check result shapes and the normalizer that maps the backend's
+// wire format onto them. Every imported video now streams live, so these are the
+// types of the live result frame (stack/backend internal/handler live handler):
+// SegmentWire/MatchWire is the per-segment wire shape carried in each result
+// frame, and normalizeSegment is the single normalizer the live path uses to
+// turn it into a FactCheckSegment.
 
 export type Verdict = "corroborates" | "contradicts" | "unclear";
 
@@ -54,38 +55,8 @@ export type FactCheckSegment = {
   skipReason?: SkipReason;
 };
 
-export type ProcessingStatus = "processing" | "complete" | "failed";
-
-export type Submission = {
-  videoId: string;
-  status: ProcessingStatus;
-};
-
-export type VideoStatus = {
-  videoId: string;
-  status: ProcessingStatus;
-  segmentsTotal: number;
-  segmentsDone: number;
-  error: string | undefined;
-};
-
-export type ResultsOutcome =
-  | { kind: "complete"; segments: FactCheckSegment[] }
-  | { kind: "pending" };
-
-type SubmitWire = { video_id: string; status: ProcessingStatus };
-
-type StatusWire = {
-  video_id: string;
-  status: ProcessingStatus;
-  segments_total: number;
-  segments_done: number;
-  error?: string;
-};
-
-// Wire shapes mirror stack/backend internal/handler/processing.go. A match's
-// kind may be absent on results stored before the Wikipedia evidence feature;
-// such matches read back as claims, matching the backend's own default.
+// A match's kind may be absent on results stored before the Wikipedia evidence
+// feature; such matches read back as claims, matching the backend's own default.
 export type MatchWire = {
   kind?: "claim" | "evidence";
   claim?: string;
@@ -95,9 +66,8 @@ export type MatchWire = {
   article?: ArticleRef;
 };
 
-// SegmentWire is the per-segment wire shape shared by the batch results
-// endpoint and the live result frame (stack/backend internal/handler), so the
-// same normalizer serves both.
+// SegmentWire is the per-segment wire shape carried in each live result frame
+// (stack/backend internal/handler), normalized by normalizeSegment.
 export type SegmentWire = {
   start: number;
   end: number;
@@ -105,8 +75,6 @@ export type SegmentWire = {
   matches: MatchWire[];
   skip_reason?: SkipReason;
 };
-
-type ResultsWire = { video_id: string; segments: SegmentWire[] };
 
 function normalizeMatch(wire: MatchWire): SegmentMatch {
   // Discriminate on kind alone: evidence must never fall through to the claim
@@ -141,60 +109,4 @@ export function normalizeSegment(wire: SegmentWire): FactCheckSegment {
     matches: wire.matches.map(normalizeMatch),
     skipReason: wire.skip_reason,
   };
-}
-
-export async function submitVideo(
-  source: string,
-  signal?: AbortSignal,
-): Promise<Submission> {
-  const response = await fetch(`${API_BASE}/api/videos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source }),
-    signal,
-  });
-  if (!response.ok) {
-    throw await toApiError(response);
-  }
-  const wire = (await response.json()) as SubmitWire;
-  return { videoId: wire.video_id, status: wire.status };
-}
-
-export async function fetchVideoStatus(
-  videoId: string,
-  signal?: AbortSignal,
-): Promise<VideoStatus> {
-  const response = await fetch(
-    `${API_BASE}/api/videos/${encodeURIComponent(videoId)}/status`,
-    { signal },
-  );
-  if (!response.ok) {
-    throw await toApiError(response);
-  }
-  const wire = (await response.json()) as StatusWire;
-  return {
-    videoId: wire.video_id,
-    status: wire.status,
-    segmentsTotal: wire.segments_total,
-    segmentsDone: wire.segments_done,
-    error: wire.error,
-  };
-}
-
-export async function fetchVideoResults(
-  videoId: string,
-  signal?: AbortSignal,
-): Promise<ResultsOutcome> {
-  const response = await fetch(
-    `${API_BASE}/api/videos/${encodeURIComponent(videoId)}/results`,
-    { signal },
-  );
-  if (response.status === 409 || response.status === 404) {
-    return { kind: "pending" };
-  }
-  if (!response.ok) {
-    throw await toApiError(response);
-  }
-  const wire = (await response.json()) as ResultsWire;
-  return { kind: "complete", segments: wire.segments.map(normalizeSegment) };
 }

@@ -16,14 +16,14 @@ type fakePinger struct{ err error }
 
 func (f fakePinger) Ping(_ context.Context) error { return f.err }
 
-func newTestServer(storeErr error, transcriber *stubTranscriber) http.Handler {
-	return newAuthedTestServer(globalTestAuth, storeErr, transcriber, &fakeProcessing{})
+func newTestServer(storeErr error) http.Handler {
+	return newAuthedTestServer(globalTestAuth, storeErr)
 }
 
-func newAuthedTestServer(auth AuthConfig, storeErr error, transcriber *stubTranscriber, processing ProcessingService) http.Handler {
+func newAuthedTestServer(auth AuthConfig, storeErr error) http.Handler {
 	health := service.NewHealthChecker(fakePinger{err: storeErr})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, transcriber, processing, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, "", auth, logger)
+	return NewMux(health, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, "", auth, logger)
 }
 
 func TestHealthz(t *testing.T) {
@@ -37,7 +37,7 @@ func TestHealthz(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newTestServer(tc.storeErr, &stubTranscriber{})
+			srv := newTestServer(tc.storeErr)
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 			if rec.Code != tc.wantCode {
@@ -48,7 +48,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestUnknownRouteIs404(t *testing.T) {
-	srv := newTestServer(nil, &stubTranscriber{})
+	srv := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/nope", nil))
 	if rec.Code != http.StatusNotFound {

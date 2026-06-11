@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"context"
 	"encoding/json"
 	"time"
 )
@@ -10,9 +9,8 @@ import (
 // are millisecond precision: transcription APIs emit milliseconds and the
 // store persists milliseconds, so finer durations would not round-trip.
 //
-// Speaker is the diarized speaker label, set only on the live path where the
-// provider emits per-turn speaker labels; it is empty on the batch path, which
-// does not diarize. The live analyzer groups consecutive same-speaker segments
+// Speaker is the diarized speaker label the streaming provider emits per
+// committed turn. The live analyzer groups consecutive same-speaker segments
 // into one analysis unit so a verdict never blends two speakers.
 type Segment struct {
 	Start   time.Duration
@@ -66,9 +64,8 @@ type Article struct {
 // claims corpus (Kind claim, with Verdict and Sources) or the Wikipedia corpus
 // (Kind evidence, with Article and no verdict). Claim holds the matched
 // reference text in both cases: the claim statement for claims, the article
-// excerpt for evidence. The json tags are both the segment_results.matches
-// jsonb wire format and the API response shape; they are identical by design so
-// the stored result is served verbatim.
+// excerpt for evidence. The json tags are the live result frame's wire shape,
+// served verbatim to the client.
 type SegmentMatch struct {
 	Kind       MatchKind `json:"kind"`
 	Claim      string    `json:"claim"`
@@ -78,10 +75,9 @@ type SegmentMatch struct {
 	Article    *Article  `json:"article,omitempty"`
 }
 
-// UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim.
-// Results stored before the Wikipedia evidence card carry no kind field; reading
-// them back as claim matches keeps the historical corpus valid without a data
-// migration.
+// UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim so a
+// match payload that omits the discriminator decodes as a claim rather than an
+// invalid zero kind, matching the frontend normalizer's own default.
 func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 	type raw SegmentMatch
 	decoded := raw{}
@@ -95,9 +91,9 @@ func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SegmentResult is the fact-check outcome for one transcript segment. It is
-// the unit a batch pipeline persists per segment and the exact shape an
-// incremental live source will emit, so clients handle both modes identically.
+// SegmentResult is the fact-check outcome for one transcript segment: the shape
+// the live source emits per finalized statement and the wire form the handler
+// renders into a result frame.
 //
 // SkipReason distinguishes a segment the check-worthiness gate declined from
 // one that was checked: when it is SkipReasonNone the segment was matched and
@@ -107,38 +103,4 @@ type SegmentResult struct {
 	Segment
 	Matches    []SegmentMatch
 	SkipReason SkipReason
-}
-
-// SegmentResultWriter is the write side of the processing results port: the
-// pipeline persists each segment as it completes and marks the video processed
-// only after the last one, so a completion marker always means a full result
-// set.
-type SegmentResultWriter interface {
-	// SaveSegmentResult inserts or replaces the result keyed by
-	// (videoID, result.Start).
-	SaveSegmentResult(ctx context.Context, videoID string, result SegmentResult) error
-	// DeleteSegmentResults removes every persisted result for videoID. A
-	// fresh run clears leftovers of an earlier failed run first, so a later
-	// completion never serves stale rows from a different segmentation.
-	DeleteSegmentResults(ctx context.Context, videoID string) error
-	// MarkVideoProcessed records that all segmentCount segments of videoID
-	// have been persisted.
-	MarkVideoProcessed(ctx context.Context, videoID string, segmentCount int) error
-}
-
-// SegmentResultReader is the read side of the processing results port.
-type SegmentResultReader interface {
-	// ProcessedSegmentCount returns the persisted segment count for videoID
-	// and whether the video has been fully processed.
-	ProcessedSegmentCount(ctx context.Context, videoID string) (count int, processed bool, err error)
-	// ListSegmentResults returns every persisted result for videoID ordered
-	// by segment start time.
-	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
-}
-
-// SegmentResultStore is the full processing results port, implemented by
-// store/postgres.
-type SegmentResultStore interface {
-	SegmentResultWriter
-	SegmentResultReader
 }

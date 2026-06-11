@@ -44,10 +44,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	liveTranscription, err := config.LoadLiveTranscription()
-	if err != nil {
-		return err
-	}
 	embedding, err := config.LoadEmbedding()
 	if err != nil {
 		return err
@@ -134,19 +130,6 @@ func run(logger *slog.Logger) error {
 
 	health := service.NewHealthChecker(store)
 
-	scribe := transcribe.New(transcribe.Config{
-		APIKey: transcription.APIKey,
-		Model:  transcription.Model,
-	})
-	// Route a processing source to the resolver that can read it: a bundled demo
-	// filename to the media root, an object key (uploads, samples, youtube) to
-	// object storage. A cataloged video processes through its object key with no
-	// re-upload.
-	transcriber := transcribe.NewRouter(
-		transcribe.NewSourceTranscriber(scribe, cfg.DemoMediaDir),
-		transcribe.NewObjectTranscriber(scribe, mediaStore),
-	)
-
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
 	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
 		TopK:              matchCfg.TopK,
@@ -167,21 +150,8 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
-	processor := service.NewProcessor(service.ProcessorConfig{
-		Transcriber: transcriber,
-		Matcher:     segmentMatcher,
-		Prechecker:  prechecker,
-		Store:       store,
-		Logger:      logger,
-	})
-	processorDone := make(chan struct{})
-	go func() {
-		defer close(processorDone)
-		processor.Run(ctx)
-	}()
-
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
-		Stream:     liveStream(liveTranscription, logger),
+		Stream:     liveStream(transcription, logger),
 		Matcher:    segmentMatcher,
 		Prechecker: prechecker,
 		Logger:     logger,
@@ -196,7 +166,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -204,8 +174,8 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: apiHandler,
-		// Tight server-wide bounds; the transcript route extends its own
-		// deadlines per request via http.ResponseController.
+		// Tight server-wide bounds keep slow connections out; the live WebSocket
+		// handler owns its own long-lived read/write deadlines after the upgrade.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -223,15 +193,12 @@ func run(logger *slog.Logger) error {
 	select {
 	case err := <-errCh:
 		stop()
-		<-processorDone
 		return err
 	case <-ctx.Done():
 		logger.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		err := srv.Shutdown(shutdownCtx)
-		<-processorDone
-		return err
+		return srv.Shutdown(shutdownCtx)
 	}
 }
 
@@ -250,20 +217,11 @@ func liveAllowedOrigins(corsOrigin string) []string {
 	return []string{u.Host}
 }
 
-// liveStream selects the live (realtime) transcription provider from config and
-// adapts it to the live pipeline's segment stream. AssemblyAI Universal-3 Pro is
-// the default because it diarizes inline; ElevenLabs Scribe v2 Realtime is the
-// non-diarizing fallback. Batch (VOD) transcription stays on ElevenLabs Scribe
-// regardless, wired separately above.
-func liveStream(cfg config.LiveTranscription, logger *slog.Logger) service.SegmentStream {
-	if cfg.Provider == config.LiveProviderElevenLabs {
-		client := transcribe.New(transcribe.Config{
-			APIKey:        cfg.APIKey,
-			RealtimeModel: cfg.Model,
-			Logger:        logger,
-		})
-		return transcribe.NewStreamSegmenter(client, transcribe.Options{})
-	}
+// liveStream builds the AssemblyAI streaming transcriber and adapts it to the
+// live pipeline's segment stream. AssemblyAI Universal-3 Pro is the sole
+// transcription provider: live streams and imported videos alike transcribe
+// over its realtime diarizing WebSocket.
+func liveStream(cfg config.Transcription, logger *slog.Logger) service.SegmentStream {
 	client := transcribe.NewAssemblyAI(transcribe.AssemblyAIConfig{
 		APIKey:      cfg.APIKey,
 		Model:       cfg.Model,

@@ -27,24 +27,3 @@ export function stubBackend(routes: BackendRoute[]) {
       return Promise.resolve(next());
     });
 }
-
-export const submitRoute = (
-  ...responses: BackendRoute["responses"]
-): BackendRoute => ({
-  match: (url, init) => url.endsWith("/api/videos") && init?.method === "POST",
-  responses,
-});
-
-export const statusRoute = (
-  ...responses: BackendRoute["responses"]
-): BackendRoute => ({
-  match: (url) => url.endsWith("/status"),
-  responses,
-});
-
-export const resultsRoute = (
-  ...responses: BackendRoute["responses"]
-): BackendRoute => ({
-  match: (url) => url.endsWith("/results"),
-  responses,
-});

@@ -1,30 +1,20 @@
-// Package transcribe turns audio or video sources into ordered, timestamped
-// transcript segments. The Transcriber interface is the stable contract shared
-// by the v1 batch path and the future real-time path: live mode emits the same
-// Segment shape incrementally, so callers never change.
+// Package transcribe turns streaming audio into ordered, timestamped transcript
+// segments. AssemblyAI Universal-3 Pro streaming is the single speech-to-text
+// provider; its realtime WebSocket emits committed and partial Turn events that
+// the live pipeline surfaces as captions and fact-checks, for live streams and
+// imported videos alike.
 package transcribe
 
-import (
-	"context"
-	"io"
-	"time"
-)
+import "time"
 
 // Segment is a contiguous span of speech with its position in the source.
-// Speaker is the diarized speaker label on the live path (empty on the batch
-// path, which does not diarize); it lets the live aggregator keep one speaker's
-// words out of another's analysis unit.
+// Speaker is the diarized speaker label emitted on each committed turn; it lets
+// the live aggregator keep one speaker's words out of another's analysis unit.
 type Segment struct {
 	Start   time.Duration
 	End     time.Duration
 	Text    string
 	Speaker string
-}
-
-// Transcript is the complete result of transcribing one source.
-type Transcript struct {
-	Language string
-	Segments []Segment
 }
 
 // TranscriptEvent is one incremental result from a streaming transcription.
@@ -34,25 +24,10 @@ type TranscriptEvent struct {
 	Final   bool
 }
 
-// Options tunes a single transcription request. The zero value auto-detects
-// the language.
+// Options tunes a single transcription request. The zero value auto-detects the
+// language.
 type Options struct {
 	// Language pins the spoken language as an ISO-639 code; empty means
 	// provider-side auto-detection.
 	Language string
-	// Filename labels the uploaded source for providers that sniff the
-	// container format from the name; empty falls back to a generic name.
-	Filename string
-}
-
-// Transcriber converts an audio or video source into timestamped segments.
-// Implementations wrap one speech-to-text provider; callers must not depend
-// on which one.
-type Transcriber interface {
-	// TranscribeFile transcribes a complete pre-recorded source in one call.
-	TranscribeFile(ctx context.Context, audio io.Reader, opts Options) (Transcript, error)
-	// TranscribeStream transcribes audio chunks as they arrive, emitting
-	// segments incrementally until chunks closes or ctx is done. The batch and
-	// live paths share this contract, so callers never depend on which is wired.
-	TranscribeStream(ctx context.Context, chunks <-chan []byte, opts Options) (<-chan TranscriptEvent, error)
 }
