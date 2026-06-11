@@ -5,8 +5,11 @@ SQLC_IMAGE    := sqlc/sqlc:1.31.1
 MIGRATE_IMAGE := migrate/migrate:v4.18.3
 # Override for a real target, e.g. make migrate-up DATABASE_URL=postgres://...
 DATABASE_URL  ?= postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable
+# Export the default so the go-run targets (seed, ingest, wikisync) see it in
+# their environment, not just the migrate-up interpolation.
+export DATABASE_URL
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest wikisync digest
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -43,6 +46,12 @@ build: ## Static build of the server
 
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest
+
+seed: ## Load the local dataset (claims, wiki, demo) offline from the committed cache (DATABASE_URL; no API key)
+	go run ./cmd/seed
+
+refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
+	go run ./cmd/seed -refresh
 
 wikisync: ## Download and ingest the Wikipedia corpus (WIKI_CORPUS, DATABASE_URL)
 	go run ./cmd/wikisync
