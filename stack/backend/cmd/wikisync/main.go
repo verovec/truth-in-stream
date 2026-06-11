@@ -43,15 +43,33 @@ func main() {
 	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest) or delta (incremental catch-up)")
 	dir := flag.String("dir", os.TempDir(), "directory for downloaded dump files")
 	dryRun := flag.Bool("dry-run", false, "ingest and report the embedding cost estimate without embedding or swapping")
+	maxDuration := flag.Duration("max-duration", 0, "stop the run after this much wall-clock time, leaving progress for the next run to resume (0 = run to completion)")
 	flag.Parse()
 
-	if err := run(logger, *mode, *dir, *dryRun); err != nil {
+	err := run(logger, *mode, *dir, *dryRun, *maxDuration)
+	switch {
+	case err == nil:
+		return
+	case stoppedEarly(err):
+		// A -max-duration budget or an interrupt cancels the context mid-run; the
+		// embedded prefix is already committed, so this is a clean resumable stop,
+		// not a failure.
+		logger.Info("wikisync stopped before completing; progress saved, re-run to resume", slog.Any("reason", err))
+		return
+	default:
 		logger.Error("wikisync failed", slog.Any("err", err))
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
+// stoppedEarly reports whether err is the context cancellation a -max-duration
+// budget or an interrupt signal produces. Both leave the corpus mid-build but
+// resumable, so the next run continues rather than the process reporting failure.
+func stoppedEarly(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Duration) error {
 	if mode != "bulk" && mode != "delta" {
 		return fmt.Errorf("wikisync: unsupported mode %q (want bulk or delta)", mode)
 	}
@@ -67,6 +85,14 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// A positive budget caps the run's wall-clock; the deadline cancels the shared
+	// context, every store and embed call unwinds, and the committed prefix stays
+	// for the next run to resume from.
+	if maxDuration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, maxDuration)
+		defer cancel()
+	}
 
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

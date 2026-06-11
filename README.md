@@ -101,6 +101,11 @@ managed with one-command reset and reseed targets (root `Makefile`):
 | `make seed-claims` / `make seed-wiki` / `make seed-demo` | Seed one dataset for targeted testing |
 | `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
 
+The offline seed loads claims, the Wikipedia subset, and the demo results - but not the curated
+sample-video record, which the backend upserts on startup (`VideoService.EnsureSamples`). A soft
+`make reset` rebuilds the schema without restarting the backend, so the video gallery is empty
+until you `docker compose restart backend` (or use `make reset-hard`, which restarts the stack).
+
 The datasets and their fixtures (`stack/backend/seed/`):
 
 - **Curated claims** - `claims.json`, matched against spoken segments.
@@ -137,6 +142,22 @@ chunks each article's lead section, upserts the chunks, embeds every chunk via V
 swaps the freshly embedded corpus into place. The run is idempotent and an interrupted embed
 resumes; `go run ./cmd/wikisync -dry-run` ingests and reports the embedding-cost estimate
 without calling the embedding API or swapping anything.
+
+**Populating over bounded sessions.** A full run is long and the embed step is paid, so you can
+fill the corpus across several time-boxed runs:
+
+```bash
+cd stack/backend
+make wiki-populate WIKI_MAX_DURATION=15m   # run for up to 15m, then stop; re-run to continue
+```
+
+`wiki-populate` runs the same bulk pipeline but stops cleanly at the budget, leaving the
+embedded prefix committed; each re-run resumes where the last left off. The corpus only goes
+**live** (atomic table swap) once a run completes the whole embed - partial runs accumulate
+progress without serving it. Under the hood this is
+`go run ./cmd/wikisync -mode=bulk -max-duration=<dur>`; a `0` budget (the default for
+`make wikisync`) runs to completion. The Make-level knobs are `WIKI_MAX_DURATION` (default
+`15m`) and `WIKI_DUMP_DIR` (default `/tmp/wikisync-dump`, reused across runs).
 
 It needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional knobs:
 

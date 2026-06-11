@@ -3,7 +3,7 @@
 ```
 LINEAR_TEAM: Veroveit
 LINEAR_PROJECT: Truth in Stream
-LINEAR_TICKETS: VER-6..VER-34
+LINEAR_TICKETS: VER-6..VER-37
 AGENT_INDUSTRY_VERSION: 5.0.0
 STATUS: Active
 CREATED: 2026-06-09
@@ -36,16 +36,19 @@ Ready queue.
 | VER-24 | Check-worthiness precheck gate for transcript segments | Done | High | |
 | VER-27 | Object storage foundation: MinIO local + S3 on AWS | Done | High | |
 | VER-22 | Wikipedia evidence in fact-check results | Done | Medium | VER-20 |
-| VER-21 | Periodic Wikipedia delta sync | In Review | Medium | VER-20 |
+| VER-21 | Periodic Wikipedia delta sync | Done | Medium | VER-20 |
 | VER-28 | Video metadata and presigned upload API (backend) | Done | High | VER-27 |
 | VER-25 | Real-time continuous fact-check: live subtitles and verdicts | Duplicate (canceled) | High | VER-24, VER-30 |
-| VER-32 | Local dev data environment: one-command reset, seeds, offline fixtures | In Progress | High | |
-| VER-33 | Public landing page and login-modal entry into the analyser | In Review | High | VER-18 |
-| VER-34 | Ingest a YouTube video by link (download, store, catalog) | In Progress | High | VER-28 |
+| VER-32 | Local dev data environment: one-command reset, seeds, offline fixtures | Done | High | |
+| VER-33 | Public landing page and login-modal entry into the analyser | Done | High | VER-18 |
+| VER-34 | Ingest a YouTube video by link (download, store, catalog) | Done | High | VER-28 |
+| VER-35 | Daily Slack digest and /report command | Done | Low | |
+| VER-29 | Upload UI and video library/picker (frontend) | Done | High | VER-28 |
+| VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | Done | High | VER-28 |
 | VER-26 | Upload and live-analyse video from the frontend (epic) | Todo | High | VER-28, VER-29, VER-30, VER-31 |
-| VER-29 | Upload UI and video library/picker (frontend) | In Review | High | VER-28 |
-| VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | In Progress | High | VER-28 |
 | VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Todo | High | VER-29, VER-30 |
+| VER-37 | Paste a YouTube URL to add a video (frontend ingest + pending-to-ready polling) | Todo | Medium | VER-34 |
+| VER-36 | Library video tiles: render a real frame thumbnail instead of the gradient monogram | Todo | Low | |
 
 ## Dependency Graph
 
@@ -60,7 +63,7 @@ VER-20 -> VER-22
 VER-18 -> VER-33
 VER-27 -> VER-28 -> VER-29 -> VER-31
 VER-28 -> VER-30 -> VER-31
-VER-28 -> VER-34
+VER-28 -> VER-34 -> VER-37
 VER-{28,29,30,31} -> VER-26
 ```
 
@@ -69,18 +72,13 @@ VER-{28,29,30,31} -> VER-26
 ## Ready Queue (computed)
 
 A card is READY when state is `Todo` AND every depends_on card is `Done`.
+VER-26 is the epic/parent tracker (not independently executable; closes when VER-31 is Done)
+and is excluded from the queue.
 
-EMPTY - no claimable card. VER-28 is merged to main, which unblocked VER-29, VER-30, and
-VER-34; all three were claimed by parallel sessions within minutes (VER-34 00:13:56,
-VER-29 00:14:38, VER-30 00:15:35) and are now In Progress. The two remaining Todo cards
-are still blocked:
+Ordered by priority, then unblock-count, then card number:
 
-- VER-31 - gated on VER-29 + VER-30 (both In Progress, not Done).
-- VER-26 - epic; closes when VER-28..VER-31 are Done.
-
-In flight (claimed by parallel sessions, not claimable): VER-29, VER-30, VER-32,
-VER-34 (In Progress); VER-21, VER-33 (In Review, PR #27).
-
-Next unblock: when VER-29 and VER-30 reach Done, VER-31 becomes ready.
+1. VER-31 - Live playback sync (frontend) - High - deps VER-29 + VER-30 both Done -> READY
+2. VER-37 - Paste a YouTube URL to add a video (frontend) - Medium - dep VER-34 Done -> READY
+3. VER-36 - Library video tile real-frame thumbnail - Low - no deps -> READY
 
 END_OF_DOCUMENT

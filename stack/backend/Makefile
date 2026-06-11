@@ -9,7 +9,14 @@ DATABASE_URL  ?= postgres://postgres:dev@localhost:5432/truthinstream?sslmode=di
 # their environment, not just the migrate-up interpolation.
 export DATABASE_URL
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync digest
+# Wall-clock budget for one wiki-populate run. The corpus embed is long and
+# paid, so a run stops cleanly at the budget and the next run resumes; populate
+# over several runs. Override per invocation, e.g. make wiki-populate WIKI_MAX_DURATION=30m.
+WIKI_MAX_DURATION ?= 15m
+# Persisted across runs so a resume reuses the downloaded dump dir.
+WIKI_DUMP_DIR     ?= /tmp/wikisync-dump
+
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync wiki-populate digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -55,6 +62,10 @@ refresh-embeddings: ## Regenerate the committed embedding cache from fixtures vi
 
 wikisync: ## Download and ingest the Wikipedia corpus (WIKI_CORPUS, DATABASE_URL)
 	go run ./cmd/wikisync
+
+wiki-populate: ## Bulk-ingest+embed the Wikipedia corpus for up to WIKI_MAX_DURATION, then stop; resumable, so re-run to continue (WIKI_CORPUS, DATABASE_URL, EMBEDDING_API_KEY)
+	@mkdir -p $(WIKI_DUMP_DIR)
+	go run ./cmd/wikisync -mode=bulk -max-duration=$(WIKI_MAX_DURATION) -dir=$(WIKI_DUMP_DIR)
 
 digest: ## Post the daily development digest to Slack (needs SLACK_DIGEST_WEBHOOK_URL)
 	go run ./cmd/digest
