@@ -100,6 +100,8 @@ managed with one-command reset and reseed targets (root `Makefile`):
 | `make seed` | Reseed every dataset; idempotent (safe to re-run) |
 | `make seed-claims` / `make seed-wiki` / `make seed-demo` | Seed one dataset for targeted testing |
 | `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
+| `make wiki-populate` | Bulk-embed the full Wikipedia corpus (paid, foreground, resumable) - see [Wikipedia corpus](#wikipedia-corpus) |
+| `make wiki-update` | Incrementally update the embedded corpus via the MediaWiki API - see [Wikipedia corpus](#wikipedia-corpus) |
 
 The offline seed loads claims, the Wikipedia subset, and the demo results - but not the curated
 sample-video record, which the backend upserts on startup (`VideoService.EnsureSamples`). A soft
@@ -137,49 +139,65 @@ openssl rand -hex 32                                  # -> SESSION_SECRET
 ## Wikipedia corpus
 
 Beyond the seeded claims, the verification store can be backed by a full Wikipedia corpus.
-`make wikisync` (from `stack/backend`) downloads the corpus's multistream dump, extracts and
-chunks each article's lead section, upserts the chunks, embeds every chunk via Voyage, then
-swaps the freshly embedded corpus into place. The run is idempotent and an interrupted embed
-resumes; `go run ./cmd/wikisync -dry-run` ingests and reports the embedding-cost estimate
-without calling the embedding API or swapping anything.
-
-**Populating over bounded sessions.** A full run is long and the embed step is paid, so you can
-fill the corpus across several time-boxed runs:
+`wikisync` downloads the corpus's multistream dump, extracts and chunks each article's lead
+section, upserts the chunks, embeds every chunk via Voyage, then swaps the freshly embedded
+corpus into place. It is an opt-in Docker Compose service behind the `wiki` profile, so `make up`
+never triggers the paid embed. Two Make targets drive it from the repo root; both run in the
+**foreground** and stream JSON logs (no `-d`), and both are resumable - Ctrl-C and re-run
+continues where it left off:
 
 ```bash
-cd stack/backend
-make wiki-populate WIKI_MAX_DURATION=15m   # run for up to 15m, then stop; re-run to continue
+make wiki-populate   # bulk: ingest + embed the whole corpus, then swap it live (paid, long)
+make wiki-update     # delta: catch the corpus up to recent Wikipedia changes via the MediaWiki API
 ```
 
-`wiki-populate` runs the same bulk pipeline but stops cleanly at the budget, leaving the
-embedded prefix committed; each re-run resumes where the last left off. The corpus only goes
-**live** (atomic table swap) once a run completes the whole embed - partial runs accumulate
-progress without serving it. Under the hood this is
-`go run ./cmd/wikisync -mode=bulk -max-duration=<dur>`; a `0` budget (the default for
-`make wikisync`) runs to completion. The Make-level knobs are `WIKI_MAX_DURATION` (default
-`15m`) and `WIKI_DUMP_DIR` (default `/tmp/wikisync-dump`, reused across runs).
-
-Against the Docker Compose stack the same bounded session runs as an opt-in service behind the
-`wiki` profile, so a plain `docker compose up` never triggers the paid embed:
+Both call Voyage and need `EMBEDDING_API_KEY` in the root `.env`. `wiki-populate` loads embedded
+chunks into a staging table in keyset order and only swaps them into the live `wiki_chunks` once
+the **whole** corpus is embedded, so partial runs accumulate progress without serving it;
+re-running resumes from the staging watermark (the downloaded dump persists in the `wiki-dump`
+volume). The defaults are tuned gentle for a constrained Voyage tier; raise the batch and
+concurrency on a higher tier, or box the run with a budget:
 
 ```bash
-docker compose --profile wiki run --rm wiki-populate                 # one 15m session, resumable
-WIKI_MAX_DURATION=30m docker compose --profile wiki run --rm wiki-populate
+make wiki-populate WIKI_EMBED_BATCH_SIZE=128 WIKI_EMBED_CONCURRENCY=4   # faster on a higher tier
+make wiki-populate WIKI_MAX_DURATION=15m                                # one 15m session, then stop
 ```
 
-It waits for Postgres and the migrations, reads `EMBEDDING_API_KEY` from the root `.env`, and
-keeps the downloaded dump in the `wiki-dump` named volume so re-runs resume. The knobs are the
-same `WIKI_MAX_DURATION` (default `15m`, `0` runs to completion) and `WIKI_CORPUS` (default
-`simplewiki`).
+The Make defaults are `WIKI_EMBED_BATCH_SIZE=32`, `WIKI_EMBED_CONCURRENCY=2`,
+`WIKI_EMBED_HTTP_TIMEOUT=300s`, and `WIKI_MAX_DURATION=0` (run to completion); `WIKI_CORPUS`
+defaults to `simplewiki`.
 
-It needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional knobs:
+**Reading the logs.** Each run streams structured lines:
+
+- `starting bulk embed` - `pending_chunks`, `resume_after_page`.
+- `embedded wiki chunk batch` - one per HTTP batch, with `batch_chunks`, cumulative `embedded`,
+  `pending_total`, `through_page`/`through_title`, and `embed_duration` (the request latency).
+  **When `embed_duration` nears `WIKI_EMBED_HTTP_TIMEOUT`, lower the batch/concurrency or raise
+  the timeout** - that is the throttle signal.
+- `embedding request failed, backing off before retry` - a WARN per retry with `reason`,
+  `elapsed`, and `backoff`; sustained ones mean Voyage is throttling or stalling.
+- `all pending chunks embedded; building index and swapping staging into wiki_chunks`, then
+  `bulk embed finalized; wiki_chunks now serves the embedded corpus` - the atomic swap.
+  **Wiki search only returns results after that final line.**
+
+Pipe to a file or `jq` for a readable trace: `make wiki-populate 2>&1 | tee wiki.log`. If a prior
+run left `wiki_chunks_staging` behind, `make wiki-update` refuses to start until a bulk run
+finishes it - just re-run `make wiki-populate` to resume to the swap.
+
+With a local Go toolchain you can instead run the pipeline directly from `stack/backend`
+(`make wiki-populate` / `make wikisync`, against the Compose Postgres on `localhost:5432`);
+`go run ./cmd/wikisync -dry-run` ingests and reports the embedding-cost estimate without calling
+the API or swapping. `wikisync` needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional
+knobs:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `WIKI_CORPUS` | no (default `simplewiki`) | Wikimedia dump name (`<lang>wiki`); interpolated into the download and source URLs |
-| `WIKI_EMBED_BATCH_SIZE` | no (default `128`, max `1000`) | Chunks per Voyage embedding request |
-| `WIKI_EMBED_CONCURRENCY` | no (default `4`) | Concurrent embedding requests |
+| `WIKI_EMBED_BATCH_SIZE` | no (binary default `128`, max `1000`; Make sets `32`) | Chunks per Voyage embedding request - lower it if `embed_duration` nears the timeout |
+| `WIKI_EMBED_CONCURRENCY` | no (binary default `4`; Make sets `2`) | Concurrent embedding requests - lower it to ease throttling |
+| `WIKI_EMBED_HTTP_TIMEOUT` | no (binary default `120s`; Make sets `300s`) | Per-request HTTP timeout; raise it when Voyage is slow but still responding |
 | `WIKI_EMBED_MAX_RETRIES` | no (default `6`) | Retries per request when the API throttles |
+| `WIKI_MAX_DURATION` | no (default `0` = run to completion) | Wall-clock budget for one bulk run (maps to `-max-duration`); a positive budget stops the run cleanly and the next resumes. Running the Compose service directly (not via `make`) applies a `15m` fallback |
 | `WIKI_EMBED_MAINTENANCE_WORK_MEM` | no (default `512MB`) | Postgres `maintenance_work_mem` for the HNSW index build; raise it for `enwiki` |
 | `WIKI_EMBED_MAX_PARALLEL_WORKERS` | no (default `7`) | Parallel workers for the index build |
 
