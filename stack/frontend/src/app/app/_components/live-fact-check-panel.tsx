@@ -1,44 +1,98 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { useLiveAnalysis } from "@/hooks/use-live-analysis";
+import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
-import { PlaybackClock } from "./playback-clock";
+import { LiveFactCheckList } from "./live-fact-check-list";
 import { LiveStatementList } from "./live-statement-list";
+import { PlaybackClock } from "./playback-clock";
 
-// LiveFactCheckPanel feeds the fact-check panel from the live analysis stream
-// for the selected video: it opens the WebSocket and renders incremental
-// subtitles and verdicts as the video plays, keyed to the playback clock.
+// LiveFactCheckPanel feeds the live analysis stream for the selected video into
+// two stacked, independently-scrolling regions inside one fixed-height
+// container: subtitles on top, a decoupled fact-check list below. The panel
+// height is a fraction of the viewport (not content- or player-driven), so a
+// long transcript never pushes the fact-checks off screen and vice versa.
+// Selecting a fact-check entry lifts its statement id here so the subtitle
+// region can highlight and scroll the origin into view.
 export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
   const { statements, caption, status } = useLiveAnalysis(videoId);
+  // tick increments on every selection so re-selecting the same fact-check entry
+  // still scrolls its origin subtitle back into view.
+  const [selection, setSelection] = useState<{
+    id: string;
+    tick: number;
+  } | null>(null);
+  const selectFactCheck = (statementId: string) =>
+    setSelection((prev) => ({ id: statementId, tick: (prev?.tick ?? 0) + 1 }));
+  // Derived from the same statements that drive the subtitles, so the two can
+  // never disagree. Memoized (the React compiler is not enabled) so the interim
+  // caption updating on every spoken word does not re-derive or re-render the
+  // memoized fact-check list.
+  const entries = useMemo(() => deriveFactChecks(statements), [statements]);
 
   return (
     <aside
-      aria-labelledby="fact-check-heading"
-      className="flex h-full flex-col gap-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
+      aria-labelledby="live-analysis-heading"
+      className="flex h-[78svh] flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
     >
       <header className="flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-2">
           <h2
-            id="fact-check-heading"
+            id="live-analysis-heading"
             className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
           >
-            Fact checks
+            Live analysis
           </h2>
           <LiveStatusPill status={status} />
         </div>
         <PlaybackClock />
       </header>
       <ConnectionNotice status={status} />
-      {statements.length > 0 && <LiveStatementList statements={statements} />}
-      {statements.length === 0 && !caption && <EmptyHint status={status} />}
-      <LiveCaption text={caption} />
+
+      <section
+        aria-label="Live subtitles"
+        className="flex min-h-0 flex-1 flex-col gap-2"
+      >
+        <RegionHeading>Subtitles</RegionHeading>
+        {statements.length > 0 && (
+          <LiveStatementList
+            statements={statements}
+            selectedStatementId={selection?.id ?? null}
+            selectionTick={selection?.tick ?? 0}
+          />
+        )}
+        {statements.length === 0 && !caption && <EmptyHint status={status} />}
+        <LiveCaption text={caption} />
+      </section>
+
+      <section
+        aria-label="Fact checks"
+        className="flex min-h-0 flex-1 flex-col gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800"
+      >
+        <RegionHeading>Fact checks</RegionHeading>
+        <LiveFactCheckList
+          entries={entries}
+          selectedStatementId={selection?.id ?? null}
+          onSelect={selectFactCheck}
+        />
+      </section>
     </aside>
   );
 }
 
+// RegionHeading labels each of the two stacked scroll regions.
+function RegionHeading({ children }: { children: string }) {
+  return (
+    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+      {children}
+    </h3>
+  );
+}
+
 // LiveCaption shows the current utterance as it is spoken, before it commits to
-// a statement, so the transcript is visible word by word rather than appearing
-// only when a statement finalizes. It renders nothing between utterances.
+// a statement, so the transcript is visible word by word. It is part of the
+// subtitle region and renders nothing between utterances.
 function LiveCaption({ text }: { text: string }) {
   if (!text) {
     return null;
@@ -46,7 +100,7 @@ function LiveCaption({ text }: { text: string }) {
   return (
     <p
       aria-live="polite"
-      className="mt-auto flex items-start gap-2 border-t border-dashed border-zinc-200 pt-3 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+      className="mt-auto flex items-start gap-2 border-t border-dashed border-zinc-200 pt-2 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
     >
       <span
         aria-hidden="true"
@@ -101,7 +155,7 @@ function ConnectionNotice({ status }: { status: LiveStatus }) {
   return null;
 }
 
-// EmptyHint explains, per status, why no statements are shown yet.
+// EmptyHint explains, per status, why no subtitles are shown yet.
 function EmptyHint({ status }: { status: LiveStatus }) {
   const message =
     status === "connecting"

@@ -1,0 +1,112 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, test, vi } from "vitest";
+import type { FactCheckEntry } from "@/lib/live/fact-checks";
+import { LiveFactCheckList } from "./live-fact-check-list";
+
+const claimEntry: FactCheckEntry = {
+  key: "s1:0",
+  statementId: "s1",
+  start: 12,
+  snippet: "the earth is round",
+  match: {
+    kind: "claim",
+    claim: "Earth is an oblate spheroid",
+    verdict: "corroborates",
+    sources: [{ title: "NASA", url: "https://nasa.gov" }],
+    similarity: 0.92,
+  },
+};
+
+const evidenceEntry: FactCheckEntry = {
+  key: "s2:0",
+  statementId: "s2",
+  start: 30,
+  snippet: "earth is a planet",
+  match: {
+    kind: "evidence",
+    excerpt: "Earth is the third planet from the Sun",
+    article: { title: "Earth", url: "https://en.wikipedia.org/wiki/Earth" },
+    similarity: 0.8,
+  },
+};
+
+describe("LiveFactCheckList", () => {
+  test("renders a claim verdict with its sources and the originating subtitle", () => {
+    render(
+      <LiveFactCheckList
+        entries={[claimEntry]}
+        selectedStatementId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/oblate spheroid/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "NASA" })).toHaveAttribute(
+      "href",
+      "https://nasa.gov",
+    );
+    // Origin reference back to the subtitle: timestamp and a snippet.
+    expect(screen.getByText("0:12")).toBeInTheDocument();
+    expect(screen.getByText(/the earth is round/i)).toBeInTheDocument();
+  });
+
+  test("renders evidence with its Wikipedia attribution", () => {
+    render(
+      <LiveFactCheckList
+        entries={[evidenceEntry]}
+        selectedStatementId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/third planet from the sun/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Earth" })).toHaveAttribute(
+      "href",
+      "https://en.wikipedia.org/wiki/Earth",
+    );
+  });
+
+  test("selecting an entry reports its originating statement id", async () => {
+    const onSelect = vi.fn();
+    render(
+      <LiveFactCheckList
+        entries={[claimEntry]}
+        selectedStatementId={null}
+        onSelect={onSelect}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /the earth is round/i }));
+    expect(onSelect).toHaveBeenCalledWith("s1");
+  });
+
+  test("marks the selected entry for the operator", () => {
+    render(
+      <LiveFactCheckList
+        entries={[claimEntry, evidenceEntry]}
+        selectedStatementId="s1"
+        onSelect={() => {}}
+      />,
+    );
+
+    const selected = screen
+      .getByText(/oblate spheroid/i)
+      .closest("li");
+    expect(selected).toHaveAttribute("aria-current", "true");
+  });
+
+  test("shows an empty hint when no fact-checks have resolved", () => {
+    render(
+      <LiveFactCheckList
+        entries={[]}
+        selectedStatementId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(/fact-checks appear here as claims are verified/i),
+    ).toBeInTheDocument();
+  });
+});

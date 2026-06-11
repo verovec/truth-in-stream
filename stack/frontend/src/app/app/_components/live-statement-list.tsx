@@ -5,56 +5,92 @@ import {
   usePlayback,
   usePlaybackStore,
 } from "@/components/playback/playback-provider";
+import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import type { LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
-import { SegmentDetail } from "./segment-detail";
+import {
+  LIVE_ROW_BASE_CLASS,
+  LIVE_ROW_EMPHASIZED_CLASS,
+} from "./live-row-classes";
 
-// LiveStatementList renders incremental live statements with the same row
-// presentation as the batch results list, plus an in-flight affordance while a
-// statement's verdict is still being computed. The active statement tracks the
-// playback clock and scrolls into view. Memoized so a caption-only update of the
-// parent panel (every interim word) does not re-render the whole list.
+// LiveStatementList is the subtitle region: the running transcript of finalised
+// statements. Verdicts live in the decoupled fact-check list below, so each row
+// here carries only the spoken text plus a light status marker (analysing,
+// could-not-check, skipped, or no-match). Two scroll drivers coexist without
+// fighting: the active row tracks the playback clock, and a row selected from
+// the fact-check list scrolls into view on demand. Memoized so a caption-only
+// update of the parent panel (every interim word) does not re-render the list.
 export const LiveStatementList = memo(function LiveStatementList({
   statements,
+  selectedStatementId,
+  selectionTick = 0,
 }: {
   statements: LiveStatement[];
+  selectedStatementId: string | null;
+  // Bumped by the parent on every fact-check selection so re-selecting the same
+  // entry scrolls its origin back into view even when the id is unchanged.
+  selectionTick?: number;
 }) {
   const store = usePlaybackStore();
   const activeIndex = usePlayback((snapshot) =>
     findActiveSegmentIndex(statements, snapshot.currentTime),
   );
-  const activeItemRef = useRef<HTMLLIElement>(null);
+  const itemRefs = useRef(new Map<string, HTMLLIElement>());
 
+  const activeId = activeIndex >= 0 ? statements[activeIndex]?.id : undefined;
   useEffect(() => {
-    activeItemRef.current?.scrollIntoView({
+    if (activeId === undefined) {
+      return;
+    }
+    itemRefs.current.get(activeId)?.scrollIntoView({
       block: "nearest",
       behavior: "smooth",
     });
-  }, [activeIndex]);
+  }, [activeId]);
+
+  useEffect(() => {
+    if (selectedStatementId === null) {
+      return;
+    }
+    itemRefs.current.get(selectedStatementId)?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [selectedStatementId, selectionTick]);
 
   return (
     <ol
-      aria-label="Live fact-checked statements"
-      className="-mr-2 flex max-h-[70svh] min-h-0 flex-col gap-3 overflow-y-auto pr-2"
+      aria-label="Subtitle transcript"
+      className="-mr-2 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-2"
     >
       {statements.map((statement, index) => {
         const active = index === activeIndex;
+        const selected = statement.id === selectedStatementId;
         return (
           <li
             key={statement.id}
-            ref={active ? activeItemRef : undefined}
+            ref={(el) => {
+              const refs = itemRefs.current;
+              if (el) {
+                refs.set(statement.id, el);
+              } else {
+                refs.delete(statement.id);
+              }
+            }}
             aria-current={active ? "true" : undefined}
             className={`rounded-lg border transition-colors ${
-              active
-                ? "border-sky-400 bg-sky-50 dark:border-sky-500/60 dark:bg-sky-500/10"
-                : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+              active ? LIVE_ROW_EMPHASIZED_CLASS : LIVE_ROW_BASE_CLASS
+            } ${
+              selected
+                ? "ring-2 ring-sky-400 ring-offset-1 dark:ring-sky-500/60 dark:ring-offset-zinc-950"
+                : ""
             }`}
           >
             <button
               type="button"
               onClick={() => store.seekTo(statement.start)}
-              className="flex w-full flex-col gap-1 rounded-t-lg px-3 py-2 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+              className="flex w-full flex-col gap-1 rounded-lg px-3 py-2 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
             >
               <span
                 className={`font-mono text-[11px] tabular-nums ${
@@ -69,7 +105,7 @@ export const LiveStatementList = memo(function LiveStatementList({
                 {statement.text}
               </span>
             </button>
-            <StatementBody statement={statement} />
+            <SubtitleStatus statement={statement} />
           </li>
         );
       })}
@@ -77,12 +113,29 @@ export const LiveStatementList = memo(function LiveStatementList({
   );
 });
 
-function StatementBody({ statement }: { statement: LiveStatement }) {
+// SKIP_LABELS explains, per skip reason, why a statement was not fact-checked.
+const SKIP_LABELS: Record<SkipReason, string> = {
+  not_a_claim: "No verifiable claim",
+  not_covered: "Not covered by the reference corpus",
+  not_checked: "The live checker was busy",
+};
+
+// skipLabel tolerates a skip reason the backend may add before the frontend
+// knows it. The parameter is widened to string on purpose: the value crosses the
+// wire unchecked.
+function skipLabel(reason: string): string {
+  return SKIP_LABELS[reason as SkipReason] ?? "Not checked";
+}
+
+// SubtitleStatus is the light per-row marker. It never shows a verdict (those
+// live in the fact-check list); it only signals progress or why a statement
+// produced no fact-check, so a row is never silently empty after analysis.
+function SubtitleStatus({ statement }: { statement: LiveStatement }) {
   if (statement.status === "analysing") {
     return (
       <p
         role="status"
-        className="flex items-center gap-2 border-t border-dashed border-zinc-200 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+        className="flex items-center gap-2 px-3 pb-2 text-xs text-zinc-500 dark:text-zinc-400"
       >
         <span
           aria-hidden="true"
@@ -95,21 +148,27 @@ function StatementBody({ statement }: { statement: LiveStatement }) {
 
   if (statement.error) {
     return (
-      <p className="border-t border-dashed border-amber-200 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/30 dark:text-amber-400">
+      <p className="px-3 pb-2 text-xs text-amber-700 dark:text-amber-400">
         This statement could not be checked.
       </p>
     );
   }
 
-  return (
-    <SegmentDetail
-      segment={{
-        start: statement.start,
-        end: statement.end,
-        text: statement.text,
-        matches: statement.matches,
-        skipReason: statement.skipReason,
-      }}
-    />
-  );
+  if (statement.skipReason) {
+    return (
+      <p className="px-3 pb-2 text-xs italic text-zinc-400 dark:text-zinc-500">
+        Not checked - {skipLabel(statement.skipReason)}.
+      </p>
+    );
+  }
+
+  if (statement.matches.length === 0) {
+    return (
+      <p className="px-3 pb-2 text-xs text-zinc-500 dark:text-zinc-400">
+        No confident match.
+      </p>
+    );
+  }
+
+  return null;
 }
