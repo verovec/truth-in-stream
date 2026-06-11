@@ -18,33 +18,69 @@ func TestRunRejectsUnknownMode(t *testing.T) {
 	}
 }
 
-func TestStoppedEarly(t *testing.T) {
+// TestClassifyStop pins the rule that decides whether a stop is clean: it is
+// keyed on the owned context (a -max-duration budget or an interrupt), never on
+// the shape of the work error. A provider timeout satisfies
+// errors.Is(err, context.DeadlineExceeded) too, so error-sniffing would mistake
+// it for a budget stop and silently swallow a real failure.
+func TestClassifyStop(t *testing.T) {
 	t.Parallel()
+	providerTimeout := fmt.Errorf("wiki: embed chunks [0:128]: %w",
+		fmt.Errorf("embed: giving up after 6 attempts: %w", context.DeadlineExceeded))
 	tests := []struct {
-		name string
-		err  error
-		want bool
+		name          string
+		workErr       error
+		ctxErr        error
+		wantStopped   bool
+		wantNilResult bool
 	}{
-		{name: "nil", err: nil, want: false},
-		{name: "deadline budget", err: context.DeadlineExceeded, want: true},
-		{name: "interrupt signal", err: context.Canceled, want: true},
+		{name: "success", workErr: nil, ctxErr: nil, wantNilResult: true},
 		{
-			name: "wrapped deadline from a store call",
-			err:  fmt.Errorf("wiki: read pending chunks: %w", context.DeadlineExceeded),
-			want: true,
+			name:          "finished as the budget expired is a success, not a stop",
+			workErr:       nil,
+			ctxErr:        context.DeadlineExceeded,
+			wantNilResult: true,
 		},
 		{
-			name: "doubly wrapped cancellation through the embed retry",
-			err:  fmt.Errorf("wiki: embed chunks [0:64]: %w", fmt.Errorf("embed request: %w", context.Canceled)),
-			want: true,
+			name:        "budget expired mid-run",
+			workErr:     fmt.Errorf("wiki: read pending chunks: %w", context.DeadlineExceeded),
+			ctxErr:      context.DeadlineExceeded,
+			wantStopped: true,
 		},
-		{name: "genuine failure", err: errors.New("wiki: finalize staging: relation does not exist"), want: false},
+		{
+			name:        "interrupt mid-run",
+			workErr:     fmt.Errorf("wiki: load embedded chunks: %w", context.Canceled),
+			ctxErr:      context.Canceled,
+			wantStopped: true,
+		},
+		{
+			name:        "provider timeout with a live context is a failure, not a clean stop",
+			workErr:     providerTimeout,
+			ctxErr:      nil,
+			wantStopped: false,
+		},
+		{
+			name:        "genuine failure",
+			workErr:     errors.New("wiki: finalize staging: relation does not exist"),
+			ctxErr:      nil,
+			wantStopped: false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := stoppedEarly(tc.err); got != tc.want {
-				t.Errorf("stoppedEarly(%v) = %v, want %v", tc.err, got, tc.want)
+			got := classifyStop(tc.workErr, tc.ctxErr)
+			if tc.wantNilResult {
+				if got != nil {
+					t.Fatalf("classifyStop = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("classifyStop = nil, want an error")
+			}
+			if stoppedEarly(got) != tc.wantStopped {
+				t.Errorf("stoppedEarly(%v) = %v, want %v", got, stoppedEarly(got), tc.wantStopped)
 			}
 		})
 	}
