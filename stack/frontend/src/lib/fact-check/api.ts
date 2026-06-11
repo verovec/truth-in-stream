@@ -1,8 +1,8 @@
 // Typed client for the video processing API (stack/backend
-// internal/handler/processing.go). NEXT_PUBLIC_API_URL is empty in deployed
-// environments (the ALB serves /api/* same-origin) and points at the backend
-// container in local dev.
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+// internal/handler/processing.go).
+import { API_BASE, ApiError, toApiError } from "@/lib/http";
+
+export { ApiError };
 
 export type Verdict = "corroborates" | "contradicts" | "unclear";
 
@@ -70,16 +70,6 @@ export type ResultsOutcome =
   | { kind: "complete"; segments: FactCheckSegment[] }
   | { kind: "pending" };
 
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
 type SubmitWire = { video_id: string; status: ProcessingStatus };
 
 type StatusWire = {
@@ -145,24 +135,6 @@ function normalizeSegment(wire: SegmentWire): FactCheckSegment {
     matches: wire.matches.map(normalizeMatch),
     skipReason: wire.skip_reason,
   };
-}
-
-async function toApiError(response: Response): Promise<ApiError> {
-  const fallback = `request failed with status ${response.status}`;
-  try {
-    const body: unknown = await response.json();
-    if (
-      typeof body === "object" &&
-      body !== null &&
-      "error" in body &&
-      typeof body.error === "string"
-    ) {
-      return new ApiError(body.error, response.status);
-    }
-  } catch {
-    // Non-JSON error body; fall through to the generic message.
-  }
-  return new ApiError(fallback, response.status);
 }
 
 export async function submitVideo(
