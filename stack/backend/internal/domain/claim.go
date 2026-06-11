@@ -5,7 +5,7 @@ package domain
 import "context"
 
 // EmbeddingDim is the fixed embedding dimension for the claim store. It is
-// pinned to the voyage-4 output dimension and the claims.embedding
+// pinned to the voyage-4-large output dimension and the claims.embedding
 // halfvec(1024) column; ingest and query time must use the same value or
 // similarity scores are meaningless.
 const EmbeddingDim = 1024
@@ -52,7 +52,7 @@ type Source struct {
 }
 
 // Claim is a curated, verified statement and its embedding, as stored in the
-// vector store. Embedding is voyage-4, EmbeddingDim dimensions.
+// vector store. Embedding is voyage-4-large, EmbeddingDim dimensions.
 type Claim struct {
 	ID        string
 	Text      string

@@ -230,7 +230,7 @@ func (c *Cached) embed(ctx context.Context, texts []string, inputType string) ([
 		return out, nil
 	}
 	if c.filler == nil {
-		return nil, fmt.Errorf("%w: %q (run refresh-embeddings with EMBEDDING_API_KEY)", ErrCacheMiss, missTexts[0])
+		return nil, fmt.Errorf("%w: model %q has no cached embedding for %q (run refresh-embeddings with EMBEDDING_API_KEY)", ErrCacheMiss, c.model, missTexts[0])
 	}
 
 	filled, err := c.fillMisses(ctx, missTexts, inputType)

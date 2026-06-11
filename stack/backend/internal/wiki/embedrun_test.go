@@ -166,12 +166,12 @@ func TestEstimateBulkEmbed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EstimateBulkEmbed: %v", err)
 	}
-	// 5000 chars / 5 chars-per-token = 1000 tokens; 1000/1e6 * $0.06 = $6e-5.
+	// 5000 chars / 5 chars-per-token = 1000 tokens; 1000/1e6 * $0.12 = $1.2e-4.
 	if est.Pages != 10 || est.Chunks != 100 || est.Tokens != 1000 {
 		t.Errorf("estimate counts = %+v, want pages 10 chunks 100 tokens 1000", est)
 	}
-	if est.CostUSD < 5.9e-5 || est.CostUSD > 6.1e-5 {
-		t.Errorf("cost = %v, want ~6e-5", est.CostUSD)
+	if est.CostUSD < 1.19e-4 || est.CostUSD > 1.21e-4 {
+		t.Errorf("cost = %v, want ~1.2e-4", est.CostUSD)
 	}
 }
 

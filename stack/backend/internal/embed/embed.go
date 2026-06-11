@@ -4,8 +4,8 @@
 // Verified against docs.voyageai.com (2026-06): POST
 // https://api.voyageai.com/v1/embeddings, Bearer auth, request fields
 // input/model/input_type/output_dimension/output_dtype, response
-// {data:[{index,embedding}], usage:{total_tokens}}. voyage-4 defaults to and
-// supports 1024 output dimensions; input_type is "document" for stored text
+// {data:[{index,embedding}], usage:{total_tokens}}. voyage-4-large defaults to
+// and supports 1024 output dimensions; input_type is "document" for stored text
 // and "query" for retrieval queries.
 package embed
 

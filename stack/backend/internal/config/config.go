@@ -15,8 +15,10 @@ import (
 
 // defaultEmbeddingModel is the voyage model used for both ingest and query
 // embeddings. The same model must be used on both sides or similarity scores
-// are meaningless.
-const defaultEmbeddingModel = "voyage-4"
+// are meaningless. voyage-4-large is the canonical model: it outputs 1024 dims
+// (matching the pinned index) and its batch endpoint works, where base
+// voyage-4's currently hangs on any multi-input batch.
+const defaultEmbeddingModel = "voyage-4-large"
 
 // defaultTranscriptionModel is the ElevenLabs batch speech-to-text model.
 const defaultTranscriptionModel = "scribe_v2"
@@ -61,8 +63,8 @@ type Embedding struct {
 }
 
 // LoadEmbedding reads the embedding provider configuration from the
-// environment. EMBEDDING_API_KEY is required; the model defaults to voyage-4
-// and the dimension is pinned to the claim store's EmbeddingDim. An
+// environment. EMBEDDING_API_KEY is required; the model defaults to
+// voyage-4-large and the dimension is pinned to the claim store's EmbeddingDim. An
 // EMBEDDING_DIM that disagrees with the pinned dimension is a fatal
 // misconfiguration rather than a silent re-ingest hazard.
 func LoadEmbedding() (Embedding, error) {

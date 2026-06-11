@@ -12,7 +12,7 @@ import (
 
 // committedCacheModel is the model the committed offline cache is keyed under.
 // It mirrors the cmd/seed default; a real refresh re-keys under the same model.
-const committedCacheModel = "voyage-4"
+const committedCacheModel = "voyage-4-large"
 
 // TestCommittedCacheCoversFixtures fails if the committed embedding cache is
 // missing a vector for any fixture document text. It runs with no database and

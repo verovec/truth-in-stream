@@ -8,7 +8,7 @@ Real-time fact-checking for live streams.
 |-------|------|----------|
 | Frontend | Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) | `stack/frontend` |
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
-| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4` embeddings, ElevenLabs Scribe v2 batch transcription, AssemblyAI Universal-3 Pro live transcription | `stack/backend` |
+| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4-large` embeddings, ElevenLabs Scribe v2 batch transcription, AssemblyAI Universal-3 Pro live transcription | `stack/backend` |
 | Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
 
 ## Quick start
@@ -43,7 +43,7 @@ interpolates `.env` into the service environments.
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
 | `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 batch (VOD/file) speech-to-text |
 | `LIVE_TRANSCRIPTION_API_KEY` | yes | Live (realtime) speech-to-text. Defaults to AssemblyAI Universal-3 Pro streaming (`u3-rt-pro`) for inline speaker diarization; this is the AssemblyAI key. Set `LIVE_TRANSCRIPTION_PROVIDER=elevenlabs` to fall back to Scribe v2 Realtime (no diarization). Optional: `LIVE_TRANSCRIPTION_MODEL`, `LIVE_TRANSCRIPTION_MAX_SPEAKERS` |
-| `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4` embeddings. Seeding reads the committed cache offline; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
+| `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4-large` embeddings. Seeding is strictly offline (the committed cache is the source of truth) and never calls Voyage, so a stale value cannot break it; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
 | `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
 | `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |
 | `SESSION_SECRET` | yes | HMAC key for session cookies, at least 32 bytes |
@@ -53,13 +53,13 @@ interpolates `.env` into the service environments.
 | `PORT` | no (default `8080`) | Backend listen port |
 | `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
 | `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves and transcribes the demo clip from |
-| `EMBEDDING_MODEL` | no (default `voyage-4`) | Voyage embedding model; the **same value must be used for ingest and query** (different models are different vector spaces). All `voyage-4*`/`voyage-3.5` models output 1024 dims, matching the pinned index. Note: base `voyage-4`'s batch endpoint is currently broken on Voyage's side (single inputs return, but any 2+ input batch hangs) - set `EMBEDDING_MODEL=voyage-4-large` (also 1024 dims) to batch normally, with `WIKI_EMBED_BATCH_SIZE` low enough that a batch stays under voyage-4-large's 120k-token-per-request cap (≈64 for Wikipedia lead chunks) |
+| `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Voyage embedding model; the **same value must be used for ingest and query** (different models are different vector spaces), and the committed seed cache is keyed under this value, so changing it requires `make refresh-embeddings`. The default `voyage-4-large` outputs 1024 dims (matching the pinned index) and batches normally, where base `voyage-4`'s batch endpoint is currently broken on Voyage's side (single inputs return, but any 2+ input batch hangs). Keep `WIKI_EMBED_BATCH_SIZE` low enough that a batch stays under voyage-4-large's 120k-token-per-request cap (≈64 for Wikipedia lead chunks) |
 | `EMBEDDING_DIM` | no | If set, must equal the pinned index dimension (1024); a mismatch fails fast rather than silently re-ingesting |
 | `TRANSCRIPTION_MODEL` | no (default `scribe_v2`) | ElevenLabs batch speech-to-text model |
 | `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
 The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
-`voyage-4`) and the pinned 1024-dim index are shared by both paths.
+`voyage-4-large`) and the pinned 1024-dim index are shared by both paths.
 
 Generate the operator credential secrets - only the hash and the secret are ever configured,
 never the plaintext password:
@@ -123,7 +123,7 @@ The datasets and their fixtures (`stack/backend/seed/`):
 (`embeddings.cache.jsonl`, keyed by model + input type + normalized text), so a full reseed is
 offline and deterministic. The shipped cache holds deterministic placeholder vectors generated
 without an API key; once you have a Voyage key, `make refresh-embeddings` replaces them with
-real `voyage-4` vectors. After editing a fixture's text, run `make refresh-embeddings` (needs
+real `voyage-4-large` vectors. After editing a fixture's text, run `make refresh-embeddings` (needs
 `EMBEDDING_API_KEY`) so its cache entry is regenerated - otherwise an offline seed reports a
 cache miss for the changed text. Transcribing a *new* (non-seeded) video still needs
 `TRANSCRIPTION_API_KEY`; the demo never does.

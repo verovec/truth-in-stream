@@ -17,9 +17,9 @@ import (
 // verified 2026-06). It only feeds the dry-run cost estimate, never billing.
 const charsPerToken = 5
 
-// pricePerMTokenUSD is the voyage-4 price per one million tokens
-// (docs.voyageai.com, verified 2026-06: $0.06/M, first 200M tokens free).
-const pricePerMTokenUSD = 0.06
+// pricePerMTokenUSD is the voyage-4-large price per one million tokens
+// (docs.voyageai.com, verified 2026-06: $0.12/M, first 200M tokens free).
+const pricePerMTokenUSD = 0.12
 
 // Estimate is the dry-run projection of a bulk-embedding run.
 type Estimate struct {

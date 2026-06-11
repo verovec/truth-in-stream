@@ -188,17 +188,17 @@ func TestLoadEmbedding(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{"EMBEDDING_API_KEY": "k"},
-			want: Embedding{APIKey: "k", Model: "voyage-4", Dim: domain.EmbeddingDim},
+			want: Embedding{APIKey: "k", Model: "voyage-4-large", Dim: domain.EmbeddingDim},
 		},
 		{
 			name: "model override",
-			env:  map[string]string{"EMBEDDING_API_KEY": "k", "EMBEDDING_MODEL": "voyage-4-large"},
-			want: Embedding{APIKey: "k", Model: "voyage-4-large", Dim: domain.EmbeddingDim},
+			env:  map[string]string{"EMBEDDING_API_KEY": "k", "EMBEDDING_MODEL": "voyage-4"},
+			want: Embedding{APIKey: "k", Model: "voyage-4", Dim: domain.EmbeddingDim},
 		},
 		{
 			name: "matching dimension accepted",
 			env:  map[string]string{"EMBEDDING_API_KEY": "k", "EMBEDDING_DIM": "1024"},
-			want: Embedding{APIKey: "k", Model: "voyage-4", Dim: domain.EmbeddingDim},
+			want: Embedding{APIKey: "k", Model: "voyage-4-large", Dim: domain.EmbeddingDim},
 		},
 		{
 			name:    "mismatched dimension fails",

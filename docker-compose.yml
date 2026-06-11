@@ -40,9 +40,12 @@ services:
   # subset, the precomputed demo-video results, and the curated sample video
   # gallery (records plus best-effort media) - into pgvector and object storage,
   # then exits. Idempotent (everything upserts by id/object key). Embeddings come
-  # from the committed cache (stack/backend/seed/embeddings.cache.jsonl), so this
-  # needs no API key; EMBEDDING_API_KEY is only consulted to fill a cache miss
-  # after a fixture edit. Sample media is fetched once from SAMPLE_VIDEO_URL
+  # from the committed cache (stack/backend/seed/embeddings.cache.jsonl), keyed
+  # under the default model (voyage-4-large); seeding is strictly offline and
+  # never calls Voyage, so a stray or invalid EMBEDDING_API_KEY can never break
+  # it. A cache miss is a hard error (a fixture changed, or EMBEDDING_MODEL no
+  # longer matches the cache) - rebuild with `make refresh-embeddings`, which is
+  # the only path that uses EMBEDDING_API_KEY. Sample media is fetched once from SAMPLE_VIDEO_URL
   # (default a public test clip) and cached under seed/media-cache (bind-mounted,
   # so it survives reseeds); an unreachable host with no cache seeds the records
   # without media rather than failing. The backend waits for this so the stores
@@ -70,8 +73,10 @@ services:
       SAMPLE_VIDEO_URL: "${SAMPLE_VIDEO_URL:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
-      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
-      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      # (voyage-4-large: 1024 dims, and its batch endpoint works where base
+      # voyage-4's currently hangs). Override only with another 1024-dim Voyage
+      # model, and note the committed seed cache is keyed under the default - a
+      # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
     volumes:
       - ./stack/backend:/app
@@ -113,8 +118,10 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
-      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
-      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      # (voyage-4-large: 1024 dims, and its batch endpoint works where base
+      # voyage-4's currently hangs). Override only with another 1024-dim Voyage
+      # model, and note the committed seed cache is keyed under the default - a
+      # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
       # Embed tuning for a slow or rate-limited Voyage tier (all unset here, so
@@ -191,8 +198,10 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
-      # (voyage-4). Set EMBEDDING_MODEL in .env to standardize the whole stack
-      # (e.g. voyage-4-large, whose batch endpoint works where base voyage-4 hangs).
+      # (voyage-4-large: 1024 dims, and its batch endpoint works where base
+      # voyage-4's currently hangs). Override only with another 1024-dim Voyage
+      # model, and note the committed seed cache is keyed under the default - a
+      # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
