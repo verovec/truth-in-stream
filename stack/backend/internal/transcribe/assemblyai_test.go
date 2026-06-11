@@ -97,6 +97,15 @@ func TestAAISegment(t *testing.T) {
 			msg:  aaiMessage{Transcript: "no timestamps", SpeakerLabel: "B"},
 			want: Segment{Text: "no timestamps", Speaker: "B"},
 		},
+		{
+			name: "trailing zero end is clamped to start, never inverted",
+			msg: aaiMessage{
+				Transcript:   "uh",
+				SpeakerLabel: "A",
+				Words:        []aaiWord{{Text: "uh", Start: 1500, End: 0}},
+			},
+			want: Segment{Start: 1500 * time.Millisecond, End: 1500 * time.Millisecond, Text: "uh", Speaker: "A"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
