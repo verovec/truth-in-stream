@@ -121,16 +121,25 @@ func (s *Store) liveCurrentAt(ctx context.Context, version string) (bool, error)
 // ResetStaging drops any surviving staging table and creates a fresh unindexed
 // one stamped building:version. LIKE copies the columns, NOT NULLs, and
 // defaults but no primary key or HNSW index, keeping the bulk load fast; the
-// index and key are built once at finalize.
+// index and key are built once at finalize. The drop, create, and stamp run in
+// one transaction so a concurrent stagingExists/EmbedInProgress check never sees
+// the table briefly absent mid-rebuild: it observes the old table until commit,
+// then the new one, never a window where a delta sync could slip past the guard.
 func (s *Store) ResetStaging(ctx context.Context, version string) error {
-	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
-		return fmt.Errorf("postgres: drop staging: %w", err)
+	stamp := stagingStamp(stampBuilding, version)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
+			return fmt.Errorf("drop staging: %w", err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE wiki_chunks INCLUDING DEFAULTS)", wikiStagingTable)); err != nil {
+			return fmt.Errorf("create staging: %w", err)
+		}
+		return stampStagingTx(ctx, tx, stamp)
+	})
+	if err != nil {
+		return fmt.Errorf("postgres: reset staging: %w", err)
 	}
-	stmt := fmt.Sprintf("CREATE TABLE %s (LIKE wiki_chunks INCLUDING DEFAULTS)", wikiStagingTable)
-	if _, err := s.pool.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("postgres: create staging: %w", err)
-	}
-	return s.stampStaging(ctx, stagingStamp(stampBuilding, version))
+	return nil
 }
 
 // MarkStagingReady re-stamps a fully ingested, embedding-carried staging table
@@ -340,21 +349,31 @@ func formatHalfVec(v []float32) string {
 	return b.String()
 }
 
-// stampStaging records stamp as the staging table's comment. COMMENT takes no
-// bind parameters, so the statement is assembled server-side with format(%L),
-// which escapes the value safely; the table name is a trusted constant. The
-// stamp lives on the table and is dropped with it, so it never outlives staging.
+// stampStaging records stamp as the staging table's comment. The stamp lives on
+// the table and is dropped with it, so it never outlives staging.
 func (s *Store) stampStaging(ctx context.Context, stamp string) error {
+	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		return stampStagingTx(ctx, tx, stamp)
+	}); err != nil {
+		return fmt.Errorf("postgres: stamp staging table: %w", err)
+	}
+	return nil
+}
+
+// stampStagingTx writes the staging comment within tx. COMMENT takes no bind
+// parameters, so the statement is assembled server-side with format(%L), which
+// escapes the value safely; the table name is a trusted constant.
+func stampStagingTx(ctx context.Context, tx pgx.Tx, stamp string) error {
 	var stmt string
-	if err := s.pool.QueryRow(
+	if err := tx.QueryRow(
 		ctx,
 		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", wikiStagingTable),
 		stamp,
 	).Scan(&stmt); err != nil {
-		return fmt.Errorf("postgres: build staging stamp: %w", err)
+		return fmt.Errorf("build staging stamp: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("postgres: stamp staging table: %w", err)
+	if _, err := tx.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("stamp staging table: %w", err)
 	}
 	return nil
 }
@@ -479,10 +498,14 @@ func (s *Store) swapStaging(ctx context.Context, corpus, version string, lastCha
 	return nil
 }
 
-// EmbedInProgress reports whether a bulk embed is mid-flight. The staging table
-// exists only between the start of a bulk build and a completed swap (the swap
-// drops it), so its presence means the live corpus is being rebuilt - the delta
-// sync refuses to run while one exists.
+// EmbedInProgress reports whether a bulk rebuild is mid-flight, so the delta
+// sync refuses to mutate live while one is. The staging table exists from the
+// start of ingest (ResetStaging) until a completed swap drops it, covering both
+// the ingest and embed phases: delta must not write to live during either,
+// because the swap replaces live wholesale and would discard delta's work. A
+// staging table left by a crashed bulk therefore also blocks delta until the
+// next bulk run (which ResetStaging clears) finishes - the conservative choice,
+// since a half-built corpus is exactly when delta's in-place writes are unsafe.
 func (s *Store) EmbedInProgress(ctx context.Context) (bool, error) {
 	return s.stagingExists(ctx)
 }
