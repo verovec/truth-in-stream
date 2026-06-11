@@ -53,6 +53,17 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
     });
   }, [store]);
 
+  // Expose the media element to the live audio path so it can capture the
+  // playing audio. crossOrigin is set as a prop (below) rather than here, so it
+  // lands with the src and is honoured before the cross-origin source loads.
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media) {
+      return;
+    }
+    return store.registerMediaElement(media);
+  }, [store, src]);
+
   const publishTime = (event: SyntheticEvent<HTMLVideoElement>) => {
     store.update({ currentTime: event.currentTarget.currentTime });
   };
@@ -74,6 +85,7 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
         src={src}
         controls
         playsInline
+        crossOrigin="anonymous"
         volume={volume}
         playbackRate={playbackRate}
         style={{ width: "100%", height: "100%", aspectRatio: "16 / 9" }}
@@ -81,6 +93,7 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
         onDurationChange={publishDuration}
         onPlay={() => store.update({ paused: false })}
         onPause={() => store.update({ paused: true })}
+        onSeeked={() => store.notifySeeked()}
         onVolumeChange={(event) => setVolume(event.currentTarget.volume)}
         onRateChange={(event) =>
           setPlaybackRate(event.currentTarget.playbackRate)

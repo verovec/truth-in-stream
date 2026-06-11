@@ -83,7 +83,7 @@ type StatusWire = {
 // Wire shapes mirror stack/backend internal/handler/processing.go. A match's
 // kind may be absent on results stored before the Wikipedia evidence feature;
 // such matches read back as claims, matching the backend's own default.
-type MatchWire = {
+export type MatchWire = {
   kind?: "claim" | "evidence";
   claim?: string;
   verdict?: Verdict;
@@ -92,7 +92,10 @@ type MatchWire = {
   article?: ArticleRef;
 };
 
-type SegmentWire = {
+// SegmentWire is the per-segment wire shape shared by the batch results
+// endpoint and the live result frame (stack/backend internal/handler), so the
+// same normalizer serves both.
+export type SegmentWire = {
   start: number;
   end: number;
   text: string;
@@ -127,7 +130,7 @@ function normalizeMatch(wire: MatchWire): SegmentMatch {
   };
 }
 
-function normalizeSegment(wire: SegmentWire): FactCheckSegment {
+export function normalizeSegment(wire: SegmentWire): FactCheckSegment {
   return {
     start: wire.start,
     end: wire.end,

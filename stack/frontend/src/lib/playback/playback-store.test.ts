@@ -84,6 +84,44 @@ describe("createPlaybackStore", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  test("registers and exposes the media element, and unregister clears it", () => {
+    const store = createPlaybackStore();
+    const media = {} as HTMLMediaElement;
+
+    expect(store.getMediaElement()).toBeNull();
+    const unregister = store.registerMediaElement(media);
+    expect(store.getMediaElement()).toBe(media);
+
+    unregister();
+    expect(store.getMediaElement()).toBeNull();
+  });
+
+  test("a later media registration supersedes an earlier one", () => {
+    const store = createPlaybackStore();
+    const first = {} as HTMLMediaElement;
+    const second = {} as HTMLMediaElement;
+    store.registerMediaElement(first);
+    const unregisterSecond = store.registerMediaElement(second);
+
+    expect(store.getMediaElement()).toBe(second);
+    // Unregistering the current element clears it; it does not restore the first.
+    unregisterSecond();
+    expect(store.getMediaElement()).toBeNull();
+  });
+
+  test("notifySeeked fans out to seek subscribers until they unsubscribe", () => {
+    const store = createPlaybackStore();
+    const listener = vi.fn();
+    const unsubscribe = store.subscribeSeeked(listener);
+
+    store.notifySeeked();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    store.notifySeeked();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   test("notifies every subscriber once per update", () => {
     const store = createPlaybackStore();
     const first = vi.fn();

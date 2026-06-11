@@ -10,6 +10,16 @@ export type PlaybackStore = {
   update: (changes: Partial<PlaybackSnapshot>) => void;
   seekTo: (seconds: number) => void;
   registerSeekHandler: (handler: (seconds: number) => void) => () => void;
+  // The live audio path captures from the same media element the player owns;
+  // the player registers it here so the live hook can attach without prop
+  // drilling the element through the tree.
+  registerMediaElement: (element: HTMLMediaElement) => () => void;
+  getMediaElement: () => HTMLMediaElement | null;
+  // Seek events drive the live session to reset cleanly. The player forwards the
+  // media element's "seeked" event (fired for both scrubbing and programmatic
+  // seeks) here; the live hook subscribes.
+  notifySeeked: () => void;
+  subscribeSeeked: (listener: () => void) => () => void;
 };
 
 const IDLE_SNAPSHOT: PlaybackSnapshot = {
@@ -21,7 +31,9 @@ const IDLE_SNAPSHOT: PlaybackSnapshot = {
 export function createPlaybackStore(): PlaybackStore {
   let snapshot = IDLE_SNAPSHOT;
   let seekHandler: ((seconds: number) => void) | null = null;
+  let mediaElement: HTMLMediaElement | null = null;
   const listeners = new Set<() => void>();
+  const seekListeners = new Set<() => void>();
 
   return {
     getSnapshot: () => snapshot,
@@ -49,6 +61,24 @@ export function createPlaybackStore(): PlaybackStore {
           seekHandler = null;
         }
       };
+    },
+    registerMediaElement: (element) => {
+      mediaElement = element;
+      return () => {
+        if (mediaElement === element) {
+          mediaElement = null;
+        }
+      };
+    },
+    getMediaElement: () => mediaElement,
+    notifySeeked: () => {
+      for (const listener of seekListeners) {
+        listener();
+      }
+    },
+    subscribeSeeked: (listener) => {
+      seekListeners.add(listener);
+      return () => seekListeners.delete(listener);
     },
   };
 }
