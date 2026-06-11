@@ -3,6 +3,11 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    # Docker defaults /dev/shm to 64MB; the parallel HNSW index build for the
+    # bulk Wikipedia corpus needs hundreds of MB of shared memory, so raise it
+    # to avoid "could not resize shared memory segment ... No space left on
+    # device" (SQLSTATE 53100) during wiki-populate's finalize step.
+    shm_size: "2gb"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: dev
