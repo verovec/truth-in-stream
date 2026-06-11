@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -185,6 +187,49 @@ func TestRetryStopsWhenParentContextExpired(t *testing.T) {
 			t.Errorf("calls = %d, want 1 (expired parent context is not retried)", f.calls)
 		}
 	})
+}
+
+// TestRetryRetriesRealClientTimeout drives a real *Client whose http.Client
+// timeout is shorter than the server's response, reproducing the
+// "Client.Timeout exceeded while awaiting headers" failure the bulk embed hit.
+// It guards the load-bearing assumption of the fix: the genuine stdlib timeout
+// error - not just a hand-built net.Error - is classified as retriable and the
+// request is attempted again rather than aborting the run on the first stall.
+func TestRetryRetriesRealClientTimeout(t *testing.T) {
+	t.Parallel()
+	var hits int32
+	// The handler records the hit, then blocks past the client timeout until the
+	// test releases it - no fixed sleep to race the timeout, so the only timing
+	// assumption is that localhost setup fits inside the generous 100ms ceiling.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		<-release
+	}))
+	// Cleanups run LIFO: unblock the handlers first, then Close waits them out.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	client := New(Config{
+		APIKey:     "k",
+		Model:      "voyage-4",
+		Dim:        1,
+		BaseURL:    srv.URL,
+		HTTPClient: &http.Client{Timeout: 100 * time.Millisecond},
+	})
+	rc := WithRetry(client, RetryConfig{MaxAttempts: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond})
+
+	_, err := rc.EmbedDocuments(t.Context(), []string{"x"})
+	if err == nil {
+		t.Fatal("want a timeout error, got nil")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want a net.Error timeout", err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Errorf("server hits = %d, want 2 (the real timeout was retried)", got)
+	}
 }
 
 func TestRetryClampsZeroDelaysInsteadOfSpinning(t *testing.T) {

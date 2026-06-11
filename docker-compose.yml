@@ -83,6 +83,11 @@ services:
       # Required for the real embed run; the program fails fast if unset.
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+      # Per-request embed timeout (default 120s) and batch size (default 128).
+      # Raise the timeout or lower the batch if Voyage requests stall on a slow
+      # link; both are unset here so the binary's defaults apply.
+      WIKI_EMBED_HTTP_TIMEOUT: "${WIKI_EMBED_HTTP_TIMEOUT:-}"
+      WIKI_EMBED_BATCH_SIZE: "${WIKI_EMBED_BATCH_SIZE:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
