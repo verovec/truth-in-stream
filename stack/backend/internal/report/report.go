@@ -179,7 +179,11 @@ func (c *Collector) Collect(ctx context.Context) Payload {
 // window. It needs both Linear (the In Progress set) and git (the active set);
 // if either is unavailable it records a note and returns nothing.
 func (c *Collector) computeBlockers(ctx context.Context, p *Payload, inProgress []CardMove) []Blocker {
-	if len(inProgress) == 0 || c.commits == nil {
+	if len(inProgress) == 0 {
+		return nil
+	}
+	if c.commits == nil {
+		p.Notes = append(p.Notes, "blockers: git source unavailable, not computed")
 		return nil
 	}
 	active, err := c.commits.ActiveCardIDs(ctx, c.window)

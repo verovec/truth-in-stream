@@ -65,7 +65,9 @@ func (r *SlackRenderer) Post(ctx context.Context, p Payload) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("report: build slack request: %w", err)
+		// A URL parse failure returns a *url.Error whose message embeds the
+		// webhook URL; keep the secret out of the returned (and logged) error.
+		return errors.New("report: invalid slack webhook URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -128,10 +130,12 @@ func mrkdwnSection(title string, lines []string, empty string) slackBlock {
 		return slackBlock{Type: "section", Text: &slackText{Type: "mrkdwn", Text: b.String()}}
 	}
 	// Stop at the item cap or the byte budget, whichever comes first, so a few
-	// long lines cannot push the section past Slack's per-section character limit.
+	// long lines cannot push the section past Slack's per-section character
+	// limit. The first line is always included so a section never renders as a
+	// title with an overflow note but no items.
 	shown := 0
 	for _, line := range lines {
-		if shown >= slackSectionCap || b.Len()+len(line)+1 > slackSectionByteBudget {
+		if shown > 0 && (shown >= slackSectionCap || b.Len()+len(line)+1 > slackSectionByteBudget) {
 			break
 		}
 		if shown > 0 {

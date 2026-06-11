@@ -36,8 +36,12 @@ func NewLinearClient(apiKey, project string) *LinearClient {
 	}
 }
 
+// issuesQuery fetches one page of issues. first: 250 is Linear's maximum page
+// size; a single project's daily activity (and its concurrent In Progress set,
+// which feeds the blocker heuristic) stays well within one page, so the digest
+// does not paginate.
 const issuesQuery = `query Digest($filter: IssueFilter) {
-  issues(filter: $filter, first: 50, orderBy: updatedAt) {
+  issues(filter: $filter, first: 250, orderBy: updatedAt) {
     nodes { identifier title updatedAt state { name } }
   }
 }`
