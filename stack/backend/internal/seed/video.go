@@ -157,9 +157,11 @@ func cachedOrFetch(ctx context.Context, fetcher MediaFetcher, cacheDir string, s
 	return cachePath, size, nil
 }
 
-// cacheFileName derives a flat, collision-free cache filename from an object
-// key by replacing path separators, so two samples under different prefixes
-// (samples/a/clip.mp4 vs samples/b/clip.mp4) never share one cache file.
+// cacheFileName derives a flat cache filename from an object key by folding its
+// path separators, so two samples under different prefixes (samples/a/clip.mp4
+// vs samples/b/clip.mp4) get distinct cache files instead of sharing one keyed
+// on the basename. Sample object keys are curated constants under samples/, so
+// this simple fold is unambiguous for the seeded set.
 func cacheFileName(objectKey string) string {
 	return strings.ReplaceAll(objectKey, "/", "_")
 }
