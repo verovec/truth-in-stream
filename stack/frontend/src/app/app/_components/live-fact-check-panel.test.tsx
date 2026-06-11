@@ -1,9 +1,11 @@
-import { screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, test, vi } from "vitest";
-import { renderWithPlayback } from "@/test/playback";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { PlaybackProvider } from "@/components/playback/playback-provider";
+import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
 import type { LiveStatement } from "@/lib/live/statements";
+import { summarizeStatements } from "@/lib/live/summary";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 
 const mockUseLiveAnalysis = vi.hoisted(() => vi.fn<() => LiveAnalysis>());
@@ -12,9 +14,24 @@ vi.mock("@/hooks/use-live-analysis", () => ({
   useLiveAnalysis: mockUseLiveAnalysis,
 }));
 
-function renderPanel(analysis: LiveAnalysis) {
-  mockUseLiveAnalysis.mockReturnValue(analysis);
-  return renderWithPlayback(<LiveFactCheckPanel videoId="vid-1" />);
+afterEach(() => {
+  mockUseLiveAnalysis.mockReset();
+});
+
+// The panel reads the shared live snapshot, so a test drives it by mocking the
+// hook the provider's driver runs and rendering the panel under the provider.
+function renderPanel(analysis: Omit<LiveAnalysis, "summary">) {
+  mockUseLiveAnalysis.mockReturnValue({
+    ...analysis,
+    summary: summarizeStatements(analysis.statements),
+  });
+  return render(
+    <PlaybackProvider>
+      <LiveAnalysisProvider videoId="vid-1">
+        <LiveFactCheckPanel />
+      </LiveAnalysisProvider>
+    </PlaybackProvider>,
+  );
 }
 
 const checked = (
@@ -32,7 +49,7 @@ const checked = (
 });
 
 describe("LiveFactCheckPanel", () => {
-  test("forwards the video id to the live analysis hook", () => {
+  test("reads the active session from the shared live provider", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1");
   });

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { json, stubBackend, type BackendRoute } from "@/test/fact-check";
@@ -68,6 +68,14 @@ describe("LibraryExperience", () => {
     ).toBeInTheDocument();
     expect(
       await screen.findByText(/fact checks stream here while the video plays/i),
+    ).toBeInTheDocument();
+    // The running-findings strip sits above the grid, idle until playback starts.
+    const summary = screen.getByRole("region", {
+      name: /live findings summary/i,
+    });
+    expect(summary).toBeInTheDocument();
+    expect(
+      within(summary).getByText(/findings appear here/i),
     ).toBeInTheDocument();
   });
 

@@ -3,7 +3,7 @@
 // Each verdict or piece of evidence becomes its own entry that points back at
 // the statement it came from.
 import type { SegmentMatch } from "@/lib/fact-check/api";
-import type { LiveStatement } from "./statements";
+import { isScored, type LiveStatement } from "./statements";
 
 // FactCheckEntry is one resolved claim or evidence match, decoupled from its
 // statement row but still referencing it (id for selection, start/snippet so the
@@ -16,22 +16,18 @@ export type FactCheckEntry = {
   match: SegmentMatch;
 };
 
-// deriveFactChecks flattens checked statements into per-match entries, in the
+// deriveFactChecks flattens scored statements into per-match entries, in the
 // statements' existing start order. Analysing, errored, skipped, and no-match
 // statements contribute nothing: they carry no verdict and stay visible only as
-// subtitles. The skipReason guard keeps a skipped statement out of the
-// fact-check list even if it somehow arrives with matches, so a row the subtitle
-// marks "Not checked" can never also show a verdict here.
+// subtitles. The isScored guard keeps a skipped statement out of the fact-check
+// list even if it somehow arrives with matches, so a row the subtitle marks
+// "Not checked" can never also show a verdict here.
 export function deriveFactChecks(
   statements: readonly LiveStatement[],
 ): FactCheckEntry[] {
   const entries: FactCheckEntry[] = [];
   for (const statement of statements) {
-    if (
-      statement.status !== "checked" ||
-      statement.error ||
-      statement.skipReason
-    ) {
+    if (!isScored(statement)) {
       continue;
     }
     statement.matches.forEach((match, index) => {

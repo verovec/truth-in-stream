@@ -1,12 +1,18 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { useLiveAnalysis } from "@/hooks/use-live-analysis";
+import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
+import type { LiveStatement } from "@/lib/live/statements";
 import { LiveFactCheckList } from "./live-fact-check-list";
 import { LiveStatementList } from "./live-statement-list";
 import { PlaybackClock } from "./playback-clock";
+
+// EMPTY is a stable empty-statements reference so the selector returns the same
+// value every render while no video is being analysed, keeping
+// useSyncExternalStore from looping.
+const EMPTY: LiveStatement[] = [];
 
 // LiveFactCheckPanel feeds the live analysis stream for the selected video into
 // two stacked, independently-scrolling regions inside one fixed-height
@@ -14,9 +20,19 @@ import { PlaybackClock } from "./playback-clock";
 // height is a fraction of the viewport (not content- or player-driven), so a
 // long transcript never pushes the fact-checks off screen and vice versa.
 // Selecting a fact-check entry lifts its statement id here so the subtitle
-// region can highlight and scroll the origin into view.
-export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
-  const { statements, caption, status } = useLiveAnalysis(videoId);
+// region can highlight and scroll the origin into view. It reads the shared
+// live snapshot, so it and the top-of-page summary strip track one session over
+// one WebSocket.
+export function LiveFactCheckPanel() {
+  const statements = useLiveAnalysisSelector(
+    (snapshot) => snapshot?.statements ?? EMPTY,
+  );
+  const caption = useLiveAnalysisSelector(
+    (snapshot) => snapshot?.caption ?? "",
+  );
+  const status = useLiveAnalysisSelector(
+    (snapshot) => snapshot?.status ?? "idle",
+  );
   // tick increments on every selection so re-selecting the same fact-check entry
   // still scrolls its origin subtitle back into view.
   const [selection, setSelection] = useState<{

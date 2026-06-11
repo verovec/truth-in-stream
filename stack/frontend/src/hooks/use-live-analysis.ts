@@ -28,6 +28,7 @@ import {
   listStatements,
   type StatementsState,
 } from "@/lib/live/statements";
+import { type LiveSummary, summarizeStatements } from "@/lib/live/summary";
 import { liveSocketUrl } from "@/lib/live/url";
 import type { LiveSocket } from "@/lib/live/ports";
 
@@ -40,6 +41,7 @@ export type LiveAnalysis = {
   statements: LiveStatement[];
   caption: string;
   status: LiveStatus;
+  summary: LiveSummary;
 };
 
 // reconnectDelayMs grows the backoff with each consecutive failed attempt,
@@ -286,5 +288,14 @@ export function useLiveAnalysis(
   // not produce a new array reference and re-render the memoized statement list.
   const orderedStatements = useMemo(() => listStatements(statements), [statements]);
 
-  return { statements: orderedStatements, caption, status };
+  // The running summary is a pure projection of the same statements, memoized on
+  // them so an interim caption (which never touches the statement set) does not
+  // recompute it. This is the single source the top-of-page strip and the
+  // fact-check list both read, so they can never disagree.
+  const summary = useMemo(
+    () => summarizeStatements(orderedStatements),
+    [orderedStatements],
+  );
+
+  return { statements: orderedStatements, caption, status, summary };
 }

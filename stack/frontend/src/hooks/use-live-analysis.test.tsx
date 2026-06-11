@@ -309,4 +309,54 @@ describe("useLiveAnalysis", () => {
     expect(h.analysis().status).toBe("ended");
     expect(h.sockets).toHaveLength(1);
   });
+
+  test("exposes a running summary derived from the same statements", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+
+    // Idle/empty: no statements, so every count is zero.
+    expect(h.analysis().summary).toMatchObject({
+      checked: 0,
+      corroborates: 0,
+      analysing: 0,
+    });
+
+    act(() => h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "claim one")));
+    expect(h.analysis().summary).toMatchObject({ analysing: 1, checked: 0 });
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        resultFrame("0", 1, "claim one", [
+          {
+            kind: "claim",
+            claim: "Earth is round",
+            verdict: "corroborates",
+            sources: [],
+            similarity: 0.9,
+          },
+        ]),
+      ),
+    );
+    expect(h.analysis().summary).toMatchObject({
+      analysing: 0,
+      checked: 1,
+      corroborates: 1,
+    });
+  });
+
+  test("the summary keeps a stable identity across interim-only updates", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() =>
+      h.sockets[0].handlers.onFrame(resultFrame("0", 1, "checked claim")),
+    );
+
+    const before = h.analysis().summary;
+    // An interim caption changes nothing in the statement set, so the memoized
+    // summary must not be recomputed into a new object.
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("still talking")));
+    expect(h.analysis().summary).toBe(before);
+  });
 });
