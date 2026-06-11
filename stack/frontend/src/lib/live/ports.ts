@@ -21,10 +21,13 @@ export type LiveSocketFactory = (
 ) => LiveSocket;
 
 // AudioCapture captures playback-rate PCM frames from a media element. resume()
-// starts or continues capture and suspend() halts it. stop() ends a session's
-// capture; the browser implementation halts the graph rather than destroying it,
-// because a MediaElementAudioSourceNode can be built only once per element and
-// the graph is reused across sessions. A later resume() restarts it.
+// starts or continues capture and suspend() halts it on operator pause. stop()
+// ends a session's capture but, because the browser graph reroutes the video's
+// audio through the same context, it only stops forwarding frames and leaves
+// that context running so a teardown while the video plays never mutes it. The
+// graph is reused across sessions (a MediaElementAudioSourceNode can be built
+// only once per element); a freshly returned capture starts gated, so frames
+// flow only after the session calls resume().
 export type AudioCapture = {
   resume: () => void;
   suspend: () => void;
