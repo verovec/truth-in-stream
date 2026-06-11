@@ -100,15 +100,3 @@ Next 16 removed implicit caching: every `fetch` is dynamic by default. Standardi
   HTMLMediaElement-shaped: `src` (not `url`), `onTimeUpdate`/`onDurationChange`/`onRateChange`,
   ref exposes the media element. Native `controls` carry accessible browser UI incl. speed;
   custom control bar later = chromeless + media-chrome (documented v3 path).
-- Login modal (VER-33): intercepting + parallel routes, the canonical App Router modal pattern
-  (verified 2026-06 against the bundled docs for next 16.2.7 and Context7 `/vercel/next.js`).
-  `@auth` slot in the root layout; `@auth/(.)login/page.tsx` intercepts soft navigation to
-  `/login` and renders the shared `LoginForm` inside `LoginModal`; `@auth/default.tsx`,
-  `@auth/page.tsx`, and `@auth/[...catchAll]/page.tsx` return `null` so the slot is empty on a
-  hard load and closes on navigation; `/login/page.tsx` is the full-page fallback (deep link /
-  refresh). Modal closes with `router.back()`; on auth success the shared form does
-  `router.replace("/app")`. Chosen over client-only URL/searchParam state because it gives a
-  shareable URL, refresh-safe modal, and back-button close for free. Not unit-testable end to
-  end without Playwright (none configured): the shared form, the modal shell (focus trap,
-  Escape, backdrop), the landing page, and the proxy gate are covered by Vitest; the route
-  interception itself relies on the documented pattern plus a green `next build`.

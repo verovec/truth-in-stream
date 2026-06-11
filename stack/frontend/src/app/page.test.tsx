@@ -1,49 +1,42 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import LandingPage, { metadata } from "./page";
+import {
+  json,
+  resultsRoute,
+  stubBackend,
+  submitRoute,
+} from "@/test/fact-check";
+import Home from "./page";
 
-vi.mock("next/link", () => import("@/test/next-link-mock"));
+vi.mock("react-player", () => import("@/test/react-player-mock"));
 
-describe("LandingPage", () => {
-  test("renders the hero, how-it-works, and a closing call to action", () => {
-    render(<LandingPage />);
+vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
+
+describe("Home", () => {
+  test("renders the watch screen with player and fact-check panel", async () => {
+    stubBackend([
+      submitRoute(json(200, { video_id: "v1", status: "complete" })),
+      resultsRoute(json(200, { video_id: "v1", segments: [] })),
+    ]);
+
+    render(<Home />);
 
     expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: /truth in the middle of the politics stage/i,
-      }),
+      screen.getByRole("heading", { level: 1, name: "Truth in Stream" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 2, name: /how it works/i }),
+      screen.getByRole("button", { name: /sign out/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("main")).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: /common myths/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 3, name: /^listen$/i }),
+      screen.getByRole("complementary", { name: /fact checks/i }),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("media")).toHaveAttribute("src");
     expect(
-      screen.getByRole("heading", { level: 3, name: /^verdict$/i }),
+      await screen.findByText(/no speech segments were found/i),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", {
-        level: 2,
-        name: /bring the receipts/i,
-      }),
-    ).toBeInTheDocument();
-  });
-
-  test("every 'Open the app' call to action points at the login route", () => {
-    render(<LandingPage />);
-
-    const ctas = screen.getAllByRole("link", { name: /open the app/i });
-    expect(ctas.length).toBeGreaterThanOrEqual(1);
-    for (const cta of ctas) {
-      expect(cta).toHaveAttribute("href", "/login");
-    }
-  });
-
-  test("exposes landing metadata for SEO and sharing", () => {
-    expect(metadata.title).toMatch(/truth in stream/i);
-    expect(metadata.description).toBeTruthy();
-    expect(metadata.openGraph?.title).toMatch(/truth in stream/i);
   });
 });
