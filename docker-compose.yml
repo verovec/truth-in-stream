@@ -31,16 +31,18 @@ services:
       postgres:
         condition: service_healthy
 
-  # One-shot: embeds the curated seed claims and upserts them into pgvector,
-  # then exits. Idempotent (claims upsert by id). The backend waits for it so
-  # the claim store is populated before the first video is matched. Requires
-  # EMBEDDING_API_KEY (the embed call hits Voyage); without it this fails fast.
-  ingest:
+  # One-shot: loads the local dataset - curated claims, the Wikipedia evidence
+  # subset, and the precomputed demo-video results - into pgvector, then exits.
+  # Idempotent (everything upserts by id). Embeddings come from the committed
+  # cache (stack/backend/seed/embeddings.cache.jsonl), so this needs no API key;
+  # EMBEDDING_API_KEY is only consulted to fill a cache miss after a fixture edit.
+  # The backend waits for it so the stores are populated before the first match.
+  seed:
     build:
       context: ./stack/backend
       target: dev
     working_dir: /app
-    command: ["go", "run", "./cmd/ingest"]
+    command: ["go", "run", "./cmd/seed"]
     environment:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
@@ -122,7 +124,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      ingest:
+      seed:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully

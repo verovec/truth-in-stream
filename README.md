@@ -13,26 +13,25 @@ Real-time fact-checking for live streams.
 
 ## Quick start
 
-The fact-check pipeline calls two external providers, so the demo needs API keys:
+The local dataset (curated claims, a Wikipedia evidence subset, and the demo-video results)
+seeds fully offline from a committed embedding cache, so **no API keys are needed to bring the
+stack up and play the demo**. Set the operator login, then start everything with one command:
 
 ```bash
 cp .env.example .env
-# then set TRANSCRIPTION_API_KEY (ElevenLabs) and EMBEDDING_API_KEY (Voyage) in .env
-```
-
-Bring up the whole stack (Postgres, schema migration, claim ingestion, backend, frontend):
-
-```bash
-docker compose up
+# set AUTH_EMAIL / AUTH_PASSWORD_HASH / SESSION_SECRET (see Configuration);
+# TRANSCRIPTION_API_KEY and EMBEDDING_API_KEY can stay empty for the demo.
+make up
 # frontend -> http://localhost:3000
 # backend  -> http://localhost:8080/healthz
 ```
 
-`docker compose up` runs, in order: Postgres, a one-shot `migrate`, a one-shot `ingest` that
-embeds the seeded claims into pgvector, then the backend and frontend. Open
-http://localhost:3000 - the bundled demo clip loads, the backend transcribes it, embeds and
-matches each segment against the seeded claims, and the fact-check panel fills in as the clip
-plays. See [Demo](#demo).
+`make up` (`docker compose up -d --build`) runs, in order: Postgres, a one-shot `migrate`, a
+one-shot `seed` that loads the claims, the Wikipedia subset, and the precomputed demo results
+into pgvector, then the backend and frontend. Open http://localhost:3000, sign in, and the
+bundled demo clip plays with the fact-check panel already populated from the seeded results -
+no transcription or embedding API call. See [Local development data](#local-development-data)
+to reset or reseed, and [Demo](#demo) for the demo itself.
 
 ## Configuration
 
@@ -43,7 +42,7 @@ interpolates `.env` into the service environments.
 |----------|----------|---------|
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
 | `TRANSCRIPTION_API_KEY` | yes | ElevenLabs Scribe v2 speech-to-text |
-| `EMBEDDING_API_KEY` | yes | Voyage AI `voyage-4` embeddings - used by both `ingest` and query |
+| `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4` embeddings. Seeding reads the committed cache offline; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
 | `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
 | `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |
 | `SESSION_SECRET` | yes | HMAC key for session cookies, at least 32 bytes |
@@ -82,9 +81,53 @@ The bundled demo clip (`stack/backend/demo/`) narrates several well-known claims
 serves it at `/demo/<file>` (sign in first - demo media sits behind the session gate, and the
 frontend proxies the path same-origin) so the browser plays exactly the file the pipeline
 transcribes; the panel shows each segment's nearest curated claims with a `corroborates`,
-`contradicts`, or `unclear` verdict and source links, in sync with playback. Seeded claims
-live in `stack/backend/seed/claims.json`; re-running `ingest` is idempotent. If a provider
-call fails, the panel shows the error with a **Try again** button.
+`contradicts`, or `unclear` verdict and source links, in sync with playback. In the seeded
+local environment the panel is served from precomputed results
+(`stack/backend/seed/demo_results.json`), so the demo works with no API keys; against a real
+upload the same panel is filled by the live transcribe-embed-match pipeline, and a failed
+provider call shows the error with a **Try again** button.
+
+## Local development data
+
+`make up` brings the stack up with a realistic, fully offline dataset. The same data is
+managed with one-command reset and reseed targets (root `Makefile`):
+
+| Command | What it does |
+|---------|--------------|
+| `make up` | Bring up the whole stack; migrate and seed run as one-shot steps |
+| `make reset` | Soft reset: drop the schema, re-migrate, and reseed (seconds; container stays up) |
+| `make reset-hard` | Discard the Postgres volume and rebuild everything from scratch |
+| `make seed` | Reseed every dataset; idempotent (safe to re-run) |
+| `make seed-claims` / `make seed-wiki` / `make seed-demo` | Seed one dataset for targeted testing |
+| `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
+
+The datasets and their fixtures (`stack/backend/seed/`):
+
+- **Curated claims** - `claims.json`, matched against spoken segments.
+- **Wikipedia evidence subset** - `wiki_chunks.json`, a small set of chunks overlapping the
+  demo so evidence lookups return something meaningful.
+- **Demo-video results** - `demo_results.json`, precomputed `processed_videos` +
+  `segment_results` keyed to the SHA-256 of the demo source string `common-myths.mp4`
+  (video id `f0db671448289655a8b20f317a6336f4b53dc407448f5d5b2eb64b78c6577d80`), so the player
+  and panel work end to end with no keys.
+
+**Embeddings without an API key.** Each fixture's vector lives in a committed cache
+(`embeddings.cache.jsonl`, keyed by model + input type + normalized text), so a full reseed is
+offline and deterministic. The shipped cache holds deterministic placeholder vectors generated
+without an API key; once you have a Voyage key, `make refresh-embeddings` replaces them with
+real `voyage-4` vectors. After editing a fixture's text, run `make refresh-embeddings` (needs
+`EMBEDDING_API_KEY`) so its cache entry is regenerated - otherwise an offline seed reports a
+cache miss for the changed text. Transcribing a *new* (non-seeded) video still needs
+`TRANSCRIPTION_API_KEY`; the demo never does.
+
+Generate the operator credentials the login requires (see [Configuration](#configuration) for
+detail):
+
+```bash
+cd stack/backend
+printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH
+openssl rand -hex 32                                  # -> SESSION_SECRET
+```
 
 ## Wikipedia corpus
 

@@ -1,0 +1,110 @@
+[
+  {
+    "page_id": 1,
+    "chunk_index": 0,
+    "title": "Great Wall of China",
+    "url": "https://simple.wikipedia.org/wiki/Great_Wall_of_China",
+    "revision_id": 9101,
+    "corpus": "simplewiki",
+    "content": "The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states and Imperial China to protect against nomadic groups from the Eurasian Steppe."
+  },
+  {
+    "page_id": 1,
+    "chunk_index": 1,
+    "title": "Great Wall of China",
+    "url": "https://simple.wikipedia.org/wiki/Great_Wall_of_China",
+    "revision_id": 9101,
+    "corpus": "simplewiki",
+    "content": "Contrary to a popular myth, the Great Wall is not visible to the unaided human eye from low Earth orbit, and it is certainly not visible from the Moon."
+  },
+  {
+    "page_id": 2,
+    "chunk_index": 0,
+    "title": "Lightning",
+    "url": "https://simple.wikipedia.org/wiki/Lightning",
+    "revision_id": 7740,
+    "corpus": "simplewiki",
+    "content": "Lightning is a sudden electrostatic discharge that occurs during a thunderstorm. This discharge happens between electrically charged regions of a cloud, between two clouds, or between a cloud and the ground."
+  },
+  {
+    "page_id": 2,
+    "chunk_index": 1,
+    "title": "Lightning",
+    "url": "https://simple.wikipedia.org/wiki/Lightning",
+    "revision_id": 7740,
+    "corpus": "simplewiki",
+    "content": "Tall, isolated structures such as skyscrapers and radio masts are often struck by lightning many times during a single storm, so the saying that lightning never strikes the same place twice is false."
+  },
+  {
+    "page_id": 3,
+    "chunk_index": 0,
+    "title": "Speed of light",
+    "url": "https://simple.wikipedia.org/wiki/Speed_of_light",
+    "revision_id": 6655,
+    "corpus": "simplewiki",
+    "content": "The speed of light in a vacuum, commonly denoted c, is a universal physical constant exactly equal to 299,792,458 metres per second."
+  },
+  {
+    "page_id": 3,
+    "chunk_index": 1,
+    "title": "Speed of light",
+    "url": "https://simple.wikipedia.org/wiki/Speed_of_light",
+    "revision_id": 6655,
+    "corpus": "simplewiki",
+    "content": "According to the theory of special relativity, c is the upper limit for the speed at which conventional matter, energy, or any information can travel through space."
+  },
+  {
+    "page_id": 4,
+    "chunk_index": 0,
+    "title": "Moon",
+    "url": "https://simple.wikipedia.org/wiki/Moon",
+    "revision_id": 8820,
+    "corpus": "simplewiki",
+    "content": "The Moon is Earth's only natural satellite. It orbits Earth at an average distance of about 384,400 kilometres."
+  },
+  {
+    "page_id": 4,
+    "chunk_index": 1,
+    "title": "Moon",
+    "url": "https://simple.wikipedia.org/wiki/Moon",
+    "revision_id": 8820,
+    "corpus": "simplewiki",
+    "content": "The far side of the Moon is not permanently dark; both the near and far sides receive roughly equal amounts of sunlight over a lunar day, even though the far side always faces away from Earth."
+  },
+  {
+    "page_id": 5,
+    "chunk_index": 0,
+    "title": "Goldfish",
+    "url": "https://simple.wikipedia.org/wiki/Goldfish",
+    "revision_id": 4410,
+    "corpus": "simplewiki",
+    "content": "The goldfish is a freshwater fish in the family Cyprinidae and one of the most commonly kept aquarium fish."
+  },
+  {
+    "page_id": 5,
+    "chunk_index": 1,
+    "title": "Goldfish",
+    "url": "https://simple.wikipedia.org/wiki/Goldfish",
+    "revision_id": 4410,
+    "corpus": "simplewiki",
+    "content": "Studies have shown that goldfish have a memory span of at least several months and can be trained to respond to cues, contradicting the myth of a three-second memory."
+  },
+  {
+    "page_id": 6,
+    "chunk_index": 0,
+    "title": "Mount Everest",
+    "url": "https://simple.wikipedia.org/wiki/Mount_Everest",
+    "revision_id": 5512,
+    "corpus": "simplewiki",
+    "content": "Mount Everest is Earth's highest mountain above sea level, located in the Mahalangur Himal sub-range of the Himalayas. Its summit reaches 8,849 metres above sea level."
+  },
+  {
+    "page_id": 7,
+    "chunk_index": 0,
+    "title": "Amazon rainforest",
+    "url": "https://simple.wikipedia.org/wiki/Amazon_rainforest",
+    "revision_id": 6133,
+    "corpus": "simplewiki",
+    "content": "The Amazon rainforest is a moist broadleaf tropical rainforest in the Amazon biome that covers most of the Amazon basin of South America."
+  }
+]
