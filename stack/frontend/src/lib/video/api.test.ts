@@ -1,6 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
 import { ApiError } from "@/lib/http";
-import { confirmVideo, getVideo, listVideos, requestUpload } from "./api";
+import {
+  confirmVideo,
+  getVideo,
+  listVideos,
+  requestUpload,
+  submitYoutubeUrl,
+} from "./api";
 
 function mockFetch(status: number, body: unknown) {
   return vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -169,6 +175,50 @@ describe("requestUpload", () => {
     await expect(
       requestUpload({ title: "x", contentType: "video/avi", sizeBytes: 1 }),
     ).rejects.toThrow(new ApiError("unsupported content type", 415));
+  });
+});
+
+describe("submitYoutubeUrl", () => {
+  test("posts the url and maps the accepted pending record", async () => {
+    const fetchSpy = mockFetch(202, {
+      id: "vid-yt",
+      title: "https://www.youtube.com/watch?v=abc",
+      status: "pending",
+      kind: "youtube",
+      content_type: "video/mp4",
+      size_bytes: 0,
+      created_at: "2026-06-11T12:00:00Z",
+      updated_at: "2026-06-11T12:00:00Z",
+    });
+
+    const video = await submitYoutubeUrl(
+      "https://www.youtube.com/watch?v=abc",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith("/api/videos/youtube", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://www.youtube.com/watch?v=abc" }),
+      signal: undefined,
+    });
+    expect(video).toEqual({
+      id: "vid-yt",
+      title: "https://www.youtube.com/watch?v=abc",
+      status: "pending",
+      kind: "youtube",
+      contentType: "video/mp4",
+      sizeBytes: 0,
+      createdAt: "2026-06-11T12:00:00Z",
+      updatedAt: "2026-06-11T12:00:00Z",
+    });
+  });
+
+  test("throws an ApiError carrying the backend rejection message", async () => {
+    mockFetch(400, { error: "not a valid youtube video url" });
+
+    await expect(submitYoutubeUrl("nope")).rejects.toThrow(
+      new ApiError("not a valid youtube video url", 400),
+    );
   });
 });
 

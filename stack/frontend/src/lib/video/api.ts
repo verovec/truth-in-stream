@@ -6,7 +6,7 @@
 import { API_BASE, toApiError } from "@/lib/http";
 
 export type VideoStatus = "pending" | "ready" | "failed";
-export type VideoKind = "upload" | "sample";
+export type VideoKind = "upload" | "sample" | "youtube";
 
 // ACCEPTED_VIDEO_TYPES mirrors the backend's allowed upload content types
 // (stack/backend internal/service/video.go). The browser validates against it
@@ -153,6 +153,28 @@ export async function requestUpload(
     status: wire.status,
     upload: normalizePresigned(wire.upload),
   };
+}
+
+// submitYoutubeUrl asks the backend to ingest a YouTube link. The backend
+// validates the link, creates a pending record, and downloads in the background,
+// so it answers 202 with the pending record; an invalid link is a 400 the caller
+// surfaces inline. Resubmitting an already-ingested link returns the existing
+// record (the backend deduplicates by canonical video id).
+export async function submitYoutubeUrl(
+  url: string,
+  signal?: AbortSignal,
+): Promise<LibraryVideo> {
+  const response = await fetch(`${API_BASE}/api/videos/youtube`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const wire = (await response.json()) as VideoWire;
+  return normalizeVideo(wire);
 }
 
 export async function confirmVideo(
