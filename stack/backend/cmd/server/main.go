@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -163,9 +164,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
 	processor := service.NewProcessor(service.ProcessorConfig{
 		Transcriber: transcriber,
-		Matcher:     service.NewSegmentMatchAdapter(matcher),
+		Matcher:     segmentMatcher,
 		Prechecker:  prechecker,
 		Store:       store,
 		Logger:      logger,
@@ -176,7 +178,23 @@ func run(logger *slog.Logger) error {
 		processor.Run(ctx)
 	}()
 
-	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, cfg.DemoMediaDir, auth, logger)
+	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
+		Stream:     transcribe.NewStreamSegmenter(scribe, transcribe.Options{}),
+		Matcher:    segmentMatcher,
+		Prechecker: prechecker,
+		Logger:     logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	liveOrigins := liveAllowedOrigins(cfg.CORSAllowedOrigin)
+	if cfg.CORSAllowedOrigin != "" && len(liveOrigins) == 0 {
+		logger.Warn("live websocket enforces same-origin: CORS_ALLOWED_ORIGIN has no parseable host",
+			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
+	}
+
+	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -213,6 +231,21 @@ func run(logger *slog.Logger) error {
 		<-processorDone
 		return err
 	}
+}
+
+// liveAllowedOrigins derives the WebSocket origin allow-list from the CORS
+// origin: empty in production (frontend and API share an origin, so same-origin
+// is enforced) and the dev frontend's host otherwise, matching the relaxation
+// the CORS middleware already grants normal requests.
+func liveAllowedOrigins(corsOrigin string) []string {
+	if corsOrigin == "" {
+		return nil
+	}
+	u, err := url.Parse(corsOrigin)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	return []string{u.Host}
 }
 
 // buildPrechecker assembles the check-worthiness gate from config. A disabled

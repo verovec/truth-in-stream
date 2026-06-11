@@ -48,7 +48,7 @@ type Transcriber interface {
 	// TranscribeFile transcribes a complete pre-recorded source in one call.
 	TranscribeFile(ctx context.Context, audio io.Reader, opts Options) (Transcript, error)
 	// TranscribeStream transcribes audio chunks as they arrive, emitting
-	// segments incrementally until chunks closes or ctx is done. Unimplemented
-	// in v1; the signature is fixed now so live mode needs no caller change.
+	// segments incrementally until chunks closes or ctx is done. The batch and
+	// live paths share this contract, so callers never depend on which is wired.
 	TranscribeStream(ctx context.Context, chunks <-chan []byte, opts Options) (<-chan TranscriptEvent, error)
 }

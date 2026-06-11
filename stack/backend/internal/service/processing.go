@@ -313,19 +313,34 @@ func (p *Processor) process(ctx context.Context, j *job) {
 // batch pipeline is not latency-bound; the realtime path can thread the query
 // vector through if profiling shows the doubled Voyage spend matters.
 func (p *Processor) checkSegment(ctx context.Context, seg domain.Segment) (domain.SegmentResult, error) {
-	decision, err := p.prechecker.Evaluate(ctx, seg.Text)
+	matches, decision, err := gateAndMatch(ctx, p.prechecker, p.matcher, seg.Text)
 	if err != nil {
-		return domain.SegmentResult{}, fmt.Errorf("precheck: %w", err)
+		return domain.SegmentResult{}, err
 	}
 	if !decision.Checkable {
 		return domain.SegmentResult{Segment: seg, SkipReason: decision.Reason}, nil
 	}
-
-	matches, err := p.matcher.Match(ctx, seg.Text)
-	if err != nil {
-		return domain.SegmentResult{}, fmt.Errorf("match: %w", err)
-	}
 	return domain.SegmentResult{Segment: seg, Matches: matches}, nil
+}
+
+// gateAndMatch is the shared check-worthiness core of the batch and live
+// pipelines: it runs the precheck gate, then matches only checkable segments, so
+// both paths apply identical skip-vs-check policy and cannot drift. It returns
+// the precheck decision (whose Checkable flag is the authoritative skip-vs-check
+// signal) alongside the matches, which are nil for a skipped segment.
+func gateAndMatch(ctx context.Context, prechecker SegmentPrechecker, matcher SegmentMatcher, text string) ([]domain.SegmentMatch, domain.PrecheckDecision, error) {
+	decision, err := prechecker.Evaluate(ctx, text)
+	if err != nil {
+		return nil, domain.PrecheckDecision{}, fmt.Errorf("precheck: %w", err)
+	}
+	if !decision.Checkable {
+		return nil, decision, nil
+	}
+	matches, err := matcher.Match(ctx, text)
+	if err != nil {
+		return nil, domain.PrecheckDecision{}, fmt.Errorf("match: %w", err)
+	}
+	return matches, decision, nil
 }
 
 func (p *Processor) setTotal(j *job, total int) {
