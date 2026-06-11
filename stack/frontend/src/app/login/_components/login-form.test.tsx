@@ -1,13 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { push, refresh } from "@/test/next-navigation-mock";
+import { push, refresh, replace } from "@/test/next-navigation-mock";
 import { LoginForm } from "./login-form";
 
 vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
 
 beforeEach(() => {
   push.mockClear();
+  replace.mockClear();
   refresh.mockClear();
 });
 
@@ -27,7 +28,7 @@ describe("LoginForm", () => {
     expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
   });
 
-  test("posts credentials and navigates home on success", async () => {
+  test("posts credentials and navigates to the analyser on success", async () => {
     const fetchMock = mockFetch({ ok: true });
     const user = userEvent.setup();
     render(<LoginForm />);
@@ -44,7 +45,8 @@ describe("LoginForm", () => {
         password: "hunter2hunter2",
       }),
     });
-    expect(push).toHaveBeenCalledWith("/");
+    expect(replace).toHaveBeenCalledWith("/app");
+    expect(push).not.toHaveBeenCalled();
     expect(refresh).toHaveBeenCalled();
   });
 

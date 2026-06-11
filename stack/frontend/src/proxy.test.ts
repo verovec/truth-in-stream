@@ -11,15 +11,21 @@ function request(path: string, sessionCookie?: string) {
 }
 
 describe("proxy", () => {
-  test("redirects an unauthenticated request to the login page", () => {
+  test("lets an unauthenticated request reach the public landing page", () => {
     const res = proxy(request("/"));
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  test("redirects an unauthenticated request for a product route to login", () => {
+    const res = proxy(request("/app"));
 
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("http://localhost:3000/login");
   });
 
-  test("lets a request with a session cookie through", () => {
-    const res = proxy(request("/", "sometoken"));
+  test("lets an authenticated request reach a product route", () => {
+    const res = proxy(request("/app", "sometoken"));
 
     expect(res.headers.get("x-middleware-next")).toBe("1");
   });
@@ -32,6 +38,12 @@ describe("proxy", () => {
 
   test("keeps the login page reachable with a cookie present, so a stale cookie cannot lock the operator out", () => {
     const res = proxy(request("/login", "staletoken"));
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  test("lets an unauthenticated request reach a static marketing asset", () => {
+    const res = proxy(request("/og.png"));
 
     expect(res.headers.get("x-middleware-next")).toBe("1");
   });
