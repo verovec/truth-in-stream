@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -330,39 +331,44 @@ func (c *AssemblyAIClient) readEvents(ctx context.Context, sock aaiSocket, out c
 			}
 			return
 		}
-		event, ok, end := c.classify(ctx, msg)
+		events, end := c.classify(ctx, msg)
+		for _, event := range events {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- event:
+			}
+		}
 		if end {
 			return
-		}
-		if !ok {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case out <- event:
 		}
 	}
 }
 
-// classify maps one server message to a transcript event. ok reports whether an
-// event should be emitted; end reports whether the session has ended. A Turn
-// with end_of_turn emits as final, an in-progress Turn as a partial; Begin is
-// absorbed and a Termination ends the stream. An unrecognized type is absorbed
-// and logged at debug, since fatal provider errors arrive as a WebSocket close
-// rather than a data-channel message.
-func (c *AssemblyAIClient) classify(ctx context.Context, msg aaiMessage) (event TranscriptEvent, ok, end bool) {
+// classify maps one server message to its transcript events. A committed Turn
+// yields one final event per speaker run (so a turn spanning a speaker change is
+// split), an in-progress Turn one partial; Begin is absorbed and a Termination
+// ends the stream. end reports whether the session has ended; the returned slice
+// is empty for an absorbed or terminating message. An unrecognized type is
+// absorbed and logged at debug, since fatal provider errors arrive as a
+// WebSocket close rather than a data-channel message.
+func (c *AssemblyAIClient) classify(ctx context.Context, msg aaiMessage) (events []TranscriptEvent, end bool) {
 	switch msg.Type {
 	case aaiMsgTurn:
 		if msg.Transcript == "" {
-			return TranscriptEvent{}, false, false
+			return nil, false
 		}
 		if msg.EndOfTurn {
-			return TranscriptEvent{Segment: aaiSegment(msg), Final: true}, true, false
+			segs := aaiSegments(msg)
+			events = make([]TranscriptEvent, 0, len(segs))
+			for _, seg := range segs {
+				events = append(events, TranscriptEvent{Segment: seg, Final: true})
+			}
+			return events, false
 		}
-		return TranscriptEvent{Segment: Segment{Text: msg.Transcript, Speaker: msg.SpeakerLabel}, Final: false}, true, false
+		return []TranscriptEvent{{Segment: Segment{Text: msg.Transcript, Speaker: msg.SpeakerLabel}, Final: false}}, false
 	case aaiMsgTermination:
-		return TranscriptEvent{}, false, true
+		return nil, true
 	case aaiMsgError:
 		// Surface the provider's stated cause at error level: the WebSocket close
 		// reason only points here ("See Error message for details"), so without
@@ -371,28 +377,91 @@ func (c *AssemblyAIClient) classify(ctx context.Context, msg aaiMessage) (event 
 		c.logger.ErrorContext(ctx, "assemblyai: session error",
 			slog.Int("error_code", msg.ErrorCode),
 			slog.String("error", msg.Error))
-		return TranscriptEvent{}, false, true
+		return nil, true
 	case aaiMsgBegin:
-		return TranscriptEvent{}, false, false
+		return nil, false
 	default:
 		c.logger.DebugContext(ctx, "assemblyai: ignoring unrecognized message", slog.String("type", msg.Type))
-		return TranscriptEvent{}, false, false
+		return nil, false
 	}
 }
 
-// aaiSegment builds a finalized Segment from a committed Turn. Start is the first
-// word's onset and End is the latest word end, so a trailing in-progress word
-// with a zero end (a committed Turn can still carry one) cannot truncate the
-// span. The speaker is the turn-level diarization label. With no words the span
-// is zero and only the text and speaker carry information. End is clamped to at
-// least Start so a turn whose only word has a zero end never yields an inverted
-// span.
-func aaiSegment(msg aaiMessage) Segment {
-	seg := Segment{Text: msg.Transcript, Speaker: msg.SpeakerLabel}
-	for i, w := range msg.Words {
-		if i == 0 {
-			seg.Start = millis(w.Start)
+// aaiSegments splits a committed Turn into one Segment per contiguous run of
+// same-speaker words, so a turn that spans a speaker change does not attribute a
+// later speaker's words to the turn-level label. A uniform-speaker turn (the
+// common case) yields a single Segment that keeps the formatted transcript and
+// the turn-level speaker, so only a genuinely mixed turn changes shape. A Turn
+// with no per-word data yields one text-only Segment carrying the turn-level
+// speaker, since there is nothing to split on.
+func aaiSegments(msg aaiMessage) []Segment {
+	if len(msg.Words) == 0 {
+		return []Segment{{Text: msg.Transcript, Speaker: msg.SpeakerLabel}}
+	}
+	runs := speakerRuns(msg.Words)
+	if len(runs) == 1 {
+		return []Segment{spanSegment(msg.Transcript, msg.SpeakerLabel, msg.Words)}
+	}
+	segs := make([]Segment, 0, len(runs))
+	for _, run := range runs {
+		segs = append(segs, spanSegment(joinWords(run), runSpeaker(run), run))
+	}
+	return segs
+}
+
+// speakerRuns partitions words into contiguous runs that share a speaker. A run
+// breaks only when a word carries a non-empty speaker different from the run's;
+// an empty per-word speaker continues the current run rather than starting a new
+// one, mirroring the live aggregator's continuation rule so a transient unknown
+// label never forces a spurious split. words must be non-empty.
+func speakerRuns(words []aaiWord) [][]aaiWord {
+	runs := make([][]aaiWord, 0, 1)
+	start, speaker := 0, words[0].Speaker
+	for i := 1; i < len(words); i++ {
+		s := words[i].Speaker
+		if s != "" && speaker != "" && s != speaker {
+			runs = append(runs, words[start:i])
+			start, speaker = i, s
+			continue
 		}
+		if speaker == "" {
+			speaker = s
+		}
+	}
+	return append(runs, words[start:])
+}
+
+// runSpeaker is a run's speaker: the first non-empty per-word label, or empty if
+// the whole run is unlabeled.
+func runSpeaker(words []aaiWord) string {
+	for _, w := range words {
+		if w.Speaker != "" {
+			return w.Speaker
+		}
+	}
+	return ""
+}
+
+// joinWords reconstructs a run's text from its word tokens, single-spaced, for a
+// split segment that has no formatted transcript of its own.
+func joinWords(words []aaiWord) string {
+	var b strings.Builder
+	for i, w := range words {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(w.Text)
+	}
+	return b.String()
+}
+
+// spanSegment builds a Segment over words with the given text and speaker. Start
+// is the first word's onset and End is the latest word end, so a trailing
+// in-progress word with a zero end (a committed Turn can still carry one) cannot
+// truncate the span. End is clamped to at least Start so a run whose only word
+// has a zero end never yields an inverted span. words must be non-empty.
+func spanSegment(text, speaker string, words []aaiWord) Segment {
+	seg := Segment{Text: text, Speaker: speaker, Start: millis(words[0].Start)}
+	for _, w := range words {
 		if end := millis(w.End); end > seg.End {
 			seg.End = end
 		}
