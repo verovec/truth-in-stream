@@ -3,7 +3,7 @@
 // statements, each either still "analysing" or "checked". It is a pure reducer
 // so the React layer only mirrors it.
 import type { FactCheckSegment, SegmentMatch, SkipReason } from "@/lib/fact-check/api";
-import type { LiveFrame } from "./frames";
+import type { ResultFrame, SubtitleFrame } from "./frames";
 
 // LiveStatement is one spoken statement on screen. The two states are a
 // discriminated union so an analysing statement can never carry a verdict and a
@@ -65,15 +65,16 @@ function checkedFromResult(
 }
 
 /**
- * Applies one inbound frame, returning a new state. A subtitle creates an
+ * Applies one committed frame, returning a new state. A subtitle creates an
  * analysing statement but never downgrades one already checked; a result
  * resolves its statement to checked. Either way, any other statement sharing
  * the same start bucket is superseded, so a reconnect that replays a moment
- * does not duplicate it.
+ * does not duplicate it. Interim captions are handled upstream and never reach
+ * this reducer, so only the id-bearing committed frames are accepted here.
  */
 export function applyFrame(
   state: StatementsState,
-  frame: LiveFrame,
+  frame: SubtitleFrame | ResultFrame,
 ): StatementsState {
   const start = frame.type === "subtitle" ? frame.start : frame.segment.start;
   const key = startKey(start);

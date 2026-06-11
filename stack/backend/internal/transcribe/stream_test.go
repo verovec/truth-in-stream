@@ -31,7 +31,7 @@ func (f *fakeStreamClient) TranscribeStream(_ context.Context, _ <-chan []byte, 
 	return ch, nil
 }
 
-func TestStreamSegmenterKeepsFinalizedSegmentsOnly(t *testing.T) {
+func TestStreamSegmenterForwardsPartialsAndFinals(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeStreamClient{events: []TranscriptEvent{
@@ -47,16 +47,20 @@ func TestStreamSegmenterKeepsFinalizedSegmentsOnly(t *testing.T) {
 		t.Fatalf("StreamSegments: %v", err)
 	}
 
-	var got []domain.Segment
+	var got []domain.LiveTranscript
 	for s := range out {
 		got = append(got, s)
 	}
-	want := []domain.Segment{
-		{Start: time.Second, End: 2 * time.Second, Text: "the earth is round"},
-		{Start: 3 * time.Second, End: 4 * time.Second, Text: "and the sky is blue"},
+	// Partials are kept (the live caption) and tagged non-final; committed
+	// segments are tagged final and carry their timestamps.
+	want := []domain.LiveTranscript{
+		{Segment: domain.Segment{Text: "the ear"}, Final: false},
+		{Segment: domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round"}, Final: true},
+		{Segment: domain.Segment{Text: "and the"}, Final: false},
+		{Segment: domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: "and the sky is blue"}, Final: true},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("segments mismatch (-want +got):\n%s", diff)
+		t.Errorf("transcripts mismatch (-want +got):\n%s", diff)
 	}
 	if client.gotOpts.Language != "en" {
 		t.Errorf("options not forwarded: got language %q", client.gotOpts.Language)

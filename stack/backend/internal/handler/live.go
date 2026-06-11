@@ -63,6 +63,14 @@ const (
 // backpressure once the buffer fills. At ~100 ms/frame this is a few seconds.
 const liveAudioBuffer = 32
 
+// interimFrame is the wire form of an interim event: the live, still-revised
+// caption for the current utterance. It carries only text - no id, no
+// timestamps, no verdict - and the next interim or subtitle supersedes it.
+type interimFrame struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 // subtitleFrame is the wire form of a subtitle event: a statement's text the
 // moment it is transcribed, before any verdict.
 type subtitleFrame struct {
@@ -182,6 +190,12 @@ func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket
 func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent) error {
 	ctx, cancel := context.WithTimeout(ctx, liveWriteTimeout)
 	defer cancel()
+	if ev.Kind == service.LiveEventInterim {
+		return wsjson.Write(ctx, conn, interimFrame{
+			Type: string(ev.Kind),
+			Text: ev.Segment.Text,
+		})
+	}
 	if ev.Kind == service.LiveEventSubtitle {
 		return wsjson.Write(ctx, conn, subtitleFrame{
 			Type:  string(ev.Kind),

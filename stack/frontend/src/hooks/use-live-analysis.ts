@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { usePlayback, usePlaybackStore } from "@/components/playback/playback-provider";
 import { createMediaElementCapture } from "@/lib/live/audio-capture";
-import { type LiveFrame, parseLiveFrame } from "@/lib/live/frames";
+import {
+  parseLiveFrame,
+  type ResultFrame,
+  type SubtitleFrame,
+} from "@/lib/live/frames";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import {
@@ -34,6 +38,7 @@ export type UseLiveAnalysisOptions = {
 
 export type LiveAnalysis = {
   statements: LiveStatement[];
+  caption: string;
   status: LiveStatus;
 };
 
@@ -49,10 +54,10 @@ function reconnectDelayMs(attempt: number): number {
 // its correlation id by session, so ids from a reconnect cannot collide with a
 // prior session's.
 function prepareFrame(
-  frame: LiveFrame,
+  frame: SubtitleFrame | ResultFrame,
   sessionSeq: number,
   baseTime: number,
-): LiveFrame {
+): SubtitleFrame | ResultFrame {
   const id = `${sessionSeq}:${frame.id}`;
   if (frame.type === "subtitle") {
     return {
@@ -96,6 +101,9 @@ export function useLiveAnalysis(
   const captureFactory = options.captureFactory ?? createMediaElementCapture;
 
   const [statements, setStatements] = useState<StatementsState>(emptyStatements);
+  // caption is the live, still-being-spoken utterance from interim frames,
+  // shown verbatim until it commits to a statement or the session resets.
+  const [caption, setCaption] = useState("");
   const [status, setStatus] = useState<LiveStatus>("idle");
 
   // All session machinery lives in refs so socket/audio callbacks and effects
@@ -125,6 +133,15 @@ export function useLiveAnalysis(
       const frame = parseLiveFrame(raw);
       if (!frame) {
         return;
+      }
+      if (frame.type === "interim") {
+        setCaption(frame.text);
+        return;
+      }
+      // A subtitle commits the current utterance to a statement, so the live
+      // caption clears - its text now lives in the statement list.
+      if (frame.type === "subtitle") {
+        setCaption("");
       }
       const prepared = prepareFrame(frame, sessionSeq, baseTimeRef.current);
       setStatements((prev) => applyFrame(prev, prepared));
@@ -197,6 +214,9 @@ export function useLiveAnalysis(
           break;
         case "clearAnalysing":
           setStatements((prev) => clearAnalysing(prev));
+          // A reset (seek or a dropped connection) abandons the in-flight
+          // utterance, so the stale live caption clears with it.
+          setCaption("");
           break;
         case "scheduleReconnect":
           if (reconnectTimerRef.current) {
@@ -244,5 +264,14 @@ export function useLiveAnalysis(
     dispatchRef.current({ type: paused ? "pause" : "play" });
   }, [paused]);
 
-  return { statements: listStatements(statements), status };
+  // The live caption is only meaningful while streaming. Whenever the stream is
+  // not live - paused, reconnecting, errored, ended - clear it so a partial from
+  // the last live moment never lingers on screen or flashes when play resumes.
+  useEffect(() => {
+    if (status !== "live") {
+      setCaption("");
+    }
+  }, [status]);
+
+  return { statements: listStatements(statements), caption, status };
 }

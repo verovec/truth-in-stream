@@ -101,6 +101,9 @@ const resultFrame = (
     matches,
   });
 
+const interimFrame = (text: string) =>
+  JSON.stringify({ type: "interim", text });
+
 const play = (store: PlaybackStore) =>
   act(() => store.update({ paused: false }));
 const pause = (store: PlaybackStore) =>
@@ -166,6 +169,48 @@ describe("useLiveAnalysis", () => {
 
     act(() => h.sockets[0].handlers.onFrame(resultFrame("0", 1, "claim one")));
     expect(h.analysis().statements[0]).toMatchObject({ status: "checked" });
+  });
+
+  test("an interim frame surfaces a live caption that a subtitle then clears", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("the earth is")));
+    expect(h.analysis().caption).toBe("the earth is");
+    // An interim caption is not a statement.
+    expect(h.analysis().statements).toHaveLength(0);
+
+    // Committing the utterance clears the caption; its text moves to the list.
+    act(() =>
+      h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "the earth is round")),
+    );
+    expect(h.analysis().caption).toBe("");
+    expect(h.analysis().statements).toHaveLength(1);
+  });
+
+  test("seeking clears the in-flight live caption", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("half a senten")));
+    expect(h.analysis().caption).toBe("half a senten");
+
+    act(() => h.store().notifySeeked());
+    expect(h.analysis().caption).toBe("");
+  });
+
+  test("clears the live caption when the stream leaves the live state", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() => h.sockets[0].handlers.onFrame(interimFrame("mid utteran")));
+    expect(h.analysis().caption).toBe("mid utteran");
+
+    // Pausing leaves the live state; the stale partial must not linger.
+    pause(h.store());
+    expect(h.analysis().status).not.toBe("live");
+    expect(h.analysis().caption).toBe("");
   });
 
   test("forwards captured PCM frames to the open socket", () => {

@@ -11,11 +11,12 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// SegmentStream is the live transcription port: finalized transcript segments
-// for streaming audio. Defined consumer-side so this package does not depend on
-// the transcription implementation; the transcribe stream adapter satisfies it.
+// SegmentStream is the live transcription port: transcript revisions for
+// streaming audio, each tagged interim (partial) or final. Defined consumer-side
+// so this package does not depend on the transcription implementation; the
+// transcribe stream adapter satisfies it.
 type SegmentStream interface {
-	StreamSegments(ctx context.Context, audio <-chan []byte) (<-chan domain.Segment, error)
+	StreamSegments(ctx context.Context, audio <-chan []byte) (<-chan domain.LiveTranscript, error)
 }
 
 // LiveEventKind tags a live event as the immediate subtitle for a statement or
@@ -23,6 +24,11 @@ type SegmentStream interface {
 type LiveEventKind string
 
 const (
+	// LiveEventInterim carries the live, still-being-revised caption for the
+	// current utterance, before the provider commits it. It has no id and is
+	// never fact-checked - it exists only so the transcript is visible word by
+	// word rather than appearing in bursts when a statement finalizes.
+	LiveEventInterim LiveEventKind = "interim"
 	// LiveEventSubtitle carries a finalized statement's text the moment it is
 	// transcribed, before any verdict exists.
 	LiveEventSubtitle LiveEventKind = "subtitle"
@@ -109,22 +115,24 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 // channel. The channel closes when audio closes, the provider ends the stream,
 // or ctx is canceled; cancel ctx to stop analysis and release every goroutine.
 func (a *LiveAnalyzer) Run(ctx context.Context, audio <-chan []byte) (<-chan LiveEvent, error) {
-	segments, err := a.stream.StreamSegments(ctx, audio)
+	transcripts, err := a.stream.StreamSegments(ctx, audio)
 	if err != nil {
 		return nil, fmt.Errorf("service: live analyze: %w", err)
 	}
 	out := make(chan LiveEvent)
-	go a.analyzeLoop(ctx, segments, out)
+	go a.analyzeLoop(ctx, transcripts, out)
 	return out, nil
 }
 
-// analyzeLoop emits a subtitle per finalized segment in order and dispatches the
-// verdict computation under a concurrency bound. Subtitle emission never waits
-// on a worker slot: when every worker is busy the statement is reported
-// not_checked at once, so a slow match overlaps later statements instead of
-// stalling the transcript. It closes out only after every dispatched worker has
-// finished, so no event is ever sent on a closed channel.
-func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, segments <-chan domain.Segment, out chan<- LiveEvent) {
+// analyzeLoop turns transcript revisions into live events. An interim (partial)
+// transcript is forwarded as an interim caption with no id and no scoring, so
+// the transcript is visible word by word. A finalized transcript emits a
+// subtitle and dispatches the verdict under a concurrency bound. Subtitle
+// emission never waits on a worker slot: when every worker is busy the statement
+// is reported not_checked at once, so a slow match overlaps later statements
+// instead of stalling the transcript. It closes out only after every dispatched
+// worker has finished, so no event is ever sent on a closed channel.
+func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domain.LiveTranscript, out chan<- LiveEvent) {
 	defer close(out)
 
 	sem := make(chan struct{}, a.concurrency)
@@ -133,10 +141,18 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, segments <-chan domain.S
 
 	seq := 0
 	for {
-		seg, ok := receiveSegment(ctx, segments)
+		tr, ok := receiveTranscript(ctx, transcripts)
 		if !ok {
 			return
 		}
+		// Interim revisions are the live caption: surfaced as-is, never scored.
+		if !tr.Final {
+			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventInterim, Segment: tr.Segment}) {
+				return
+			}
+			continue
+		}
+		seg := tr.Segment
 		id := strconv.Itoa(seq)
 		seq++
 
@@ -192,14 +208,14 @@ func (a *LiveAnalyzer) analyze(ctx context.Context, id string, seg domain.Segmen
 	return event
 }
 
-// receiveSegment reads the next finalized segment, reporting ok=false when the
-// stream closes or ctx is canceled.
-func receiveSegment(ctx context.Context, segments <-chan domain.Segment) (domain.Segment, bool) {
+// receiveTranscript reads the next transcript revision, reporting ok=false when
+// the stream closes or ctx is canceled.
+func receiveTranscript(ctx context.Context, transcripts <-chan domain.LiveTranscript) (domain.LiveTranscript, bool) {
 	select {
 	case <-ctx.Done():
-		return domain.Segment{}, false
-	case seg, ok := <-segments:
-		return seg, ok
+		return domain.LiveTranscript{}, false
+	case tr, ok := <-transcripts:
+		return tr, ok
 	}
 }
 

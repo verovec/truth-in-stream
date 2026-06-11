@@ -18,28 +18,38 @@ func discardLogger() *slog.Logger {
 }
 
 type fakeSegmentStream struct {
-	segs []domain.Segment
-	err  error
+	transcripts []domain.LiveTranscript
+	err         error
 }
 
-func (f *fakeSegmentStream) StreamSegments(_ context.Context, _ <-chan []byte) (<-chan domain.Segment, error) {
+func (f *fakeSegmentStream) StreamSegments(_ context.Context, _ <-chan []byte) (<-chan domain.LiveTranscript, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	ch := make(chan domain.Segment, len(f.segs))
-	for _, s := range f.segs {
-		ch <- s
+	ch := make(chan domain.LiveTranscript, len(f.transcripts))
+	for _, t := range f.transcripts {
+		ch <- t
 	}
 	close(ch)
 	return ch, nil
 }
 
-// blockingSegmentStream returns a segment channel that never yields and never
+// finalize wraps segments as finalized transcripts, the input the scoring path
+// expects; tests that exercise interim captions add partials explicitly.
+func finalize(segs ...domain.Segment) []domain.LiveTranscript {
+	out := make([]domain.LiveTranscript, len(segs))
+	for i, s := range segs {
+		out[i] = domain.LiveTranscript{Segment: s, Final: true}
+	}
+	return out
+}
+
+// blockingSegmentStream returns a transcript channel that never yields and never
 // closes on its own, so the analyzer only stops on ctx cancellation.
 type blockingSegmentStream struct{}
 
-func (blockingSegmentStream) StreamSegments(ctx context.Context, _ <-chan []byte) (<-chan domain.Segment, error) {
-	ch := make(chan domain.Segment)
+func (blockingSegmentStream) StreamSegments(ctx context.Context, _ <-chan []byte) (<-chan domain.LiveTranscript, error) {
+	ch := make(chan domain.LiveTranscript)
 	go func() {
 		<-ctx.Done()
 		close(ch)
@@ -124,7 +134,7 @@ func TestLiveAnalyzerEmitsSubtitleAndResultPerSegment(t *testing.T) {
 		{Start: 3 * time.Second, End: 4 * time.Second, Text: "obscure unmatched claim"},
 	}
 	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
-		Stream: &fakeSegmentStream{segs: segs},
+		Stream: &fakeSegmentStream{transcripts: finalize(segs...)},
 		Matcher: liveMatcher{
 			matches: map[string][]domain.SegmentMatch{"the earth is round": claimMatch},
 			err:     map[string]error{"obscure unmatched claim": errors.New("embed failed")},
@@ -188,6 +198,58 @@ func TestLiveAnalyzerEmitsSubtitleAndResultPerSegment(t *testing.T) {
 	}
 }
 
+func TestLiveAnalyzerForwardsInterimCaptionsWithoutScoring(t *testing.T) {
+	t.Parallel()
+	// Partials are surfaced as interim captions - no id, never scored - so the
+	// transcript is visible word by word; only the finalized statement gets a
+	// subtitle and a verdict.
+	transcripts := []domain.LiveTranscript{
+		{Segment: domain.Segment{Text: "the ear"}, Final: false},
+		{Segment: domain.Segment{Text: "the earth is"}, Final: false},
+		{Segment: domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round"}, Final: true},
+	}
+	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+		Stream:     &fakeSegmentStream{transcripts: transcripts},
+		Matcher:    liveMatcher{},
+		Prechecker: livePrechecker{},
+		Logger:     discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveAnalyzer: %v", err)
+	}
+
+	out, err := analyzer.Run(t.Context(), make(chan []byte))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events := drainLiveEvents(t, out)
+
+	var interims []LiveEvent
+	var subtitles, results int
+	for _, ev := range events {
+		switch ev.Kind {
+		case LiveEventInterim:
+			interims = append(interims, ev)
+		case LiveEventSubtitle:
+			subtitles++
+		case LiveEventResult:
+			results++
+		}
+	}
+
+	wantInterims := []LiveEvent{
+		{Kind: LiveEventInterim, Segment: domain.Segment{Text: "the ear"}},
+		{Kind: LiveEventInterim, Segment: domain.Segment{Text: "the earth is"}},
+	}
+	if diff := cmp.Diff(wantInterims, interims); diff != "" {
+		t.Errorf("interim captions mismatch (-want +got):\n%s", diff)
+	}
+	// The finalized statement yields exactly one subtitle and one verdict.
+	if subtitles != 1 || results != 1 {
+		t.Errorf("finalized statement should yield 1 subtitle + 1 result, got %d + %d", subtitles, results)
+	}
+}
+
 func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
 	t.Parallel()
 	// With a single verdict worker pinned on the first statement, the later
@@ -201,7 +263,7 @@ func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
 		{Start: 3 * time.Second, End: 4 * time.Second, Text: "third"},
 	}
 	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
-		Stream:      &fakeSegmentStream{segs: segs},
+		Stream:      &fakeSegmentStream{transcripts: finalize(segs...)},
 		Matcher:     blockingMatcher{release: release},
 		Prechecker:  livePrechecker{},
 		Logger:      discardLogger(),
