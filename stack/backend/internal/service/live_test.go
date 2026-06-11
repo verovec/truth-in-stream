@@ -167,8 +167,8 @@ func TestLiveAnalyzerEmitsSubtitleAndResultPerSegment(t *testing.T) {
 		t.Errorf("result 1 should be skipped not_a_claim, got %+v", results["1"])
 	}
 	// id 2: checkable but matching failed; reported as a non-fatal error.
-	if results["2"].Err != "match failed" || len(results["2"].Matches) != 0 {
-		t.Errorf("result 2 should carry a match error, got %+v", results["2"])
+	if results["2"].Err != "analysis failed" || len(results["2"].Matches) != 0 {
+		t.Errorf("result 2 should carry an analysis error, got %+v", results["2"])
 	}
 }
 

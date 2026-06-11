@@ -184,6 +184,86 @@ func TestLiveRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+func acceptAndServe(t *testing.T, serve func(ctx context.Context, c *websocket.Conn)) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		serve(r.Context(), c)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+}
+
+func dialWS(t *testing.T, wsURL string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	return conn
+}
+
+func TestPingLoopCancelsOnDeadPeer(t *testing.T) {
+	t.Parallel()
+	// The peer vanishes the moment it accepts, so the keepalive ping goes
+	// unanswered and the loop must cancel the session rather than block forever.
+	wsURL := acceptAndServe(t, func(_ context.Context, c *websocket.Conn) {
+		_ = c.CloseNow()
+	})
+	conn := dialWS(t, wsURL)
+	defer func() { _ = conn.CloseNow() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go pingLoop(ctx, cancel, conn, 10*time.Millisecond, time.Second)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("pingLoop did not cancel on a dead peer")
+	}
+}
+
+func TestPingLoopExitsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	// A live peer answers pings (its Read loop auto-pongs), so the loop survives
+	// until the session context is canceled, then it must return.
+	wsURL := acceptAndServe(t, func(ctx context.Context, c *websocket.Conn) {
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				return
+			}
+		}
+	})
+	conn := dialWS(t, wsURL)
+	defer func() { _ = conn.CloseNow() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pingLoop(ctx, cancel, conn, 10*time.Millisecond, time.Second)
+	}()
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("pingLoop did not exit on context cancel")
+	}
+}
+
 func readFrame(ctx context.Context, t *testing.T, conn *websocket.Conn) wireFrame {
 	t.Helper()
 	var frame wireFrame

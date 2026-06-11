@@ -155,35 +155,23 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, segments <-chan domain.S
 	}
 }
 
-// analyze runs the precheck gate, then matches only checkable segments,
-// returning the result event. A non-checkable segment carries its skip reason
-// and no matches; a precheck or match failure is reported as a non-fatal Err so
-// one bad statement never ends the live session. Failures during teardown
-// (ctx canceled) are not logged, as the event is dropped on the closing stream.
+// analyze runs the shared gate-and-match core and shapes the result event. A
+// non-checkable segment carries its skip reason and no matches; a precheck or
+// match failure is reported as a non-fatal Err so one bad statement never ends
+// the live session. Failures during teardown (ctx canceled) are not logged, as
+// the event is dropped on the closing stream.
 func (a *LiveAnalyzer) analyze(ctx context.Context, id string, seg domain.Segment) LiveEvent {
 	event := LiveEvent{Kind: LiveEventResult, ID: id, Segment: seg}
 
-	decision, err := a.prechecker.Evaluate(ctx, seg.Text)
+	matches, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, seg.Text)
 	if err != nil {
 		if ctx.Err() == nil {
-			a.logger.ErrorContext(ctx, "live precheck failed", slog.String("id", id), slog.Any("err", err))
+			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("id", id), slog.Any("err", err))
 		}
-		event.Err = "precheck failed"
+		event.Err = "analysis failed"
 		return event
 	}
-	if !decision.Checkable {
-		event.SkipReason = decision.Reason
-		return event
-	}
-
-	matches, err := a.matcher.Match(ctx, seg.Text)
-	if err != nil {
-		if ctx.Err() == nil {
-			a.logger.ErrorContext(ctx, "live match failed", slog.String("id", id), slog.Any("err", err))
-		}
-		event.Err = "match failed"
-		return event
-	}
+	event.SkipReason = decision.Reason
 	event.Matches = matches
 	return event
 }

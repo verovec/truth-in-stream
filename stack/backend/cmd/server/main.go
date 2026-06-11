@@ -188,7 +188,13 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, liveAnalyzer, liveAllowedOrigins(cfg.CORSAllowedOrigin), cfg.DemoMediaDir, auth, logger)
+	liveOrigins := liveAllowedOrigins(cfg.CORSAllowedOrigin)
+	if cfg.CORSAllowedOrigin != "" && len(liveOrigins) == 0 {
+		logger.Warn("live websocket enforces same-origin: CORS_ALLOWED_ORIGIN has no parseable host",
+			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
+	}
+
+	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

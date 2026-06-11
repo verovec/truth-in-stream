@@ -44,6 +44,17 @@ const liveReadLimit = 1 << 20
 // cannot wedge the session indefinitely.
 const liveWriteTimeout = 10 * time.Second
 
+// livePingInterval and livePingTimeout drive a keepalive ping that detects a
+// half-open connection (a peer that vanished without a close frame: laptop
+// sleep, network drop, crashed tab). Without it, conn.Read on a dead peer
+// blocks forever, pinning the reader, the writer, and the upstream provider
+// session. The ping tolerates legitimate playback pauses: the browser answers
+// pings even when it is sending no audio, so only a genuinely dead peer trips it.
+const (
+	livePingInterval = 30 * time.Second
+	livePingTimeout  = 10 * time.Second
+)
+
 // subtitleFrame is the wire form of a subtitle event: a statement's text the
 // moment it is transcribed, before any verdict.
 type subtitleFrame struct {
@@ -89,6 +100,7 @@ func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, logger *slog.Lo
 		videoID := r.PathValue("id")
 		audio := make(chan []byte)
 		go readAudio(ctx, cancel, conn, audio)
+		go pingLoop(ctx, cancel, conn, livePingInterval, livePingTimeout)
 
 		events, err := analyzer.Run(ctx, audio)
 		if err != nil {
@@ -114,13 +126,35 @@ func readAudio(ctx context.Context, cancel context.CancelFunc, conn *websocket.C
 		if err != nil {
 			return
 		}
-		if typ != websocket.MessageBinary {
+		if typ != websocket.MessageBinary || len(data) == 0 {
 			continue
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case audio <- data:
+		}
+	}
+}
+
+// pingLoop pings the peer on a fixed interval and cancels the session when a
+// ping is not answered within timeout, so a half-open connection is reclaimed
+// instead of blocking the reader forever. It exits when ctx is canceled.
+func pingLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, interval, timeout time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, pingCancel := context.WithTimeout(ctx, timeout)
+			err := conn.Ping(pingCtx)
+			pingCancel()
+			if err != nil {
+				cancel()
+				return
+			}
 		}
 	}
 }
