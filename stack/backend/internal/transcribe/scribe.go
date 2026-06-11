@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -27,6 +28,10 @@ const (
 	// recordings, not a single round-trip.
 	defaultTimeout  = 5 * time.Minute
 	defaultFilename = "audio"
+	// defaultRealtimeURL and defaultRealtimeModel target the Scribe v2 Realtime
+	// WebSocket endpoint used by the live TranscribeStream path.
+	defaultRealtimeURL   = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+	defaultRealtimeModel = "scribe_v2_realtime"
 )
 
 const (
@@ -44,36 +49,56 @@ const (
 )
 
 // Config configures a Client. APIKey and Model are required; BaseURL and
-// HTTPClient default to the ElevenLabs endpoint and a client whose timeout
-// covers long uploads.
+// HTTPClient default to the batch ElevenLabs endpoint and a client whose
+// timeout covers long uploads. RealtimeURL, RealtimeModel, and Logger default
+// to the Scribe v2 Realtime endpoint, its model, and slog.Default; they govern
+// only the live TranscribeStream path.
 type Config struct {
-	APIKey     string
-	Model      string
-	BaseURL    string
-	HTTPClient *http.Client
+	APIKey        string
+	Model         string
+	BaseURL       string
+	HTTPClient    *http.Client
+	RealtimeURL   string
+	RealtimeModel string
+	Logger        *slog.Logger
 }
 
 // Client calls the ElevenLabs Scribe speech-to-text API.
 type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	apiKey     string
-	model      string
+	httpClient    *http.Client
+	baseURL       string
+	apiKey        string
+	model         string
+	realtimeURL   string
+	realtimeModel string
+	logger        *slog.Logger
 }
 
 // New builds a Client from cfg, applying defaults for the optional fields.
 func New(cfg Config) *Client {
 	c := &Client{
-		httpClient: cfg.HTTPClient,
-		baseURL:    cfg.BaseURL,
-		apiKey:     cfg.APIKey,
-		model:      cfg.Model,
+		httpClient:    cfg.HTTPClient,
+		baseURL:       cfg.BaseURL,
+		apiKey:        cfg.APIKey,
+		model:         cfg.Model,
+		realtimeURL:   cfg.RealtimeURL,
+		realtimeModel: cfg.RealtimeModel,
+		logger:        cfg.Logger,
 	}
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
+	}
+	if c.realtimeURL == "" {
+		c.realtimeURL = defaultRealtimeURL
+	}
+	if c.realtimeModel == "" {
+		c.realtimeModel = defaultRealtimeModel
+	}
+	if c.logger == nil {
+		c.logger = slog.Default()
 	}
 	return c
 }
@@ -145,12 +170,6 @@ func (c *Client) TranscribeFile(ctx context.Context, audio io.Reader, opts Optio
 		Language: decoded.LanguageCode,
 		Segments: groupWords(decoded.Words),
 	}, nil
-}
-
-// TranscribeStream is the live-mode half of the Transcriber contract, to be
-// implemented against Scribe v2 Realtime. v1 is batch-only.
-func (c *Client) TranscribeStream(_ context.Context, _ <-chan []byte, _ Options) (<-chan TranscriptEvent, error) {
-	return nil, errors.New("scribe: streaming transcription is not implemented in v1")
 }
 
 // formBody streams the multipart request body: the form is written through a

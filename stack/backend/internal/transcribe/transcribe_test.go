@@ -316,13 +316,15 @@ func TestTranscribeFileRejectsMalformedResponse(t *testing.T) {
 	}
 }
 
-func TestTranscribeStreamIsUnimplemented(t *testing.T) {
+func TestTranscribeStreamDialErrorSurfaces(t *testing.T) {
 	t.Parallel()
-	client := New(Config{APIKey: "k", Model: "scribe_v2"})
+	// A malformed realtime URL fails before any network dial, so the streaming
+	// setup error surfaces from the call without leaking a channel.
+	client := New(Config{APIKey: "k", Model: "scribe_v2", RealtimeURL: "://bad"})
 
 	events, err := client.TranscribeStream(t.Context(), make(chan []byte), Options{})
 	if err == nil {
-		t.Fatal("want unimplemented error, got nil")
+		t.Fatal("want dial setup error, got nil")
 	}
 	if events != nil {
 		t.Fatalf("events = %v, want nil", events)

@@ -19,7 +19,7 @@ import (
 // public routes are the explicit registrations on the outer mux: /healthz for
 // load balancer checks, login, and logout (reachable without a valid session
 // so an expired one can still clear its cookie).
-func NewMux(health *service.HealthChecker, transcriber transcribe.Transcriber, processing ProcessingService, videos VideoService, youtube YouTubeService, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, transcriber transcribe.Transcriber, processing ProcessingService, videos VideoService, youtube YouTubeService, live LiveAnalyzer, liveAllowedOrigins []string, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("POST /api/transcripts", transcriptHandler(transcriber, logger))
 	// Batch processing identity (id is the SHA-256 of a video source).
@@ -32,6 +32,8 @@ func NewMux(health *service.HealthChecker, transcriber transcribe.Transcriber, p
 	api.HandleFunc("POST /api/videos/{id}/confirm", confirmVideoHandler(videos))
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
+	// Live fact-check stream (WebSocket). See live.go.
+	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, liveAllowedOrigins, logger))
 
 	guard := middleware.Auth(auth.Sessions, sessionCookieName)
 

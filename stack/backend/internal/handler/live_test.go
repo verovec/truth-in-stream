@@ -1,0 +1,194 @@
+package handler
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/service"
+)
+
+// stubLiveAnalyzer satisfies the live port for tests that wire NewMux but never
+// open the live socket; its event stream is empty and immediately closed.
+type stubLiveAnalyzer struct{}
+
+func (stubLiveAnalyzer) Run(_ context.Context, _ <-chan []byte) (<-chan service.LiveEvent, error) {
+	out := make(chan service.LiveEvent)
+	close(out)
+	return out, nil
+}
+
+// recordingLive records every audio frame it receives and, once the first frame
+// arrives, emits a fixed sequence of events. Emitting only after a frame lands
+// makes the audio assertion deterministic.
+type recordingLive struct {
+	events []service.LiveEvent
+
+	mu       sync.Mutex
+	received [][]byte
+}
+
+func (r *recordingLive) Run(ctx context.Context, audio <-chan []byte) (<-chan service.LiveEvent, error) {
+	out := make(chan service.LiveEvent)
+	go func() {
+		defer close(out)
+		sent := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case frame, ok := <-audio:
+				if !ok {
+					return
+				}
+				r.mu.Lock()
+				r.received = append(r.received, frame)
+				r.mu.Unlock()
+				if sent {
+					continue
+				}
+				sent = true
+				for _, ev := range r.events {
+					select {
+					case <-ctx.Done():
+						return
+					case out <- ev:
+					}
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (r *recordingLive) frames() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]byte(nil), r.received...)
+}
+
+// wireFrame decodes either event shape; absent fields stay zero.
+type wireFrame struct {
+	Type       string                `json:"type"`
+	ID         string                `json:"id"`
+	Start      float64               `json:"start"`
+	End        float64               `json:"end"`
+	Text       string                `json:"text"`
+	Matches    []domain.SegmentMatch `json:"matches"`
+	SkipReason string                `json:"skip_reason"`
+	Error      string                `json:"error"`
+}
+
+func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/videos/{id}/live", liveHandler(analyzer, origins, logger))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
+}
+
+func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
+	t.Parallel()
+
+	claim := []domain.SegmentMatch{{
+		Kind:       domain.MatchKindClaim,
+		Claim:      "the earth is an oblate spheroid",
+		Verdict:    domain.Verdict("corroborates"),
+		Sources:    []domain.Source{},
+		Similarity: 0.9,
+	}}
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, Matches: claim},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01, 0x02, 0x03}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	subtitle := readFrame(ctx, t, conn)
+	if subtitle.Type != "subtitle" || subtitle.ID != "0" || subtitle.Text != seg.Text {
+		t.Errorf("subtitle frame = %+v", subtitle)
+	}
+	if subtitle.Start != 1 || subtitle.End != 2 {
+		t.Errorf("subtitle span = [%v,%v], want [1,2]", subtitle.Start, subtitle.End)
+	}
+
+	result := readFrame(ctx, t, conn)
+	if result.Type != "result" || result.ID != "0" {
+		t.Errorf("result frame = %+v", result)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Claim != claim[0].Claim {
+		t.Errorf("result matches = %+v, want the claim hit", result.Matches)
+	}
+
+	if frames := fake.frames(); len(frames) != 1 || string(frames[0]) != string([]byte{0x01, 0x02, 0x03}) {
+		t.Errorf("server received audio = %v, want one 3-byte frame", frames)
+	}
+}
+
+func TestLiveHandlerRejectsDisallowedOrigin(t *testing.T) {
+	t.Parallel()
+
+	wsURL := liveTestServer(t, stubLiveAnalyzer{}, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {"http://evil.example"}},
+	})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		_ = conn.CloseNow()
+		t.Fatal("expected cross-origin handshake to be rejected")
+	}
+}
+
+func TestLiveRouteRequiresAuth(t *testing.T) {
+	t.Parallel()
+	// The live route sits under the /api guard, so an unauthenticated upgrade is
+	// rejected with 401 before any WebSocket handshake.
+	srv := newTestServer(nil, &stubTranscriber{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/vid1/live", nil)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET live without session = %d, want 401", rec.Code)
+	}
+}
+
+func readFrame(ctx context.Context, t *testing.T, conn *websocket.Conn) wireFrame {
+	t.Helper()
+	var frame wireFrame
+	if err := wsjson.Read(ctx, conn, &frame); err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	return frame
+}
