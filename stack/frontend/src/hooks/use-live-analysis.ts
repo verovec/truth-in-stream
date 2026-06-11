@@ -241,7 +241,16 @@ export function useLiveAnalysis(
     function dispatch(event: LiveSessionEvent): void {
       const { state, commands } = reduceSession(sessionRef.current, event);
       sessionRef.current = state;
-      setStatus(liveStatus(state));
+      const nextStatus = liveStatus(state);
+      setStatus(nextStatus);
+      // The live caption is only meaningful while streaming. Clear it on any
+      // transition out of live (pause, reconnect, error, end) here in the event
+      // path - status only ever changes through dispatch - so a partial from the
+      // last live moment never lingers or flashes on resume, without clearing
+      // state from inside an effect.
+      if (nextStatus !== "live") {
+        setCaption("");
+      }
       for (const command of commands) {
         runCommand(command);
       }
@@ -263,15 +272,6 @@ export function useLiveAnalysis(
   useEffect(() => {
     dispatchRef.current({ type: paused ? "pause" : "play" });
   }, [paused]);
-
-  // The live caption is only meaningful while streaming. Whenever the stream is
-  // not live - paused, reconnecting, errored, ended - clear it so a partial from
-  // the last live moment never lingers on screen or flashes when play resumes.
-  useEffect(() => {
-    if (status !== "live") {
-      setCaption("");
-    }
-  }, [status]);
 
   return { statements: listStatements(statements), caption, status };
 }
