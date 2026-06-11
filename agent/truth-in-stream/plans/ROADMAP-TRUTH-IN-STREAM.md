@@ -3,11 +3,11 @@
 ```
 LINEAR_TEAM: Veroveit
 LINEAR_PROJECT: Truth in Stream
-LINEAR_TICKETS: VER-6..VER-41
+LINEAR_TICKETS: VER-6..VER-43
 AGENT_INDUSTRY_VERSION: 5.0.0
 STATUS: Active
 CREATED: 2026-06-09
-LAST_UPDATED: 2026-06-11 (pick refresh)
+LAST_UPDATED: 2026-06-11 (pick refresh - VER-39/42/43 ready)
 ```
 
 Rules live in the `roadmap-linear` skill. This file is derived state; never hand-edit the
@@ -49,10 +49,12 @@ Ready queue.
 | VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Done | High | VER-29, VER-30 |
 | VER-37 | Paste a YouTube URL to add a video (frontend ingest + pending-to-ready polling) | Done | Medium | VER-34 |
 | VER-36 | Library video tiles: render a real frame thumbnail instead of the gradient monogram | Done | Low | |
-| VER-38 | Live panel: stacked subtitles-over-fact-checks layout with independent scroll regions | In Review | Medium | |
+| VER-38 | Live panel: stacked subtitles-over-fact-checks layout with independent scroll regions | Done | Medium | |
 | VER-39 | Live analysis summary: top-of-page running findings strip | Todo | Medium | VER-38 |
-| VER-40 | Unify dev seeding: one command for a complete environment (claims, wiki, demo, sample videos) | In Progress | Medium | |
-| VER-41 | Speaker-aware live analysis: diarized segmentation, group up to 3 sentences per turn | Todo | High | VER-30 |
+| VER-40 | Unify dev seeding: one command for a complete environment (claims, wiki, demo, sample videos) | Done | Medium | |
+| VER-41 | Speaker-aware live analysis: diarized segmentation, group up to 3 sentences per turn | Done | High | VER-30 |
+| VER-42 | Rework make wiki-populate: auto-load .env keys, skip re-download when dump present | Todo | Medium | VER-40 |
+| VER-43 | Make AssemblyAI the only transcriber: stream imported videos live, remove ElevenLabs Scribe | Todo | Medium | VER-41 |
 
 ## Dependency Graph
 
@@ -71,9 +73,16 @@ VER-28 -> VER-34 -> VER-37
 VER-{28,29,30,31} -> VER-26
 VER-38 -> VER-39
 VER-30 -> VER-41
+VER-40 -> VER-42
+VER-41 -> VER-43
 ```
 
 (VER-25 canceled as Duplicate; its VER-24/VER-30 edges are retired.)
+
+VER-42 -> VER-40: formal Linear `blockedBy`; both edit `Makefile` + `docker-compose.yml`.
+VER-43 -> VER-41: VER-43 consolidates the AssemblyAI diarization output and max-speakers
+config that VER-41 introduces, and overlaps `internal/transcribe/assemblyai.go`,
+`internal/config`, and `cmd/server/main.go` - cannot run concurrently with VER-41.
 
 ## Ready Queue (computed)
 
@@ -81,11 +90,13 @@ A card is READY when state is `Todo` AND every depends_on card is `Done`.
 
 Ordered by priority, then unblock-count, then card number:
 
-1. VER-41 - Speaker-aware live analysis: diarized segmentation - High - deps VER-30 Done -> READY
+1. VER-39 - Live analysis summary strip - depends on VER-38 (Done). READY.
+2. VER-42 - Rework make wiki-populate - depends on VER-40 (Done). READY.
+3. VER-43 - AssemblyAI sole transcriber - depends on VER-41 (Done). READY.
+
+(All Medium priority, unblock-count 0 each, ordered by card number.)
 
 Blocked / not ready:
-- VER-39 - Live analysis summary strip - depends on VER-38, which is In Review (not Done).
-- VER-40 - In Progress (claimed by another session).
-- VER-38 - In Review (claimed by another session).
+- (none)
 
 END_OF_DOCUMENT
