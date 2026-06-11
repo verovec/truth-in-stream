@@ -62,9 +62,9 @@ describe("LibraryExperience", () => {
         "https://storage/play/vid-1",
       );
     });
-    // The live fact-check panel mounts for the ready video, waiting to stream.
+    // The live analysis panel mounts for the ready video, waiting to stream.
     expect(
-      screen.getByRole("complementary", { name: /fact checks/i }),
+      screen.getByRole("complementary", { name: /live analysis/i }),
     ).toBeInTheDocument();
     expect(
       await screen.findByText(/fact checks stream here while the video plays/i),
