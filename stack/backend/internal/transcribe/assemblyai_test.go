@@ -163,6 +163,11 @@ func TestAAIClassify(t *testing.T) {
 			wantEnd: true,
 		},
 		{
+			name:    "error ends the stream and is surfaced",
+			msg:     aaiMessage{Type: aaiMsgError, ErrorCode: 3007, Error: "Audio chunk duration violation"},
+			wantEnd: true,
+		},
+		{
 			name:   "unknown message is absorbed",
 			msg:    aaiMessage{Type: "SomethingNew", Transcript: "ignored"},
 			wantOK: false,
@@ -268,29 +273,114 @@ func TestAAIStreamSessionEmitsUntilServerClose(t *testing.T) {
 	}
 }
 
-func TestAAIStreamSessionWritesBinaryAudioThenEndsOnChunkClose(t *testing.T) {
+// maxAAIChunkBytes is AssemblyAI streaming v3's per-frame upper bound (1000 ms)
+// in bytes of 16 kHz mono signed-16-bit PCM (32 bytes/ms); a frame above it is
+// rejected with WebSocket close code 3007. The lower bound is the production
+// constant assemblyAIMinChunkBytes. The client must keep every coalesced frame
+// inside [assemblyAIMinChunkBytes, maxAAIChunkBytes].
+const maxAAIChunkBytes = 1000 * 32 // 32000
+
+func TestAAIStreamSessionCoalescesAudioToProviderChunkSize(t *testing.T) {
 	t.Parallel()
 
+	// The live pipeline emits tiny frames (~3 ms each). Feed 3200 bytes (100 ms)
+	// as 40 80-byte frames, all below the 50 ms minimum on their own.
+	const frameBytes, frameCount = 80, 40
 	sock := &scriptedAAISocket{blockRead: true}
-	chunks := make(chan []byte, 2)
-	chunks <- []byte{0x01, 0x02}
-	chunks <- []byte{0x03, 0x04}
+	chunks := make(chan []byte, frameCount)
+	sent := make([]byte, 0, frameBytes*frameCount)
+	for i := range frameCount {
+		frame := make([]byte, frameBytes)
+		for j := range frame {
+			frame[j] = byte(i)
+		}
+		sent = append(sent, frame...)
+		chunks <- frame
+	}
 	close(chunks)
 
 	c := silentAssemblyAI()
 	out := make(chan TranscriptEvent)
 	go c.streamSession(t.Context(), sock, chunks, out)
 
-	// Draining the audio source ends the session, so the blocked reader unblocks
-	// and the output channel closes without leaking.
 	if events := collectEvents(t, out); len(events) != 0 {
 		t.Errorf("expected no transcript events, got %d", len(events))
 	}
 
 	binary := sock.capturedBinary()
-	want := [][]byte{{0x01, 0x02}, {0x03, 0x04}}
-	if diff := cmp.Diff(want, binary); diff != "" {
-		t.Errorf("binary frames mismatch (-want +got):\n%s", diff)
+	if len(binary) == 0 {
+		t.Fatal("no audio written; coalesced frames were dropped")
+	}
+	var got []byte
+	for i, frame := range binary {
+		if len(frame) < assemblyAIMinChunkBytes || len(frame) > maxAAIChunkBytes {
+			t.Errorf("frame %d is %d bytes, want within [%d, %d] (50-1000 ms)", i, len(frame), assemblyAIMinChunkBytes, maxAAIChunkBytes)
+		}
+		got = append(got, frame...)
+	}
+	// Coalescing must preserve the audio bytes and their order exactly.
+	if diff := cmp.Diff(sent, got); diff != "" {
+		t.Errorf("coalesced audio mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestAAIStreamSessionSplitsOversizedChunk(t *testing.T) {
+	t.Parallel()
+
+	// A single inbound chunk larger than the 1000 ms ceiling must be split so no
+	// emitted frame re-trips 3007. Feed 6400 bytes (200 ms) as one chunk.
+	sock := &scriptedAAISocket{blockRead: true}
+	chunks := make(chan []byte, 1)
+	sent := make([]byte, 2*assemblyAIChunkBytes)
+	for i := range sent {
+		sent[i] = byte(i)
+	}
+	chunks <- sent
+	close(chunks)
+
+	c := silentAssemblyAI()
+	out := make(chan TranscriptEvent)
+	go c.streamSession(t.Context(), sock, chunks, out)
+
+	if events := collectEvents(t, out); len(events) != 0 {
+		t.Errorf("expected no transcript events, got %d", len(events))
+	}
+
+	binary := sock.capturedBinary()
+	if len(binary) < 2 {
+		t.Fatalf("expected the oversized chunk split into multiple frames, got %d", len(binary))
+	}
+	var got []byte
+	for i, frame := range binary {
+		if len(frame) < assemblyAIMinChunkBytes || len(frame) > maxAAIChunkBytes {
+			t.Errorf("frame %d is %d bytes, want within [%d, %d]", i, len(frame), assemblyAIMinChunkBytes, maxAAIChunkBytes)
+		}
+		got = append(got, frame...)
+	}
+	if diff := cmp.Diff(sent, got); diff != "" {
+		t.Errorf("split audio mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestAAIStreamSessionDropsSubMinimumTailOnClose(t *testing.T) {
+	t.Parallel()
+
+	// A trailing buffer below the 50 ms minimum cannot be sent without tripping
+	// 3007, so it is dropped when the audio source closes.
+	sock := &scriptedAAISocket{blockRead: true}
+	chunks := make(chan []byte, 1)
+	chunks <- make([]byte, assemblyAIMinChunkBytes-32) // just under 50 ms
+	close(chunks)
+
+	c := silentAssemblyAI()
+	out := make(chan TranscriptEvent)
+	go c.streamSession(t.Context(), sock, chunks, out)
+
+	if events := collectEvents(t, out); len(events) != 0 {
+		t.Errorf("expected no transcript events, got %d", len(events))
+	}
+	if binary := sock.capturedBinary(); len(binary) != 0 {
+		t.Errorf("expected the sub-minimum tail to be dropped, got %d frame(s)", len(binary))
 	}
 }
 
