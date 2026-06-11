@@ -128,3 +128,16 @@ export function clearAnalysing(state: StatementsState): StatementsState {
 export function listStatements(state: StatementsState): LiveStatement[] {
   return [...state.byId.values()].sort((a, b) => a.start - b.start);
 }
+
+// isScored is true for a statement that was fact-checked and may therefore carry
+// verdict or evidence matches: it resolved to "checked" and was neither skipped
+// by the check-worthiness gate nor errored. The fact-check list and the running
+// summary both key off this one predicate, so a statement the list omits can
+// never be tallied as a verdict in the summary.
+export function isScored(
+  statement: LiveStatement,
+): statement is Extract<LiveStatement, { status: "checked" }> {
+  return (
+    statement.status === "checked" && !statement.error && !statement.skipReason
+  );
+}

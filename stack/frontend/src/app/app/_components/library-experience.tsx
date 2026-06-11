@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { VideoPlayer } from "@/components/playback/video-player";
 import { useVideoUploads } from "@/hooks/use-video-uploads";
@@ -13,6 +14,7 @@ import {
 } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
+import { LiveSummaryStrip } from "./live-summary-strip";
 import { GALLERY_GRID_CLASS, VideoGallery } from "./video-gallery";
 import { VideoUploader } from "./video-uploader";
 import { YoutubeUrlForm } from "./youtube-url-form";
@@ -254,38 +256,48 @@ export function LibraryExperience({
   }, [hasPendingYoutube, pollIntervalMs]);
 
   const active = resolveActive(selectedVideo, resolved);
+  const activeVideoId = active.status === "ready" ? active.playable.id : null;
 
   return (
     <PlaybackProvider>
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      {/* One live session feeds both the top-of-page summary strip and the
+          in-grid fact-check panel: the provider owns the single WebSocket and
+          publishes to a store the two read independently, so neither the player
+          nor the library re-renders as findings stream in. */}
+      <LiveAnalysisProvider videoId={activeVideoId}>
         <div className="flex flex-col gap-4">
-          <PlayerStage active={active} />
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
-              Library
-            </h2>
-            <VideoUploader onFiles={startUploads} />
-            <YoutubeUrlForm onAdded={handleYoutubeAdded} submit={submitYoutube} />
-            <LibrarySection
-              listState={listState}
-              onRetry={retryLibrary}
-              videos={videos}
-              jobs={jobs}
-              selectedId={selectedId}
-              onSelect={(video) => setSelectedId(video.id)}
-              onDismiss={dismiss}
-            />
-          </section>
+          <LiveSummaryStrip />
+          <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="flex flex-col gap-4">
+              <PlayerStage active={active} />
+              <section className="flex flex-col gap-3">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+                  Library
+                </h2>
+                <VideoUploader onFiles={startUploads} />
+                <YoutubeUrlForm
+                  onAdded={handleYoutubeAdded}
+                  submit={submitYoutube}
+                />
+                <LibrarySection
+                  listState={listState}
+                  onRetry={retryLibrary}
+                  videos={videos}
+                  jobs={jobs}
+                  selectedId={selectedId}
+                  onSelect={(video) => setSelectedId(video.id)}
+                  onDismiss={dismiss}
+                />
+              </section>
+            </div>
+            {active.status === "ready" ? (
+              <LiveFactCheckPanel key={active.playable.id} />
+            ) : (
+              <FactCheckPlaceholder />
+            )}
+          </div>
         </div>
-        {active.status === "ready" ? (
-          <LiveFactCheckPanel
-            key={active.playable.id}
-            videoId={active.playable.id}
-          />
-        ) : (
-          <FactCheckPlaceholder />
-        )}
-      </div>
+      </LiveAnalysisProvider>
     </PlaybackProvider>
   );
 }
