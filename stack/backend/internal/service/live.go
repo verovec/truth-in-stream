@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -51,34 +53,50 @@ type LiveEvent struct {
 	Err        string
 }
 
-// defaultLiveConcurrency bounds in-flight per-segment analyses. Subtitles emit
-// in order regardless; this caps how many verdicts compute at once so a burst of
-// speech cannot spawn unbounded work. Speech beyond the bound is surfaced as a
-// subtitle and reported not_checked rather than stalling the live transcript.
+// defaultLiveConcurrency bounds in-flight unit analyses. Subtitles emit in order
+// regardless; this caps how many verdicts compute at once so a burst of speech
+// cannot spawn unbounded work. A unit beyond the bound surfaces its subtitles
+// and is reported not_checked rather than stalling the live transcript.
 const defaultLiveConcurrency = 4
+
+// defaultMaxSentences bounds an analysis unit to a few sentences so a verdict
+// reads as one tight, coherent claim instead of a paragraph.
+const defaultMaxSentences = 3
+
+// defaultIdleFlush bounds how long a buffered unit waits for more same-speaker
+// speech before it is scored anyway, so a trailing short turn is checked within
+// a couple of seconds of silence rather than held until the next speaker.
+const defaultIdleFlush = 2 * time.Second
 
 // LiveAnalyzerConfig wires a LiveAnalyzer. Stream and Matcher are required;
 // Prechecker defaults to the no-op gate that checks every segment, Logger to
-// slog.Default, and Concurrency to defaultLiveConcurrency.
+// slog.Default, Concurrency to defaultLiveConcurrency, MaxSentences to
+// defaultMaxSentences, and IdleFlush to defaultIdleFlush.
 type LiveAnalyzerConfig struct {
-	Stream      SegmentStream
-	Matcher     SegmentMatcher
-	Prechecker  SegmentPrechecker
-	Logger      *slog.Logger
-	Concurrency int
+	Stream       SegmentStream
+	Matcher      SegmentMatcher
+	Prechecker   SegmentPrechecker
+	Logger       *slog.Logger
+	Concurrency  int
+	MaxSentences int
+	IdleFlush    time.Duration
 }
 
-// LiveAnalyzer turns streaming audio into incremental fact-check events. For
-// each finalized transcript segment it emits the subtitle immediately, then runs
-// the same check-worthiness gate and matcher as the batch pipeline and emits the
-// result. It holds no transport types: callers feed it audio bytes and read
-// events, and the socket lives entirely in the handler layer.
+// LiveAnalyzer turns streaming audio into incremental fact-check events. It
+// emits each finalized segment's subtitle immediately, groups consecutive
+// same-speaker segments into an analysis unit, then runs the same
+// check-worthiness gate and matcher as the batch pipeline on the unit's combined
+// text and emits the verdict to each member. It holds no transport types:
+// callers feed it audio bytes and read events, and the socket lives entirely in
+// the handler layer.
 type LiveAnalyzer struct {
-	stream      SegmentStream
-	matcher     SegmentMatcher
-	prechecker  SegmentPrechecker
-	logger      *slog.Logger
-	concurrency int
+	stream       SegmentStream
+	matcher      SegmentMatcher
+	prechecker   SegmentPrechecker
+	logger       *slog.Logger
+	concurrency  int
+	maxSentences int
+	idleFlush    time.Duration
 }
 
 // NewLiveAnalyzer builds a LiveAnalyzer from cfg, applying defaults and failing
@@ -102,12 +120,22 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 	if concurrency <= 0 {
 		concurrency = defaultLiveConcurrency
 	}
+	maxSentences := cfg.MaxSentences
+	if maxSentences <= 0 {
+		maxSentences = defaultMaxSentences
+	}
+	idleFlush := cfg.IdleFlush
+	if idleFlush <= 0 {
+		idleFlush = defaultIdleFlush
+	}
 	return &LiveAnalyzer{
-		stream:      cfg.Stream,
-		matcher:     cfg.Matcher,
-		prechecker:  prechecker,
-		logger:      logger,
-		concurrency: concurrency,
+		stream:       cfg.Stream,
+		matcher:      cfg.Matcher,
+		prechecker:   prechecker,
+		logger:       logger,
+		concurrency:  concurrency,
+		maxSentences: maxSentences,
+		idleFlush:    idleFlush,
 	}, nil
 }
 
@@ -124,13 +152,65 @@ func (a *LiveAnalyzer) Run(ctx context.Context, audio <-chan []byte) (<-chan Liv
 	return out, nil
 }
 
+// unitMember is one committed segment buffered into the current analysis unit:
+// its subtitle correlation id paired with its segment. The unit groups members,
+// scores their combined text once, then emits a result per member id so every
+// subtitle still resolves to a verdict (the verdict per member subtitle model).
+type unitMember struct {
+	id  string
+	seg domain.Segment
+}
+
+// liveUnit accumulates consecutive same-speaker committed segments into one
+// analysis unit. speaker is the unit's speaker, adopted from the first member
+// that carries a known label; sentences is the running estimate used to cap a
+// unit at maxSentences.
+type liveUnit struct {
+	members   []unitMember
+	speaker   string
+	sentences int
+}
+
+func (u *liveUnit) empty() bool { return len(u.members) == 0 }
+
+// add appends a segment, adopting its speaker label when the unit has none yet
+// (so a unit that opened on an unknown-speaker turn takes the next known label).
+func (u *liveUnit) add(id string, seg domain.Segment, sentences int) {
+	if u.speaker == "" && seg.Speaker != "" {
+		u.speaker = seg.Speaker
+	}
+	u.members = append(u.members, unitMember{id: id, seg: seg})
+	u.sentences += sentences
+}
+
+// take returns the buffered members and resets the unit for the next one.
+func (u *liveUnit) take() []unitMember {
+	members := u.members
+	*u = liveUnit{}
+	return members
+}
+
+// combinedText joins the members' text into the single statement that is scored,
+// so the verdict reflects the whole same-speaker thought rather than a fragment.
+func combinedText(members []unitMember) string {
+	var b strings.Builder
+	for i, m := range members {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(m.seg.Text)
+	}
+	return b.String()
+}
+
 // analyzeLoop turns transcript revisions into live events. An interim (partial)
 // transcript is forwarded as an interim caption with no id and no scoring, so
-// the transcript is visible word by word. A finalized transcript emits a
-// subtitle and dispatches the verdict under a concurrency bound. Subtitle
-// emission never waits on a worker slot: when every worker is busy the statement
-// is reported not_checked at once, so a slow match overlaps later statements
-// instead of stalling the transcript. It closes out only after every dispatched
+// the transcript is visible word by word. A finalized transcript emits its
+// subtitle immediately (per committed segment, with its speaker, decoupled from
+// scoring) and is buffered into the current analysis unit. The unit flushes - is
+// scored once and a verdict emitted per member - when the speaker changes, the
+// unit reaches the sentence cap, or it idles, so every verdict stays within one
+// speaker and reads as a tight claim. It closes out only after every dispatched
 // worker has finished, so no event is ever sent on a closed channel.
 func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domain.LiveTranscript, out chan<- LiveEvent) {
 	defer close(out)
@@ -139,84 +219,184 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	seq := 0
-	for {
-		tr, ok := receiveTranscript(ctx, transcripts)
-		if !ok {
-			return
-		}
-		// Interim revisions are the live caption: surfaced as-is, never scored.
-		if !tr.Final {
-			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventInterim, Segment: tr.Segment}) {
-				return
-			}
-			continue
-		}
-		seg := tr.Segment
-		id := strconv.Itoa(seq)
-		seq++
+	// The idle timer starts stopped; it is armed whenever a segment is buffered
+	// and disarmed on every flush, so it only fires on a genuinely idle buffer.
+	// Go 1.23+ guarantees no stale tick is delivered after Stop, so a bare Stop
+	// before each Reset is sufficient - no manual channel drain.
+	timer := time.NewTimer(a.idleFlush)
+	timer.Stop()
+	defer timer.Stop()
 
-		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventSubtitle, ID: id, Segment: seg}) {
-			return
+	var unit liveUnit
+	seq := 0
+	flush := func() bool {
+		if unit.empty() {
+			return true
 		}
-		// Score only when a worker slot is free, so a slow match never stalls the
-		// subtitle stream. When every worker is busy the statement keeps its
-		// subtitle and is reported unscored rather than holding back later speech.
-		// The skip is best-effort and final: the statement is not re-queued, so
-		// sustained saturation simply leaves more statements unscored.
+		timer.Stop()
+		return a.dispatch(ctx, out, sem, &wg, unit.take())
+	}
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case sem <- struct{}{}:
-			wg.Add(1)
-			go func(id string, seg domain.Segment) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				sendEvent(ctx, out, a.analyze(ctx, id, seg))
-			}(id, seg)
-		default:
-			if !sendEvent(ctx, out, LiveEvent{
-				Kind:       LiveEventResult,
-				ID:         id,
-				Segment:    seg,
-				SkipReason: domain.SkipReasonNotChecked,
-			}) {
+		case <-timer.C:
+			// An idle buffer is scored now rather than held for speech that may
+			// never come, so a trailing short turn still gets a verdict.
+			if !flush() {
 				return
+			}
+		case tr, ok := <-transcripts:
+			if !ok {
+				// Clean end of stream: score the trailing buffered unit so the last
+				// finalized statements still get a verdict rather than being lost.
+				// On ctx cancel the case above returns first and skips this flush.
+				flush()
+				return
+			}
+			if !tr.Final {
+				if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventInterim, Segment: tr.Segment}) {
+					return
+				}
+				continue
+			}
+			seg := tr.Segment
+			id := strconv.Itoa(seq)
+			seq++
+			// The subtitle is the live caption: emitted at once, never waiting on
+			// scoring, so the transcript stays responsive regardless of grouping.
+			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventSubtitle, ID: id, Segment: seg}) {
+				return
+			}
+			sentences := sentenceCount(seg.Text)
+			// A speaker change or an over-cap append closes the current unit before
+			// this segment joins, so a unit never blends speakers or runs long.
+			if !unit.empty() && (!sameSpeaker(seg.Speaker, unit.speaker) || unit.sentences+sentences > a.maxSentences) {
+				if !flush() {
+					return
+				}
+			}
+			unit.add(id, seg, sentences)
+			timer.Stop()
+			timer.Reset(a.idleFlush)
+			// A full unit is scored at once instead of waiting for a boundary, so
+			// its verdict is not delayed behind the idle window.
+			if unit.sentences >= a.maxSentences {
+				if !flush() {
+					return
+				}
 			}
 		}
 	}
 }
 
-// analyze runs the shared gate-and-match core and shapes the result event. A
-// non-checkable segment carries its skip reason and no matches; a precheck or
-// match failure is reported as a non-fatal Err so one bad statement never ends
-// the live session. Failures during teardown (ctx canceled) are not logged, as
-// the event is dropped on the closing stream.
-func (a *LiveAnalyzer) analyze(ctx context.Context, id string, seg domain.Segment) LiveEvent {
-	event := LiveEvent{Kind: LiveEventResult, ID: id, Segment: seg}
-
-	matches, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, seg.Text)
-	if err != nil {
-		if ctx.Err() == nil {
-			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("id", id), slog.Any("err", err))
-		}
-		event.Err = "analysis failed"
-		return event
-	}
-	event.SkipReason = decision.Reason
-	event.Matches = matches
-	return event
-}
-
-// receiveTranscript reads the next transcript revision, reporting ok=false when
-// the stream closes or ctx is canceled.
-func receiveTranscript(ctx context.Context, transcripts <-chan domain.LiveTranscript) (domain.LiveTranscript, bool) {
+// dispatch scores one analysis unit and emits its verdict to every member. It
+// scores only when a worker slot is free, so a slow match never stalls the
+// transcript; when every worker is busy the unit's members are reported
+// not_checked at once and not re-queued, so sustained saturation simply leaves
+// more statements unscored. It reports false when ctx is canceled mid-emit.
+func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, sem chan struct{}, wg *sync.WaitGroup, members []unitMember) bool {
 	select {
 	case <-ctx.Done():
-		return domain.LiveTranscript{}, false
-	case tr, ok := <-transcripts:
-		return tr, ok
+		return false
+	case sem <- struct{}{}:
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			a.scoreUnit(ctx, out, members)
+		}()
+		return true
+	default:
+		for _, m := range members {
+			if !sendEvent(ctx, out, LiveEvent{
+				Kind:       LiveEventResult,
+				ID:         m.id,
+				Segment:    m.seg,
+				SkipReason: domain.SkipReasonNotChecked,
+			}) {
+				return false
+			}
+		}
+		return true
 	}
+}
+
+// scoreUnit runs the shared gate-and-match core on the unit's combined text and
+// emits the same verdict to each member, keyed to that member's subtitle id and
+// segment so every subtitle reconciles to a result. A non-checkable unit carries
+// its skip reason and no matches; a precheck or match failure is reported as a
+// non-fatal Err on each member so one bad unit never ends the live session.
+// Failures during teardown (ctx canceled) are not logged, as the event is
+// dropped on the closing stream.
+func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, members []unitMember) {
+	matches, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, combinedText(members))
+	if err != nil {
+		if ctx.Err() == nil {
+			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("ids", memberIDs(members)), slog.Any("err", err))
+		}
+		for _, m := range members {
+			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, Err: "analysis failed"}) {
+				return
+			}
+		}
+		return
+	}
+	for _, m := range members {
+		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason, Matches: matches}) {
+			return
+		}
+	}
+}
+
+// memberIDs joins the members' ids for one log line attributing a failed unit.
+func memberIDs(members []unitMember) string {
+	ids := make([]string, len(members))
+	for i, m := range members {
+		ids[i] = m.id
+	}
+	return strings.Join(ids, ",")
+}
+
+// sameSpeaker reports whether an incoming segment continues the unit's speaker.
+// An empty (unknown) label on either side is treated as a continuation rather
+// than a new speaker, so a transient unknown label from a very short turn does
+// not split a unit spuriously.
+func sameSpeaker(incoming, current string) bool {
+	return incoming == "" || current == "" || incoming == current
+}
+
+// maxWordsPerSentence is the fallback sentence length: a same-speaker run with no
+// terminal punctuation still counts as multiple sentences past this many words,
+// so an unpunctuated monologue flushes instead of growing without bound.
+const maxWordsPerSentence = 25
+
+// sentenceCount estimates how many sentences a segment holds. It counts runs of
+// terminal punctuation and falls back to a word-count estimate, taking the
+// larger, so both well-punctuated speech and an unpunctuated run are bounded.
+func sentenceCount(text string) int {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return 0
+	}
+	byWords := (len(strings.Fields(trimmed)) + maxWordsPerSentence - 1) / maxWordsPerSentence
+	return max(1, max(sentenceTerminators(trimmed), byWords))
+}
+
+// sentenceTerminators counts groups of sentence-ending punctuation, so a run
+// like "?!" or "..." counts as one boundary rather than several.
+func sentenceTerminators(text string) int {
+	count := 0
+	prevTerm := false
+	for _, r := range text {
+		term := r == '.' || r == '!' || r == '?' || r == '…'
+		if term && !prevTerm {
+			count++
+		}
+		prevTerm = term
+	}
+	return count
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the

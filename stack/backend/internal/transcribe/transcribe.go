@@ -11,10 +11,14 @@ import (
 )
 
 // Segment is a contiguous span of speech with its position in the source.
+// Speaker is the diarized speaker label on the live path (empty on the batch
+// path, which does not diarize); it lets the live aggregator keep one speaker's
+// words out of another's analysis unit.
 type Segment struct {
-	Start time.Duration
-	End   time.Duration
-	Text  string
+	Start   time.Duration
+	End     time.Duration
+	Text    string
+	Speaker string
 }
 
 // Transcript is the complete result of transcribing one source.

@@ -72,13 +72,16 @@ type interimFrame struct {
 }
 
 // subtitleFrame is the wire form of a subtitle event: a statement's text the
-// moment it is transcribed, before any verdict.
+// moment it is transcribed, before any verdict. Speaker carries the diarized
+// speaker label when the live provider supplies one; it is additive and omitted
+// when empty, so a client that does not yet read it is unaffected.
 type subtitleFrame struct {
-	Type  string  `json:"type"`
-	ID    string  `json:"id"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
+	Type    string  `json:"type"`
+	ID      string  `json:"id"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+	Speaker string  `json:"speaker,omitempty"`
 }
 
 // resultFrame is the wire form of a result event: the batch per-segment shape
@@ -201,11 +204,12 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 	}
 	if ev.Kind == service.LiveEventSubtitle {
 		return wsjson.Write(ctx, conn, subtitleFrame{
-			Type:  string(ev.Kind),
-			ID:    ev.ID,
-			Start: ev.Segment.Start.Seconds(),
-			End:   ev.Segment.End.Seconds(),
-			Text:  ev.Segment.Text,
+			Type:    string(ev.Kind),
+			ID:      ev.ID,
+			Start:   ev.Segment.Start.Seconds(),
+			End:     ev.Segment.End.Seconds(),
+			Text:    ev.Segment.Text,
+			Speaker: ev.Segment.Speaker,
 		})
 	}
 	return wsjson.Write(ctx, conn, resultFrame{

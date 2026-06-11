@@ -108,6 +108,72 @@ func LoadTranscription() (Transcription, error) {
 	}, nil
 }
 
+// Live transcription provider identifiers and per-provider default models. The
+// live (realtime) path defaults to AssemblyAI Universal-3 Pro because it
+// diarizes inline; ElevenLabs Scribe v2 Realtime stays available as a
+// non-diarizing fallback.
+const (
+	// LiveProviderAssemblyAI and LiveProviderElevenLabs are the supported live
+	// (realtime) transcription providers, selected at wiring time.
+	LiveProviderAssemblyAI     = "assemblyai"
+	LiveProviderElevenLabs     = "elevenlabs"
+	defaultLiveProvider        = LiveProviderAssemblyAI
+	defaultLiveModelAssemblyAI = "u3-rt-pro"
+	defaultLiveModelElevenLabs = "scribe_v2_realtime"
+)
+
+// LiveTranscription holds the configuration for the live (realtime)
+// speech-to-text provider. It is separate from Transcription, which stays the
+// ElevenLabs batch transcriber, so the live diarizing provider can differ from
+// the batch one. MaxSpeakers, when positive, hints the diarizer at the expected
+// speaker count; zero leaves it provider-default.
+type LiveTranscription struct {
+	Provider    string
+	APIKey      string
+	Model       string
+	MaxSpeakers int
+}
+
+// LoadLiveTranscription reads the live transcription configuration from the
+// environment. LIVE_TRANSCRIPTION_PROVIDER defaults to assemblyai and must be a
+// known provider; LIVE_TRANSCRIPTION_API_KEY is required; LIVE_TRANSCRIPTION_MODEL
+// defaults to the provider's model; LIVE_TRANSCRIPTION_MAX_SPEAKERS is optional
+// and must be non-negative.
+func LoadLiveTranscription() (LiveTranscription, error) {
+	provider := getenv("LIVE_TRANSCRIPTION_PROVIDER", defaultLiveProvider)
+	defaultModel, err := defaultLiveModel(provider)
+	if err != nil {
+		return LiveTranscription{}, err
+	}
+	apiKey, err := requireEnv("LIVE_TRANSCRIPTION_API_KEY")
+	if err != nil {
+		return LiveTranscription{}, err
+	}
+	maxSpeakers, err := intEnv("LIVE_TRANSCRIPTION_MAX_SPEAKERS", 0, 0, math.MaxInt32)
+	if err != nil {
+		return LiveTranscription{}, err
+	}
+	return LiveTranscription{
+		Provider:    provider,
+		APIKey:      apiKey,
+		Model:       getenv("LIVE_TRANSCRIPTION_MODEL", defaultModel),
+		MaxSpeakers: maxSpeakers,
+	}, nil
+}
+
+// defaultLiveModel maps a provider to its default model, rejecting an unknown
+// provider so a typo fails fast rather than dialing a bogus endpoint.
+func defaultLiveModel(provider string) (string, error) {
+	switch provider {
+	case LiveProviderAssemblyAI:
+		return defaultLiveModelAssemblyAI, nil
+	case LiveProviderElevenLabs:
+		return defaultLiveModelElevenLabs, nil
+	default:
+		return "", fmt.Errorf("config: LIVE_TRANSCRIPTION_PROVIDER %q is not a known provider (%s, %s)", provider, LiveProviderAssemblyAI, LiveProviderElevenLabs)
+	}
+}
+
 // Session defaults: 24h keeps the single operator signed in for a working day
 // plus slack without leaving stolen cookies valid for long. 32 bytes is the
 // minimum secret size for an HMAC-SHA256 key with full strength.

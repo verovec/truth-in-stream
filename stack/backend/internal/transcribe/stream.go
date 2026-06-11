@@ -43,7 +43,7 @@ func (s *StreamSegmenter) StreamSegments(ctx context.Context, audio <-chan []byt
 		defer close(out)
 		for ev := range events {
 			tr := domain.LiveTranscript{
-				Segment: domain.Segment{Start: ev.Segment.Start, End: ev.Segment.End, Text: ev.Segment.Text},
+				Segment: domain.Segment{Start: ev.Segment.Start, End: ev.Segment.End, Text: ev.Segment.Text, Speaker: ev.Segment.Speaker},
 				Final:   ev.Final,
 			}
 			select {

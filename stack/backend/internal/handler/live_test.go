@@ -84,6 +84,7 @@ type wireFrame struct {
 	Start      float64               `json:"start"`
 	End        float64               `json:"end"`
 	Text       string                `json:"text"`
+	Speaker    string                `json:"speaker"`
 	Matches    []domain.SegmentMatch `json:"matches"`
 	SkipReason string                `json:"skip_reason"`
 	Error      string                `json:"error"`
@@ -109,7 +110,7 @@ func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
 		Sources:    []domain.Source{},
 		Similarity: 0.9,
 	}}
-	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round"}
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, Matches: claim},
@@ -137,6 +138,9 @@ func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
 	}
 	if subtitle.Start != 1 || subtitle.End != 2 {
 		t.Errorf("subtitle span = [%v,%v], want [1,2]", subtitle.Start, subtitle.End)
+	}
+	if subtitle.Speaker != "A" {
+		t.Errorf("subtitle speaker = %q, want A", subtitle.Speaker)
 	}
 
 	result := readFrame(ctx, t, conn)
