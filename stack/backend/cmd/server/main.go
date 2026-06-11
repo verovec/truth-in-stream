@@ -18,6 +18,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
+	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
 )
@@ -73,11 +74,44 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	storageCfg, err := config.LoadStorage()
+	if err != nil {
+		return err
+	}
+	uploadCfg, err := config.LoadUpload()
+	if err != nil {
+		return err
+	}
+
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+
+	mediaStore, err := storage.New(ctx, storage.Config{
+		Endpoint:     storageCfg.Endpoint,
+		Region:       storageCfg.Region,
+		Bucket:       storageCfg.Bucket,
+		AccessKey:    storageCfg.AccessKey,
+		SecretKey:    storageCfg.SecretKey,
+		UsePathStyle: storageCfg.UsePathStyle,
+		PutTTL:       storageCfg.PutTTL,
+		GetTTL:       storageCfg.GetTTL,
+	})
+	if err != nil {
+		return err
+	}
+
+	videoSvc, err := service.NewVideoService(store, mediaStore, service.VideoConfig{
+		MaxUploadBytes: uploadCfg.MaxBytes,
+	})
+	if err != nil {
+		return err
+	}
+	if err := videoSvc.EnsureSamples(ctx); err != nil {
+		return err
+	}
 
 	health := service.NewHealthChecker(store)
 
@@ -119,7 +153,7 @@ func run(logger *slog.Logger) error {
 		processor.Run(ctx)
 	}()
 
-	apiHandler := handler.NewMux(health, scribe, processor, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, scribe, processor, videoSvc, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

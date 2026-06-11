@@ -218,7 +218,7 @@ func LoadMatch() (Match, error) {
 	}
 	if m.ScoreThreshold, err = thresholdEnv("MATCH_SCORE_THRESHOLD", m.ScoreThreshold); err != nil {
 		return Match{}, err
-  }
+	}
 	if raw := os.Getenv("MATCH_SCORE_THRESHOLD"); raw != "" {
 		threshold, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
@@ -471,6 +471,33 @@ func LoadStorage() (Storage, error) {
 		return Storage{}, err
 	}
 	return s, nil
+}
+
+// defaultUploadMaxBytes caps a declared upload size at 2 GiB: large enough for a
+// long clip, small enough to reject a runaway declaration before any object is
+// stored.
+const defaultUploadMaxBytes int64 = 2 << 30
+
+// Upload holds the video-upload constraints applied by the upload API.
+type Upload struct {
+	MaxBytes int64
+}
+
+// LoadUpload reads the upload configuration from the environment. UPLOAD_MAX_BYTES
+// overrides the 2 GiB default and must be a positive integer.
+func LoadUpload() (Upload, error) {
+	maxBytes := defaultUploadMaxBytes
+	if raw := os.Getenv("UPLOAD_MAX_BYTES"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return Upload{}, fmt.Errorf("config: UPLOAD_MAX_BYTES %q: %w", raw, err)
+		}
+		if v <= 0 {
+			return Upload{}, fmt.Errorf("config: UPLOAD_MAX_BYTES must be positive, got %d", v)
+		}
+		maxBytes = v
+	}
+	return Upload{MaxBytes: maxBytes}, nil
 }
 
 // boolEnv reads a boolean environment variable, applying fallback when unset.

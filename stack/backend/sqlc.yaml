@@ -14,6 +14,12 @@ sql:
         emit_interface: true
         emit_empty_slices: true
         overrides:
+          # The pgx/v5 driver maps a uuid column to pgtype.UUID by default; map
+          # it to google/uuid.UUID instead for an ergonomic, stringable id.
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
           # sqlc has no built-in mapping for pgvector's halfvec; map the column
           # to pgvector-go's HalfVector (implements Scanner/Valuer).
           - column: "claims.embedding"

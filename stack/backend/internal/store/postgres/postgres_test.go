@@ -77,7 +77,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	// wiki_chunks_staging and wiki_chunks_old are runtime tables the bulk-embedding
 	// pipeline creates outside the migration schema; drop them too so a test that
 	// leaves staging behind cannot leak rows into the next test.
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, segment_results, processed_videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 

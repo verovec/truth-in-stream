@@ -5,6 +5,7 @@
 package db
 
 import (
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
 )
@@ -30,6 +31,18 @@ type SegmentResult struct {
 	Content    string
 	Matches    []byte
 	SkipReason string
+}
+
+type Video struct {
+	ID          uuid.UUID
+	Title       string
+	ObjectKey   string
+	ContentType string
+	SizeBytes   int64
+	Status      string
+	Kind        string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type WikiChunk struct {
