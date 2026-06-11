@@ -7,7 +7,7 @@ lives under `stack/`.
 - Frontend: Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) - `stack/frontend`
 - Backend: Go (stdlib net/http service) - `stack/backend`
 - Infra: Terraform on AWS, region `eu-west-3`, directory-per-env - `stack/terraform`
-- Data: Postgres + pgvector (vector store, `DATABASE_URL`) + embeddings via Voyage AI `voyage-4`
+- Data: Postgres + pgvector (vector store, `DATABASE_URL`) + embeddings via Voyage AI `voyage-4-large`
   API (`EMBEDDING_API_KEY`), index pinned to 1024 dims (`halfvec(1024)`, HNSW cosine). Same model
   for ingest (`input_type=document`) and query (`input_type=query`)
 - Speech-to-text: ElevenLabs Scribe v2 API (`TRANSCRIPTION_API_KEY`). Batch REST for v1,

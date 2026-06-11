@@ -16,8 +16,8 @@ import (
 // identical vector - so a query for a stored document's exact text lands on the
 // same vector and similarity search returns it - while unrelated texts are
 // near-orthogonal. Run refresh-embeddings with a real EMBEDDING_API_KEY to
-// replace the committed cache with genuine voyage-4 vectors before relying on
-// real semantic similarity.
+// replace the committed cache with genuine voyage-4-large vectors before relying
+// on real semantic similarity.
 type Deterministic struct {
 	dim int
 }

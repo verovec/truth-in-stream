@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,7 +40,7 @@ import (
 const (
 	// defaultEmbeddingModel mirrors config.defaultEmbeddingModel; the cache key
 	// embeds the model, so seed and refresh must agree on it offline.
-	defaultEmbeddingModel = "voyage-4"
+	defaultEmbeddingModel = "voyage-4-large"
 	defaultSeedDir        = "seed"
 	defaultCachePath      = "seed/embeddings.cache.jsonl"
 	// defaultMediaCacheDir holds fetched sample media so a later reseed reuses
@@ -76,7 +77,7 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	refresh := flag.Bool("refresh", false, "regenerate the embedding cache from fixtures, then exit")
-	offline := flag.Bool("offline", false, "never call Voyage: with -refresh, fill the cache with deterministic placeholder vectors; when seeding, treat a cache miss as a hard error")
+	offline := flag.Bool("offline", false, "with -refresh, fill the cache with deterministic placeholder vectors instead of calling Voyage (no API key); has no effect when seeding, which is always offline")
 	doClaims := flag.Bool("claims", false, "seed curated claims")
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
 	doDemo := flag.Bool("demo", false, "seed the demo-video results")
@@ -97,11 +98,14 @@ func run(logger *slog.Logger) error {
 	if *refresh {
 		return refreshCache(ctx, logger, *seedDir, *cachePath, *offline)
 	}
-	return seedAll(ctx, logger, sel, *seedDir, *cachePath, *mediaCacheDir, *offline)
+	if *offline {
+		logger.WarnContext(ctx, "-offline has no effect without -refresh: seeding is always offline")
+	}
+	return seedAll(ctx, logger, sel, *seedDir, *cachePath, *mediaCacheDir)
 }
 
 // embeddingModel returns the embedding model name used for cache keys, honoring
-// EMBEDDING_MODEL and defaulting to voyage-4.
+// EMBEDDING_MODEL and defaulting to voyage-4-large.
 func embeddingModel() string {
 	if m := os.Getenv("EMBEDDING_MODEL"); m != "" {
 		return m
@@ -186,9 +190,9 @@ func documentTexts(seedDir string) ([]string, error) {
 	return texts, nil
 }
 
-// seedAll opens the store and seeds the selected datasets, persisting any new
-// embeddings filled during the run back to the cache.
-func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, cachePath, mediaCacheDir string, offline bool) error {
+// seedAll opens the store and seeds the selected datasets from the committed
+// embedding cache. Seeding is strictly offline, so the cache is read-only here.
+func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, cachePath, mediaCacheDir string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -201,32 +205,25 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 	defer store.Close()
 
 	// Only the text datasets need the embedding cache; seeding videos alone must
-	// not require the committed cache to be present, so the cache lifetime stays
-	// local to this branch (load, fill during seeding, persist if dirty).
+	// not require the committed cache to be present, so the cache stays local to
+	// this branch. The model is resolved once so the embedder and any cache-miss
+	// hint name the same value.
 	if sel.claims || sel.wiki {
 		cache, err := embed.LoadCache(cachePath)
 		if err != nil {
 			return err
 		}
-		embedder, err := seedEmbedder(cache, offline)
-		if err != nil {
-			return err
-		}
+		model := embeddingModel()
+		embedder := seedEmbedder(cache, model)
 		if sel.claims {
 			if err := seedClaims(ctx, logger, store, embedder, seedDir); err != nil {
-				return err
+				return cacheMissHint(err, model)
 			}
 		}
 		if sel.wiki {
 			if err := seedWiki(ctx, logger, store, embedder, seedDir); err != nil {
-				return err
+				return cacheMissHint(err, model)
 			}
-		}
-		if cache.Dirty() {
-			if err := cache.Save(cachePath); err != nil {
-				return err
-			}
-			logger.InfoContext(ctx, "embedding cache updated with new entries", slog.String("cache", cachePath))
 		}
 	}
 	if sel.demo {
@@ -242,18 +239,29 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 	return nil
 }
 
-// seedEmbedder wraps the cache with a filler for cache misses: a real Voyage
-// client when EMBEDDING_API_KEY is set and -offline is not, otherwise nil so a
-// miss fails fast with guidance to run -refresh.
-func seedEmbedder(cache *embed.Cache, offline bool) (*embed.Cached, error) {
-	if offline || os.Getenv("EMBEDDING_API_KEY") == "" {
-		return embed.NewCached(cache, embeddingModel(), nil), nil
+// seedEmbedder wraps the committed cache as a strictly offline embedder (nil
+// filler) keyed under model. Normal seeding never calls Voyage, so a stray or
+// invalid EMBEDDING_API_KEY can never turn `make seed` into a live request that
+// fails with a provider error. A cache miss is a hard error, surfaced with
+// guidance by cacheMissHint; rebuilding the cache is the explicit job of
+// `seed -refresh`.
+func seedEmbedder(cache *embed.Cache, model string) *embed.Cached {
+	return embed.NewCached(cache, model, nil)
+}
+
+// cacheMissHint augments a committed-cache miss with actionable guidance. A miss
+// during offline seeding means the cache holds no vector for a fixture under
+// model: either a fixture's text changed, or EMBEDDING_MODEL no longer matches
+// the model the committed cache was built under. Other errors pass through
+// unchanged.
+func cacheMissHint(err error, model string) error {
+	if errors.Is(err, embed.ErrCacheMiss) {
+		return fmt.Errorf("%w\nthe committed embedding cache does not cover model %q: "+
+			"a fixture changed or EMBEDDING_MODEL differs from the model the cache was built under - "+
+			"run `make refresh-embeddings` (needs a valid EMBEDDING_API_KEY) to rebuild it, "+
+			"or unset EMBEDDING_MODEL to use the default %q", err, model, defaultEmbeddingModel)
 	}
-	emb, err := config.LoadEmbedding()
-	if err != nil {
-		return nil, err
-	}
-	return embed.NewCached(cache, emb.Model, embed.New(embed.Config{APIKey: emb.APIKey, Model: emb.Model, Dim: emb.Dim})), nil
+	return err
 }
 
 func seedClaims(ctx context.Context, logger *slog.Logger, store *postgres.Store, embedder *embed.Cached, seedDir string) error {
