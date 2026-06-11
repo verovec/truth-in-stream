@@ -140,6 +140,13 @@ func TestBlockerHeuristic(t *testing.T) {
 			want:       nil,
 			wantNote:   "ref boom",
 		},
+		{
+			name:       "nil commit source degrades to note",
+			inProgress: []CardMove{{ID: "VER-9", Title: "x"}},
+			commitsNil: true,
+			want:       nil,
+			wantNote:   "git source unavailable",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
