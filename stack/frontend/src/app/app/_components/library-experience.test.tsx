@@ -249,6 +249,117 @@ describe("LibraryExperience", () => {
     );
   });
 
+  test("pastes a YouTube link, shows it pending, then flips it to ready by polling", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-yt",
+        playableWire("vid-yt", "Town Hall", "youtube", "https://storage/play/vid-yt"),
+      ),
+    ]);
+    const submitYoutube = vi.fn(
+      async (): Promise<LibraryVideo> =>
+        videoRecord({
+          id: "vid-yt",
+          title: "Town Hall",
+          status: "pending",
+          kind: "youtube",
+        }),
+    );
+    // Polling observes the background download finishing: the list now reports
+    // the row as ready.
+    const pollVideos = vi.fn(async () => [
+      videoRecord({
+        id: "vid-yt",
+        title: "Town Hall",
+        status: "ready",
+        kind: "youtube",
+      }),
+    ]);
+
+    render(
+      <LibraryExperience
+        loadVideos={async () => []}
+        submitYoutube={submitYoutube}
+        pollVideos={pollVideos}
+        pollIntervalMs={10}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+    });
+
+    await userEvent.type(
+      screen.getByLabelText(/youtube url/i),
+      "https://youtu.be/townhall",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+    // The pending entry appears immediately, disabled until it is ready.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /town hall/i })).toBeDisabled();
+    });
+
+    // Polling flips it to ready on its own; the tile becomes selectable.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /town hall/i })).toBeEnabled();
+    });
+  });
+
+  test("resubmitting an already-ingested link selects it without adding a duplicate tile", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-1",
+        playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
+      ),
+      getVideoRoute(
+        "vid-yt",
+        playableWire("vid-yt", "Town Hall", "youtube", "https://storage/play/vid-yt"),
+      ),
+      ...factCheckRoutes,
+    ]);
+    const existing = videoRecord({
+      id: "vid-yt",
+      title: "Town Hall",
+      status: "ready",
+      kind: "youtube",
+    });
+    // The backend deduplicates: resubmitting the same link returns the existing
+    // record rather than a new one.
+    const submitYoutube = vi.fn(async (): Promise<LibraryVideo> => existing);
+
+    render(
+      <LibraryExperience
+        loadVideos={async () => [videoRecord(), existing]}
+        submitYoutube={submitYoutube}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("media")).toHaveAttribute(
+        "src",
+        "https://storage/play/vid-1",
+      );
+    });
+
+    await userEvent.type(
+      screen.getByLabelText(/youtube url/i),
+      "https://youtu.be/townhall",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+    // Selection moves to the existing video; no second tile is created.
+    await waitFor(() => {
+      expect(screen.getByTestId("media")).toHaveAttribute(
+        "src",
+        "https://storage/play/vid-yt",
+      );
+    });
+    expect(
+      screen.getAllByRole("button", { name: /town hall/i }),
+    ).toHaveLength(1);
+  });
+
   test("shows an error with retry when the library cannot load", async () => {
     const loadVideos = vi
       .fn<() => Promise<LibraryVideo[]>>()

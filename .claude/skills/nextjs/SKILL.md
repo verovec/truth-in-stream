@@ -112,3 +112,11 @@ Next 16 removed implicit caching: every `fetch` is dynamic by default. Standardi
   end without Playwright (none configured): the shared form, the modal shell (focus trap,
   Escape, backdrop), the landing page, and the proxy gate are covered by Vitest; the route
   interception itself relies on the documented pattern plus a green `next build`.
+- YouTube ingest affordance (VER-37): client `'use client'` form + `useEffect`/`AbortController`
+  polling, the current App Router pattern for server-driven, no-client-step status transitions
+  (verified 2026-06 against next 16.2.7 / react 19.2.7 / vitest 4.1.8 and Context7
+  `/vercel/next.js`; no newer idiom exists for client-side polling). The form's `<form>` carries
+  `noValidate` so the Go backend, not native `type=url` constraint validation, is the authority on
+  a valid link (native validation would also reject scheme-less links the backend accepts). The
+  ready-poll effect keys on a `hasPendingYoutube` boolean so it starts only while a row is
+  downloading and tears down its interval the moment the last pending row resolves.

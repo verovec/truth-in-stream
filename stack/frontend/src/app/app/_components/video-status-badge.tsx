@@ -26,8 +26,14 @@ export function VideoStatusBadge({ status }: { status: VideoStatus }) {
   return <span className={`${badgeBase} ${className}`}>{label}</span>;
 }
 
+const KIND_LABELS: Record<VideoKind, string> = {
+  sample: "Sample",
+  upload: "Upload",
+  youtube: "YouTube",
+};
+
 export function VideoKindBadge({ kind }: { kind: VideoKind }) {
-  const label = kind === "sample" ? "Sample" : "Upload";
+  const label = KIND_LABELS[kind];
   return (
     <span
       className={`${badgeBase} bg-white/85 text-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-200`}
