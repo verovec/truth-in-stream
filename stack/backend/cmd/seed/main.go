@@ -246,17 +246,18 @@ func seedEmbedder(cache *embed.Cache, model string) *embed.Cached {
 	return embed.NewCached(cache, model, nil)
 }
 
-// cacheMissHint augments a committed-cache miss with actionable guidance. A miss
-// during offline seeding means the cache holds no vector for a fixture under
-// model: either a fixture's text changed, or EMBEDDING_MODEL no longer matches
-// the model the committed cache was built under. Other errors pass through
-// unchanged.
+// cacheMissHint augments a committed-cache miss with actionable guidance. The
+// wrapped embed error already names the missing text; this is the single owner
+// of the seed-workflow remediation, so the guidance is not duplicated. A miss
+// during offline seeding means either a fixture's text changed, or
+// EMBEDDING_MODEL no longer matches the model the committed cache was built
+// under. Other errors pass through unchanged.
 func cacheMissHint(err error, model string) error {
 	if errors.Is(err, embed.ErrCacheMiss) {
-		return fmt.Errorf("%w\nthe committed embedding cache does not cover model %q: "+
-			"a fixture changed or EMBEDDING_MODEL differs from the model the cache was built under - "+
-			"run `make refresh-embeddings` (needs a valid EMBEDDING_API_KEY) to rebuild it, "+
-			"or unset EMBEDDING_MODEL to use the default %q", err, model, config.DefaultEmbeddingModel)
+		return fmt.Errorf("%w\nno committed embedding for that fixture under model %q: "+
+			"a fixture's text changed, or EMBEDDING_MODEL no longer matches the model the committed "+
+			"cache was built under (its default is %q) - run `make refresh-embeddings` (needs a valid "+
+			"EMBEDDING_API_KEY) to rebuild the cache", err, model, config.DefaultEmbeddingModel)
 	}
 	return err
 }

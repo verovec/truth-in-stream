@@ -88,7 +88,7 @@ Write the allocation-free version when it costs nothing in clarity; measure befo
 
 ## Data store (Postgres + pgvector, via sqlc)
 
-Schema: `documents(id, content, metadata jsonb, embedding halfvec(1024))`, HNSW `halfvec_cosine_ops` (m=16, ef_construction=200), query with `<=>`. voyage-4 vectors are not pre-normalized - the cosine opclass handles it, no manual normalization. Versions (verified 2026-06): pgx/v5 v5.10.0, pgvector-go v0.4.0 (+ separate `.../pgvector-go/pgx` module), pgvector ext 0.8.0 on RDS eu-west-3, sqlc 1.31.1.
+Schema: `documents(id, content, metadata jsonb, embedding halfvec(1024))`, HNSW `halfvec_cosine_ops` (m=16, ef_construction=200), query with `<=>`. voyage-4-large vectors are not pre-normalized - the cosine opclass handles it, no manual normalization. Versions (verified 2026-06): pgx/v5 v5.10.0, pgvector-go v0.4.0 (+ separate `.../pgvector-go/pgx` module), pgvector ext 0.8.0 on RDS eu-west-3, sqlc 1.31.1.
 
 All SQL goes through sqlc - hand-written query strings and ORMs are both banned. Store wraps generated `db.Queries` behind `domain.VectorStore`.
 
