@@ -63,7 +63,7 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	refresh := flag.Bool("refresh", false, "regenerate the embedding cache from fixtures, then exit")
-	offline := flag.Bool("offline", false, "use deterministic placeholder embeddings instead of calling Voyage")
+	offline := flag.Bool("offline", false, "never call Voyage: with -refresh, fill the cache with deterministic placeholder vectors; when seeding, treat a cache miss as a hard error")
 	doClaims := flag.Bool("claims", false, "seed curated claims")
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
 	doDemo := flag.Bool("demo", false, "seed the demo-video results")
