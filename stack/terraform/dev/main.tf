@@ -70,6 +70,17 @@ module "media_storage" {
   cors_allowed_origins = var.media_cors_allowed_origins
 }
 
+# Durable home for local pg_dump snapshots, so the embedded corpus survives a
+# reset or a new machine without re-embedding. Backups are taken and restored
+# with operator credentials via `make backup` / `make restore`; no automated
+# job consumes the bucket yet, so no dedicated IAM principal is provisioned.
+module "db_backup_storage" {
+  source = "../modules/s3-backup"
+
+  project     = local.project
+  environment = var.environment
+}
+
 module "iam" {
   source = "../modules/iam"
 

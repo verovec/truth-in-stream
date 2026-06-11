@@ -21,6 +21,9 @@ node_modules/
 .venv/
 __pycache__/
 
+# Database backups (local pg_dump archives; the durable copy lives in S3)
+/backups/
+
 # Env files (secrets)
 .env
 .env.*
