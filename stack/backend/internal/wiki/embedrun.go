@@ -21,6 +21,23 @@ const charsPerToken = 5
 // (docs.voyageai.com, verified 2026-06: $0.12/M, first 200M tokens free).
 const pricePerMTokenUSD = 0.12
 
+// BulkPlan is what a bulk run should do for the dump version it resolved,
+// decided by the store from the staging table and the live checkpoint.
+type BulkPlan int
+
+const (
+	// PlanBuild rebuilds staging from the dump, then embeds and swaps. It is the
+	// default: a fresh corpus, an interrupted build, or a staging left from a
+	// different dump all fall here.
+	PlanBuild BulkPlan = iota
+	// PlanResumeEmbed keeps a staging already materialized for this dump and
+	// embeds only its remaining chunks before swapping.
+	PlanResumeEmbed
+	// PlanAlreadyCurrent means the live corpus already serves this dump fully
+	// embedded; the run is a no-op.
+	PlanAlreadyCurrent
+)
+
 // Estimate is the dry-run projection of a bulk-embedding run.
 type Estimate struct {
 	Pages   int64
@@ -55,55 +72,39 @@ type Embedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// EmbedSource is the read side of the store the bulk-embedding run needs: where
-// staging has progressed to, the chunks still to embed, and the dry-run counts.
-// Dry-run depends on this alone, so it never touches the write side.
+// EmbedSource is the read side the dry-run estimate needs: how many staging
+// chunks remain to embed. The estimate depends on this alone, so it never
+// touches the write side.
 type EmbedSource interface {
-	// EmbedWatermark returns the greatest (page_id, chunk_index) already loaded
-	// into staging, or the zero cursor when staging is empty or absent.
-	EmbedWatermark(ctx context.Context) (domain.WikiCursor, error)
-	// UnembeddedChunks returns up to limit live chunks ordered after cur.
-	UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
-	// EstimateRemaining counts the live pages, chunks, and characters after cur.
-	EstimateRemaining(ctx context.Context, cur domain.WikiCursor) (domain.WikiRemaining, error)
+	// StagingRemaining counts the staging chunks, pages, and characters still to
+	// embed.
+	StagingRemaining(ctx context.Context) (domain.WikiRemaining, error)
 }
 
-// EmbedSink is the write side: build the staging table, load embedded chunks
-// into it, then index and swap it into place.
-type EmbedSink interface {
-	// DiscardStagingIfStale drops a surviving staging table built for a different
-	// dump than dumpVersion (or one carrying no stamp), reporting whether it did.
-	// A matching staging table is kept so an interrupted run still resumes.
-	DiscardStagingIfStale(ctx context.Context, dumpVersion string) (bool, error)
-	// CreateStaging creates the unindexed staging table if it is absent,
-	// preserving an existing one so an interrupted run resumes into it, and
-	// stamps it with dumpVersion.
-	CreateStaging(ctx context.Context, dumpVersion string) error
-	// CopyStagingChunks bulk-loads embedded chunks into staging.
-	CopyStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error
-	// FinalizeStaging indexes the loaded staging table and swaps it atomically
-	// into the live wiki_chunks, checkpointing the corpus. The build settings
-	// tune the HNSW index build session.
-	FinalizeStaging(ctx context.Context, corpus, maintenanceWorkMem string, maxParallelWorkers int) error
-}
-
-// EmbedStore is the full store surface a real bulk-embedding run drives.
-type EmbedStore interface {
+// BulkStore is the full store surface a bulk run drives: the embed loop reads
+// the pending staging chunks and writes their embeddings in place, then
+// finalize indexes the staging table and swaps it atomically into wiki_chunks,
+// checkpointing the corpus at the dump version.
+type BulkStore interface {
 	EmbedSource
-	EmbedSink
+	// UnembeddedStaging returns up to limit staging chunks lacking an embedding,
+	// in keyset order. The next run reads whatever an interrupted one left.
+	UnembeddedStaging(ctx context.Context, limit int) ([]domain.WikiChunk, error)
+	// UpdateStagingEmbeddings writes embeddings onto existing staging rows.
+	UpdateStagingEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error
+	// FinalizeStaging indexes staging and swaps it into wiki_chunks, checkpointing
+	// the corpus at version with lastChangeTS. The build settings tune the HNSW
+	// index build session.
+	FinalizeStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error
 }
 
-// EstimateBulkEmbed projects the cost of embedding the chunks still pending,
-// without calling the embedding API. On a fresh corpus this is the whole
-// corpus; on a resumed run it is only what staging has not yet absorbed.
+// EstimateBulkEmbed projects the cost of embedding the staging chunks still
+// pending, without calling the embedding API. On a freshly built staging this is
+// the whole corpus; on a resumed one it is only what is left to embed.
 func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
-	cur, err := src.EmbedWatermark(ctx)
+	rem, err := src.StagingRemaining(ctx)
 	if err != nil {
-		return Estimate{}, fmt.Errorf("wiki: read embed watermark: %w", err)
-	}
-	rem, err := src.EstimateRemaining(ctx, cur)
-	if err != nil {
-		return Estimate{}, fmt.Errorf("wiki: estimate remaining chunks: %w", err)
+		return Estimate{}, fmt.Errorf("wiki: staging remaining: %w", err)
 	}
 	tokens := rem.Chars / charsPerToken
 	return Estimate{
@@ -114,14 +115,14 @@ func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
 	}, nil
 }
 
-// RunBulkEmbed embeds every pending chunk and swaps the result into place. It
-// loads embedded chunks into a staging table in keyset order, so a crash
-// leaves staging a clean prefix that the next run resumes past; only once every
-// pending chunk is loaded does it index and swap staging atomically. An empty
-// corpus is never swapped. It logs the pending total at the start, one line per
-// embedded HTTP batch, and the finalize step, so a long or stalled run is
+// RunBulkEmbed embeds every staging chunk still lacking an embedding and swaps
+// the result into place. It embeds in keyset order and writes each batch back
+// onto staging before reading the next, so a crash leaves the embedded rows
+// committed and the next run resumes past them; only once nothing remains does
+// it index and swap atomically. It logs the pending total at the start, one line
+// per embedded HTTP batch, and the finalize step, so a long or stalled run is
 // observable; a nil logger falls back to slog.Default.
-func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, embedder Embedder, cfg Config) (EmbedStats, error) {
+func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store BulkStore, embedder Embedder, cfg Config) (EmbedStats, error) {
 	if cfg.BatchSize < 1 || cfg.Concurrency < 1 {
 		return EmbedStats{}, fmt.Errorf("wiki: bulk embed needs positive batch size and concurrency, got %d and %d", cfg.BatchSize, cfg.Concurrency)
 	}
@@ -129,82 +130,41 @@ func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, em
 		logger = slog.Default()
 	}
 
-	// Drop a staging table left by an earlier run against a different dump before
-	// reading the watermark: the freshly ingested corpus can hold chunks below
-	// that staging's watermark which the keyset resume never revisits, so resuming
-	// into it would strand them and the swap's staging==live guard would refuse
-	// the corpus on every run. Discarding re-embeds from scratch against the
-	// current dump; a staging table from the same dump is kept and resumed.
-	discarded, err := store.DiscardStagingIfStale(ctx, cfg.DumpVersion)
+	rem, err := store.StagingRemaining(ctx)
 	if err != nil {
-		return EmbedStats{}, fmt.Errorf("wiki: discard stale staging: %w", err)
-	}
-	if discarded {
-		logger.WarnContext(ctx, "discarded staging built for a different dump; re-embedding the corpus from scratch",
-			slog.String("corpus", cfg.Corpus),
-			slog.String("dump_version", cfg.DumpVersion))
-	}
-
-	start, err := store.EmbedWatermark(ctx)
-	if err != nil {
-		return EmbedStats{}, fmt.Errorf("wiki: read embed watermark: %w", err)
-	}
-	rem, err := store.EstimateRemaining(ctx, start)
-	if err != nil {
-		return EmbedStats{}, fmt.Errorf("wiki: estimate pending chunks: %w", err)
+		return EmbedStats{}, fmt.Errorf("wiki: staging remaining: %w", err)
 	}
 	logger.InfoContext(ctx, "starting bulk embed",
 		slog.String("corpus", cfg.Corpus),
-		slog.Int64("pending_chunks", rem.Chunks),
-		slog.Int64("resume_after_page", start.PageID))
+		slog.Int64("pending_chunks", rem.Chunks))
 
 	var (
 		stats      EmbedStats
 		embedded64 atomic.Int64
 	)
-	cur := start
-	created := false
 	superBatch := cfg.BatchSize * cfg.Concurrency
 	for {
-		chunks, err := store.UnembeddedChunks(ctx, cur, superBatch)
+		chunks, err := store.UnembeddedStaging(ctx, superBatch)
 		if err != nil {
-			return EmbedStats{}, fmt.Errorf("wiki: read pending chunks: %w", err)
+			return EmbedStats{}, fmt.Errorf("wiki: read pending staging chunks: %w", err)
 		}
 		if len(chunks) == 0 {
 			break
-		}
-		// Create staging lazily, only once there is work, so a re-run on an
-		// already-embedded corpus leaves no empty staging table behind.
-		if !created {
-			if err := store.CreateStaging(ctx, cfg.DumpVersion); err != nil {
-				return EmbedStats{}, fmt.Errorf("wiki: create staging table: %w", err)
-			}
-			created = true
 		}
 		embedded, err := embedChunks(ctx, logger, embedder, chunks, cfg, &embedded64, rem.Chunks)
 		if err != nil {
 			return EmbedStats{}, err
 		}
-		if err := store.CopyStagingChunks(ctx, embedded); err != nil {
-			return EmbedStats{}, fmt.Errorf("wiki: load embedded chunks: %w", err)
+		if err := store.UpdateStagingEmbeddings(ctx, embedded); err != nil {
+			return EmbedStats{}, fmt.Errorf("wiki: write staging embeddings: %w", err)
 		}
 		stats.Embedded += len(embedded)
-		last := chunks[len(chunks)-1]
-		cur = domain.WikiCursor{PageID: last.PageID, ChunkIndex: int32(last.ChunkIndex)}
 	}
 
-	// Finalize only when there is a staging table to swap: one filled this run,
-	// or one a prior interrupted run left behind (start past the zero cursor).
-	// Neither holds for an empty or already-embedded corpus, so it is a no-op.
-	if !created && start == (domain.WikiCursor{}) {
-		logger.InfoContext(ctx, "nothing to embed; corpus already current",
-			slog.String("corpus", cfg.Corpus))
-		return stats, nil
-	}
 	logger.InfoContext(ctx, "all pending chunks embedded; building index and swapping staging into wiki_chunks",
 		slog.String("corpus", cfg.Corpus),
 		slog.Int("embedded_this_run", stats.Embedded))
-	if err := store.FinalizeStaging(ctx, cfg.Corpus, cfg.MaintenanceWorkMem, cfg.MaxParallelWorkers); err != nil {
+	if err := store.FinalizeStaging(ctx, cfg.Corpus, cfg.DumpVersion, parseDumpTime(cfg.DumpVersion), cfg.MaintenanceWorkMem, cfg.MaxParallelWorkers); err != nil {
 		return EmbedStats{}, fmt.Errorf("wiki: finalize staging: %w", err)
 	}
 	logger.InfoContext(ctx, "bulk embed finalized; wiki_chunks now serves the embedded corpus",

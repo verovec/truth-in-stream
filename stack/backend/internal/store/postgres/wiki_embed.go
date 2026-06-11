@@ -9,18 +9,23 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/store/db"
+	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
 
-// The bulk-embedding pipeline builds the embedded corpus in a staging table and
-// swaps it into wiki_chunks atomically. The staging table, its index, and the
-// rename swap are runtime DDL that sqlc cannot model (sqlc compiles DML against
-// the migration schema, which does not include this transient table), so they
-// run as the raw statements below; all DML still goes through generated
+// The bulk-embedding pipeline builds the next corpus in a staging table and
+// swaps it into wiki_chunks atomically: ingest fills staging from the dump,
+// unchanged embeddings carry forward from live, the remaining chunks embed in
+// place, and a rename swaps staging over live. The staging table, its index,
+// and the rename are runtime DDL that sqlc cannot model (it compiles DML
+// against the migration schema, which omits this transient table), so they run
+// as the raw statements below; the live-corpus DML still goes through generated
 // queries. The names are constants, never interpolated user input.
 const (
 	wikiStagingTable           = "wiki_chunks_staging"
@@ -35,34 +40,207 @@ const (
 	hnswEfConstruction     int = 200
 )
 
-// EmbedWatermark returns the greatest (page_id, chunk_index) already loaded into
-// the staging table - the resume point for the bulk-embedding run - or the zero
-// cursor when staging is absent or empty.
-func (s *Store) EmbedWatermark(ctx context.Context) (domain.WikiCursor, error) {
-	exists, err := s.stagingExists(ctx)
-	if err != nil {
-		return domain.WikiCursor{}, err
-	}
-	if !exists {
-		return domain.WikiCursor{}, nil
-	}
+// Staging is stamped with its lifecycle phase and the dump version it is being
+// built for, recorded as the table comment (see stampStaging). The phase lets a
+// later run tell a fully-materialized staging it can resume embedding into
+// (ready) from one interrupted mid-build (building), which it must rebuild.
+const (
+	stampBuilding = "building"
+	stampReady    = "ready"
+)
 
-	var cur domain.WikiCursor
-	err = s.pool.QueryRow(
+func stagingStamp(phase, version string) string { return phase + ":" + version }
+
+// readStaging reports whether the staging table exists and its (phase, version)
+// stamp. An absent or unstamped table reads as building with an empty version,
+// which both classify as "rebuild" against any real dump. to_regclass yields
+// NULL for an absent table, so obj_description never throws if it vanishes
+// mid-check.
+func (s *Store) readStaging(ctx context.Context) (exists bool, phase, version string, err error) {
+	var raw *string
+	if err = s.pool.QueryRow(
 		ctx,
-		"SELECT page_id, chunk_index FROM "+wikiStagingTable+" ORDER BY page_id DESC, chunk_index DESC LIMIT 1",
-	).Scan(&cur.PageID, &cur.ChunkIndex)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.WikiCursor{}, nil
+		"SELECT to_regclass($1) IS NOT NULL, obj_description(to_regclass($1), 'pg_class')",
+		wikiStagingTable,
+	).Scan(&exists, &raw); err != nil {
+		return false, "", "", fmt.Errorf("postgres: read staging stamp: %w", err)
 	}
-	if err != nil {
-		return domain.WikiCursor{}, fmt.Errorf("postgres: read staging watermark: %w", err)
+	if !exists || raw == nil {
+		return exists, stampBuilding, "", nil
 	}
-	return cur, nil
+	if p, v, ok := strings.Cut(*raw, ":"); ok {
+		return true, p, v, nil
+	}
+	return true, stampBuilding, "", nil
 }
 
-// UnembeddedChunks returns up to limit live chunks ordered after cur, the next
-// slice of work for the bulk-embedding run.
+// StagingPlan decides what a bulk run should do for the dump version about to be
+// embedded: resume a staging already materialized for it, skip a corpus already
+// live and embedded at that version, or build from scratch (the default, which
+// also covers an interrupted build or a staging left from a different dump).
+func (s *Store) StagingPlan(ctx context.Context, version string) (wiki.BulkPlan, error) {
+	exists, phase, stampVersion, err := s.readStaging(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if exists {
+		if phase == stampReady && stampVersion == version {
+			return wiki.PlanResumeEmbed, nil
+		}
+		return wiki.PlanBuild, nil
+	}
+	current, err := s.liveCurrentAt(ctx, version)
+	if err != nil {
+		return 0, err
+	}
+	if current {
+		return wiki.PlanAlreadyCurrent, nil
+	}
+	return wiki.PlanBuild, nil
+}
+
+// liveCurrentAt reports whether the live corpus is checkpointed at version and
+// holds no unembedded chunks - the state a completed swap leaves. The checkpoint
+// advances only inside the swap transaction, so a stored version equal to the
+// dump's means that dump is already live and fully embedded.
+func (s *Store) liveCurrentAt(ctx context.Context, version string) (bool, error) {
+	var (
+		stored *string
+		nulls  int64
+	)
+	if err := s.pool.QueryRow(
+		ctx, `
+		SELECT (SELECT dump_version FROM wiki_sync_state LIMIT 1),
+		       (SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL)`,
+	).Scan(&stored, &nulls); err != nil {
+		return false, fmt.Errorf("postgres: read live currency: %w", err)
+	}
+	return stored != nil && *stored == version && nulls == 0, nil
+}
+
+// ResetStaging drops any surviving staging table and creates a fresh unindexed
+// one stamped building:version. LIKE copies the columns, NOT NULLs, and
+// defaults but no primary key or HNSW index, keeping the bulk load fast; the
+// index and key are built once at finalize.
+func (s *Store) ResetStaging(ctx context.Context, version string) error {
+	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
+		return fmt.Errorf("postgres: drop staging: %w", err)
+	}
+	stmt := fmt.Sprintf("CREATE TABLE %s (LIKE wiki_chunks INCLUDING DEFAULTS)", wikiStagingTable)
+	if _, err := s.pool.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("postgres: create staging: %w", err)
+	}
+	return s.stampStaging(ctx, stagingStamp(stampBuilding, version))
+}
+
+// MarkStagingReady re-stamps a fully ingested, embedding-carried staging table
+// as a resume target for version. A run that crashes before this leaves a
+// building stamp the next run rebuilds.
+func (s *Store) MarkStagingReady(ctx context.Context, version string) error {
+	return s.stampStaging(ctx, stagingStamp(stampReady, version))
+}
+
+// UpsertStagingChunks inserts chunks (NULL embedding) into the staging table in
+// one batch. ResetStaging leaves staging empty and multistream page ids are
+// unique, so a plain INSERT never conflicts; the primary key is added at
+// finalize.
+func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf(
+		"INSERT INTO %s (page_id, chunk_index, title, url, revision_id, corpus, content) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+		wikiStagingTable,
+	)
+	batch := &pgx.Batch{}
+	for _, c := range chunks {
+		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
+			return fmt.Errorf("postgres: stage chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+		}
+		batch.Queue(stmt, c.PageID, int32(c.ChunkIndex), c.Title, c.URL, c.RevisionID, c.Corpus, c.Content)
+	}
+	br := s.pool.SendBatch(ctx, batch)
+	defer func() { _ = br.Close() }()
+	for range chunks {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("postgres: upsert staging chunks: %w", err)
+		}
+	}
+	return nil
+}
+
+// CarryForwardEmbeddings copies each live chunk's embedding onto the matching
+// staging row whose content is byte-identical, so unchanged chunks are not
+// re-embedded; it returns the number of rows carried. Changed and new chunks
+// keep their NULL embedding and are embedded by the run, and chunks that left
+// the corpus never entered staging - so orphans cannot survive the rebuild.
+func (s *Store) CarryForwardEmbeddings(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s s SET embedding = l.embedding
+		FROM wiki_chunks l
+		WHERE s.page_id = l.page_id
+		  AND s.chunk_index = l.chunk_index
+		  AND s.content = l.content
+		  AND l.embedding IS NOT NULL`, wikiStagingTable))
+	if err != nil {
+		return 0, fmt.Errorf("postgres: carry forward embeddings: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// StagingRemaining counts the staging chunks still to embed and their content
+// characters, feeding the run's pending total and the dry-run cost estimate.
+func (s *Store) StagingRemaining(ctx context.Context) (domain.WikiRemaining, error) {
+	var r domain.WikiRemaining
+	if err := s.pool.QueryRow(
+		ctx, fmt.Sprintf(`
+		SELECT count(*)::bigint, count(DISTINCT page_id)::bigint,
+		       COALESCE(sum(length(content)), 0)::bigint
+		FROM %s WHERE embedding IS NULL`, wikiStagingTable),
+	).Scan(&r.Chunks, &r.Pages, &r.Chars); err != nil {
+		return domain.WikiRemaining{}, fmt.Errorf("postgres: staging remaining: %w", err)
+	}
+	return r, nil
+}
+
+// UnembeddedStaging returns up to limit staging chunks still lacking an
+// embedding, in keyset order. The WHERE embedding IS NULL filter is the resume
+// cursor: a crash leaves the embedded rows committed and the next run reads only
+// what is left.
+func (s *Store) UnembeddedStaging(ctx context.Context, limit int) ([]domain.WikiChunk, error) {
+	if limit < 1 || limit > math.MaxInt32 {
+		return nil, fmt.Errorf("postgres: unembedded staging: limit %d out of range", limit)
+	}
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+		SELECT page_id, chunk_index, title, url, revision_id, corpus, content
+		FROM %s WHERE embedding IS NULL
+		ORDER BY page_id, chunk_index
+		LIMIT $1`, wikiStagingTable), limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: unembedded staging: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.WikiChunk{}
+	for rows.Next() {
+		var (
+			c   domain.WikiChunk
+			idx int32
+		)
+		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content); err != nil {
+			return nil, fmt.Errorf("postgres: scan staging chunk: %w", err)
+		}
+		c.ChunkIndex = int(idx)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: read staging chunks: %w", err)
+	}
+	return out, nil
+}
+
+// UnembeddedChunks returns up to limit live chunks ordered after cur. The delta
+// sync embeds changed chunks in the live table, reading the ones it just
+// upserted back through this keyset scan.
 func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded chunks: limit %d out of range", limit)
@@ -90,106 +268,13 @@ func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, lim
 	return out, nil
 }
 
-// EstimateRemaining counts the live pages, chunks, and content characters still
-// to embed beyond cur, feeding the dry-run cost estimate.
-func (s *Store) EstimateRemaining(ctx context.Context, cur domain.WikiCursor) (domain.WikiRemaining, error) {
-	row, err := s.queries.EstimateRemainingWikiChunks(ctx, db.EstimateRemainingWikiChunksParams{
-		AfterPageID:     cur.PageID,
-		AfterChunkIndex: cur.ChunkIndex,
-	})
-	if err != nil {
-		return domain.WikiRemaining{}, fmt.Errorf("postgres: estimate remaining: %w", err)
-	}
-	return domain.WikiRemaining{Pages: row.Pages, Chunks: row.Chunks, Chars: row.Chars}, nil
-}
-
-// CreateStaging creates the unindexed staging table if it is absent and stamps
-// it with the dump version it is being built for. LIKE copies the columns, NOT
-// NULLs, and defaults but no primary key or HNSW index, keeping the COPY load
-// fast; the index is built once, after the load. IF NOT EXISTS preserves a
-// partial staging table so an interrupted run resumes into it rather than
-// re-embedding from scratch. The version stamp lets a later run tell whether a
-// surviving staging table belongs to the dump it is about to embed; see
-// DiscardStagingIfStale.
-func (s *Store) CreateStaging(ctx context.Context, dumpVersion string) error {
-	stmt := fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS %s (LIKE wiki_chunks INCLUDING DEFAULTS INCLUDING CONSTRAINTS)",
-		wikiStagingTable,
-	)
-	if _, err := s.pool.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("postgres: create staging table: %w", err)
-	}
-	return s.stampStaging(ctx, dumpVersion)
-}
-
-// stampStaging records dumpVersion as the staging table's comment. COMMENT takes
-// no bind parameters, so the statement is assembled server-side with format(%L),
-// which escapes the version safely; the table name is a trusted constant. The
-// stamp lives on the table and is dropped with it, so it never outlives staging.
-func (s *Store) stampStaging(ctx context.Context, dumpVersion string) error {
-	var stmt string
-	if err := s.pool.QueryRow(
-		ctx,
-		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", wikiStagingTable),
-		dumpVersion,
-	).Scan(&stmt); err != nil {
-		return fmt.Errorf("postgres: build staging stamp: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("postgres: stamp staging table: %w", err)
-	}
-	return nil
-}
-
-// DiscardStagingIfStale drops a surviving staging table whose version stamp does
-// not match the dump now being embedded, returning whether it dropped one. The
-// bulk pipeline re-ingests the live corpus on every run, so a newer dump can
-// change live chunks - including ones that sort below the staging watermark,
-// which the keyset resume would never revisit - leaving the swap's staging==live
-// guard to refuse the corpus forever. A staging table whose stamp matches the
-// current dump is a valid resume target and is kept; an absent one is a no-op.
-// A missing stamp is read as the empty version, so an unstamped staging is kept
-// only when the current dump is itself unversioned (the mirror reported no
-// Last-Modified), matching the pre-stamp resume behavior.
-func (s *Store) DiscardStagingIfStale(ctx context.Context, dumpVersion string) (bool, error) {
-	// One round trip reads both whether staging exists and its stamp. to_regclass
-	// yields NULL for an absent table, so obj_description(NULL) is NULL rather than
-	// an error - no TOCTOU throw if the table vanishes mid-check, and an absent
-	// table is distinguished from a present-but-unstamped one by the exists flag.
-	var (
-		exists bool
-		stamp  *string
-	)
-	if err := s.pool.QueryRow(
-		ctx,
-		"SELECT to_regclass($1) IS NOT NULL, obj_description(to_regclass($1), 'pg_class')",
-		wikiStagingTable,
-	).Scan(&exists, &stamp); err != nil {
-		return false, fmt.Errorf("postgres: read staging stamp: %w", err)
-	}
-	if !exists {
-		return false, nil
-	}
-	stampValue := ""
-	if stamp != nil {
-		stampValue = *stamp
-	}
-	if stampValue == dumpVersion {
-		return false, nil
-	}
-	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
-		return false, fmt.Errorf("postgres: drop stale staging table: %w", err)
-	}
-	return true, nil
-}
-
-// CopyStagingChunks bulk-loads embedded chunks into the staging table via a
-// text-format COPY. The COPY runs in CSV text format, not pgx's binary
-// CopyFrom: pgvector-go's HalfVector has no binary wire encoder, so a binary
-// COPY corrupts the stream, whereas the server parses the half-vector's text
-// form natively. Every chunk must carry a full-dimension embedding; synced_at
-// defaults.
-func (s *Store) CopyStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error {
+// UpdateStagingEmbeddings writes embeddings onto existing staging rows. It loads
+// (page_id, chunk_index, embedding) into a temp table via a text-format COPY
+// (pgvector-go has no binary halfvec encoder, so a binary COPY corrupts the
+// stream) and joins it back, so a batch update is one COPY plus one UPDATE. The
+// temp table is dropped at commit. Every chunk must carry a full-dimension
+// embedding.
+func (s *Store) UpdateStagingEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -197,46 +282,45 @@ func (s *Store) CopyStagingChunks(ctx context.Context, chunks []domain.WikiChunk
 	w := csv.NewWriter(&buf)
 	for _, c := range chunks {
 		if len(c.Embedding) != domain.EmbeddingDim {
-			return fmt.Errorf("postgres: copy staging chunk page %d: embedding has %d dims, want %d", c.PageID, len(c.Embedding), domain.EmbeddingDim)
+			return fmt.Errorf("postgres: update staging page %d: embedding has %d dims, want %d", c.PageID, len(c.Embedding), domain.EmbeddingDim)
 		}
 		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
-			return fmt.Errorf("postgres: copy staging chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+			return fmt.Errorf("postgres: update staging page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
 		}
-		record := []string{
+		if err := w.Write([]string{
 			strconv.FormatInt(c.PageID, 10),
 			strconv.Itoa(c.ChunkIndex),
-			c.Title,
-			c.URL,
-			strconv.FormatInt(c.RevisionID, 10),
-			c.Corpus,
-			c.Content,
 			formatHalfVec(c.Embedding),
-		}
-		if err := w.Write(record); err != nil {
-			return fmt.Errorf("postgres: encode staging row for page %d: %w", c.PageID, err)
+		}); err != nil {
+			return fmt.Errorf("postgres: encode staging update row for page %d: %w", c.PageID, err)
 		}
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
-		return fmt.Errorf("postgres: encode staging rows: %w", err)
+		return fmt.Errorf("postgres: encode staging update rows: %w", err)
 	}
 
-	conn, err := s.pool.Acquire(ctx)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(
+			"CREATE TEMP TABLE staging_embed_update (page_id bigint, chunk_index integer, embedding halfvec(%d)) ON COMMIT DROP",
+			domain.EmbeddingDim,
+		)); err != nil {
+			return fmt.Errorf("create temp table: %w", err)
+		}
+		if _, err := tx.Conn().PgConn().CopyFrom(ctx, &buf,
+			"COPY staging_embed_update (page_id, chunk_index, embedding) FROM STDIN WITH (FORMAT csv)"); err != nil {
+			return fmt.Errorf("copy temp embeddings: %w", err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s s SET embedding = u.embedding
+			FROM staging_embed_update u
+			WHERE s.page_id = u.page_id AND s.chunk_index = u.chunk_index`, wikiStagingTable)); err != nil {
+			return fmt.Errorf("apply staging embeddings: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("postgres: acquire connection for staging copy: %w", err)
-	}
-	defer conn.Release()
-
-	copySQL := fmt.Sprintf(
-		"COPY %s (page_id, chunk_index, title, url, revision_id, corpus, content, embedding) FROM STDIN WITH (FORMAT csv)",
-		wikiStagingTable,
-	)
-	tag, err := conn.Conn().PgConn().CopyFrom(ctx, &buf, copySQL)
-	if err != nil {
-		return fmt.Errorf("postgres: copy staging chunks: %w", err)
-	}
-	if tag.RowsAffected() != int64(len(chunks)) {
-		return fmt.Errorf("postgres: copy staging chunks: loaded %d of %d", tag.RowsAffected(), len(chunks))
+		return fmt.Errorf("postgres: update staging embeddings: %w", err)
 	}
 	return nil
 }
@@ -256,39 +340,50 @@ func formatHalfVec(v []float32) string {
 	return b.String()
 }
 
-// FinalizeStaging builds the staging index, then swaps it into the live table
-// and checkpoints the corpus. The swap revalidates that staging mirrors the live
-// corpus inside its own transaction, so it never swaps a partial or unembedded
-// corpus and a concurrent ingest cannot slip rows into the table being dropped.
-func (s *Store) FinalizeStaging(ctx context.Context, corpus, maintenanceWorkMem string, maxParallelWorkers int) error {
-	if err := s.buildStagingIndex(ctx, maintenanceWorkMem, maxParallelWorkers); err != nil {
-		return err
+// stampStaging records stamp as the staging table's comment. COMMENT takes no
+// bind parameters, so the statement is assembled server-side with format(%L),
+// which escapes the value safely; the table name is a trusted constant. The
+// stamp lives on the table and is dropped with it, so it never outlives staging.
+func (s *Store) stampStaging(ctx context.Context, stamp string) error {
+	var stmt string
+	if err := s.pool.QueryRow(
+		ctx,
+		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", wikiStagingTable),
+		stamp,
+	).Scan(&stmt); err != nil {
+		return fmt.Errorf("postgres: build staging stamp: %w", err)
 	}
-	if err := s.swapStaging(ctx, corpus); err != nil {
-		return err
+	if _, err := s.pool.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("postgres: stamp staging table: %w", err)
 	}
 	return nil
 }
 
-// validateStagingTx refuses the swap unless staging mirrors the live corpus
-// exactly and every staged chunk is embedded. Running inside the swap
-// transaction makes the check atomic with the rename: a concurrent ingest is
-// either counted here or blocked by the swap's lock, never lost.
-func (s *Store) validateStagingTx(ctx context.Context, tx pgx.Tx) error {
-	live, err := s.queries.WithTx(tx).CountWikiChunks(ctx)
-	if err != nil {
-		return fmt.Errorf("count live chunks: %w", err)
+// FinalizeStaging builds the staging index, then swaps it into the live table
+// and checkpoints the corpus at version. The swap revalidates that staging is a
+// complete embedded corpus inside its own transaction, so it never swaps a
+// partial or unembedded corpus and a concurrent reader sees the old corpus until
+// commit.
+func (s *Store) FinalizeStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error {
+	if err := s.buildStagingIndex(ctx, maintenanceWorkMem, maxParallelWorkers); err != nil {
+		return err
 	}
-	if live == 0 {
-		return errors.New("live corpus is empty, nothing to embed")
-	}
+	return s.swapStaging(ctx, corpus, version, lastChangeTS)
+}
 
+// validateStagingTx refuses the swap unless staging is a non-empty, fully
+// embedded corpus. Staging is built solely from the current dump, so it is the
+// authority for the new corpus; there is no count comparison against live, whose
+// row set is intentionally allowed to differ (it may hold orphans the rebuild
+// drops). Running inside the swap transaction makes the check atomic with the
+// rename.
+func (s *Store) validateStagingTx(ctx context.Context, tx pgx.Tx) error {
 	var staging, nullEmbeddings int64
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+wikiStagingTable).Scan(&staging); err != nil {
 		return fmt.Errorf("count staging chunks: %w", err)
 	}
-	if staging != live {
-		return fmt.Errorf("staging has %d chunks, live has %d; refusing to swap a partial corpus", staging, live)
+	if staging == 0 {
+		return errors.New("staging corpus is empty, refusing to swap")
 	}
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+wikiStagingTable+" WHERE embedding IS NULL").Scan(&nullEmbeddings); err != nil {
 		return fmt.Errorf("count staging null embeddings: %w", err)
@@ -342,8 +437,9 @@ END $$;`, wikiStagingPK, wikiStagingTable, wikiStagingPK)
 // one after, never a partial one. The old table's index and constraint are
 // renamed aside first so the staging objects can take the canonical names that
 // the migration schema and later ingests expect. The corpus checkpoint advances
-// in the same transaction.
-func (s *Store) swapStaging(ctx context.Context, corpus string) error {
+// in the same transaction, recording the dump version now live so a later run
+// can tell the corpus is current.
+func (s *Store) swapStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time) error {
 	stmts := []string{
 		"DROP TABLE IF EXISTS " + wikiChunksOldTable,
 		// IF EXISTS so a corpus whose HNSW index was dropped (e.g. for an ops
@@ -357,6 +453,12 @@ func (s *Store) swapStaging(ctx context.Context, corpus string) error {
 		"DROP TABLE " + wikiChunksOldTable,
 	}
 
+	checkpoint := db.UpsertWikiSyncStateParams{
+		Corpus:       corpus,
+		DumpVersion:  pgtype.Text{String: version, Valid: version != ""},
+		LastChangeTs: pgtype.Timestamptz{Time: lastChangeTS, Valid: !lastChangeTS.IsZero()},
+	}
+
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if err := s.validateStagingTx(ctx, tx); err != nil {
 			return err
@@ -366,7 +468,7 @@ func (s *Store) swapStaging(ctx context.Context, corpus string) error {
 				return fmt.Errorf("swap step %q: %w", stmt, err)
 			}
 		}
-		if err := s.queries.WithTx(tx).MarkWikiCorpusEmbedded(ctx, corpus); err != nil {
+		if err := s.queries.WithTx(tx).UpsertWikiSyncState(ctx, checkpoint); err != nil {
 			return fmt.Errorf("checkpoint corpus: %w", err)
 		}
 		return nil
@@ -378,8 +480,8 @@ func (s *Store) swapStaging(ctx context.Context, corpus string) error {
 }
 
 // EmbedInProgress reports whether a bulk embed is mid-flight. The staging table
-// exists only between a started and a completed bulk embed (the swap drops it),
-// so its presence means the live corpus is not yet fully embedded - the delta
+// exists only between the start of a bulk build and a completed swap (the swap
+// drops it), so its presence means the live corpus is being rebuilt - the delta
 // sync refuses to run while one exists.
 func (s *Store) EmbedInProgress(ctx context.Context) (bool, error) {
 	return s.stagingExists(ctx)

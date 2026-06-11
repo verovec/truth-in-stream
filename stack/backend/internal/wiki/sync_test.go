@@ -11,17 +11,22 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
+// fakeStore models the staging-build store the bulk ingest drives: ResetStaging
+// clears the staged corpus, UpsertStagingChunks fills it, and MarkStagingReady
+// records the version it was stamped ready for.
 type fakeStore struct {
-	mu        sync.Mutex
-	corpus    string
-	chunks    map[[2]int64]domain.WikiChunk
-	trims     map[int64]int
-	states    []domain.WikiSyncState
-	upsertErr error
+	mu            sync.Mutex
+	corpus        string
+	chunks        map[[2]int64]domain.WikiChunk
+	resetVersion  string
+	resets        int
+	readyVersion  string
+	carriedReturn int64
+	upsertErr     error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{chunks: make(map[[2]int64]domain.WikiChunk), trims: make(map[int64]int)}
+	return &fakeStore{chunks: make(map[[2]int64]domain.WikiChunk)}
 }
 
 func (f *fakeStore) EnsureCorpus(_ context.Context, corpus string) error {
@@ -34,7 +39,16 @@ func (f *fakeStore) EnsureCorpus(_ context.Context, corpus string) error {
 	return nil
 }
 
-func (f *fakeStore) UpsertChunks(_ context.Context, chunks []domain.WikiChunk) error {
+func (f *fakeStore) ResetStaging(_ context.Context, version string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chunks = make(map[[2]int64]domain.WikiChunk)
+	f.resetVersion = version
+	f.resets++
+	return nil
+}
+
+func (f *fakeStore) UpsertStagingChunks(_ context.Context, chunks []domain.WikiChunk) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.upsertErr != nil {
@@ -46,24 +60,16 @@ func (f *fakeStore) UpsertChunks(_ context.Context, chunks []domain.WikiChunk) e
 	return nil
 }
 
-func (f *fakeStore) TrimPages(_ context.Context, trims []domain.WikiTrim) error {
+func (f *fakeStore) CarryForwardEmbeddings(_ context.Context) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, tr := range trims {
-		f.trims[tr.PageID] = tr.FromIndex
-		for key := range f.chunks {
-			if key[0] == tr.PageID && key[1] >= int64(tr.FromIndex) {
-				delete(f.chunks, key)
-			}
-		}
-	}
-	return nil
+	return f.carriedReturn, nil
 }
 
-func (f *fakeStore) SetSyncState(_ context.Context, st domain.WikiSyncState) error {
+func (f *fakeStore) MarkStagingReady(_ context.Context, version string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.states = append(f.states, st)
+	f.readyVersion = version
 	return nil
 }
 
@@ -79,19 +85,20 @@ func TestRunBulk(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeStore()
+	store.carriedReturn = 7
 	stats, err := RunBulk(t.Context(), store, fixtureFiles(), "simplewiki")
 	if err != nil {
 		t.Fatalf("RunBulk: %v", err)
 	}
 
 	// Fixture: Paris (article), The City of Light (redirect), Mercury
-	// (disambiguation), Talk:Paris (ns 1). Only Paris is stored.
+	// (disambiguation), Talk:Paris (ns 1). Only Paris is staged.
 	if len(store.chunks) == 0 {
-		t.Fatal("no chunks stored")
+		t.Fatal("no chunks staged")
 	}
 	for key, c := range store.chunks {
 		if key[0] != 1 {
-			t.Errorf("stored chunk for page %d (%q); only Paris (1) should be stored", key[0], c.Title)
+			t.Errorf("staged chunk for page %d (%q); only Paris (1) should be staged", key[0], c.Title)
 		}
 	}
 
@@ -123,30 +130,16 @@ func TestRunBulk(t *testing.T) {
 	if stats.Chunks != len(store.chunks) {
 		t.Errorf("stats.Chunks = %d, store has %d", stats.Chunks, len(store.chunks))
 	}
-
-	// Every page seen is trimmed so a re-run converges: stored pages from
-	// their new chunk count, skipped pages from 0.
-	wantTrims := map[int64]int{1: stats.Chunks, 2: 0, 3: 0, 4: 0}
-	for pageID, want := range wantTrims {
-		got, ok := store.trims[pageID]
-		if !ok {
-			t.Errorf("page %d never trimmed", pageID)
-			continue
-		}
-		if got != want {
-			t.Errorf("page %d trimmed from %d, want %d", pageID, got, want)
-		}
+	if stats.Carried != 7 {
+		t.Errorf("stats.Carried = %d, want 7", stats.Carried)
 	}
 
-	if len(store.states) != 1 {
-		t.Fatalf("sync state written %d times, want 1", len(store.states))
+	// Staging is reset for the dump version and stamped ready once built.
+	if store.resetVersion != "Mon, 01 Jun 2026 03:14:00 GMT" {
+		t.Errorf("reset version = %q", store.resetVersion)
 	}
-	st := store.states[0]
-	if st.Corpus != "simplewiki" || st.DumpVersion != "Mon, 01 Jun 2026 03:14:00 GMT" {
-		t.Errorf("sync state = %+v", st)
-	}
-	if st.LastChangeTS.IsZero() {
-		t.Errorf("sync state LastChangeTS not derived from the dump version")
+	if store.readyVersion != "Mon, 01 Jun 2026 03:14:00 GMT" {
+		t.Errorf("ready version = %q, want the dump version", store.readyVersion)
 	}
 }
 
@@ -165,16 +158,17 @@ func TestRunBulkIdempotent(t *testing.T) {
 			t.Errorf("unexpected page %d after re-run", key[0])
 		}
 	}
-	if len(store.states) != 2 {
-		t.Errorf("sync state written %d times across two runs, want 2", len(store.states))
+	if store.resets != 2 {
+		t.Errorf("staging reset %d times across two runs, want 2", store.resets)
 	}
 }
 
-func TestRunBulkRemovesStaleChunksOfSkippedPages(t *testing.T) {
+func TestRunBulkResetClearsPriorStaging(t *testing.T) {
 	t.Parallel()
 
-	// Page 2 is a redirect in the fixture. Chunks left over from a run
-	// against an older dump (where it was an article) must be removed.
+	// Page 2 is a redirect in the fixture. A stale chunk left in staging by an
+	// earlier run (where it was an article) must not survive: ResetStaging wipes
+	// staging before the rebuild, so a page absent from the dump leaves no rows.
 	store := newFakeStore()
 	store.chunks[[2]int64{2, 0}] = domain.WikiChunk{PageID: 2, ChunkIndex: 0, Content: "stale"}
 	store.chunks[[2]int64{2, 1}] = domain.WikiChunk{PageID: 2, ChunkIndex: 1, Content: "stale"}
@@ -185,7 +179,7 @@ func TestRunBulkRemovesStaleChunksOfSkippedPages(t *testing.T) {
 
 	for key := range store.chunks {
 		if key[0] == 2 {
-			t.Errorf("stale chunk (%d, %d) of redirect page survived the re-run", key[0], key[1])
+			t.Errorf("stale chunk (%d, %d) of redirect page survived the rebuild", key[0], key[1])
 		}
 	}
 }
@@ -200,11 +194,11 @@ func TestRunBulkRefusesForeignCorpus(t *testing.T) {
 		t.Fatal("RunBulk ingested a second corpus into a single-corpus store, want error")
 	}
 	if len(store.chunks) != 0 {
-		t.Errorf("chunks were written despite the corpus guard")
+		t.Errorf("chunks were staged despite the corpus guard")
 	}
 }
 
-func TestRunBulkEmptyIndexDoesNotCheckpoint(t *testing.T) {
+func TestRunBulkEmptyIndexDoesNotMarkReady(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeStore()
@@ -217,8 +211,8 @@ func TestRunBulkEmptyIndexDoesNotCheckpoint(t *testing.T) {
 	if _, err := RunBulk(t.Context(), store, files, "simplewiki"); err == nil {
 		t.Fatal("RunBulk succeeded over an empty index, want error")
 	}
-	if len(store.states) != 0 {
-		t.Errorf("sync state checkpointed despite an empty run")
+	if store.readyVersion != "" {
+		t.Errorf("staging marked ready despite an empty run")
 	}
 }
 
@@ -231,8 +225,8 @@ func TestRunBulkPropagatesStoreError(t *testing.T) {
 	if _, err := RunBulk(t.Context(), store, fixtureFiles(), "simplewiki"); !errors.Is(err, store.upsertErr) {
 		t.Fatalf("RunBulk error = %v, want wrapped %v", err, store.upsertErr)
 	}
-	if len(store.states) != 0 {
-		t.Errorf("sync state checkpointed despite a failed run")
+	if store.readyVersion != "" {
+		t.Errorf("staging marked ready despite a failed run")
 	}
 }
 
