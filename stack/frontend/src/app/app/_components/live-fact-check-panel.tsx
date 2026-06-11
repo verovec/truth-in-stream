@@ -29,11 +29,8 @@ export function LiveFactCheckPanel({ videoId }: { videoId: string }) {
         <PlaybackClock />
       </header>
       <ConnectionNotice status={status} />
-      {statements.length > 0 ? (
-        <LiveStatementList statements={statements} />
-      ) : caption ? null : (
-        <EmptyHint status={status} />
-      )}
+      {statements.length > 0 && <LiveStatementList statements={statements} />}
+      {statements.length === 0 && !caption && <EmptyHint status={status} />}
       <LiveCaption text={caption} />
     </aside>
   );

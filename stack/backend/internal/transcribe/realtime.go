@@ -18,6 +18,14 @@ import (
 // resamples playback audio to this format before sending.
 const realtimeAudioFormat = "pcm_16000"
 
+// realtimeReadLimit raises the inbound-message cap above coder/websocket's 32
+// KiB default. A committed_transcript_with_timestamps for a long utterance
+// carries a per-word timing array that easily exceeds 32 KiB; the default limit
+// turns that into a fatal "message too big" read error that kills the whole live
+// session mid-stream. 4 MiB covers far longer utterances while still bounding a
+// misbehaving provider.
+const realtimeReadLimit int64 = 4 << 20
+
 // Client message types sent to Scribe v2 Realtime.
 const msgInputAudioChunk = "input_audio_chunk"
 
@@ -117,6 +125,9 @@ func (c *Client) dialRealtime(ctx context.Context, opts Options) (realtimeSocket
 	if err != nil {
 		return nil, fmt.Errorf("scribe: dial realtime: %w", err)
 	}
+	// Committed transcripts can exceed the library's 32 KiB default; without this
+	// a long utterance's transcript fails the read and tears down the session.
+	conn.SetReadLimit(realtimeReadLimit)
 	return &wsSocket{conn: conn}, nil
 }
 

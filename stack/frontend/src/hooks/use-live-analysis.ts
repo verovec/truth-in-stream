@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayback, usePlaybackStore } from "@/components/playback/playback-provider";
 import { createMediaElementCapture } from "@/lib/live/audio-capture";
 import {
@@ -214,9 +214,9 @@ export function useLiveAnalysis(
           break;
         case "clearAnalysing":
           setStatements((prev) => clearAnalysing(prev));
-          // A reset (seek or a dropped connection) abandons the in-flight
-          // utterance, so the stale live caption clears with it.
-          setCaption("");
+          // The caption is not cleared here: a reset (seek or a dropped
+          // connection) always moves status off "live", and the status effect
+          // below clears it. Keeping that the single owner avoids two clear sites.
           break;
         case "scheduleReconnect":
           if (reconnectTimerRef.current) {
@@ -273,5 +273,9 @@ export function useLiveAnalysis(
     dispatchRef.current({ type: paused ? "pause" : "play" });
   }, [paused]);
 
-  return { statements: listStatements(statements), caption, status };
+  // Memoize the ordered list so a caption-only update (every interim word) does
+  // not produce a new array reference and re-render the memoized statement list.
+  const orderedStatements = useMemo(() => listStatements(statements), [statements]);
+
+  return { statements: orderedStatements, caption, status };
 }

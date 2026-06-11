@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import {
   usePlayback,
   usePlaybackStore,
@@ -13,8 +13,9 @@ import { SegmentDetail } from "./segment-detail";
 // LiveStatementList renders incremental live statements with the same row
 // presentation as the batch results list, plus an in-flight affordance while a
 // statement's verdict is still being computed. The active statement tracks the
-// playback clock and scrolls into view.
-export function LiveStatementList({
+// playback clock and scrolls into view. Memoized so a caption-only update of the
+// parent panel (every interim word) does not re-render the whole list.
+export const LiveStatementList = memo(function LiveStatementList({
   statements,
 }: {
   statements: LiveStatement[];
@@ -74,7 +75,7 @@ export function LiveStatementList({
       })}
     </ol>
   );
-}
+});
 
 function StatementBody({ statement }: { statement: LiveStatement }) {
   if (statement.status === "analysing") {
