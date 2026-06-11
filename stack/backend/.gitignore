@@ -1,2 +1,5 @@
 # Local build artifacts
 /server
+
+# Fetched sample-video media, cached across reseeds (seed -videos)
+/seed/media-cache/

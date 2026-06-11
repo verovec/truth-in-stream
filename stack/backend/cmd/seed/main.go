@@ -7,6 +7,7 @@
 //
 //	seed                 seed every dataset from the committed cache (offline)
 //	seed -claims -wiki   seed only the named datasets
+//	seed -videos         seed only the curated sample videos
 //	seed -refresh        regenerate the embedding cache via Voyage, then exit
 //	seed -refresh -offline   regenerate the cache with deterministic placeholder
 //	                         vectors (no API key); used to bootstrap fixtures
@@ -16,11 +17,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -28,6 +32,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/ingest"
 	"github.com/verovec/truth-in-stream/backend/internal/seed"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
+	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
 
@@ -37,9 +42,16 @@ const (
 	defaultEmbeddingModel = "voyage-4"
 	defaultSeedDir        = "seed"
 	defaultCachePath      = "seed/embeddings.cache.jsonl"
-	claimsFile            = "claims.json"
-	wikiFile              = "wiki_chunks.json"
-	demoFile              = "demo_results.json"
+	// defaultMediaCacheDir holds fetched sample media so a later reseed reuses
+	// the bytes instead of re-downloading. It sits under the bind-mounted seed
+	// tree so it survives across `docker compose run --rm seed` invocations.
+	defaultMediaCacheDir = "seed/media-cache"
+	// sampleMediaFetchTimeout bounds the one-time download of a sample clip; a
+	// stuck fetch is skipped (the record still seeds) rather than hanging reset.
+	sampleMediaFetchTimeout = 5 * time.Minute
+	claimsFile              = "claims.json"
+	wikiFile                = "wiki_chunks.json"
+	demoFile                = "demo_results.json"
 )
 
 // datasets selects which fixtures to seed. When none are requested on the
@@ -48,9 +60,10 @@ type datasets struct {
 	claims bool
 	wiki   bool
 	demo   bool
+	videos bool
 }
 
-func (d datasets) any() bool { return d.claims || d.wiki || d.demo }
+func (d datasets) any() bool { return d.claims || d.wiki || d.demo || d.videos }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -67,13 +80,15 @@ func run(logger *slog.Logger) error {
 	doClaims := flag.Bool("claims", false, "seed curated claims")
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
 	doDemo := flag.Bool("demo", false, "seed the demo-video results")
+	doVideos := flag.Bool("videos", false, "seed the curated sample videos (records plus best-effort media)")
 	seedDir := flag.String("seed-dir", defaultSeedDir, "directory holding the seed fixtures")
 	cachePath := flag.String("cache", defaultCachePath, "embedding cache file")
+	mediaCacheDir := flag.String("media-cache", defaultMediaCacheDir, "directory caching fetched sample media across reseeds")
 	flag.Parse()
 
-	sel := datasets{claims: *doClaims, wiki: *doWiki, demo: *doDemo}
+	sel := datasets{claims: *doClaims, wiki: *doWiki, demo: *doDemo, videos: *doVideos}
 	if !sel.any() {
-		sel = datasets{claims: true, wiki: true, demo: true}
+		sel = datasets{claims: true, wiki: true, demo: true, videos: true}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -82,7 +97,7 @@ func run(logger *slog.Logger) error {
 	if *refresh {
 		return refreshCache(ctx, logger, *seedDir, *cachePath, *offline)
 	}
-	return seedAll(ctx, logger, sel, *seedDir, *cachePath, *offline)
+	return seedAll(ctx, logger, sel, *seedDir, *cachePath, *mediaCacheDir, *offline)
 }
 
 // embeddingModel returns the embedding model name used for cache keys, honoring
@@ -173,17 +188,8 @@ func documentTexts(seedDir string) ([]string, error) {
 
 // seedAll opens the store and seeds the selected datasets, persisting any new
 // embeddings filled during the run back to the cache.
-func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, cachePath string, offline bool) error {
+func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, cachePath, mediaCacheDir string, offline bool) error {
 	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-
-	cache, err := embed.LoadCache(cachePath)
-	if err != nil {
-		return err
-	}
-	embedder, err := seedEmbedder(cache, offline)
 	if err != nil {
 		return err
 	}
@@ -194,14 +200,27 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 	}
 	defer store.Close()
 
-	if sel.claims {
-		if err := seedClaims(ctx, logger, store, embedder, seedDir); err != nil {
+	// Only the text datasets need the embedding cache; seeding videos alone
+	// must not require the committed cache to be present.
+	var cache *embed.Cache
+	if sel.claims || sel.wiki {
+		cache, err = embed.LoadCache(cachePath)
+		if err != nil {
 			return err
 		}
-	}
-	if sel.wiki {
-		if err := seedWiki(ctx, logger, store, embedder, seedDir); err != nil {
+		embedder, err := seedEmbedder(cache, offline)
+		if err != nil {
 			return err
+		}
+		if sel.claims {
+			if err := seedClaims(ctx, logger, store, embedder, seedDir); err != nil {
+				return err
+			}
+		}
+		if sel.wiki {
+			if err := seedWiki(ctx, logger, store, embedder, seedDir); err != nil {
+				return err
+			}
 		}
 	}
 	if sel.demo {
@@ -209,8 +228,13 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 			return err
 		}
 	}
+	if sel.videos {
+		if err := seedVideos(ctx, logger, store, mediaCacheDir); err != nil {
+			return err
+		}
+	}
 
-	if cache.Dirty() {
+	if cache != nil && cache.Dirty() {
 		if err := cache.Save(cachePath); err != nil {
 			return err
 		}
@@ -287,4 +311,66 @@ func seedDemo(ctx context.Context, logger *slog.Logger, store *postgres.Store, s
 		slog.String("video_id", videoID),
 		slog.Int("segments", len(demo.Segments)))
 	return nil
+}
+
+// seedVideos upserts the curated sample records and best-effort places their
+// media in object storage. The records are keyed by their UUID id and are
+// independent of the demo results, which key segment results by the processing
+// id derived from the demo source filename (service.VideoID) and have no videos
+// row; the two stay separate on purpose. Storage configuration is required (the
+// media bytes need somewhere to go); the external clip fetch is best-effort and
+// SAMPLE_VIDEO_URL overrides the default clip.
+func seedVideos(ctx context.Context, logger *slog.Logger, store *postgres.Store, mediaCacheDir string) error {
+	storageCfg, err := config.LoadStorage()
+	if err != nil {
+		return err
+	}
+	media, err := storage.New(ctx, storage.Config{
+		Endpoint:       storageCfg.Endpoint,
+		PublicEndpoint: storageCfg.PublicEndpoint,
+		Region:         storageCfg.Region,
+		Bucket:         storageCfg.Bucket,
+		AccessKey:      storageCfg.AccessKey,
+		SecretKey:      storageCfg.SecretKey,
+		UsePathStyle:   storageCfg.UsePathStyle,
+		PutTTL:         storageCfg.PutTTL,
+		GetTTL:         storageCfg.GetTTL,
+	})
+	if err != nil {
+		return err
+	}
+
+	samples := seed.Samples(os.Getenv("SAMPLE_VIDEO_URL"))
+	fetcher := httpMediaFetcher{client: &http.Client{Timeout: sampleMediaFetchTimeout}}
+	if err := seed.InsertSampleVideos(ctx, store, media, fetcher, mediaCacheDir, samples, logger); err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "seeded sample videos", slog.Int("samples", len(samples)))
+	return nil
+}
+
+// httpMediaFetcher fetches sample media over HTTP. It is the wiring-layer
+// implementation of seed.MediaFetcher; the seed package stays free of transport
+// types and is exercised in tests with a fake fetcher.
+type httpMediaFetcher struct {
+	client *http.Client
+}
+
+// Fetch issues a GET for url and returns the response body. A non-2xx status is
+// an error so a captive-portal or error page is never cached as media. The
+// caller owns the returned reader and MUST close it.
+func (f httpMediaFetcher) Fetch(ctx context.Context, url string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("seed: build media request: %w", err)
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("seed: fetch media: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("seed: fetch media: unexpected status %s", resp.Status)
+	}
+	return resp.Body, nil
 }

@@ -348,7 +348,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (object_key) DO UPDATE
     SET title        = EXCLUDED.title,
         content_type = EXCLUDED.content_type,
-        size_bytes   = EXCLUDED.size_bytes,
+        size_bytes   = CASE WHEN EXCLUDED.size_bytes > 0 THEN EXCLUDED.size_bytes ELSE videos.size_bytes END,
         status       = EXCLUDED.status,
         kind         = EXCLUDED.kind,
         updated_at   = now()
@@ -364,6 +364,9 @@ type UpsertSampleVideoParams struct {
 	Kind        string
 }
 
+// size_bytes keeps a known size against a zero reseed: an offline reseed with no
+// cached media seeds the record with size 0, which must not clobber the real
+// size recorded when the media was last uploaded (the object still exists).
 func (q *Queries) UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error) {
 	row := q.db.QueryRow(ctx, upsertSampleVideo,
 		arg.Title,

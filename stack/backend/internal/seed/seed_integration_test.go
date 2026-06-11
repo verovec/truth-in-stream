@@ -1,7 +1,10 @@
 package seed_test
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +20,35 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
+
+// fakeVideoMedia is an in-memory object store: the video seed's media path runs
+// with no real network or MinIO so the integration test stays hermetic.
+type fakeVideoMedia struct {
+	objects map[string][]byte
+}
+
+func (f *fakeVideoMedia) Exists(_ context.Context, key string) (bool, error) {
+	_, ok := f.objects[key]
+	return ok, nil
+}
+
+func (f *fakeVideoMedia) Upload(_ context.Context, key string, body io.Reader, _ string, _ int64) error {
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	f.objects[key] = b
+	return nil
+}
+
+// bytesFetcher serves fixed media bytes, standing in for the HTTP clip fetch.
+type bytesFetcher struct {
+	data []byte
+}
+
+func (f bytesFetcher) Fetch(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(f.data)), nil
+}
 
 // claimsSchemaLock matches the key the store and service integration tests take
 // (postgres.claimsSchemaLock) so every package that resets the shared schema
@@ -228,6 +260,45 @@ func TestSeedDemoResultsIdempotent(t *testing.T) {
 	}
 	if len(results) != len(demo.Segments) {
 		t.Errorf("listed %d results after reseed, want %d (must not duplicate)", len(results), len(demo.Segments))
+	}
+}
+
+func TestInsertSampleVideosListed(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	media := &fakeVideoMedia{objects: map[string][]byte{}}
+	fetcher := bytesFetcher{data: []byte("sample-media-bytes")}
+	samples := seed.Samples("https://example.test/clip.mp4")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cacheDir := t.TempDir()
+
+	// Reseed twice to prove idempotency against the real store.
+	for range 2 {
+		if err := seed.InsertSampleVideos(ctx, store, media, fetcher, cacheDir, samples, logger); err != nil {
+			t.Fatalf("InsertSampleVideos: %v", err)
+		}
+	}
+
+	videos, err := store.ListVideos(ctx)
+	if err != nil {
+		t.Fatalf("ListVideos: %v", err)
+	}
+	if len(videos) != len(samples) {
+		t.Fatalf("listed %d videos after reseed, want %d (must not duplicate)", len(videos), len(samples))
+	}
+	got := videos[0]
+	if got.Kind != domain.VideoKindSample {
+		t.Errorf("kind = %q, want sample", got.Kind)
+	}
+	if got.Status != domain.VideoStatusReady {
+		t.Errorf("status = %q, want ready", got.Status)
+	}
+	if want := int64(len("sample-media-bytes")); got.SizeBytes != want {
+		t.Errorf("SizeBytes = %d, want %d (real media bytes)", got.SizeBytes, want)
+	}
+	if _, ok := media.objects[got.ObjectKey]; !ok {
+		t.Errorf("media not uploaded for object key %q", got.ObjectKey)
 	}
 }
 

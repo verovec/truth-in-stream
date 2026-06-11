@@ -179,3 +179,38 @@ func TestUpsertSampleVideoIsIdempotent(t *testing.T) {
 		t.Fatalf("seeded the same sample twice produced %d rows, want 1", len(all))
 	}
 }
+
+func TestUpsertSampleVideoKeepsKnownSizeAgainstZero(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	// First seed records a real media size (the bytes were uploaded).
+	sample := domain.Video{
+		Title: "Common Myths", ObjectKey: "samples/common-myths.mp4", ContentType: "video/mp4",
+		SizeBytes: 4096, Status: domain.VideoStatusReady, Kind: domain.VideoKindSample,
+	}
+	if _, err := store.UpsertSampleVideo(ctx, sample); err != nil {
+		t.Fatalf("UpsertSampleVideo first: %v", err)
+	}
+
+	// An offline reseed with no cached media reseeds the record with size 0; the
+	// object still exists in storage, so the known size must survive.
+	sample.SizeBytes = 0
+	second, err := store.UpsertSampleVideo(ctx, sample)
+	if err != nil {
+		t.Fatalf("UpsertSampleVideo second: %v", err)
+	}
+	if second.SizeBytes != 4096 {
+		t.Errorf("SizeBytes = %d, want 4096 (a zero reseed must not clobber a known size)", second.SizeBytes)
+	}
+
+	// A later reseed with a real size still updates it.
+	sample.SizeBytes = 8192
+	third, err := store.UpsertSampleVideo(ctx, sample)
+	if err != nil {
+		t.Fatalf("UpsertSampleVideo third: %v", err)
+	}
+	if third.SizeBytes != 8192 {
+		t.Errorf("SizeBytes = %d, want 8192 (a real size must still update)", third.SizeBytes)
+	}
+}

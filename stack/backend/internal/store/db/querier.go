@@ -88,6 +88,9 @@ type Querier interface {
 	// staging table is swapped in, every live chunk has an embedding.
 	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
+	// size_bytes keeps a known size against a zero reseed: an offline reseed with no
+	// cached media seeds the record with size 0, which must not clobber the real
+	// size recorded when the media was last uploaded (the object still exists).
 	UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error)
 	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
 	// Ingest never writes embeddings; the CASE keeps an existing embedding only
