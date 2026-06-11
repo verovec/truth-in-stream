@@ -18,6 +18,7 @@ import { VerdictBadge } from "./verdict-badge";
 const SKIP_LABELS: Record<SkipReason, string> = {
   not_a_claim: "Not checked - no verifiable claim",
   not_covered: "Not checked - not covered by the reference corpus",
+  not_checked: "Not checked - the live checker was busy",
 };
 
 // skipLabel tolerates a skip reason the backend may add before the frontend

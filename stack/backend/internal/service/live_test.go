@@ -74,6 +74,22 @@ func (f liveMatcher) Match(_ context.Context, text string) ([]domain.SegmentMatc
 	return f.matches[text], nil
 }
 
+// blockingMatcher holds every Match call until release is closed, so a test can
+// pin the verdict workers as busy and observe how the analyzer behaves while
+// scoring is saturated.
+type blockingMatcher struct {
+	release <-chan struct{}
+}
+
+func (m blockingMatcher) Match(ctx context.Context, _ string) ([]domain.SegmentMatch, error) {
+	select {
+	case <-m.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func drainLiveEvents(t *testing.T, out <-chan LiveEvent) []LiveEvent {
 	t.Helper()
 	var events []LiveEvent
@@ -169,6 +185,73 @@ func TestLiveAnalyzerEmitsSubtitleAndResultPerSegment(t *testing.T) {
 	// id 2: checkable but matching failed; reported as a non-fatal error.
 	if results["2"].Err != "analysis failed" || len(results["2"].Matches) != 0 {
 		t.Errorf("result 2 should carry an analysis error, got %+v", results["2"])
+	}
+}
+
+func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
+	t.Parallel()
+	// With a single verdict worker pinned on the first statement, the later
+	// statements cannot get a slot. They must still surface as subtitles and be
+	// reported not_checked rather than stalling the transcript behind the busy
+	// worker.
+	release := make(chan struct{})
+	segs := []domain.Segment{
+		{Start: 1 * time.Second, End: 2 * time.Second, Text: "first"},
+		{Start: 2 * time.Second, End: 3 * time.Second, Text: "second"},
+		{Start: 3 * time.Second, End: 4 * time.Second, Text: "third"},
+	}
+	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+		Stream:      &fakeSegmentStream{segs: segs},
+		Matcher:     blockingMatcher{release: release},
+		Prechecker:  livePrechecker{},
+		Logger:      discardLogger(),
+		Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveAnalyzer: %v", err)
+	}
+
+	out, err := analyzer.Run(t.Context(), make(chan []byte))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	subtitles := map[string]bool{}
+	notChecked := map[string]bool{}
+	released := false
+	timeout := time.After(2 * time.Second)
+	for done := false; !done; {
+		// The three subtitles and the two not_checked results arrive without the
+		// pinned worker; once they are in, release it so the channel can close.
+		if len(subtitles) == 3 && len(notChecked) == 2 && !released {
+			close(release)
+			released = true
+		}
+		select {
+		case ev, ok := <-out:
+			if !ok {
+				done = true
+				break
+			}
+			switch ev.Kind {
+			case LiveEventSubtitle:
+				subtitles[ev.ID] = true
+			case LiveEventResult:
+				if ev.SkipReason == domain.SkipReasonNotChecked {
+					notChecked[ev.ID] = true
+				}
+			}
+		case <-timeout:
+			t.Fatalf("timed out; subtitles stalled behind saturated scoring (subtitles=%d not_checked=%d)", len(subtitles), len(notChecked))
+		}
+	}
+
+	if len(subtitles) != 3 {
+		t.Errorf("got %d subtitles, want 3 (every statement must surface)", len(subtitles))
+	}
+	// Statements 1 and 2 could not get a worker slot, so they stay unscored.
+	if !notChecked["1"] || !notChecked["2"] {
+		t.Errorf("statements 1 and 2 should be not_checked, got %v", notChecked)
 	}
 }
 

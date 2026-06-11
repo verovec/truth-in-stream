@@ -19,6 +19,13 @@ const (
 	// SkipReasonNotCovered means the reference corpus does not plausibly cover
 	// the claim, so no evidence-grounded verdict is possible.
 	SkipReasonNotCovered SkipReason = "not_covered"
+	// SkipReasonNotChecked means the segment was transcribed and surfaced as a
+	// subtitle but left unscored because the live analyzer's verdict workers were
+	// all busy. Unlike the gate reasons, it is a capacity decision, not a
+	// judgment about the statement: the live path keeps the transcript flowing
+	// rather than stalling it behind a slow match. It is transient and travels
+	// only over the live event stream; it is never written to the result store.
+	SkipReasonNotChecked SkipReason = "not_checked"
 )
 
 // Valid reports whether r is one of the known skip reasons. The empty reason
@@ -26,7 +33,7 @@ const (
 // known cause, never skipped for an unknown one.
 func (r SkipReason) Valid() bool {
 	switch r {
-	case SkipReasonNone, SkipReasonNotAClaim, SkipReasonNotCovered:
+	case SkipReasonNone, SkipReasonNotAClaim, SkipReasonNotCovered, SkipReasonNotChecked:
 		return true
 	default:
 		return false
