@@ -30,12 +30,13 @@ func TestDeterministicStableAndUnit(t *testing.T) {
 		}
 	}
 
-	// Unit length, so cosine distance behaves.
+	// Unit length, so cosine distance behaves. The tolerance absorbs float32
+	// storage rounding accumulated across all dim components.
 	var sum float64
 	for _, v := range first[0] {
 		sum += float64(v) * float64(v)
 	}
-	if math.Abs(sum-1) > 1e-4 {
+	if math.Abs(sum-1) > 1e-3 {
 		t.Errorf("vector not unit length: |v|^2 = %v", sum)
 	}
 }

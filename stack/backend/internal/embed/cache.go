@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -144,11 +145,34 @@ func (c *Cache) Save(path string) error {
 			return fmt.Errorf("embed: encode cache entry %q: %w", k, err)
 		}
 	}
-	if err := os.WriteFile(path, []byte(buf.String()), 0o644); err != nil {
+	// Write to a temp file in the same directory and rename into place, so a
+	// crash mid-write never leaves the committed cache truncated and undecodable.
+	if err := writeFileAtomic(path, []byte(buf.String())); err != nil {
 		return fmt.Errorf("embed: write cache %q: %w", path, err)
 	}
 	c.dirty = false
 	return nil
+}
+
+// writeFileAtomic writes data to a temp file in path's directory and renames it
+// over path; rename is atomic on the same filesystem.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".cache-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // Filler embeds cache misses. The Voyage *Client and the Deterministic embedder
