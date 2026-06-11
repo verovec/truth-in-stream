@@ -3,6 +3,8 @@ package wiki
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 
@@ -109,18 +111,34 @@ func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
 // loads embedded chunks into a staging table in keyset order, so a crash
 // leaves staging a clean prefix that the next run resumes past; only once every
 // pending chunk is loaded does it index and swap staging atomically. An empty
-// corpus is never swapped.
-func RunBulkEmbed(ctx context.Context, store EmbedStore, embedder Embedder, cfg Config) (EmbedStats, error) {
+// corpus is never swapped. It logs the pending total at the start, one line per
+// embedded HTTP batch, and the finalize step, so a long or stalled run is
+// observable; a nil logger falls back to slog.Default.
+func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, embedder Embedder, cfg Config) (EmbedStats, error) {
 	if cfg.BatchSize < 1 || cfg.Concurrency < 1 {
 		return EmbedStats{}, fmt.Errorf("wiki: bulk embed needs positive batch size and concurrency, got %d and %d", cfg.BatchSize, cfg.Concurrency)
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	start, err := store.EmbedWatermark(ctx)
 	if err != nil {
 		return EmbedStats{}, fmt.Errorf("wiki: read embed watermark: %w", err)
 	}
+	rem, err := store.EstimateRemaining(ctx, start)
+	if err != nil {
+		return EmbedStats{}, fmt.Errorf("wiki: estimate pending chunks: %w", err)
+	}
+	logger.InfoContext(ctx, "starting bulk embed",
+		slog.String("corpus", cfg.Corpus),
+		slog.Int64("pending_chunks", rem.Chunks),
+		slog.Int64("resume_after_page", start.PageID))
 
-	var stats EmbedStats
+	var (
+		stats      EmbedStats
+		embedded64 atomic.Int64
+	)
 	cur := start
 	created := false
 	superBatch := cfg.BatchSize * cfg.Concurrency
@@ -140,7 +158,7 @@ func RunBulkEmbed(ctx context.Context, store EmbedStore, embedder Embedder, cfg 
 			}
 			created = true
 		}
-		embedded, err := embedChunks(ctx, embedder, chunks, cfg)
+		embedded, err := embedChunks(ctx, logger, embedder, chunks, cfg, &embedded64, rem.Chunks)
 		if err != nil {
 			return EmbedStats{}, err
 		}
@@ -156,19 +174,30 @@ func RunBulkEmbed(ctx context.Context, store EmbedStore, embedder Embedder, cfg 
 	// or one a prior interrupted run left behind (start past the zero cursor).
 	// Neither holds for an empty or already-embedded corpus, so it is a no-op.
 	if !created && start == (domain.WikiCursor{}) {
+		logger.InfoContext(ctx, "nothing to embed; corpus already current",
+			slog.String("corpus", cfg.Corpus))
 		return stats, nil
 	}
+	logger.InfoContext(ctx, "all pending chunks embedded; building index and swapping staging into wiki_chunks",
+		slog.String("corpus", cfg.Corpus),
+		slog.Int("embedded_this_run", stats.Embedded))
 	if err := store.FinalizeStaging(ctx, cfg.Corpus, cfg.MaintenanceWorkMem, cfg.MaxParallelWorkers); err != nil {
 		return EmbedStats{}, fmt.Errorf("wiki: finalize staging: %w", err)
 	}
+	logger.InfoContext(ctx, "bulk embed finalized; wiki_chunks now serves the embedded corpus",
+		slog.String("corpus", cfg.Corpus))
 	return stats, nil
 }
 
 // embedChunks embeds a super-batch by splitting it into BatchSize requests run
 // up to Concurrency at a time, writing each result back onto its chunk so the
 // returned slice stays in the input's keyset order regardless of completion
-// order.
-func embedChunks(ctx context.Context, embedder Embedder, chunks []domain.WikiChunk, cfg Config) ([]domain.WikiChunk, error) {
+// order. It emits one log line per completed HTTP batch, advancing the shared
+// done counter so the line carries the run's cumulative progress against total.
+// A negative total means the count is unknown (the delta path embeds in place
+// without a pending count), and the line omits pending_total rather than
+// reporting a misleading zero.
+func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, chunks []domain.WikiChunk, cfg Config, done *atomic.Int64, total int64) ([]domain.WikiChunk, error) {
 	out := make([]domain.WikiChunk, len(chunks))
 	copy(out, chunks)
 
@@ -191,6 +220,18 @@ func embedChunks(ctx context.Context, embedder Embedder, chunks []domain.WikiChu
 			for i := start; i < end; i++ {
 				out[i].Embedding = embeddings[i-start]
 			}
+			attrs := []slog.Attr{
+				slog.Int("batch_chunks", end-start),
+				slog.Int64("embedded", done.Add(int64(end-start))),
+				slog.Int64("through_page", chunks[end-1].PageID),
+				slog.String("through_title", chunks[end-1].Title),
+			}
+			// A negative total signals an unknown pending count (the delta path);
+			// only report pending_total when the caller knows it.
+			if total >= 0 {
+				attrs = append(attrs, slog.Int64("pending_total", total))
+			}
+			logger.LogAttrs(gctx, slog.LevelInfo, "embedded wiki chunk batch", attrs...)
 			return nil
 		})
 	}

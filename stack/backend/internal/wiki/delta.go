@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -291,6 +293,12 @@ func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string
 // order, mirroring the bulk pipeline's batching and concurrency.
 func embedPending(ctx context.Context, store DeltaStore, embedder Embedder, cfg DeltaConfig) (int, error) {
 	embedCfg := Config{BatchSize: cfg.BatchSize, Concurrency: cfg.Concurrency}
+	// The delta path embeds in place without a pending count, so it logs per
+	// batch against the process-wide default logger (main sets it via
+	// slog.SetDefault) with a negative, unknown total.
+	logger := slog.Default()
+	const unknownTotal = -1
+	var progress atomic.Int64
 	embedded := 0
 	cur := domain.WikiCursor{}
 	superBatch := cfg.BatchSize * cfg.Concurrency
@@ -302,7 +310,7 @@ func embedPending(ctx context.Context, store DeltaStore, embedder Embedder, cfg 
 		if len(chunks) == 0 {
 			return embedded, nil
 		}
-		done, err := embedChunks(ctx, embedder, chunks, embedCfg)
+		done, err := embedChunks(ctx, logger, embedder, chunks, embedCfg, &progress, unknownTotal)
 		if err != nil {
 			return 0, err
 		}

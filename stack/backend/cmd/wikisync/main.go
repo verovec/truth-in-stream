@@ -185,7 +185,7 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		return nil
 	}
 
-	embedStats, err := wiki.RunBulkEmbed(ctx, store, newEmbedder(embProvider, embedCfg), wiki.Config{
+	embedStats, err := wiki.RunBulkEmbed(ctx, logger, store, newEmbedder(logger, embProvider, embedCfg), wiki.Config{
 		Corpus:             wikiCfg.Corpus,
 		BatchSize:          embedCfg.BatchSize,
 		Concurrency:        embedCfg.Concurrency,
@@ -222,7 +222,7 @@ func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, w
 
 	api := &wiki.APIClient{Corpus: wikiCfg.Corpus}
 	logger.InfoContext(ctx, "starting delta sync", slog.String("corpus", wikiCfg.Corpus))
-	stats, err := wiki.RunDelta(ctx, store, api, newEmbedder(embProvider, embedCfg), wiki.DeltaConfig{
+	stats, err := wiki.RunDelta(ctx, store, api, newEmbedder(logger, embProvider, embedCfg), wiki.DeltaConfig{
 		Corpus:        wikiCfg.Corpus,
 		RetentionDays: deltaCfg.RetentionDays,
 		BulkFraction:  deltaCfg.BulkFraction,
@@ -248,8 +248,9 @@ func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, w
 // newEmbedder builds the Voyage embedding client wrapped in the shared retry
 // decorator both sync modes use. The bulk path embeds full batches, so it gives
 // each request a far more generous HTTP timeout than the embed client's
-// query-tuned 30s default.
-func newEmbedder(p config.Embedding, embedCfg config.WikiEmbed) *embed.RetryClient {
+// query-tuned 30s default. The logger lets the retry decorator surface backoffs,
+// so a throttled or stalled run is visible rather than silently waiting.
+func newEmbedder(logger *slog.Logger, p config.Embedding, embedCfg config.WikiEmbed) *embed.RetryClient {
 	return embed.WithRetry(
 		embed.New(embed.Config{
 			APIKey:     p.APIKey,
@@ -257,6 +258,6 @@ func newEmbedder(p config.Embedding, embedCfg config.WikiEmbed) *embed.RetryClie
 			Dim:        p.Dim,
 			HTTPClient: &http.Client{Timeout: embedCfg.HTTPTimeout},
 		}),
-		embed.RetryConfig{MaxAttempts: embedCfg.MaxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay},
+		embed.RetryConfig{MaxAttempts: embedCfg.MaxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay, Logger: logger},
 	)
 }

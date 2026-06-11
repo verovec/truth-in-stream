@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -13,11 +14,15 @@ import (
 // RetryConfig tunes the rate-limit backoff. MaxAttempts counts the first try,
 // so a value of 1 disables retrying. BaseDelay is the first backoff; each
 // subsequent attempt doubles it up to MaxDelay, with full jitter applied so
-// concurrent workers do not retry in lockstep.
+// concurrent workers do not retry in lockstep. Logger, when set, receives a
+// WARN line before every backoff so a throttled or stalled run is visible
+// instead of silently waiting; WithRetry substitutes slog.Default for a nil
+// Logger.
 type RetryConfig struct {
 	MaxAttempts int
 	BaseDelay   time.Duration
 	MaxDelay    time.Duration
+	Logger      *slog.Logger
 }
 
 // docEmbedder is the document-embedding surface RetryClient decorates; *Client
@@ -35,8 +40,9 @@ type docEmbedder interface {
 // embed without risking a wrong-cause retry. Cancellation or expiry of the
 // caller's context outranks any retry and is surfaced at once.
 type RetryClient struct {
-	inner docEmbedder
-	cfg   RetryConfig
+	inner  docEmbedder
+	cfg    RetryConfig
+	logger *slog.Logger
 }
 
 // defaultRetryBaseDelay is the floor for a misconfigured non-positive BaseDelay,
@@ -58,7 +64,11 @@ func WithRetry(inner docEmbedder, cfg RetryConfig) *RetryClient {
 	if cfg.MaxDelay < cfg.BaseDelay {
 		cfg.MaxDelay = cfg.BaseDelay
 	}
-	return &RetryClient{inner: inner, cfg: cfg}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &RetryClient{inner: inner, cfg: cfg, logger: logger}
 }
 
 // EmbedDocuments calls the wrapped embedder, retrying on transient failures
@@ -85,11 +95,33 @@ func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]f
 		if attempt == r.cfg.MaxAttempts {
 			break
 		}
-		if err := sleep(ctx, r.backoff(attempt)); err != nil {
+		delay := r.backoff(attempt)
+		r.logger.WarnContext(ctx, "embedding request failed, backing off before retry",
+			slog.Int("attempt", attempt),
+			slog.Int("max_attempts", r.cfg.MaxAttempts),
+			slog.String("reason", retryReason(err)),
+			slog.Duration("backoff", delay),
+			slog.Any("err", err))
+		if err := sleep(ctx, delay); err != nil {
 			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("embed: giving up after %d attempts: %w", r.cfg.MaxAttempts, lastErr)
+}
+
+// retryReason names why a failed request is being retried, so the backoff log
+// distinguishes provider throttling from a slow request. Each retriable case is
+// matched explicitly; an unrecognized error logs "unknown" rather than being
+// mislabeled, so a future retriable case surfaces instead of hiding as a timeout.
+func retryReason(err error) string {
+	switch {
+	case isRateLimited(err):
+		return "rate_limited"
+	case isTimeout(err):
+		return "timeout"
+	default:
+		return "unknown"
+	}
 }
 
 // backoff returns the jittered delay before the attempt+1 try. The base delay

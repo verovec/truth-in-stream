@@ -1,9 +1,12 @@
 package embed
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -249,6 +252,48 @@ func TestRetryClampsZeroDelaysInsteadOfSpinning(t *testing.T) {
 		}
 		if rc.cfg.BaseDelay <= 0 || rc.cfg.MaxDelay < rc.cfg.BaseDelay {
 			t.Errorf("delays not clamped: base=%v max=%v", rc.cfg.BaseDelay, rc.cfg.MaxDelay)
+		}
+	})
+}
+
+func TestRetryLogsBackoffBeforeRetrying(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Two 429s then success: each backoff must surface a WARN line so a
+		// throttled run is visible instead of silently waiting.
+		f := &fakeDoc{failTimes: 2, status: http.StatusTooManyRequests}
+		var buf bytes.Buffer
+		cfg := testRetryConfig()
+		cfg.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		rc := WithRetry(f, cfg)
+
+		if _, err := rc.EmbedDocuments(t.Context(), []string{"x"}); err != nil {
+			t.Fatalf("EmbedDocuments: %v", err)
+		}
+
+		var backoffs int
+		for line := range bytes.Lines(buf.Bytes()) {
+			var rec struct {
+				Level  string `json:"level"`
+				Msg    string `json:"msg"`
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(line, &rec); err != nil {
+				t.Fatalf("log line is not JSON: %q: %v", line, err)
+			}
+			if rec.Msg != "embedding request failed, backing off before retry" {
+				continue
+			}
+			backoffs++
+			if rec.Level != "WARN" {
+				t.Errorf("backoff log level = %q, want WARN", rec.Level)
+			}
+			if rec.Reason != "rate_limited" {
+				t.Errorf("backoff reason = %q, want rate_limited", rec.Reason)
+			}
+		}
+		// Three attempts, two of them retried, so two backoff lines.
+		if backoffs != 2 {
+			t.Errorf("backoff log lines = %d, want 2", backoffs)
 		}
 	})
 }

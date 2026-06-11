@@ -1,15 +1,24 @@
 package wiki
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"log/slog"
 	"sort"
 	"sync"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// discardLogger silences a run's logs in tests that assert on behavior rather
+// than on the log output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
 
 const testEmbedDim = 4
 
@@ -171,7 +180,7 @@ func TestRunBulkEmbedEmbedsAllInOrder(t *testing.T) {
 	store := &fakeEmbedStore{live: sampleChunks(5)}
 	embedder := &fakeEmbedder{}
 
-	stats, err := RunBulkEmbed(t.Context(), store, embedder, testConfig())
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed: %v", err)
 	}
@@ -206,6 +215,68 @@ func TestRunBulkEmbedEmbedsAllInOrder(t *testing.T) {
 	}
 }
 
+func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
+	t.Parallel()
+	// 5 pages * 2 chunks = 10 chunks; BatchSize 2 => 5 HTTP batches, each logged.
+	store := &fakeEmbedStore{live: sampleChunks(5), remaining: domain.WikiRemaining{Chunks: 10}}
+	embedder := &fakeEmbedder{}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if _, err := RunBulkEmbed(t.Context(), logger, store, embedder, testConfig()); err != nil {
+		t.Fatalf("RunBulkEmbed: %v", err)
+	}
+
+	var (
+		sawStart, sawFinalize bool
+		batchLines, maxDone   int64
+	)
+	for line := range bytes.Lines(buf.Bytes()) {
+		var rec struct {
+			Msg           string `json:"msg"`
+			PendingTotal  int64  `json:"pending_total"`
+			Embedded      int64  `json:"embedded"`
+			PendingChunks int64  `json:"pending_chunks"`
+			ResumeAfter   int64  `json:"resume_after_page"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("log line is not JSON: %q: %v", line, err)
+		}
+		switch rec.Msg {
+		case "starting bulk embed":
+			sawStart = true
+			if rec.PendingChunks != 10 {
+				t.Errorf("start line pending_chunks = %d, want 10", rec.PendingChunks)
+			}
+			if rec.ResumeAfter != 0 {
+				t.Errorf("start line resume_after_page = %d, want 0 on a fresh run", rec.ResumeAfter)
+			}
+		case "embedded wiki chunk batch":
+			batchLines++
+			if rec.PendingTotal != 10 {
+				t.Errorf("batch line pending_total = %d, want 10", rec.PendingTotal)
+			}
+			maxDone = max(maxDone, rec.Embedded)
+		case "bulk embed finalized; wiki_chunks now serves the embedded corpus":
+			sawFinalize = true
+		}
+	}
+
+	if !sawStart {
+		t.Error("missing the start-of-run log line")
+	}
+	if batchLines != 5 {
+		t.Errorf("per-batch log lines = %d, want 5 (one per HTTP batch)", batchLines)
+	}
+	if maxDone != 10 {
+		t.Errorf("cumulative embedded peaked at %d, want 10", maxDone)
+	}
+	if !sawFinalize {
+		t.Error("missing the finalize log line")
+	}
+}
+
 func TestRunBulkEmbedResumesFromWatermark(t *testing.T) {
 	t.Parallel()
 	// Staging already holds page 1 (both chunks) and page 2 chunk 0.
@@ -215,7 +286,7 @@ func TestRunBulkEmbedResumesFromWatermark(t *testing.T) {
 	}
 	embedder := &fakeEmbedder{}
 
-	stats, err := RunBulkEmbed(t.Context(), store, embedder, testConfig())
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed: %v", err)
 	}
@@ -245,7 +316,7 @@ func TestRunBulkEmbedResumeWithEverythingStagedStillFinalizes(t *testing.T) {
 	}
 	embedder := &fakeEmbedder{}
 
-	stats, err := RunBulkEmbed(t.Context(), store, embedder, testConfig())
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed: %v", err)
 	}
@@ -268,7 +339,7 @@ func TestRunBulkEmbedNoChunksSkipsFinalize(t *testing.T) {
 	store := &fakeEmbedStore{}
 	embedder := &fakeEmbedder{}
 
-	stats, err := RunBulkEmbed(t.Context(), store, embedder, testConfig())
+	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
 	if err != nil {
 		t.Fatalf("RunBulkEmbed: %v", err)
 	}
@@ -288,7 +359,7 @@ func TestRunBulkEmbedPropagatesEmbedError(t *testing.T) {
 	store := &fakeEmbedStore{live: sampleChunks(2)}
 	embedder := &fakeEmbedder{err: errors.New("provider down")}
 
-	if _, err := RunBulkEmbed(t.Context(), store, embedder, testConfig()); err == nil {
+	if _, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig()); err == nil {
 		t.Fatal("want embed error, got nil")
 	}
 	if store.finalized != "" {
@@ -304,7 +375,7 @@ func TestRunBulkEmbedPropagatesCopyError(t *testing.T) {
 	store := &fakeEmbedStore{live: sampleChunks(2), copyErr: errors.New("copy failed")}
 	embedder := &fakeEmbedder{}
 
-	if _, err := RunBulkEmbed(t.Context(), store, embedder, testConfig()); err == nil {
+	if _, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig()); err == nil {
 		t.Fatal("want copy error, got nil")
 	}
 	if store.finalized != "" {
