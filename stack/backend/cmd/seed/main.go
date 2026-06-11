@@ -38,11 +38,8 @@ import (
 )
 
 const (
-	// defaultEmbeddingModel mirrors config.defaultEmbeddingModel; the cache key
-	// embeds the model, so seed and refresh must agree on it offline.
-	defaultEmbeddingModel = "voyage-4-large"
-	defaultSeedDir        = "seed"
-	defaultCachePath      = "seed/embeddings.cache.jsonl"
+	defaultSeedDir   = "seed"
+	defaultCachePath = "seed/embeddings.cache.jsonl"
 	// defaultMediaCacheDir holds fetched sample media so a later reseed reuses
 	// the bytes instead of re-downloading. It sits under the bind-mounted seed
 	// tree so it survives across `docker compose run --rm seed` invocations.
@@ -110,7 +107,7 @@ func embeddingModel() string {
 	if m := os.Getenv("EMBEDDING_MODEL"); m != "" {
 		return m
 	}
-	return defaultEmbeddingModel
+	return config.DefaultEmbeddingModel
 }
 
 // refreshCache re-embeds every fixture document text from scratch and writes the
@@ -259,7 +256,7 @@ func cacheMissHint(err error, model string) error {
 		return fmt.Errorf("%w\nthe committed embedding cache does not cover model %q: "+
 			"a fixture changed or EMBEDDING_MODEL differs from the model the cache was built under - "+
 			"run `make refresh-embeddings` (needs a valid EMBEDDING_API_KEY) to rebuild it, "+
-			"or unset EMBEDDING_MODEL to use the default %q", err, model, defaultEmbeddingModel)
+			"or unset EMBEDDING_MODEL to use the default %q", err, model, config.DefaultEmbeddingModel)
 	}
 	return err
 }
