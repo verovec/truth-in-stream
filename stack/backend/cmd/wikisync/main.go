@@ -150,14 +150,18 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		}
 	}
 
-	logger.InfoContext(ctx, "downloading dump",
+	logger.InfoContext(ctx, "resolving dump",
 		slog.String("corpus", wikiCfg.Corpus), slog.String("dir", dir))
 	var dl wiki.Downloader
 	files, err := dl.Fetch(ctx, wikiCfg.Corpus, dir)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "dump downloaded",
+	resolution := "dump downloaded"
+	if files.Reused {
+		resolution = "reusing existing dump"
+	}
+	logger.InfoContext(ctx, resolution,
 		slog.String("dump", files.DumpPath), slog.String("version", files.Version))
 
 	ingestStats, err := wiki.RunBulk(ctx, store, files, wikiCfg.Corpus)

@@ -152,21 +152,27 @@ make wiki-populate   # bulk: ingest + embed the whole corpus, then swap it live 
 make wiki-update     # delta: catch the corpus up to recent Wikipedia changes via the MediaWiki API
 ```
 
-Both call Voyage and need `EMBEDDING_API_KEY` in the root `.env`. `wiki-populate` loads embedded
-chunks into a staging table in keyset order and only swaps them into the live `wiki_chunks` once
-the **whole** corpus is embedded, so partial runs accumulate progress without serving it;
-re-running resumes from the staging watermark (the downloaded dump persists in the `wiki-dump`
-volume). The defaults are tuned gentle for a constrained Voyage tier; raise the batch and
-concurrency on a higher tier, or box the run with a budget:
+Both call Voyage and read `EMBEDDING_API_KEY` from the root `.env` automatically - no manual
+`export` needed (Compose interpolates it). `wiki-populate` loads embedded chunks into a staging
+table in keyset order and only swaps them into the live `wiki_chunks` once the **whole** corpus
+is embedded, so partial runs accumulate progress without serving it; re-running resumes from the
+staging watermark. The downloaded dump persists in the `wiki-dump` volume and is **reused** on a
+re-run: each file is fetched conditionally (`If-Modified-Since`) and skipped on a `304`, so only a
+newly published dump triggers a re-download (the log says `reusing existing dump` or
+`dump downloaded`).
+
+The defaults are tuned gentle for a constrained Voyage tier; raise the batch and concurrency on a
+higher tier, or box the run with a budget. Every knob is read from the root `.env` or a per-run
+environment override (a shell value wins over `.env`):
 
 ```bash
-make wiki-populate WIKI_EMBED_BATCH_SIZE=128 WIKI_EMBED_CONCURRENCY=4   # faster on a higher tier
-make wiki-populate WIKI_MAX_DURATION=15m                                # one 15m session, then stop
+WIKI_EMBED_BATCH_SIZE=128 WIKI_EMBED_CONCURRENCY=4 make wiki-populate   # faster on a higher tier
+WIKI_MAX_DURATION=15m make wiki-populate                                # one 15m session, then stop
 ```
 
-The Make defaults are `WIKI_EMBED_BATCH_SIZE=32`, `WIKI_EMBED_CONCURRENCY=2`,
+The defaults are `WIKI_EMBED_BATCH_SIZE=32`, `WIKI_EMBED_CONCURRENCY=2`,
 `WIKI_EMBED_HTTP_TIMEOUT=300s`, and `WIKI_MAX_DURATION=0` (run to completion); `WIKI_CORPUS`
-defaults to `simplewiki`.
+defaults to `simplewiki`. Set any of them in `.env` to make the choice stick across runs.
 
 **Reading the logs.** Each run streams structured lines:
 
