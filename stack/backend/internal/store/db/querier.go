@@ -6,6 +6,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
@@ -20,7 +22,9 @@ type Querier interface {
 	CountWikiChunks(ctx context.Context) (int64, error)
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	CountWikiPages(ctx context.Context) (int64, error)
+	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
 	DeleteSegmentResults(ctx context.Context, videoID string) error
+	DeleteWikiPage(ctx context.Context, pageID int64) error
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
 	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
@@ -30,9 +34,11 @@ type Querier interface {
 	EstimateRemainingWikiChunks(ctx context.Context, arg EstimateRemainingWikiChunksParams) (EstimateRemainingWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetProcessedVideoSegmentCount(ctx context.Context, videoID string) (int32, error)
+	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListSegmentResults(ctx context.Context, videoID string) ([]SegmentResult, error)
+	ListVideos(ctx context.Context) ([]Video, error)
 	MarkVideoProcessed(ctx context.Context, arg MarkVideoProcessedParams) error
 	// Advances the corpus checkpoint after a successful embed-and-swap, recording
 	// that the live corpus is now fully embedded at its stored dump version.
@@ -41,13 +47,6 @@ type Querier interface {
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
-	// Delta sync writes embeddings straight into the live table: at delta volume the
-	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
-	SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults
-	// Delta sync diffs the revision RecentChanges reports against the one stored, so
-	// a page already at that revision is neither refetched nor re-embedded. A page's
-	// chunks share a revision after an upsert; max guards against a partial update.
-	StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error)
 	// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
 	// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
 	// the result regardless of the chosen plan; the HNSW index only indexes
@@ -55,6 +54,14 @@ type Querier interface {
 	// referenced twice but sqlc collapses it to one parameter, so the index still
 	// drives the ORDER BY.
 	SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error)
+	SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) (Video, error)
+	// Delta sync writes embeddings straight into the live table: at delta volume the
+	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
+	SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults
+	// Delta sync diffs the revision RecentChanges reports against the one stored, so
+	// a page already at that revision is neither refetched nor re-embedded. A page's
+	// chunks share a revision after an upsert; max guards against a partial update.
+	StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error)
 	// Removes the stale tail of a page after a re-sync produced fewer chunks
 	// (from_index 0 removes the page entirely, e.g. it became a redirect).
 	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults
@@ -66,6 +73,7 @@ type Querier interface {
 	// staging table is swapped in, every live chunk has an embedding.
 	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
+	UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error)
 	UpsertSegmentResult(ctx context.Context, arg UpsertSegmentResultParams) error
 	// Ingest never writes embeddings; the CASE keeps an existing embedding only
 	// while the content it was computed from is unchanged, so re-ingesting a

@@ -23,7 +23,7 @@ func newTestServer(storeErr error, transcriber *stubTranscriber) http.Handler {
 func newAuthedTestServer(auth AuthConfig, storeErr error, transcriber *stubTranscriber, processing ProcessingService) http.Handler {
 	health := service.NewHealthChecker(fakePinger{err: storeErr})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, transcriber, processing, "", auth, logger)
+	return NewMux(health, transcriber, processing, &fakeVideoService{}, "", auth, logger)
 }
 
 func TestHealthz(t *testing.T) {
