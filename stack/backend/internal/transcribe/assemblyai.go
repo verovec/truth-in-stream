@@ -24,16 +24,30 @@ import (
 const (
 	defaultAssemblyAIURL   = "wss://streaming.assemblyai.com/v3/ws"
 	defaultAssemblyAIModel = "u3-rt-pro"
-	// assemblyAIEncoding and assemblyAISampleRate pin the PCM format the live
+	// assemblyAIEncoding and assemblyAISampleRateHz pin the PCM format the live
 	// pipeline already produces: signed 16-bit little-endian, mono, 16 kHz.
-	assemblyAIEncoding   = "pcm_s16le"
-	assemblyAISampleRate = "16000"
+	// assemblyAISampleRateHz is the single source of truth: it sizes the audio
+	// coalescing buffer and is sent verbatim as the sample_rate query parameter.
+	assemblyAIEncoding     = "pcm_s16le"
+	assemblyAISampleRateHz = 16000
 	// assemblyAIReadLimit raises the inbound cap above coder/websocket's 32 KiB
 	// default: a formatted Turn for a long utterance carries a per-word array
 	// that can exceed it, and the default turns that into a fatal read error that
 	// kills the live session. 4 MiB covers far longer turns while still bounding a
 	// misbehaving provider.
 	assemblyAIReadLimit int64 = 4 << 20
+	// AssemblyAI streaming v3 accepts only audio frames carrying 50-1000 ms of
+	// audio; a frame outside that range is rejected with WebSocket close code
+	// 3007, which kills the session. The live pipeline emits ~3 ms frames (one per
+	// audio worklet block), so the writer coalesces them into assemblyAIChunkBytes
+	// frames before sending and drops a trailing buffer below assemblyAIMinChunkBytes
+	// on teardown. Coalescing in fixed assemblyAIChunkBytes units also caps the
+	// upper bound: a single oversized inbound chunk is split, so an emitted frame
+	// never exceeds 100 ms. Sizes are in bytes of the pinned PCM format: 2 bytes
+	// per sample, one channel, so assemblyAISampleRateHz*2/1000 bytes per ms.
+	assemblyAIBytesPerMilli = assemblyAISampleRateHz * 2 / 1000
+	assemblyAIChunkBytes    = 100 * assemblyAIBytesPerMilli
+	assemblyAIMinChunkBytes = 50 * assemblyAIBytesPerMilli
 )
 
 // Server message types received from AssemblyAI streaming v3. The type field is
@@ -42,6 +56,10 @@ const (
 	aaiMsgBegin       = "Begin"
 	aaiMsgTurn        = "Turn"
 	aaiMsgTermination = "Termination"
+	// aaiMsgError is a fatal session error the provider sends as a JSON frame
+	// just before it closes the socket; its close reason is only "See Error
+	// message for details", so this message carries the actual cause.
+	aaiMsgError = "Error"
 )
 
 // aaiWord is one word in a Turn. Timestamps are integer milliseconds (unlike
@@ -64,12 +82,18 @@ type aaiMessage struct {
 	EndOfTurn    bool      `json:"end_of_turn"`
 	SpeakerLabel string    `json:"speaker_label"`
 	Words        []aaiWord `json:"words"`
+	// ErrorCode and Error carry the cause of an aaiMsgError frame, e.g. code 3007
+	// "Audio chunk duration violation".
+	ErrorCode int    `json:"error_code"`
+	Error     string `json:"error"`
 }
 
 // aaiSocket is the slice of a WebSocket connection the AssemblyAI session
 // drives: binary audio out, JSON messages in, plus teardown. It is an interface
 // so the session loop is tested against a faked socket without a live provider.
 type aaiSocket interface {
+	// writeBinary sends data synchronously and must not retain the slice past
+	// return, so the caller may reuse the backing array for the next frame.
 	writeBinary(ctx context.Context, data []byte) error
 	readJSON(ctx context.Context, v any) error
 	close()
@@ -188,7 +212,7 @@ func assemblyAIURL(base, model string, maxSpeakers int, language string) (string
 	}
 	q := url.Values{
 		"speech_model":   {model},
-		"sample_rate":    {assemblyAISampleRate},
+		"sample_rate":    {strconv.Itoa(assemblyAISampleRateHz)},
 		"encoding":       {assemblyAIEncoding},
 		"speaker_labels": {"true"},
 	}
@@ -233,23 +257,42 @@ func (c *AssemblyAIClient) streamSession(ctx context.Context, sock aaiSocket, ch
 	wg.Wait()
 }
 
-// writeAudio forwards each audio chunk as a binary frame until chunks closes, a
-// write fails, or ctx is canceled. A write failure after cancellation is the
-// expected teardown race and is not logged.
+// writeAudio coalesces inbound audio into provider-sized frames and forwards
+// each as a binary frame until chunks closes, a write fails, or ctx is canceled.
+// The live pipeline emits ~3 ms frames, far below AssemblyAI's 50 ms minimum, so
+// sending them through unbatched trips close code 3007; this accumulates and
+// emits in fixed assemblyAIChunkBytes (100 ms) frames. Emitting fixed-size frames
+// also splits an oversized inbound chunk, so an emitted frame never exceeds the
+// 1000 ms upper bound either. Because the source is paced to playback, a frame
+// fills at roughly real time, keeping within the transmission-rate limit too. On
+// a clean end-of-stream a trailing buffer is flushed if it meets the 50 ms
+// minimum, else dropped; on a canceled teardown the flush write no-ops and the
+// sub-frame tail is dropped, the accepted tail loss. A write failure after
+// cancellation is the expected teardown race and is not logged.
 func (c *AssemblyAIClient) writeAudio(ctx context.Context, sock aaiSocket, chunks <-chan []byte) {
+	buf := make([]byte, 0, assemblyAIChunkBytes)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case chunk, ok := <-chunks:
 			if !ok {
-				return
-			}
-			if err := sock.writeBinary(ctx, chunk); err != nil {
-				if ctx.Err() == nil {
-					c.logger.ErrorContext(ctx, "assemblyai: write audio", slog.Any("err", err))
+				if len(buf) >= assemblyAIMinChunkBytes {
+					_ = sock.writeBinary(ctx, buf)
 				}
 				return
+			}
+			buf = append(buf, chunk...)
+			for len(buf) >= assemblyAIChunkBytes {
+				if err := sock.writeBinary(ctx, buf[:assemblyAIChunkBytes]); err != nil {
+					if ctx.Err() == nil {
+						c.logger.ErrorContext(ctx, "assemblyai: write audio", slog.Any("err", err))
+					}
+					return
+				}
+				// Compact the carry-over to the front; copy is memmove-safe for the
+				// overlapping source after a large chunk produced multiple frames.
+				buf = buf[:copy(buf, buf[assemblyAIChunkBytes:])]
 			}
 		}
 	}
@@ -301,6 +344,15 @@ func (c *AssemblyAIClient) classify(ctx context.Context, msg aaiMessage) (event 
 		}
 		return TranscriptEvent{Segment: Segment{Text: msg.Transcript, Speaker: msg.SpeakerLabel}, Final: false}, true, false
 	case aaiMsgTermination:
+		return TranscriptEvent{}, false, true
+	case aaiMsgError:
+		// Surface the provider's stated cause at error level: the WebSocket close
+		// reason only points here ("See Error message for details"), so without
+		// this the real failure (e.g. code 3007 audio chunk duration violation) is
+		// invisible. The error ends the session.
+		c.logger.ErrorContext(ctx, "assemblyai: session error",
+			slog.Int("error_code", msg.ErrorCode),
+			slog.String("error", msg.Error))
 		return TranscriptEvent{}, false, true
 	case aaiMsgBegin:
 		return TranscriptEvent{}, false, false
