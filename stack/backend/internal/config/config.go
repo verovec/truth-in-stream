@@ -13,12 +13,15 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// defaultEmbeddingModel is the voyage model used for both ingest and query
+// DefaultEmbeddingModel is the voyage model used for both ingest and query
 // embeddings. The same model must be used on both sides or similarity scores
 // are meaningless. voyage-4-large is the canonical model: it outputs 1024 dims
 // (matching the pinned index) and its batch endpoint works, where base
-// voyage-4's currently hangs on any multi-input batch.
-const defaultEmbeddingModel = "voyage-4-large"
+// voyage-4's currently hangs on any multi-input batch. It is exported so the
+// seed tooling and its cache-coverage test key the offline cache under the same
+// string the running stack embeds with - a drift here resurfaces as a silent
+// cache miss (the failure this card fixed).
+const DefaultEmbeddingModel = "voyage-4-large"
 
 // defaultTranscriptionModel is the ElevenLabs batch speech-to-text model.
 const defaultTranscriptionModel = "scribe_v2"
@@ -74,7 +77,7 @@ func LoadEmbedding() (Embedding, error) {
 	}
 	e := Embedding{
 		APIKey: apiKey,
-		Model:  getenv("EMBEDDING_MODEL", defaultEmbeddingModel),
+		Model:  getenv("EMBEDDING_MODEL", DefaultEmbeddingModel),
 		Dim:    domain.EmbeddingDim,
 	}
 	if raw := os.Getenv("EMBEDDING_DIM"); raw != "" {

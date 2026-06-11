@@ -5,14 +5,16 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/ingest"
 	"github.com/verovec/truth-in-stream/backend/internal/seed"
 )
 
-// committedCacheModel is the model the committed offline cache is keyed under.
-// It mirrors the cmd/seed default; a real refresh re-keys under the same model.
-const committedCacheModel = "voyage-4-large"
+// committedCacheModel is the model the committed offline cache is keyed under -
+// the exported canonical default, so this guard probes the exact keys the seed
+// binary and a refresh use; a real refresh re-keys under the same model.
+const committedCacheModel = config.DefaultEmbeddingModel
 
 // TestCommittedCacheCoversFixtures fails if the committed embedding cache is
 // missing a vector for any fixture document text. It runs with no database and
