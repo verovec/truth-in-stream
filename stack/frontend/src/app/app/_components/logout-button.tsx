@@ -19,7 +19,11 @@ export function LogoutButton() {
       setFailed(true);
       return;
     }
-    router.push("/login");
+    // Return to the public landing page. Navigating to /login here would be
+    // intercepted by the @auth/(.)login modal route and render the login modal
+    // over the analyser instead of leaving it; the landing page is not
+    // intercepted and is the natural signed-out destination.
+    router.push("/");
     router.refresh();
   }
 

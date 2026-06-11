@@ -11,11 +11,13 @@ const LOGIN_PATH = "/login";
 // so an invalid or stale cookie can never lock the operator out of signing in.
 const PUBLIC_PATHS = new Set(["/", LOGIN_PATH]);
 
-// A path ending in a file extension (e.g. /og.png, /robots.txt) is a static
-// marketing asset, served publicly. The matcher already excludes the framework
-// asset prefixes; this covers files served from the public directory at the
-// root.
-const STATIC_ASSET = /\.[a-z0-9]+$/i;
+// A path ending in a known asset extension (e.g. /og.png, /robots.txt) is a
+// static marketing asset served from the public directory, public so social
+// crawlers with no cookie can fetch it. The matcher already excludes the
+// framework asset prefixes; this is a closed allowlist rather than "any
+// extension" so a product route is never made public by accident.
+const STATIC_ASSET =
+  /\.(?:png|jpe?g|gif|svg|webp|avif|ico|txt|xml|webmanifest|woff2?)$/i;
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.has(pathname) || STATIC_ASSET.test(pathname);

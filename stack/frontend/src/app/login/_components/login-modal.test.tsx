@@ -26,7 +26,18 @@ describe("LoginModal", () => {
     ).toBeInTheDocument();
   });
 
-  test("moves focus into the dialog on open", () => {
+  test("moves focus to the first form field on open", () => {
+    render(
+      <LoginModal>
+        <input aria-label="email" />
+        <input aria-label="password" />
+      </LoginModal>,
+    );
+
+    expect(screen.getByLabelText("email")).toHaveFocus();
+  });
+
+  test("falls back to focusing the dialog when there is no field", () => {
     render(
       <LoginModal>
         <button type="button">inner control</button>

@@ -20,7 +20,13 @@ export function LoginModal({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const dialog = dialogRef.current;
-    dialog?.focus();
+    // Prefer the first form field for immediate typing; fall back to the dialog
+    // container (it is programmatically focusable via tabIndex) so focus still
+    // lands inside the modal when there is no field to take it.
+    const firstField = dialog?.querySelector<HTMLElement>(
+      "input, select, textarea",
+    );
+    (firstField ?? dialog)?.focus();
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
