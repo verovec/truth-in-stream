@@ -55,6 +55,44 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Opt-in (profile "wiki"), not part of `docker compose up`: bulk-ingests and
+  # embeds the full Wikipedia corpus into pgvector. Unlike `seed` (a committed
+  # subset, no key), this calls the paid Voyage embedding API and is long, so it
+  # runs only on demand and the backend never waits for it:
+  #   docker compose --profile wiki run --rm wiki-populate
+  # Each run is time-boxed by WIKI_MAX_DURATION (default 15m) and stops cleanly
+  # at the budget; the embedded prefix is committed and re-running resumes. The
+  # corpus only goes live (atomic swap) once a run finishes the whole embed. The
+  # downloaded dump lives in a named volume so resumes reuse it. Override with
+  # WIKI_MAX_DURATION (0 = run to completion) and WIKI_CORPUS (default simplewiki).
+  wiki-populate:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command:
+      - "go"
+      - "run"
+      - "./cmd/wikisync"
+      - "-mode=bulk"
+      - "-max-duration=${WIKI_MAX_DURATION:-15m}"
+      - "-dir=/wiki-dump"
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      # Required for the real embed run; the program fails fast if unset.
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - wiki-dump:/wiki-dump
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # Object storage for uploaded video. Local mirror of the production S3 bucket;
   # the backend talks to both through one storage abstraction selected by config
   # (STORAGE_* env). Console on :9001, S3 API on :9000.
@@ -156,3 +194,4 @@ volumes:
   frontend-node-modules:
   pgdata:
   minio-data:
+  wiki-dump:

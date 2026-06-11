@@ -159,6 +159,19 @@ progress without serving it. Under the hood this is
 `make wikisync`) runs to completion. The Make-level knobs are `WIKI_MAX_DURATION` (default
 `15m`) and `WIKI_DUMP_DIR` (default `/tmp/wikisync-dump`, reused across runs).
 
+Against the Docker Compose stack the same bounded session runs as an opt-in service behind the
+`wiki` profile, so a plain `docker compose up` never triggers the paid embed:
+
+```bash
+docker compose --profile wiki run --rm wiki-populate                 # one 15m session, resumable
+WIKI_MAX_DURATION=30m docker compose --profile wiki run --rm wiki-populate
+```
+
+It waits for Postgres and the migrations, reads `EMBEDDING_API_KEY` from the root `.env`, and
+keeps the downloaded dump in the `wiki-dump` named volume so re-runs resume. The knobs are the
+same `WIKI_MAX_DURATION` (default `15m`, `0` runs to completion) and `WIKI_CORPUS` (default
+`simplewiki`).
+
 It needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional knobs:
 
 | Variable | Required | Purpose |
