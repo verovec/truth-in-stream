@@ -195,8 +195,9 @@ knobs:
 | `WIKI_CORPUS` | no (default `simplewiki`) | Wikimedia dump name (`<lang>wiki`); interpolated into the download and source URLs |
 | `WIKI_EMBED_BATCH_SIZE` | no (binary default `128`, max `1000`; Make sets `32`) | Chunks per Voyage embedding request - lower it if `embed_duration` nears the timeout |
 | `WIKI_EMBED_CONCURRENCY` | no (binary default `4`; Make sets `2`) | Concurrent embedding requests - lower it to ease throttling |
-| `WIKI_EMBED_HTTP_TIMEOUT` | no (binary default `120s`; Make sets `300s`) | Per-request HTTP timeout; raise it when Voyage is slow but still responding |
+| `WIKI_EMBED_HTTP_TIMEOUT` | no (binary default `30s`; Make sets `300s`) | Per-request HTTP timeout; a healthy batch returns in seconds, so the short default surfaces a throttling stall fast - raise it when Voyage is slow but still responding |
 | `WIKI_EMBED_MAX_RETRIES` | no (default `6`) | Retries per request when the API throttles |
+| `WIKI_EMBED_RPM` | no (default `0` = unpaced) | Caps outbound embedding requests per minute so a constrained tier is not overrun; set it to your tier's RPM. The free Voyage tier (3 RPM) cannot embed a full corpus in any reasonable time regardless - a paid tier is required |
 | `WIKI_MAX_DURATION` | no (default `0` = run to completion) | Wall-clock budget for one bulk run (maps to `-max-duration`); a positive budget stops the run cleanly and the next resumes. Running the Compose service directly (not via `make`) applies a `15m` fallback |
 | `WIKI_EMBED_MAINTENANCE_WORK_MEM` | no (default `512MB`) | Postgres `maintenance_work_mem` for the HNSW index build; raise it for `enwiki` |
 | `WIKI_EMBED_MAX_PARALLEL_WORKERS` | no (default `7`) | Parallel workers for the index build |
