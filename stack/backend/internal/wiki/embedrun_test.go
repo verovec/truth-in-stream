@@ -239,6 +239,7 @@ func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 			Embedded      int64  `json:"embedded"`
 			PendingChunks int64  `json:"pending_chunks"`
 			ResumeAfter   int64  `json:"resume_after_page"`
+			EmbedDuration *int64 `json:"embed_duration"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil {
 			t.Fatalf("log line is not JSON: %q: %v", line, err)
@@ -256,6 +257,9 @@ func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 			batchLines++
 			if rec.PendingTotal != 10 {
 				t.Errorf("batch line pending_total = %d, want 10", rec.PendingTotal)
+			}
+			if rec.EmbedDuration == nil {
+				t.Error("batch line missing embed_duration; per-batch embed latency must be logged")
 			}
 			maxDone = max(maxDone, rec.Embedded)
 		case "bulk embed finalized; wiki_chunks now serves the embedded corpus":

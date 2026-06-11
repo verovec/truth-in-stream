@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -192,8 +193,13 @@ func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, em
 // embedChunks embeds a super-batch by splitting it into BatchSize requests run
 // up to Concurrency at a time, writing each result back onto its chunk so the
 // returned slice stays in the input's keyset order regardless of completion
-// order. It emits one log line per completed HTTP batch, advancing the shared
-// done counter so the line carries the run's cumulative progress against total.
+// order. It emits one log line per completed HTTP batch carrying the batch's
+// embed latency (embed_duration spans the whole call, so on a first-try success
+// it is the single request's latency, and on a retried one it also includes the
+// backoff waits), advancing the shared done counter so the line also reports the
+// run's cumulative progress against total. The latency makes a slow provider
+// visible: when it approaches the embed HTTP timeout, lower WIKI_EMBED_BATCH_SIZE
+// or WIKI_EMBED_CONCURRENCY, or raise WIKI_EMBED_HTTP_TIMEOUT.
 // A negative total means the count is unknown (the delta path embeds in place
 // without a pending count), and the line omits pending_total rather than
 // reporting a misleading zero.
@@ -210,10 +216,12 @@ func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, ch
 			for i := start; i < end; i++ {
 				texts[i-start] = chunks[i].Content
 			}
+			embedStart := time.Now()
 			embeddings, err := embedder.EmbedDocuments(gctx, texts)
 			if err != nil {
 				return fmt.Errorf("wiki: embed chunks [%d:%d]: %w", start, end, err)
 			}
+			embedDuration := time.Since(embedStart)
 			if len(embeddings) != end-start {
 				return fmt.Errorf("wiki: embed chunks [%d:%d]: got %d embeddings, want %d", start, end, len(embeddings), end-start)
 			}
@@ -223,6 +231,7 @@ func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, ch
 			attrs := []slog.Attr{
 				slog.Int("batch_chunks", end-start),
 				slog.Int64("embedded", done.Add(int64(end-start))),
+				slog.Duration("embed_duration", embedDuration),
 				slog.Int64("through_page", chunks[end-1].PageID),
 				slog.String("through_title", chunks[end-1].Title),
 			}

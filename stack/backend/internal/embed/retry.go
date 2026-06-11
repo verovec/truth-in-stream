@@ -77,10 +77,12 @@ func WithRetry(inner docEmbedder, cfg RetryConfig) *RetryClient {
 func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
 	var lastErr error
 	for attempt := 1; attempt <= r.cfg.MaxAttempts; attempt++ {
+		reqStart := time.Now()
 		out, err := r.inner.EmbedDocuments(ctx, texts)
 		if err == nil {
 			return out, nil
 		}
+		elapsed := time.Since(reqStart)
 		// An expired or canceled caller context (a -max-duration budget or an
 		// interrupt) outranks any retry: a request timeout that fires because the
 		// parent deadline already passed must surface as the context error, not be
@@ -100,6 +102,7 @@ func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]f
 			slog.Int("attempt", attempt),
 			slog.Int("max_attempts", r.cfg.MaxAttempts),
 			slog.String("reason", retryReason(err)),
+			slog.Duration("elapsed", elapsed),
 			slog.Duration("backoff", delay),
 			slog.Any("err", err))
 		if err := sleep(ctx, delay); err != nil {
