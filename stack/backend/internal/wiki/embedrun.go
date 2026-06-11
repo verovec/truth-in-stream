@@ -41,6 +41,7 @@ type EmbedStats struct {
 // build; the pipeline forwards them to the store without interpreting them.
 type Config struct {
 	Corpus             string
+	DumpVersion        string
 	BatchSize          int
 	Concurrency        int
 	MaintenanceWorkMem string
@@ -70,9 +71,14 @@ type EmbedSource interface {
 // EmbedSink is the write side: build the staging table, load embedded chunks
 // into it, then index and swap it into place.
 type EmbedSink interface {
+	// DiscardStagingIfStale drops a surviving staging table built for a different
+	// dump than dumpVersion (or one carrying no stamp), reporting whether it did.
+	// A matching staging table is kept so an interrupted run still resumes.
+	DiscardStagingIfStale(ctx context.Context, dumpVersion string) (bool, error)
 	// CreateStaging creates the unindexed staging table if it is absent,
-	// preserving an existing one so an interrupted run resumes into it.
-	CreateStaging(ctx context.Context) error
+	// preserving an existing one so an interrupted run resumes into it, and
+	// stamps it with dumpVersion.
+	CreateStaging(ctx context.Context, dumpVersion string) error
 	// CopyStagingChunks bulk-loads embedded chunks into staging.
 	CopyStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error
 	// FinalizeStaging indexes the loaded staging table and swaps it atomically
@@ -123,6 +129,22 @@ func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, em
 		logger = slog.Default()
 	}
 
+	// Drop a staging table left by an earlier run against a different dump before
+	// reading the watermark: the freshly ingested corpus can hold chunks below
+	// that staging's watermark which the keyset resume never revisits, so resuming
+	// into it would strand them and the swap's staging==live guard would refuse
+	// the corpus on every run. Discarding re-embeds from scratch against the
+	// current dump; a staging table from the same dump is kept and resumed.
+	discarded, err := store.DiscardStagingIfStale(ctx, cfg.DumpVersion)
+	if err != nil {
+		return EmbedStats{}, fmt.Errorf("wiki: discard stale staging: %w", err)
+	}
+	if discarded {
+		logger.WarnContext(ctx, "discarded staging built for a different dump; re-embedding the corpus from scratch",
+			slog.String("corpus", cfg.Corpus),
+			slog.String("dump_version", cfg.DumpVersion))
+	}
+
 	start, err := store.EmbedWatermark(ctx)
 	if err != nil {
 		return EmbedStats{}, fmt.Errorf("wiki: read embed watermark: %w", err)
@@ -154,7 +176,7 @@ func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store EmbedStore, em
 		// Create staging lazily, only once there is work, so a re-run on an
 		// already-embedded corpus leaves no empty staging table behind.
 		if !created {
-			if err := store.CreateStaging(ctx); err != nil {
+			if err := store.CreateStaging(ctx, cfg.DumpVersion); err != nil {
 				return EmbedStats{}, fmt.Errorf("wiki: create staging table: %w", err)
 			}
 			created = true

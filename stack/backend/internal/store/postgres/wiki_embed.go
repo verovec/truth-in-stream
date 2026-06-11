@@ -48,7 +48,8 @@ func (s *Store) EmbedWatermark(ctx context.Context) (domain.WikiCursor, error) {
 	}
 
 	var cur domain.WikiCursor
-	err = s.pool.QueryRow(ctx,
+	err = s.pool.QueryRow(
+		ctx,
 		"SELECT page_id, chunk_index FROM "+wikiStagingTable+" ORDER BY page_id DESC, chunk_index DESC LIMIT 1",
 	).Scan(&cur.PageID, &cur.ChunkIndex)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -102,12 +103,15 @@ func (s *Store) EstimateRemaining(ctx context.Context, cur domain.WikiCursor) (d
 	return domain.WikiRemaining{Pages: row.Pages, Chunks: row.Chunks, Chars: row.Chars}, nil
 }
 
-// CreateStaging creates the unindexed staging table if it is absent. LIKE
-// copies the columns, NOT NULLs, and defaults but no primary key or HNSW index,
-// keeping the COPY load fast; the index is built once, after the load. IF NOT
-// EXISTS preserves a partial staging table so an interrupted run resumes into
-// it rather than re-embedding from scratch.
-func (s *Store) CreateStaging(ctx context.Context) error {
+// CreateStaging creates the unindexed staging table if it is absent and stamps
+// it with the dump version it is being built for. LIKE copies the columns, NOT
+// NULLs, and defaults but no primary key or HNSW index, keeping the COPY load
+// fast; the index is built once, after the load. IF NOT EXISTS preserves a
+// partial staging table so an interrupted run resumes into it rather than
+// re-embedding from scratch. The version stamp lets a later run tell whether a
+// surviving staging table belongs to the dump it is about to embed; see
+// DiscardStagingIfStale.
+func (s *Store) CreateStaging(ctx context.Context, dumpVersion string) error {
 	stmt := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s (LIKE wiki_chunks INCLUDING DEFAULTS INCLUDING CONSTRAINTS)",
 		wikiStagingTable,
@@ -115,7 +119,68 @@ func (s *Store) CreateStaging(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("postgres: create staging table: %w", err)
 	}
+	return s.stampStaging(ctx, dumpVersion)
+}
+
+// stampStaging records dumpVersion as the staging table's comment. COMMENT takes
+// no bind parameters, so the statement is assembled server-side with format(%L),
+// which escapes the version safely; the table name is a trusted constant. The
+// stamp lives on the table and is dropped with it, so it never outlives staging.
+func (s *Store) stampStaging(ctx context.Context, dumpVersion string) error {
+	var stmt string
+	if err := s.pool.QueryRow(
+		ctx,
+		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", wikiStagingTable),
+		dumpVersion,
+	).Scan(&stmt); err != nil {
+		return fmt.Errorf("postgres: build staging stamp: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("postgres: stamp staging table: %w", err)
+	}
 	return nil
+}
+
+// DiscardStagingIfStale drops a surviving staging table whose version stamp does
+// not match the dump now being embedded, returning whether it dropped one. The
+// bulk pipeline re-ingests the live corpus on every run, so a newer dump can
+// change live chunks - including ones that sort below the staging watermark,
+// which the keyset resume would never revisit - leaving the swap's staging==live
+// guard to refuse the corpus forever. A staging table whose stamp matches the
+// current dump is a valid resume target and is kept; an absent one is a no-op.
+// A missing stamp is read as the empty version, so an unstamped staging is kept
+// only when the current dump is itself unversioned (the mirror reported no
+// Last-Modified), matching the pre-stamp resume behavior.
+func (s *Store) DiscardStagingIfStale(ctx context.Context, dumpVersion string) (bool, error) {
+	// One round trip reads both whether staging exists and its stamp. to_regclass
+	// yields NULL for an absent table, so obj_description(NULL) is NULL rather than
+	// an error - no TOCTOU throw if the table vanishes mid-check, and an absent
+	// table is distinguished from a present-but-unstamped one by the exists flag.
+	var (
+		exists bool
+		stamp  *string
+	)
+	if err := s.pool.QueryRow(
+		ctx,
+		"SELECT to_regclass($1) IS NOT NULL, obj_description(to_regclass($1), 'pg_class')",
+		wikiStagingTable,
+	).Scan(&exists, &stamp); err != nil {
+		return false, fmt.Errorf("postgres: read staging stamp: %w", err)
+	}
+	if !exists {
+		return false, nil
+	}
+	stampValue := ""
+	if stamp != nil {
+		stampValue = *stamp
+	}
+	if stampValue == dumpVersion {
+		return false, nil
+	}
+	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
+		return false, fmt.Errorf("postgres: drop stale staging table: %w", err)
+	}
+	return true, nil
 }
 
 // CopyStagingChunks bulk-loads embedded chunks into the staging table via a

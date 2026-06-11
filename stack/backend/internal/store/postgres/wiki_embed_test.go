@@ -45,8 +45,13 @@ func withEmbedding(c domain.WikiChunk, v []float32) domain.WikiChunk {
 	return c
 }
 
+// testDumpVersion is the dump stamp the bulk-embed integration tests run under;
+// the manual CreateStaging calls below use it so the discard guard sees a
+// matching stamp and resumes instead of dropping the staging.
+const testDumpVersion = "Mon, 01 Jun 2026 00:00:00 GMT"
+
 func bulkConfig() wiki.Config {
-	return wiki.Config{Corpus: "simplewiki", BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
+	return wiki.Config{Corpus: "simplewiki", DumpVersion: testDumpVersion, BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
 }
 
 // seedChunks claims the corpus and stores chunks with null embeddings, the
@@ -137,7 +142,7 @@ func TestEmbedWatermarkTracksStaging(t *testing.T) {
 		t.Errorf("watermark = %+v, want zero before staging exists", cur)
 	}
 
-	if err := store.CreateStaging(ctx); err != nil {
+	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
 		t.Fatalf("CreateStaging: %v", err)
 	}
 	cur, err = store.EmbedWatermark(ctx)
@@ -192,7 +197,8 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 	}
 
 	var nearest int64
-	if err := store.pool.QueryRow(ctx,
+	if err := store.pool.QueryRow(
+		ctx,
 		"SELECT page_id FROM wiki_chunks ORDER BY embedding <=> $1 LIMIT 1",
 		pgvector.NewHalfVector(unitVec(1)),
 	).Scan(&nearest); err != nil {
@@ -254,7 +260,7 @@ func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	})
 
 	// Simulate an interrupted prior run that already staged page 1.
-	if err := store.CreateStaging(ctx); err != nil {
+	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
 		t.Fatalf("CreateStaging: %v", err)
 	}
 	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
@@ -291,7 +297,7 @@ func TestFinalizeStagingRefusesPartialCorpus(t *testing.T) {
 		wikiChunk(3, 0, "v2"),
 	})
 
-	if err := store.CreateStaging(ctx); err != nil {
+	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
 		t.Fatalf("CreateStaging: %v", err)
 	}
 	// Only one of three chunks loaded: finalizing would swap a partial corpus.
@@ -310,6 +316,129 @@ func TestFinalizeStagingRefusesPartialCorpus(t *testing.T) {
 	}
 	if !stagingExistsT(t, store) {
 		t.Error("staging was dropped despite the refused swap")
+	}
+}
+
+func TestDiscardStagingIfStaleDropsOnDumpChange(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	if err := store.CreateStaging(ctx, "dump-v1"); err != nil {
+		t.Fatalf("CreateStaging: %v", err)
+	}
+
+	// Same dump: staging is a valid resume target and is kept.
+	dropped, err := store.DiscardStagingIfStale(ctx, "dump-v1")
+	if err != nil {
+		t.Fatalf("DiscardStagingIfStale (same dump): %v", err)
+	}
+	if dropped {
+		t.Error("staging from the same dump was dropped, want kept")
+	}
+	if !stagingExistsT(t, store) {
+		t.Error("staging table missing after a same-dump check")
+	}
+
+	// Newer dump: the stamp no longer matches, so the stale staging is dropped.
+	dropped, err = store.DiscardStagingIfStale(ctx, "dump-v2")
+	if err != nil {
+		t.Fatalf("DiscardStagingIfStale (new dump): %v", err)
+	}
+	if !dropped {
+		t.Error("staging from an older dump was kept, want dropped")
+	}
+	if stagingExistsT(t, store) {
+		t.Error("stale staging table survived the discard")
+	}
+
+	// Absent staging is a no-op.
+	dropped, err = store.DiscardStagingIfStale(ctx, "dump-v2")
+	if err != nil {
+		t.Fatalf("DiscardStagingIfStale (absent): %v", err)
+	}
+	if dropped {
+		t.Error("discard reported a drop with no staging table")
+	}
+}
+
+func TestDiscardStagingIfStaleHandlesUnversionedDump(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	// A mirror that reports no Last-Modified yields an empty dump version, which
+	// Postgres stores as a NULL comment. The empty stamp must still compare equal
+	// to a later empty version so the staging is kept (the pre-stamp behavior),
+	// and must be dropped once a real version appears.
+	if err := store.CreateStaging(ctx, ""); err != nil {
+		t.Fatalf("CreateStaging: %v", err)
+	}
+	dropped, err := store.DiscardStagingIfStale(ctx, "")
+	if err != nil {
+		t.Fatalf("DiscardStagingIfStale (empty vs empty): %v", err)
+	}
+	if dropped {
+		t.Error("unversioned staging dropped against an unversioned dump, want kept")
+	}
+	if !stagingExistsT(t, store) {
+		t.Error("staging table missing after an unversioned same-dump check")
+	}
+
+	dropped, err = store.DiscardStagingIfStale(ctx, "Mon, 01 Jun 2026 00:00:00 GMT")
+	if err != nil {
+		t.Fatalf("DiscardStagingIfStale (empty vs versioned): %v", err)
+	}
+	if !dropped {
+		t.Error("unversioned staging kept when a versioned dump arrived, want dropped")
+	}
+	if stagingExistsT(t, store) {
+		t.Error("stale unversioned staging survived the discard")
+	}
+}
+
+func TestBulkEmbedReembedsAfterDumpChange(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	// The live state after a newer dump (V2) re-ingested the corpus: page 1
+	// sorts below the watermark a prior V1 run left, so a keyset resume would
+	// never embed it. Without the discard guard this is the production failure -
+	// staging stays one chunk short of live and the swap is refused forever.
+	seedChunks(t, store, []domain.WikiChunk{
+		wikiChunk(1, 0, "v0"),
+		wikiChunk(2, 0, "v1"),
+		wikiChunk(3, 0, "v2"),
+	})
+
+	// A surviving V1 staging table that embedded only page 2 (watermark (2,0)).
+	if err := store.CreateStaging(ctx, "Sun, 25 May 2026 00:00:00 GMT"); err != nil {
+		t.Fatalf("CreateStaging: %v", err)
+	}
+	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
+		withEmbedding(wikiChunk(2, 0, "v1"), unitVec(1)),
+	}); err != nil {
+		t.Fatalf("CopyStagingChunks: %v", err)
+	}
+
+	// Running under the new dump version discards the stale staging and re-embeds
+	// the whole corpus, so the swap completes instead of refusing a partial corpus.
+	emb := &vecEmbedder{}
+	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
+	if err != nil {
+		t.Fatalf("RunBulkEmbed: %v", err)
+	}
+	if stats.Embedded != 3 {
+		t.Errorf("embedded = %d, want 3 (full corpus re-embedded after discard)", stats.Embedded)
+	}
+	if emb.count() != 3 {
+		t.Errorf("embedder saw %d texts, want 3", emb.count())
+	}
+	if stagingExistsT(t, store) {
+		t.Error("staging table was not dropped after the swap")
+	}
+	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL"); n != 0 {
+		t.Errorf("%d chunks left unembedded after re-embed", n)
+	}
+	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 3 {
+		t.Errorf("live corpus has %d chunks after swap, want 3", n)
 	}
 }
 
