@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pgvector/pgvector-go"
 
@@ -45,17 +46,17 @@ func withEmbedding(c domain.WikiChunk, v []float32) domain.WikiChunk {
 	return c
 }
 
-// testDumpVersion is the dump stamp the bulk-embed integration tests run under;
-// the manual CreateStaging calls below use it so the discard guard sees a
-// matching stamp and resumes instead of dropping the staging.
+// testDumpVersion is the dump version the bulk-embed integration tests run
+// under.
 const testDumpVersion = "Mon, 01 Jun 2026 00:00:00 GMT"
 
 func bulkConfig() wiki.Config {
 	return wiki.Config{Corpus: "simplewiki", DumpVersion: testDumpVersion, BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
 }
 
-// seedChunks claims the corpus and stores chunks with null embeddings, the
-// state the bulk-embedding pipeline starts from.
+// seedChunks claims the corpus and stores chunks in the live table; chunks
+// carrying embeddings also have those written, so the live corpus is searchable,
+// mirroring the state after a completed swap.
 func seedChunks(t *testing.T, store *Store, chunks []domain.WikiChunk) {
 	t.Helper()
 	ctx := t.Context()
@@ -65,117 +66,238 @@ func seedChunks(t *testing.T, store *Store, chunks []domain.WikiChunk) {
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
+	var embedded []domain.WikiChunk
+	for _, c := range chunks {
+		if c.Embedding != nil {
+			embedded = append(embedded, c)
+		}
+	}
+	if len(embedded) > 0 {
+		if err := store.SetChunkEmbeddings(ctx, embedded); err != nil {
+			t.Fatalf("SetChunkEmbeddings: %v", err)
+		}
+	}
 }
 
-func TestUnembeddedChunksKeyset(t *testing.T) {
+// stageChunks resets staging for version and loads chunks with NULL embeddings,
+// the state ingest leaves for the embed run.
+func stageChunks(t *testing.T, store *Store, version string, chunks []domain.WikiChunk) {
+	t.Helper()
+	ctx := t.Context()
+	if err := store.ResetStaging(ctx, version); err != nil {
+		t.Fatalf("ResetStaging: %v", err)
+	}
+	if err := store.UpsertStagingChunks(ctx, chunks); err != nil {
+		t.Fatalf("UpsertStagingChunks: %v", err)
+	}
+}
+
+func TestStagingPlan(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "a"),
-		wikiChunk(1, 1, "b"),
-		wikiChunk(2, 0, "c"),
+	const v1, v2 = "v1", "v2"
+
+	// No staging, no live corpus -> build.
+	if p, err := store.StagingPlan(ctx, v1); err != nil || p != wiki.PlanBuild {
+		t.Fatalf("empty: got %v, %v; want PlanBuild", p, err)
+	}
+
+	// ready:v1 staging -> resume embed for v1, rebuild for v2.
+	if err := store.ResetStaging(ctx, v1); err != nil {
+		t.Fatalf("ResetStaging: %v", err)
+	}
+	if err := store.MarkStagingReady(ctx, v1); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
+	}
+	if p, err := store.StagingPlan(ctx, v1); err != nil || p != wiki.PlanResumeEmbed {
+		t.Fatalf("ready:v1 @ v1: got %v, %v; want PlanResumeEmbed", p, err)
+	}
+	if p, err := store.StagingPlan(ctx, v2); err != nil || p != wiki.PlanBuild {
+		t.Fatalf("ready:v1 @ v2: got %v, %v; want PlanBuild", p, err)
+	}
+
+	// building:v1 (interrupted build) -> rebuild even for v1.
+	if err := store.ResetStaging(ctx, v1); err != nil {
+		t.Fatalf("ResetStaging: %v", err)
+	}
+	if p, err := store.StagingPlan(ctx, v1); err != nil || p != wiki.PlanBuild {
+		t.Fatalf("building:v1 @ v1: got %v, %v; want PlanBuild", p, err)
+	}
+}
+
+func TestStagingPlanAlreadyCurrent(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	const v1 = "v1"
+	// Live fully embedded and checkpointed at v1, no staging -> already current.
+	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
+	if err := store.SetSyncState(ctx, domain.WikiSyncState{Corpus: "simplewiki", DumpVersion: v1}); err != nil {
+		t.Fatalf("SetSyncState: %v", err)
+	}
+	if p, err := store.StagingPlan(ctx, v1); err != nil || p != wiki.PlanAlreadyCurrent {
+		t.Fatalf("got %v, %v; want PlanAlreadyCurrent", p, err)
+	}
+	// A different version is not current.
+	if p, err := store.StagingPlan(ctx, "v2"); err != nil || p != wiki.PlanBuild {
+		t.Fatalf("got %v, %v; want PlanBuild", p, err)
+	}
+}
+
+func TestStagingBuild(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	stageChunks(t, store, "v1", []domain.WikiChunk{
+		wikiChunk(1, 0, "v1"), wikiChunk(1, 1, "v2"), wikiChunk(2, 0, "v3"),
 	})
 
-	all, err := store.UnembeddedChunks(ctx, domain.WikiCursor{}, 10)
+	rem, err := store.StagingRemaining(ctx)
 	if err != nil {
-		t.Fatalf("UnembeddedChunks: %v", err)
+		t.Fatalf("StagingRemaining: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("got %d chunks, want 3", len(all))
+	if rem.Chunks != 3 || rem.Pages != 2 {
+		t.Fatalf("remaining = %+v; want 3 chunks / 2 pages", rem)
 	}
-	if all[0].PageID != 1 || all[0].ChunkIndex != 0 || all[2].PageID != 2 {
-		t.Errorf("not in keyset order: %+v", all)
+	if exists, phase, v, _ := store.readStaging(ctx); !exists || phase != stampBuilding || v != "v1" {
+		t.Fatalf("stamp = %v %q %q; want building v1", exists, phase, v)
 	}
-
-	rest, err := store.UnembeddedChunks(ctx, domain.WikiCursor{PageID: 1, ChunkIndex: 0}, 10)
-	if err != nil {
-		t.Fatalf("UnembeddedChunks after cursor: %v", err)
+	if err := store.MarkStagingReady(ctx, "v1"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
 	}
-	if len(rest) != 2 || rest[0].ChunkIndex != 1 {
-		t.Errorf("after (1,0) got %+v, want chunks (1,1) and (2,0)", rest)
+	if _, phase, _, _ := store.readStaging(ctx); phase != stampReady {
+		t.Fatalf("phase = %q; want ready", phase)
 	}
-
-	limited, err := store.UnembeddedChunks(ctx, domain.WikiCursor{}, 2)
-	if err != nil {
-		t.Fatalf("UnembeddedChunks limited: %v", err)
+	// Reset drops the prior table.
+	if err := store.ResetStaging(ctx, "v2"); err != nil {
+		t.Fatalf("ResetStaging v2: %v", err)
 	}
-	if len(limited) != 2 {
-		t.Errorf("limit 2 returned %d", len(limited))
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 0 {
+		t.Fatalf("after reset remaining = %d; want 0", rem.Chunks)
 	}
 }
 
-func TestEstimateRemaining(t *testing.T) {
+func TestCarryForwardEmbeddings(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
+	// Live: page1/0 "v1", page1/1 "v2", orphan page9/0 "v9" (all embedded).
 	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "abc"),
-		wikiChunk(1, 1, "de"),
-		wikiChunk(2, 0, "f"),
+		withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1)),
+		withEmbedding(wikiChunk(1, 1, "v2"), unitVec(2)),
+		withEmbedding(wikiChunk(9, 0, "v9"), unitVec(9)),
+	})
+	// New dump in staging: page1/0 unchanged, page1/1 changed, page2/0 new.
+	stageChunks(t, store, "v2", []domain.WikiChunk{
+		wikiChunk(1, 0, "v1"), wikiChunk(1, 1, "v2-changed"), wikiChunk(2, 0, "v7"),
 	})
 
-	rem, err := store.EstimateRemaining(ctx, domain.WikiCursor{})
+	carried, err := store.CarryForwardEmbeddings(ctx)
 	if err != nil {
-		t.Fatalf("EstimateRemaining: %v", err)
+		t.Fatalf("CarryForwardEmbeddings: %v", err)
 	}
-	if rem.Pages != 2 || rem.Chunks != 3 || rem.Chars != 6 {
-		t.Errorf("estimate = %+v, want pages 2 chunks 3 chars 6", rem)
+	if carried != 1 {
+		t.Fatalf("carried = %d; want 1 (only page1/0)", carried)
 	}
-
-	after, err := store.EstimateRemaining(ctx, domain.WikiCursor{PageID: 1, ChunkIndex: 1})
-	if err != nil {
-		t.Fatalf("EstimateRemaining after cursor: %v", err)
+	rem, _ := store.StagingRemaining(ctx)
+	if rem.Chunks != 2 {
+		t.Fatalf("remaining unembedded = %d; want 2 (changed + new)", rem.Chunks)
 	}
-	if after.Pages != 1 || after.Chunks != 1 || after.Chars != 1 {
-		t.Errorf("estimate after (1,1) = %+v, want pages 1 chunks 1 chars 1", after)
+	if n := scalarInt(t, store, "SELECT count(*) FROM "+wikiStagingTable+" WHERE page_id = 9"); n != 0 {
+		t.Fatalf("orphan page9 entered staging: %d rows", n)
 	}
 }
 
-func TestEmbedWatermarkTracksStaging(t *testing.T) {
+func TestStagingEmbedInPlace(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
+	stageChunks(t, store, "v1", []domain.WikiChunk{
+		wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2"), wikiChunk(3, 0, "v3"),
+	})
 
-	cur, err := store.EmbedWatermark(ctx)
-	if err != nil {
-		t.Fatalf("EmbedWatermark (no staging): %v", err)
+	batch, err := store.UnembeddedStaging(ctx, 2)
+	if err != nil || len(batch) != 2 || batch[0].PageID != 1 || batch[1].PageID != 2 {
+		t.Fatalf("batch = %+v, %v; want pages 1,2 in keyset order", batch, err)
 	}
-	if cur != (domain.WikiCursor{}) {
-		t.Errorf("watermark = %+v, want zero before staging exists", cur)
+	for i := range batch {
+		batch[i] = withEmbedding(batch[i], unitVec(int(batch[i].PageID)))
+	}
+	if err := store.UpdateStagingEmbeddings(ctx, batch); err != nil {
+		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 1 {
+		t.Fatalf("remaining = %d; want 1", rem.Chunks)
+	}
+}
+
+func TestFinalizeStagingSwapAndHeal(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	// Live holds an orphan page (9) absent from the new dump.
+	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(9, 0, "v9"), unitVec(9))})
+	// Build a fully embedded staging for two real pages.
+	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
+	b, _ := store.UnembeddedStaging(ctx, 10)
+	for i := range b {
+		b[i] = withEmbedding(b[i], unitVec(int(b[i].PageID)))
+	}
+	if err := store.UpdateStagingEmbeddings(ctx, b); err != nil {
+		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	}
+	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
 	}
 
-	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
+	if err := store.FinalizeStaging(ctx, "simplewiki", "v2", time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
 	}
-	cur, err = store.EmbedWatermark(ctx)
-	if err != nil {
-		t.Fatalf("EmbedWatermark (empty staging): %v", err)
+	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 2 {
+		t.Fatalf("live count = %d; want 2", n)
 	}
-	if cur != (domain.WikiCursor{}) {
-		t.Errorf("watermark = %+v, want zero for empty staging", cur)
+	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks WHERE page_id = 9"); n != 0 {
+		t.Fatalf("orphan survived the swap: %d rows", n)
+	}
+	if stagingExistsT(t, store) {
+		t.Error("staging was not dropped after the swap")
+	}
+	// Checkpoint advanced to v2; the plan now short-circuits.
+	if p, err := store.StagingPlan(ctx, "v2"); err != nil || p != wiki.PlanAlreadyCurrent {
+		t.Fatalf("plan after swap = %v, %v; want PlanAlreadyCurrent", p, err)
+	}
+}
+
+func TestFinalizeStagingRefusesNull(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
+	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(2, 0, "v2")})
+	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
 	}
 
-	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
-		withEmbedding(wikiChunk(2, 1, "v0"), unitVec(0)),
-		withEmbedding(wikiChunk(2, 3, "v1"), unitVec(1)),
-	}); err != nil {
-		t.Fatalf("CopyStagingChunks: %v", err)
+	err := store.FinalizeStaging(ctx, "simplewiki", "v2", time.Time{}, "64MB", 0)
+	if err == nil || !strings.Contains(err.Error(), "unembedded") {
+		t.Fatalf("err = %v; want unembedded refusal", err)
 	}
-	cur, err = store.EmbedWatermark(ctx)
-	if err != nil {
-		t.Fatalf("EmbedWatermark (loaded staging): %v", err)
+	// Live is untouched and staging survives the refused swap.
+	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 1 {
+		t.Errorf("live corpus changed: %d chunks, want 1", n)
 	}
-	if cur.PageID != 2 || cur.ChunkIndex != 3 {
-		t.Errorf("watermark = %+v, want (2,3)", cur)
+	if !stagingExistsT(t, store) {
+		t.Error("staging was dropped despite the refused swap")
 	}
 }
 
 func TestBulkEmbedEndToEnd(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"),
-		wikiChunk(2, 0, "v1"),
-		wikiChunk(3, 0, "v2"),
+	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureCorpus: %v", err)
+	}
+	// Staging built by ingest: three pages, no embeddings yet.
+	stageChunks(t, store, testDumpVersion, []domain.WikiChunk{
+		wikiChunk(1, 0, "v0"), wikiChunk(2, 0, "v1"), wikiChunk(3, 0, "v2"),
 	})
+	if err := store.MarkStagingReady(ctx, testDumpVersion); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
+	}
 
 	emb := &vecEmbedder{}
 	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
@@ -185,7 +307,6 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 	if stats.Embedded != 3 {
 		t.Errorf("embedded = %d, want 3", stats.Embedded)
 	}
-
 	if stagingExistsT(t, store) {
 		t.Error("staging table was not dropped after the swap")
 	}
@@ -208,65 +329,29 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 		t.Errorf("nearest to unitVec(1) = page %d, want 2", nearest)
 	}
 
-	if _, ok, err := store.GetSyncState(ctx, "simplewiki"); err != nil || !ok {
-		t.Errorf("sync state after embed: ok=%v err=%v", ok, err)
-	}
-}
-
-func TestBulkEmbedRerunAfterCompletionIsNoop(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"),
-		wikiChunk(2, 0, "v1"),
-	})
-
-	first := &vecEmbedder{}
-	if _, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, first, bulkConfig()); err != nil {
-		t.Fatalf("RunBulkEmbed (first): %v", err)
-	}
-	if first.count() != 2 {
-		t.Fatalf("first run embedded %d, want 2", first.count())
-	}
-
-	// Re-running on the already-embedded corpus must embed nothing (no double
-	// billing) and leave no staging table behind.
-	second := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, second, bulkConfig())
-	if err != nil {
-		t.Fatalf("RunBulkEmbed (rerun): %v", err)
-	}
-	if second.count() != 0 {
-		t.Errorf("rerun embedded %d texts, want 0", second.count())
-	}
-	if stats.Embedded != 0 {
-		t.Errorf("rerun stats.Embedded = %d, want 0", stats.Embedded)
-	}
-	if stagingExistsT(t, store) {
-		t.Error("rerun left a staging table behind")
-	}
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 2 {
-		t.Errorf("corpus has %d chunks after rerun, want 2", n)
+	// The swap checkpointed the dump version, so a re-run is a no-op.
+	if p, err := store.StagingPlan(ctx, testDumpVersion); err != nil || p != wiki.PlanAlreadyCurrent {
+		t.Errorf("plan after swap = %v, %v; want PlanAlreadyCurrent", p, err)
 	}
 }
 
 func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"),
-		wikiChunk(2, 0, "v1"),
-		wikiChunk(3, 0, "v2"),
-	})
-
-	// Simulate an interrupted prior run that already staged page 1.
-	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
+	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureCorpus: %v", err)
 	}
-	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
+	// A prior run already embedded page 1 into staging before dying.
+	stageChunks(t, store, testDumpVersion, []domain.WikiChunk{
+		wikiChunk(1, 0, "v0"), wikiChunk(2, 0, "v1"), wikiChunk(3, 0, "v2"),
+	})
+	if err := store.UpdateStagingEmbeddings(ctx, []domain.WikiChunk{
 		withEmbedding(wikiChunk(1, 0, "v0"), unitVec(0)),
 	}); err != nil {
-		t.Fatalf("CopyStagingChunks: %v", err)
+		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	}
+	if err := store.MarkStagingReady(ctx, testDumpVersion); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
 	}
 
 	emb := &vecEmbedder{}
@@ -285,160 +370,6 @@ func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	}
 	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 3 {
 		t.Errorf("live corpus has %d chunks, want 3", n)
-	}
-}
-
-func TestFinalizeStagingRefusesPartialCorpus(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"),
-		wikiChunk(2, 0, "v1"),
-		wikiChunk(3, 0, "v2"),
-	})
-
-	if err := store.CreateStaging(ctx, testDumpVersion); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
-	}
-	// Only one of three chunks loaded: finalizing would swap a partial corpus.
-	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
-		withEmbedding(wikiChunk(1, 0, "v0"), unitVec(0)),
-	}); err != nil {
-		t.Fatalf("CopyStagingChunks: %v", err)
-	}
-
-	if err := store.FinalizeStaging(ctx, "simplewiki", "64MB", 0); err == nil {
-		t.Fatal("FinalizeStaging swapped a partial corpus, want error")
-	}
-	// The live corpus is untouched: still three unembedded chunks, no swap.
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL"); n != 3 {
-		t.Errorf("live corpus changed: %d null embeddings, want 3", n)
-	}
-	if !stagingExistsT(t, store) {
-		t.Error("staging was dropped despite the refused swap")
-	}
-}
-
-func TestDiscardStagingIfStaleDropsOnDumpChange(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-
-	if err := store.CreateStaging(ctx, "dump-v1"); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
-	}
-
-	// Same dump: staging is a valid resume target and is kept.
-	dropped, err := store.DiscardStagingIfStale(ctx, "dump-v1")
-	if err != nil {
-		t.Fatalf("DiscardStagingIfStale (same dump): %v", err)
-	}
-	if dropped {
-		t.Error("staging from the same dump was dropped, want kept")
-	}
-	if !stagingExistsT(t, store) {
-		t.Error("staging table missing after a same-dump check")
-	}
-
-	// Newer dump: the stamp no longer matches, so the stale staging is dropped.
-	dropped, err = store.DiscardStagingIfStale(ctx, "dump-v2")
-	if err != nil {
-		t.Fatalf("DiscardStagingIfStale (new dump): %v", err)
-	}
-	if !dropped {
-		t.Error("staging from an older dump was kept, want dropped")
-	}
-	if stagingExistsT(t, store) {
-		t.Error("stale staging table survived the discard")
-	}
-
-	// Absent staging is a no-op.
-	dropped, err = store.DiscardStagingIfStale(ctx, "dump-v2")
-	if err != nil {
-		t.Fatalf("DiscardStagingIfStale (absent): %v", err)
-	}
-	if dropped {
-		t.Error("discard reported a drop with no staging table")
-	}
-}
-
-func TestDiscardStagingIfStaleHandlesUnversionedDump(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-
-	// A mirror that reports no Last-Modified yields an empty dump version, which
-	// Postgres stores as a NULL comment. The empty stamp must still compare equal
-	// to a later empty version so the staging is kept (the pre-stamp behavior),
-	// and must be dropped once a real version appears.
-	if err := store.CreateStaging(ctx, ""); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
-	}
-	dropped, err := store.DiscardStagingIfStale(ctx, "")
-	if err != nil {
-		t.Fatalf("DiscardStagingIfStale (empty vs empty): %v", err)
-	}
-	if dropped {
-		t.Error("unversioned staging dropped against an unversioned dump, want kept")
-	}
-	if !stagingExistsT(t, store) {
-		t.Error("staging table missing after an unversioned same-dump check")
-	}
-
-	dropped, err = store.DiscardStagingIfStale(ctx, "Mon, 01 Jun 2026 00:00:00 GMT")
-	if err != nil {
-		t.Fatalf("DiscardStagingIfStale (empty vs versioned): %v", err)
-	}
-	if !dropped {
-		t.Error("unversioned staging kept when a versioned dump arrived, want dropped")
-	}
-	if stagingExistsT(t, store) {
-		t.Error("stale unversioned staging survived the discard")
-	}
-}
-
-func TestBulkEmbedReembedsAfterDumpChange(t *testing.T) {
-	store := setupStore(t)
-	ctx := t.Context()
-	// The live state after a newer dump (V2) re-ingested the corpus: page 1
-	// sorts below the watermark a prior V1 run left, so a keyset resume would
-	// never embed it. Without the discard guard this is the production failure -
-	// staging stays one chunk short of live and the swap is refused forever.
-	seedChunks(t, store, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"),
-		wikiChunk(2, 0, "v1"),
-		wikiChunk(3, 0, "v2"),
-	})
-
-	// A surviving V1 staging table that embedded only page 2 (watermark (2,0)).
-	if err := store.CreateStaging(ctx, "Sun, 25 May 2026 00:00:00 GMT"); err != nil {
-		t.Fatalf("CreateStaging: %v", err)
-	}
-	if err := store.CopyStagingChunks(ctx, []domain.WikiChunk{
-		withEmbedding(wikiChunk(2, 0, "v1"), unitVec(1)),
-	}); err != nil {
-		t.Fatalf("CopyStagingChunks: %v", err)
-	}
-
-	// Running under the new dump version discards the stale staging and re-embeds
-	// the whole corpus, so the swap completes instead of refusing a partial corpus.
-	emb := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
-	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
-	}
-	if stats.Embedded != 3 {
-		t.Errorf("embedded = %d, want 3 (full corpus re-embedded after discard)", stats.Embedded)
-	}
-	if emb.count() != 3 {
-		t.Errorf("embedder saw %d texts, want 3", emb.count())
-	}
-	if stagingExistsT(t, store) {
-		t.Error("staging table was not dropped after the swap")
-	}
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL"); n != 0 {
-		t.Errorf("%d chunks left unembedded after re-embed", n)
-	}
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 3 {
-		t.Errorf("live corpus has %d chunks after swap, want 3", n)
 	}
 }
 

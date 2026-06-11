@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"hash/fnv"
 	"log/slog"
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -65,53 +65,45 @@ func (f *fakeEmbedder) maxBatch() int {
 	return m
 }
 
-type fakeEmbedStore struct {
-	mu        sync.Mutex
-	live      []domain.WikiChunk
-	watermark domain.WikiCursor
-	remaining domain.WikiRemaining
-	created   bool
-	copied    []domain.WikiChunk
-	finalized string
-	copyErr   error
-
-	// stagingPresent models a staging table left by a prior run; stagingVersion
-	// is the dump it was stamped for. discarded records whether DiscardStagingIfStale
-	// dropped it this run.
-	stagingPresent bool
-	stagingVersion string
-	discarded      bool
+// fakeBulkStore models the staging table the embed run drives: it holds staged
+// chunks, fills their embeddings in place, and records the finalize call.
+type fakeBulkStore struct {
+	mu                sync.Mutex
+	staging           []domain.WikiChunk
+	remainingOverride *domain.WikiRemaining
+	updated           []domain.WikiChunk
+	finalizedCorpus   string
+	finalizedVersion  string
+	finalized         bool
+	updateErr         error
 }
 
-func (f *fakeEmbedStore) DiscardStagingIfStale(_ context.Context, dumpVersion string) (bool, error) {
-	if !f.stagingPresent || f.stagingVersion == dumpVersion {
-		return false, nil
+func (f *fakeBulkStore) StagingRemaining(context.Context) (domain.WikiRemaining, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.remainingOverride != nil {
+		return *f.remainingOverride, nil
 	}
-	// Mirror the store: dropping staging clears the resume state so the run
-	// re-embeds the whole corpus from a zero watermark.
-	f.stagingPresent = false
-	f.stagingVersion = ""
-	f.watermark = domain.WikiCursor{}
-	f.copied = nil
-	f.discarded = true
-	return true, nil
+	rem := domain.WikiRemaining{}
+	pages := map[int64]struct{}{}
+	for _, c := range f.staging {
+		if c.Embedding != nil {
+			continue
+		}
+		rem.Chunks++
+		rem.Chars += int64(len(c.Content))
+		pages[c.PageID] = struct{}{}
+	}
+	rem.Pages = int64(len(pages))
+	return rem, nil
 }
 
-func (f *fakeEmbedStore) CreateStaging(_ context.Context, dumpVersion string) error {
-	f.created = true
-	f.stagingPresent = true
-	f.stagingVersion = dumpVersion
-	return nil
-}
-
-func (f *fakeEmbedStore) EmbedWatermark(context.Context) (domain.WikiCursor, error) {
-	return f.watermark, nil
-}
-
-func (f *fakeEmbedStore) UnembeddedChunks(_ context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+func (f *fakeBulkStore) UnembeddedStaging(_ context.Context, limit int) ([]domain.WikiChunk, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []domain.WikiChunk
-	for _, c := range f.live {
-		if afterCursor(c, cur) {
+	for _, c := range f.staging {
+		if c.Embedding == nil {
 			out = append(out, c)
 		}
 	}
@@ -127,33 +119,34 @@ func (f *fakeEmbedStore) UnembeddedChunks(_ context.Context, cur domain.WikiCurs
 	return out, nil
 }
 
-func (f *fakeEmbedStore) EstimateRemaining(context.Context, domain.WikiCursor) (domain.WikiRemaining, error) {
-	return f.remaining, nil
-}
-
-func (f *fakeEmbedStore) CopyStagingChunks(_ context.Context, chunks []domain.WikiChunk) error {
-	if f.copyErr != nil {
-		return f.copyErr
-	}
+func (f *fakeBulkStore) UpdateStagingEmbeddings(_ context.Context, chunks []domain.WikiChunk) error {
 	f.mu.Lock()
-	f.copied = append(f.copied, chunks...)
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *fakeEmbedStore) FinalizeStaging(_ context.Context, corpus, _ string, _ int) error {
-	f.finalized = corpus
-	return nil
-}
-
-func afterCursor(c domain.WikiChunk, cur domain.WikiCursor) bool {
-	if c.PageID != cur.PageID {
-		return c.PageID > cur.PageID
+	defer f.mu.Unlock()
+	if f.updateErr != nil {
+		return f.updateErr
 	}
-	return int32(c.ChunkIndex) > cur.ChunkIndex
+	f.updated = append(f.updated, chunks...)
+	for _, c := range chunks {
+		for i := range f.staging {
+			if f.staging[i].PageID == c.PageID && f.staging[i].ChunkIndex == c.ChunkIndex {
+				f.staging[i].Embedding = c.Embedding
+			}
+		}
+	}
+	return nil
 }
 
-// sampleChunks builds chunks for pages numbered 1..pages, two chunks per page.
+func (f *fakeBulkStore) FinalizeStaging(_ context.Context, corpus, version string, _ time.Time, _ string, _ int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finalizedCorpus = corpus
+	f.finalizedVersion = version
+	f.finalized = true
+	return nil
+}
+
+// sampleChunks builds chunks for pages numbered 1..pages, two chunks per page,
+// with NULL embeddings - the state a freshly built staging table is in.
 func sampleChunks(pages int) []domain.WikiChunk {
 	const perPage = 2
 	var out []domain.WikiChunk
@@ -178,12 +171,12 @@ func contentFor(page, idx int) string {
 }
 
 func testConfig() Config {
-	return Config{Corpus: "simplewiki", BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
+	return Config{Corpus: "simplewiki", DumpVersion: "Mon, 01 Jun 2026 00:00:00 GMT", BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
 }
 
 func TestEstimateBulkEmbed(t *testing.T) {
 	t.Parallel()
-	src := &fakeEmbedStore{remaining: domain.WikiRemaining{Pages: 10, Chunks: 100, Chars: 5000}}
+	src := &fakeBulkStore{remainingOverride: &domain.WikiRemaining{Pages: 10, Chunks: 100, Chars: 5000}}
 
 	est, err := EstimateBulkEmbed(t.Context(), src)
 	if err != nil {
@@ -200,7 +193,7 @@ func TestEstimateBulkEmbed(t *testing.T) {
 
 func TestRunBulkEmbedEmbedsAllInOrder(t *testing.T) {
 	t.Parallel()
-	store := &fakeEmbedStore{live: sampleChunks(5)}
+	store := &fakeBulkStore{staging: sampleChunks(5)}
 	embedder := &fakeEmbedder{}
 
 	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
@@ -210,20 +203,20 @@ func TestRunBulkEmbedEmbedsAllInOrder(t *testing.T) {
 	if stats.Embedded != 10 {
 		t.Errorf("embedded = %d, want 10", stats.Embedded)
 	}
-	if !store.created {
-		t.Error("staging table was not created")
+	if !store.finalized || store.finalizedCorpus != "simplewiki" {
+		t.Errorf("finalized = %v corpus %q, want true simplewiki", store.finalized, store.finalizedCorpus)
 	}
-	if store.finalized != "simplewiki" {
-		t.Errorf("finalized corpus = %q, want simplewiki", store.finalized)
+	if store.finalizedVersion != testConfig().DumpVersion {
+		t.Errorf("finalized version = %q, want %q", store.finalizedVersion, testConfig().DumpVersion)
 	}
-	if len(store.copied) != 10 {
-		t.Fatalf("copied %d chunks, want 10", len(store.copied))
+	if len(store.updated) != 10 {
+		t.Fatalf("updated %d chunks, want 10", len(store.updated))
 	}
-	for i, c := range store.copied {
+	for i, c := range store.updated {
 		if i > 0 {
-			prev := store.copied[i-1]
+			prev := store.updated[i-1]
 			if c.PageID < prev.PageID || (c.PageID == prev.PageID && c.ChunkIndex <= prev.ChunkIndex) {
-				t.Fatalf("copied out of order at %d: %v after %v", i, c, prev)
+				t.Fatalf("updated out of order at %d: %v after %v", i, c, prev)
 			}
 		}
 		if len(c.Embedding) != testEmbedDim {
@@ -241,7 +234,7 @@ func TestRunBulkEmbedEmbedsAllInOrder(t *testing.T) {
 func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 	t.Parallel()
 	// 5 pages * 2 chunks = 10 chunks; BatchSize 2 => 5 HTTP batches, each logged.
-	store := &fakeEmbedStore{live: sampleChunks(5), remaining: domain.WikiRemaining{Chunks: 10}}
+	store := &fakeBulkStore{staging: sampleChunks(5)}
 	embedder := &fakeEmbedder{}
 
 	var buf bytes.Buffer
@@ -261,7 +254,6 @@ func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 			PendingTotal  int64  `json:"pending_total"`
 			Embedded      int64  `json:"embedded"`
 			PendingChunks int64  `json:"pending_chunks"`
-			ResumeAfter   int64  `json:"resume_after_page"`
 			EmbedDuration *int64 `json:"embed_duration"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil {
@@ -272,9 +264,6 @@ func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 			sawStart = true
 			if rec.PendingChunks != 10 {
 				t.Errorf("start line pending_chunks = %d, want 10", rec.PendingChunks)
-			}
-			if rec.ResumeAfter != 0 {
-				t.Errorf("start line resume_after_page = %d, want 0 on a fresh run", rec.ResumeAfter)
 			}
 		case "embedded wiki chunk batch":
 			batchLines++
@@ -304,43 +293,48 @@ func TestRunBulkEmbedLogsBatchProgress(t *testing.T) {
 	}
 }
 
-func TestRunBulkEmbedResumesFromWatermark(t *testing.T) {
+func TestRunBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	t.Parallel()
-	// Staging already holds page 1 (both chunks) and page 2 chunk 0.
-	store := &fakeEmbedStore{
-		live:      sampleChunks(3),
-		watermark: domain.WikiCursor{PageID: 2, ChunkIndex: 0},
+	// Staging already holds page 1 (both chunks) embedded from an interrupted
+	// prior run; only the rest is left.
+	staging := sampleChunks(3)
+	for i := range staging {
+		if staging[i].PageID == 1 {
+			staging[i].Embedding = []float32{1, 2, 3, 4}
+		}
 	}
+	store := &fakeBulkStore{staging: staging}
 	embedder := &fakeEmbedder{}
 
 	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
 	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
+		t.Fatalf("RunBulkEmbed (resume): %v", err)
 	}
-	// Remaining after (2,0): (2,1), (3,0), (3,1) = 3 chunks.
-	if stats.Embedded != 3 {
-		t.Errorf("embedded = %d, want 3 (resume skips the staged prefix)", stats.Embedded)
+	// 6 chunks total, 2 already embedded => 4 remaining.
+	if stats.Embedded != 4 {
+		t.Errorf("embedded = %d, want 4 (resume skips the staged prefix)", stats.Embedded)
 	}
-	if len(store.copied) != 3 {
-		t.Fatalf("copied %d, want 3", len(store.copied))
+	if len(store.updated) != 4 {
+		t.Fatalf("updated %d, want 4", len(store.updated))
 	}
-	first := store.copied[0]
-	if first.PageID != 2 || first.ChunkIndex != 1 {
-		t.Errorf("first resumed chunk = (%d,%d), want (2,1)", first.PageID, first.ChunkIndex)
+	first := store.updated[0]
+	if first.PageID != 2 || first.ChunkIndex != 0 {
+		t.Errorf("first resumed chunk = (%d,%d), want (2,0)", first.PageID, first.ChunkIndex)
 	}
-	if store.finalized != "simplewiki" {
+	if !store.finalized {
 		t.Error("resume must still finalize and swap")
 	}
 }
 
-func TestRunBulkEmbedResumeWithEverythingStagedStillFinalizes(t *testing.T) {
+func TestRunBulkEmbedFullyStagedStillFinalizes(t *testing.T) {
 	t.Parallel()
-	// A prior run staged every chunk before dying; this run finds nothing left
-	// to embed but must still build, swap, and never recreate staging.
-	store := &fakeEmbedStore{
-		live:      sampleChunks(2),
-		watermark: domain.WikiCursor{PageID: 2, ChunkIndex: 1},
+	// Every chunk was embedded before a prior run died at finalize; this run
+	// embeds nothing but must still build, swap, and never re-embed.
+	staging := sampleChunks(2)
+	for i := range staging {
+		staging[i].Embedding = []float32{1, 2, 3, 4}
 	}
+	store := &fakeBulkStore{staging: staging}
 	embedder := &fakeEmbedder{}
 
 	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
@@ -353,130 +347,7 @@ func TestRunBulkEmbedResumeWithEverythingStagedStillFinalizes(t *testing.T) {
 	if len(embedder.calls) != 0 {
 		t.Errorf("embedder called %d times, want 0", len(embedder.calls))
 	}
-	if store.created {
-		t.Error("must not recreate staging when resuming an existing one")
-	}
-	if store.finalized != "simplewiki" {
+	if !store.finalized {
 		t.Error("a fully-staged resume must still finalize and swap")
-	}
-}
-
-func TestRunBulkEmbedDiscardsStagingFromDifferentDump(t *testing.T) {
-	t.Parallel()
-	// A prior run staged a prefix for dump V1, then a newer dump V2 was ingested.
-	// Resuming from V1's watermark would strand V2 chunks below it, so the run
-	// must drop the stale staging and re-embed the whole corpus from scratch.
-	store := &fakeEmbedStore{
-		live:           sampleChunks(3),
-		watermark:      domain.WikiCursor{PageID: 2, ChunkIndex: 0},
-		stagingPresent: true,
-		stagingVersion: "V1",
-	}
-	embedder := &fakeEmbedder{}
-	cfg := testConfig()
-	cfg.DumpVersion = "V2"
-
-	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, cfg)
-	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
-	}
-	if !store.discarded {
-		t.Error("staging built for V1 must be discarded when embedding V2")
-	}
-	if stats.Embedded != 6 {
-		t.Errorf("embedded = %d, want 6 (full corpus re-embedded after discard)", stats.Embedded)
-	}
-	if len(store.copied) != 6 {
-		t.Fatalf("copied %d, want 6", len(store.copied))
-	}
-	if first := store.copied[0]; first.PageID != 1 || first.ChunkIndex != 0 {
-		t.Errorf("first re-embedded chunk = (%d,%d), want (1,0)", first.PageID, first.ChunkIndex)
-	}
-	if store.stagingVersion != "V2" {
-		t.Errorf("staging stamped %q, want fresh stamp V2", store.stagingVersion)
-	}
-	if store.finalized != "simplewiki" {
-		t.Error("re-embed must still finalize and swap")
-	}
-}
-
-func TestRunBulkEmbedKeepsStagingFromSameDump(t *testing.T) {
-	t.Parallel()
-	// Staging from the same dump is a valid resume target: keep it and embed only
-	// the remainder, exactly as an ordinary interrupted-run resume.
-	store := &fakeEmbedStore{
-		live:           sampleChunks(3),
-		watermark:      domain.WikiCursor{PageID: 2, ChunkIndex: 0},
-		stagingPresent: true,
-		stagingVersion: "V1",
-	}
-	embedder := &fakeEmbedder{}
-	cfg := testConfig()
-	cfg.DumpVersion = "V1"
-
-	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, cfg)
-	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
-	}
-	if store.discarded {
-		t.Error("staging from the same dump must not be discarded")
-	}
-	if stats.Embedded != 3 {
-		t.Errorf("embedded = %d, want 3 (resume skips the staged prefix)", stats.Embedded)
-	}
-	if first := store.copied[0]; first.PageID != 2 || first.ChunkIndex != 1 {
-		t.Errorf("first resumed chunk = (%d,%d), want (2,1)", first.PageID, first.ChunkIndex)
-	}
-	if store.finalized != "simplewiki" {
-		t.Error("resume must still finalize and swap")
-	}
-}
-
-func TestRunBulkEmbedNoChunksSkipsFinalize(t *testing.T) {
-	t.Parallel()
-	store := &fakeEmbedStore{}
-	embedder := &fakeEmbedder{}
-
-	stats, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig())
-	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
-	}
-	if stats.Embedded != 0 {
-		t.Errorf("embedded = %d, want 0", stats.Embedded)
-	}
-	if store.finalized != "" {
-		t.Error("an empty corpus must not be swapped")
-	}
-	if len(embedder.calls) != 0 {
-		t.Errorf("embedder called %d times for empty corpus, want 0", len(embedder.calls))
-	}
-}
-
-func TestRunBulkEmbedPropagatesEmbedError(t *testing.T) {
-	t.Parallel()
-	store := &fakeEmbedStore{live: sampleChunks(2)}
-	embedder := &fakeEmbedder{err: errors.New("provider down")}
-
-	if _, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig()); err == nil {
-		t.Fatal("want embed error, got nil")
-	}
-	if store.finalized != "" {
-		t.Error("must not finalize after an embed failure")
-	}
-	if len(store.copied) != 0 {
-		t.Errorf("copied %d chunks despite embed failure, want 0", len(store.copied))
-	}
-}
-
-func TestRunBulkEmbedPropagatesCopyError(t *testing.T) {
-	t.Parallel()
-	store := &fakeEmbedStore{live: sampleChunks(2), copyErr: errors.New("copy failed")}
-	embedder := &fakeEmbedder{}
-
-	if _, err := RunBulkEmbed(t.Context(), discardLogger(), store, embedder, testConfig()); err == nil {
-		t.Fatal("want copy error, got nil")
-	}
-	if store.finalized != "" {
-		t.Error("must not finalize after a copy failure")
 	}
 }

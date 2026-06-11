@@ -20,7 +20,6 @@ type Querier interface {
 	// checkpoint exists), so a corpus switch is detectable even after a crashed
 	// first run. Never overwrites an existing checkpoint.
 	ClaimWikiCorpus(ctx context.Context, corpus string) error
-	CountWikiChunks(ctx context.Context) (int64, error)
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
 	CountWikiPages(ctx context.Context) (int64, error)
 	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
@@ -32,19 +31,12 @@ type Querier interface {
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
 	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
-	// Dry-run counts for the chunks still to embed beyond the staging watermark.
-	// chars feeds the token estimate (chars / Voyage's documented chars-per-token).
-	// Only unembedded chunks count, so the estimate reflects real remaining spend.
-	EstimateRemainingWikiChunks(ctx context.Context, arg EstimateRemainingWikiChunksParams) (EstimateRemainingWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListVideos(ctx context.Context) ([]Video, error)
-	// Advances the corpus checkpoint after a successful embed-and-swap, recording
-	// that the live corpus is now fully embedded at its stored dump version.
-	MarkWikiCorpusEmbedded(ctx context.Context, corpus string) error
 	// Atomically claim a failed ingest for retry: flip it back to pending only if it
 	// is currently failed, so two concurrent re-submissions cannot both re-download.
 	// The guard returns no row (and thus no claim) when the record is not failed.
@@ -76,12 +68,9 @@ type Querier interface {
 	// Removes the stale tail of a page after a re-sync produced fewer chunks
 	// (from_index 0 removes the page entirely, e.g. it became a redirect).
 	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults
-	// The bulk-embedding pipeline reads pending chunks in keyset order so each
-	// super-batch loaded into staging is a clean prefix; a crash leaves staging
-	// past which the next run resumes. The order matches the staging watermark.
-	// The embedding IS NULL filter makes a re-run after a completed embed a no-op
-	// instead of re-embedding (and re-billing) the whole corpus: once the embedded
-	// staging table is swapped in, every live chunk has an embedding.
+	// The delta sync reads the chunks it just upserted into the live table back in
+	// keyset order to embed them in place. The embedding IS NULL filter scopes the
+	// scan to the unembedded chunks a delta run produced.
 	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 	// size_bytes keeps a known size against a zero reseed: an offline reseed with no

@@ -164,16 +164,31 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 	logger.InfoContext(ctx, resolution,
 		slog.String("dump", files.DumpPath), slog.String("version", files.Version))
 
-	ingestStats, err := wiki.RunBulk(ctx, store, files, wikiCfg.Corpus)
+	plan, err := store.StagingPlan(ctx, files.Version)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "ingest complete",
-		slog.String("corpus", wikiCfg.Corpus),
-		slog.Int("pages_seen", ingestStats.PagesSeen),
-		slog.Int("pages_skipped", ingestStats.PagesSkipped),
-		slog.Int("pages_stored", ingestStats.PagesStored),
-		slog.Int("chunks", ingestStats.Chunks))
+	if plan == wiki.PlanAlreadyCurrent {
+		logger.InfoContext(ctx, "corpus already current; nothing to do",
+			slog.String("corpus", wikiCfg.Corpus), slog.String("version", files.Version))
+		return nil
+	}
+	if plan == wiki.PlanBuild {
+		ingestStats, err := wiki.RunBulk(ctx, store, files, wikiCfg.Corpus)
+		if err != nil {
+			return err
+		}
+		logger.InfoContext(ctx, "ingest complete",
+			slog.String("corpus", wikiCfg.Corpus),
+			slog.Int("pages_seen", ingestStats.PagesSeen),
+			slog.Int("pages_skipped", ingestStats.PagesSkipped),
+			slog.Int("pages_stored", ingestStats.PagesStored),
+			slog.Int("chunks", ingestStats.Chunks),
+			slog.Int64("embeddings_carried", ingestStats.Carried))
+	} else {
+		logger.InfoContext(ctx, "resuming embed of staged corpus",
+			slog.String("corpus", wikiCfg.Corpus), slog.String("version", files.Version))
+	}
 
 	if dryRun {
 		est, err := wiki.EstimateBulkEmbed(ctx, store)
