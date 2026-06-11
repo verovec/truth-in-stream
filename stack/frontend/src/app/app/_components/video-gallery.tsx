@@ -1,5 +1,3 @@
-"use client";
-
 import type { LibraryVideo } from "@/lib/video/api";
 import type { UploadJob } from "@/hooks/use-video-uploads";
 import { UploadTile } from "./upload-tile";

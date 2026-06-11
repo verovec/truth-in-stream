@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { VideoPlayer } from "@/components/playback/video-player";
 import { useVideoUploads } from "@/hooks/use-video-uploads";
@@ -32,7 +32,10 @@ type Resolved =
   | { forId: string; status: "ready"; playable: PlayableVideo }
   | { forId: string; status: "error"; message: string };
 
-type ListState = "loading" | "loaded" | "error";
+type ListState =
+  | { status: "loading" }
+  | { status: "loaded" }
+  | { status: "error"; message: string };
 
 function resolveActive(
   selectedVideo: LibraryVideo | null,
@@ -66,11 +69,17 @@ export function LibraryExperience({
   uploader?: PutUploader;
 }) {
   const [videos, setVideos] = useState<LibraryVideo[]>([]);
-  const [listState, setListState] = useState<ListState>("loading");
-  const [listError, setListError] = useState("");
+  const [listState, setListState] = useState<ListState>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
+
+  // loadVideos is an injection seam fixed at mount; reading it from a ref keeps
+  // it out of the load effect's deps so an inline caller cannot trigger a loop.
+  const loadVideosRef = useRef(loadVideos);
+  useEffect(() => {
+    loadVideosRef.current = loadVideos;
+  });
 
   const { jobs, startUploads, dismiss } = useVideoUploads({
     uploader,
@@ -85,59 +94,62 @@ export function LibraryExperience({
   // callback, never synchronously in the effect body.
   useEffect(() => {
     let cancelled = false;
-    loadVideos()
+    loadVideosRef
+      .current()
       .then((loaded) => {
         if (cancelled) {
           return;
         }
         setVideos(loaded);
         setSelectedId((prev) => prev ?? firstReadyId(loaded));
-        setListState("loaded");
+        setListState({ status: "loaded" });
       })
       .catch((err: unknown) => {
         if (cancelled) {
           return;
         }
-        setListError(
-          err instanceof Error ? err.message : "Could not load the library.",
-        );
-        setListState("error");
+        setListState({
+          status: "error",
+          message:
+            err instanceof Error ? err.message : "Could not load the library.",
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [loadVideos, reloadToken]);
+  }, [reloadToken]);
 
   const retryLibrary = useCallback(() => {
-    setListError("");
-    setListState("loading");
+    setListState({ status: "loading" });
     setReloadToken((token) => token + 1);
   }, []);
 
   const selectedVideo = videos.find((video) => video.id === selectedId) ?? null;
 
+  // Keyed on selectedId (a stable string), not the selectedVideo object, so
+  // rebuilding the videos array on an upload does not re-fetch and flicker the
+  // currently-playing video.
   useEffect(() => {
-    if (!selectedVideo) {
+    if (selectedId === null) {
       return;
     }
     const controller = new AbortController();
-    const { id } = selectedVideo;
-    getVideo(id, controller.signal)
+    getVideo(selectedId, controller.signal)
       .then((playable) =>
-        setResolved({ forId: id, status: "ready", playable }),
+        setResolved({ forId: selectedId, status: "ready", playable }),
       )
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
           return;
         }
         setResolved({
-          forId: id,
+          forId: selectedId,
           status: "error",
           message: err instanceof Error ? err.message : "Could not load video.",
         });
       });
     return () => controller.abort();
-  }, [selectedVideo]);
+  }, [selectedId]);
 
   const active = resolveActive(selectedVideo, resolved);
 
@@ -157,7 +169,6 @@ export function LibraryExperience({
             <VideoUploader onFiles={startUploads} />
             <LibrarySection
               listState={listState}
-              listError={listError}
               onRetry={retryLibrary}
               videos={videos}
               jobs={jobs}
@@ -179,7 +190,6 @@ export function LibraryExperience({
 
 type LibrarySectionProps = {
   listState: ListState;
-  listError: string;
   onRetry: () => void;
   videos: LibraryVideo[];
   jobs: ReturnType<typeof useVideoUploads>["jobs"];
@@ -190,7 +200,6 @@ type LibrarySectionProps = {
 
 function LibrarySection({
   listState,
-  listError,
   onRetry,
   videos,
   jobs,
@@ -198,21 +207,21 @@ function LibrarySection({
   onSelect,
   onDismiss,
 }: LibrarySectionProps) {
-  if (listState === "loading") {
+  if (listState.status === "loading") {
     return (
       <p className="text-sm text-zinc-500 dark:text-zinc-400">
         Loading library…
       </p>
     );
   }
-  if (listState === "error") {
+  if (listState.status === "error") {
     return (
       <div className="flex flex-col items-start gap-2">
         <p
           role="alert"
           className="text-sm text-rose-700 dark:text-rose-300"
         >
-          The library could not load: {listError}
+          The library could not load: {listState.message}
         </p>
         <button
           type="button"

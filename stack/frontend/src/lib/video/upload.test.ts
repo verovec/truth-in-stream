@@ -119,6 +119,17 @@ describe("putWithProgress", () => {
     await expect(promise).rejects.toThrow(/network/i);
   });
 
+  test("rejects immediately when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      putWithProgress(presigned, makeFile(), () => {}, controller.signal),
+    ).rejects.toThrow(/abort/i);
+    // No request is opened when the signal is already aborted.
+    expect(FakeXHR.instances).toHaveLength(0);
+  });
+
   test("aborts the request when the signal fires", async () => {
     const controller = new AbortController();
     const promise = putWithProgress(

@@ -1,12 +1,8 @@
 // Typed client for the video processing API (stack/backend
-// internal/handler/processing.go). NEXT_PUBLIC_API_URL is empty in deployed
-// environments (the ALB serves /api/* same-origin) and points at the backend
-// container in local dev.
-import { ApiError, toApiError } from "@/lib/http";
+// internal/handler/processing.go).
+import { API_BASE, ApiError, toApiError } from "@/lib/http";
 
 export { ApiError };
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export type Verdict = "corroborates" | "contradicts" | "unclear";
 

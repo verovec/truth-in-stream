@@ -176,6 +176,75 @@ describe("LibraryExperience", () => {
     });
   });
 
+  test("keeps the selected video playing when an upload completes", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-1",
+        playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
+      ),
+      {
+        match: (url, init) =>
+          url.endsWith("/api/videos/uploads") && init?.method === "POST",
+        responses: [
+          json(201, {
+            video_id: "vid-9",
+            object_key: "uploads/vid-9.mp4",
+            status: "pending",
+            upload: { url: "https://storage/put", method: "PUT", headers: {} },
+          }),
+        ],
+      },
+      {
+        match: (url) => url.endsWith("/api/videos/vid-9/confirm"),
+        responses: [
+          json(200, {
+            id: "vid-9",
+            title: "Holiday",
+            status: "ready",
+            kind: "upload",
+            content_type: "video/mp4",
+            size_bytes: 20,
+            created_at: "2026-06-11T10:00:00Z",
+            updated_at: "2026-06-11T10:00:00Z",
+          }),
+        ],
+      },
+      ...factCheckRoutes,
+    ]);
+    const uploader: PutUploader = async (_p, _f, onProgress) => {
+      onProgress(10, 10);
+    };
+
+    render(
+      <LibraryExperience
+        loadVideos={async () => [videoRecord()]}
+        uploader={uploader}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("media")).toHaveAttribute(
+        "src",
+        "https://storage/play/vid-1",
+      );
+    });
+
+    await userEvent.upload(
+      screen.getByLabelText(/upload a video/i),
+      new File(["x".repeat(20)], "Holiday.mp4", { type: "video/mp4" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /holiday/i })).toBeInTheDocument();
+    });
+    // The originally selected sample is still the active video; the new upload
+    // did not steal selection or re-load the player.
+    expect(screen.getByTestId("media")).toHaveAttribute(
+      "src",
+      "https://storage/play/vid-1",
+    );
+  });
+
   test("shows an error with retry when the library cannot load", async () => {
     const loadVideos = vi
       .fn<() => Promise<LibraryVideo[]>>()

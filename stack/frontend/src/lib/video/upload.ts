@@ -32,6 +32,10 @@ export const putWithProgress: PutUploader = (
   signal,
 ) =>
   new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("upload aborted"));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open(presigned.method, presigned.url);
 

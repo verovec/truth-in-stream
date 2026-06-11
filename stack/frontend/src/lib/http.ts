@@ -2,6 +2,10 @@
 // backend's status code so callers can branch on it (e.g. 409 -> pending),
 // and toApiError surfaces the backend's JSON `error` message when present.
 
+// API_BASE is empty in deployed environments (the ALB serves /api/* same-origin)
+// and points at the backend container in local dev.
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+
 export class ApiError extends Error {
   constructor(
     message: string,

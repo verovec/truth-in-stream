@@ -96,6 +96,7 @@ export function useVideoUploads({
   const startUploads = useCallback(
     (files: Iterable<File>) => {
       const started: UploadJob[] = [];
+      const toRun: { id: string; title: string; file: File }[] = [];
       for (const file of files) {
         const id = crypto.randomUUID();
         const title = deriveTitle(file.name);
@@ -114,10 +115,16 @@ export function useVideoUploads({
           fileName: file.name,
           state: { status: "requesting" },
         });
-        void run(id, title, file);
+        toRun.push({ id, title, file });
       }
-      if (started.length > 0) {
-        setJobs((prev) => [...started, ...prev]);
+      if (started.length === 0) {
+        return;
+      }
+      // Register every job before starting its pipeline, so the first state
+      // update always finds the job in state.
+      setJobs((prev) => [...started, ...prev]);
+      for (const { id, title, file } of toRun) {
+        void run(id, title, file);
       }
     },
     [run],

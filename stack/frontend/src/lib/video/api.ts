@@ -3,9 +3,7 @@
 // from the batch processing identity in the fact-check client. The object key is
 // never exposed: clients address a video by id and upload/play through presigned
 // requests the backend mints.
-import { toApiError } from "@/lib/http";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+import { API_BASE, toApiError } from "@/lib/http";
 
 export type VideoStatus = "pending" | "ready" | "failed";
 export type VideoKind = "upload" | "sample";
