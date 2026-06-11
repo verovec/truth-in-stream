@@ -63,8 +63,14 @@ func (d *Downloader) Fetch(ctx context.Context, corpus, destDir string) (DumpFil
 	if err != nil {
 		return DumpFiles{}, err
 	}
-	if dumpVersion != "" && indexVersion != "" && dumpVersion != indexVersion {
-		return DumpFiles{}, fmt.Errorf("wiki: dump (%s) and index (%s) come from different dump generations; retry", dumpVersion, indexVersion)
+	// The dump and index must come from the same generation. They match when
+	// both carry the same Last-Modified, or when the mirror reports none for
+	// either (nothing to compare, both freshly fetched together). A version on
+	// one but not the other - e.g. a 304-reused dump paired with a freshly
+	// downloaded index that carried no Last-Modified - cannot be confirmed as a
+	// pair and is rejected.
+	if dumpVersion != indexVersion {
+		return DumpFiles{}, fmt.Errorf("wiki: dump (%q) and index (%q) are not a confirmed dump generation pair; retry", dumpVersion, indexVersion)
 	}
 	return DumpFiles{
 		DumpPath:  dumpPath,

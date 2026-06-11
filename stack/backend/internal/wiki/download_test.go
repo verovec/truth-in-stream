@@ -349,6 +349,51 @@ func TestDownloaderFetchDropsStaleSidecarWhenVersionMissing(t *testing.T) {
 	}
 }
 
+func TestDownloaderFetchRejectsAsymmetricVersionPair(t *testing.T) {
+	t.Parallel()
+
+	// The dump carries a Last-Modified; the index does not. The pair cannot be
+	// confirmed as the same generation, so Fetch must reject it rather than
+	// pairing a versioned dump with an unverifiable index.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /simplewiki/latest/simplewiki-latest-pages-articles-multistream.xml.bz2", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", "Mon, 01 Jun 2026 03:14:00 GMT")
+		_, _ = io.WriteString(w, "dump-bytes")
+	})
+	mux.HandleFunc("GET /simplewiki/latest/simplewiki-latest-pages-articles-multistream-index.txt.bz2", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "index-bytes")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	d := Downloader{BaseURL: srv.URL}
+	if _, err := d.Fetch(t.Context(), "simplewiki", t.TempDir()); err == nil {
+		t.Fatal("Fetch accepted a dump with a version paired with a version-less index, want error")
+	}
+}
+
+func TestDownloaderFetchAcceptsVersionlessPair(t *testing.T) {
+	t.Parallel()
+
+	// Neither file carries a Last-Modified - there is nothing to compare and both
+	// were fetched together, so the pair is accepted (Version left empty).
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /simplewiki/latest/{file}", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "bytes-"+r.PathValue("file"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	d := Downloader{BaseURL: srv.URL}
+	files, err := d.Fetch(t.Context(), "simplewiki", t.TempDir())
+	if err != nil {
+		t.Fatalf("Fetch rejected a version-less pair: %v", err)
+	}
+	if files.Version != "" {
+		t.Errorf("Version = %q, want empty for a version-less pair", files.Version)
+	}
+}
+
 func TestDownloaderFetchHTTPError(t *testing.T) {
 	t.Parallel()
 
