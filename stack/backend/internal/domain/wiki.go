@@ -91,6 +91,22 @@ type WikiRemaining struct {
 	Chars  int64
 }
 
+// WikiCorpusHealth is the live corpus snapshot the reingest verifier checks: the
+// total chunk count, the counts of rows that would make the corpus unservable
+// (a missing or zero-vector embedding, an absent kind metadata), the embedding
+// column's declared type (proving the dimension), and whether the HNSW index
+// exists and is valid. A healthy corpus has Chunks > 0, the three bad-row counts
+// at zero, EmbeddingType "halfvec(1024)", and HNSWPresent and HNSWValid both true.
+type WikiCorpusHealth struct {
+	Chunks          int64
+	NullEmbeddings  int64
+	ZeroVectors     int64
+	MissingMetadata int64
+	EmbeddingType   string
+	HNSWPresent     bool
+	HNSWValid       bool
+}
+
 // WikiSyncState is the per-corpus ingestion checkpoint. LastChangeTS is the
 // dump's publication time after a bulk run - an upper bound on the data
 // snapshot cut, which happens days earlier, so the delta sync must resume

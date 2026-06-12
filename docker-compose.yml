@@ -299,6 +299,55 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Clears the live corpus and its sync checkpoint so the next bulk run rebuilds
+  # from scratch under the current code - the first step of `make reingest`. The
+  # checkpoint keys on the dump version, not the code, so this is what forces a
+  # rebuild after the chunker or metadata changed. Opt-in (profile "wiki"),
+  # one-shot, no broker or API key: it only touches the database, so it depends on
+  # postgres + migrate alone (not the broker or object storage).
+  wiki-reset:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/wikisync", "-mode=reset"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Verifies the rebuilt corpus is complete and servable: chunks present, every
+  # chunk embedded with a non-null, non-zero, 1024-dim vector, metadata populated,
+  # and the HNSW index live. The last step of `make reingest`; it exits non-zero
+  # and logs the failing checks if the corpus is incomplete or stale, so a partial
+  # rebuild is caught rather than served. Opt-in (profile "wiki"), one-shot, no API
+  # key.
+  wiki-verify:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/wikiverify"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: ./stack/backend

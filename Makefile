@@ -15,7 +15,7 @@ COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disabl
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings wiki-populate wiki-update wiki-cluster migrate logs ps
+.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -66,6 +66,16 @@ wiki-update: ## Incrementally update the embedded Wikipedia corpus via the Media
 
 wiki-cluster: ## Cluster the embedded corpus into topics and score importance so the next ingest embeds the most important content first (idempotent; run after embedding; WIKI_CLUSTER_* tuning from .env)
 	$(COMPOSE) --profile wiki run --rm wiki-cluster
+
+wiki-verify: ## Verify the live corpus is fully rebuilt (chunks present, every chunk embedded non-null/non-zero/1024-dim, metadata populated, HNSW index live); exits non-zero and logs the failing checks on a partial or stale corpus
+	$(COMPOSE) --profile wiki run --rm wiki-verify
+
+reingest: ## Full local corpus reingest under the reworked pipeline: reset corpus+checkpoint, bulk-ingest+enqueue, fleet embeds and swaps live, cluster, then verify. Brings up the broker and one worker; resumable, reuses the on-disk dump; needs EMBEDDING_API_KEY and WIKI_* tuning from .env. Long (paid embed) - run it unattended; a green verify means the corpus is ready.
+	$(COMPOSE) --profile wiki run --rm wiki-reset
+	$(COMPOSE) --profile wiki run --rm wiki-populate
+	$(COMPOSE) --profile wiki run --rm wiki-cluster
+	$(COMPOSE) --profile wiki run --rm wiki-verify
+	@echo "reingest complete: corpus rebuilt, clustered, and verified"
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up
