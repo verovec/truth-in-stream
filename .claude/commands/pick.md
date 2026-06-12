@@ -31,7 +31,25 @@ card. Card and claim rules live in the `roadmap-linear` and `delivering-linear-c
 4. **On a successful claim**, hand off to `delivering-linear-cards`: create the worktree
    (`EnterWorktree`; fallback `git worktree add .claude/worktrees/<branch> -b <branch> main`) and
    run the full per-card workflow (TDD -> `/code-review` -> verify green -> PR -> In Review)
-   inside it. The card is already `In Progress`; do not flip it again.
+   inside it. `/code-review` runs before every PR; it is never skipped. The card is already
+   `In Progress`; do not flip it again. A card reached through the Ready queue always branches
+   off `main`, because the queue only surfaces cards whose dependencies are already `Done`.
+
+5. **Optionally continue to a dependent card (stacked, separate PR).** After your PR is open and
+   the card is `In Review`, you MAY - in the same session - claim a `Todo` card that depends only
+   on the card you just delivered (its other dependencies, if any, already `Done`) and deliver it
+   without waiting for your PR to merge. This is the ONLY time a card is taken before its
+   dependency has merged to `main`. It exists so a chain of dependent cards can be delivered back
+   to back with zero merge conflicts.
+   a. Claim it with the same parallel-safe protocol (step 2).
+   b. Base its worktree on the branch you just delivered, NOT on `main`:
+      `git worktree add .claude/worktrees/<branch> -b <branch> <dependency-branch>`.
+   c. Run the full per-card workflow (TDD -> `/code-review` -> verify green -> PR), opening the PR
+      against the dependency branch as its base so it is a stacked PR showing only its own diff.
+      When the dependency merges, GitHub retargets the PR to `main` automatically.
+   d. Keep it rebased on the dependency branch while that branch changes in review; rebase it onto
+      `main` once the dependency has merged.
+   e. One dependent at a time: finish it fully before considering the next link in the chain.
 
 ## --steal <ID>
 Skip steps 1-2. Confirm the prior session is gone, set/keep the card `In Progress`, post a
