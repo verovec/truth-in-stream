@@ -539,7 +539,7 @@ func TestLoadDebugSearch(t *testing.T) {
 }
 
 func TestLoadPrecheck(t *testing.T) {
-	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.6}
+	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -617,6 +617,28 @@ func TestLoadPrecheck(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDefaultWikiCoverageThresholdSitsInMeasuredSeparationGap fails if the
+// default drifts out of the measured separation gap (see the constant's comment
+// for the calibration). The slices are the per-statement top wiki cosine
+// similarities behind that gap, so the regression guard is checked against the
+// data, not just the chosen number.
+func TestDefaultWikiCoverageThresholdSitsInMeasuredSeparationGap(t *testing.T) {
+	onTopicTops := []float64{0.5143, 0.5535, 0.5541, 0.5918, 0.6012, 0.6488}
+	offTopicTops := []float64{0.3162, 0.3423, 0.3795, 0.4129, 0.4180}
+
+	floor := defaultPrecheckWikiCoverageThreshold
+	for _, score := range onTopicTops {
+		if score < floor {
+			t.Errorf("on-topic top similarity %.4f is below the wiki coverage floor %.4f; it would be wrongly skipped as not_covered", score, floor)
+		}
+	}
+	for _, score := range offTopicTops {
+		if score >= floor {
+			t.Errorf("off-topic top similarity %.4f is at or above the wiki coverage floor %.4f; it would be wrongly admitted to checking", score, floor)
+		}
 	}
 }
 
