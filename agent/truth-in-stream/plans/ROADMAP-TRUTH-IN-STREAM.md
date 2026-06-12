@@ -48,9 +48,9 @@
 | VER-47 | Wiki-grounded coverage: let the embedded corpus decide checkability | Done | High | |
 | VER-48 | Live scoring backpressure: stop dropping statements as not_checked | Done | High | |
 | VER-49 | Structured wiki ingestion: per-chunk metadata for classification | Done | High | |
-| VER-50 | Confidence scoring: cluster corpus evidence into a corroboration percentage | In Progress | Medium | VER-47, VER-48, VER-49 |
+| VER-50 | Confidence scoring: cluster corpus evidence into a corroboration percentage | Done | Medium | VER-47, VER-48, VER-49 |
 | VER-51 | RabbitMQ broker and embedding-queue connection (infra + shared client) | Done | High | |
-| VER-52 | Embedding worker service: drain the priority queue and embed chunks | In Progress | High | VER-49, VER-51 |
+| VER-52 | Embedding worker service: drain the priority queue and embed chunks | Done | High | VER-49, VER-51 |
 | VER-53 | Adapt ingestion to enqueue embedding jobs and scale to a larger corpus | Todo | Medium | VER-49, VER-52 |
 | VER-54 | Topic clustering and importance scoring to drive embedding priority | Todo | Low | VER-53 |
 | VER-55 | Full local corpus reingest after the ingestion rework | Todo | High | VER-49, VER-52, VER-53, VER-54 |
@@ -72,10 +72,7 @@ VER-54 -> VER-55
 
 ## Ready queue
 
-_Empty._ The two startable cards (VER-50, VER-52) are both In Progress in other sessions.
-The remaining Todo cards are blocked by an In-Progress dependency that has not yet reached
-In Review, so none can branch or stack yet:
+1. VER-53 - Adapt ingestion to enqueue embedding jobs (Medium) - deps VER-49 + VER-52 both Done;
+   unblocks VER-54, VER-55. Branch off `main`.
 
-- VER-53 waits on VER-52 (In Progress -> stacks once VER-52 reaches In Review).
-- VER-54 waits on VER-53 (Todo).
-- VER-55 waits on VER-53 and VER-54 (Todo).
+VER-54 (waits on VER-53) and VER-55 (waits on VER-53, VER-54) stay blocked until VER-53 advances.
