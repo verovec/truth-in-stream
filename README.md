@@ -226,6 +226,22 @@ be bootstrapped once before the first `terraform init` - see
 cd stack/terraform/dev && terraform init && terraform plan
 ```
 
+### Database backups
+
+The database holds expensive-to-recompute embeddings (claim vectors and the
+`wiki_chunks` corpus), so it is dumped with `pg_dump -Fc` to a private,
+versioned, lifecycle-retained S3 bucket and restored without re-embedding.
+
+- **Manual:** `make backup` / `make restore` (set `DB_BACKUP_BUCKET`; `restore`
+  takes `FILE=path` or pulls the latest from S3). The fidelity guarantee -
+  `halfvec` embeddings round-trip byte-for-byte - is covered by the test in
+  `stack/backend/internal/dbbackup`.
+- **Scheduled (cloud):** a Fargate task runs the same dump on a cron and uploads
+  under the same `db-backups/<db>-<timestamp>.dump` key, so `make restore`
+  consumes either. It is gated by `enable_db_backup` (default `false`) with the
+  cron in `db_backup_schedule`; see
+  [`modules/scheduled-task`](stack/terraform/modules/scheduled-task/README.md#scheduled-database-backup).
+
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.

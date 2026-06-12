@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+
+# One-shot database-backup image: a static dbbackup binary plus the PostgreSQL
+# client (pg_dump) it shells out to. The client major must match or exceed the
+# RDS server (PostgreSQL 17), so pg17 is pinned here - an older pg_dump refuses
+# to dump a newer server. Run on a cron by stack/terraform/modules/scheduled-task.
+FROM golang:1.26 AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0
+RUN go build -o /out/dbbackup ./cmd/dbbackup
+
+# postgres:17-alpine ships pg_dump/pg_restore 17 in a small, low-CVE image; a
+# pure-Go static binary (CGO_ENABLED=0) runs on musl with no libc dependency.
+FROM postgres:17-alpine
+COPY --from=builder /out/dbbackup /dbbackup
+# The official image already defines a non-root `postgres` user (uid 70). The
+# job only runs pg_dump as a client and writes its temp dump under /tmp, so it
+# needs no superuser rights.
+USER postgres
+ENTRYPOINT ["/dbbackup"]

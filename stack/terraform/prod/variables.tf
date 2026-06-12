@@ -84,3 +84,27 @@ variable "embed_worker_max_attempts" {
   default     = 5
   description = "Per-job delivery budget before a persistent failure is dropped with a log (EMBED_WORKER_MAX_ATTEMPTS)."
 }
+
+variable "enable_db_backup" {
+  type        = bool
+  default     = false
+  description = "Create the scheduled pg_dump-to-S3 backup task. Keep false until the backup image ships; flipping it is a no-op on running services."
+}
+
+variable "db_backup_schedule" {
+  type        = string
+  default     = "cron(0 4 * * ? *)"
+  description = "EventBridge Scheduler expression for the database backup (UTC); default is daily at 04:00."
+}
+
+variable "db_backup_cpu" {
+  type        = number
+  default     = 512
+  description = "Fargate CPU units for the backup task (1024 = 1 vCPU)."
+}
+
+variable "db_backup_memory" {
+  type        = number
+  default     = 1024
+  description = "Fargate memory in MiB for the backup task."
+}

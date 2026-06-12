@@ -209,3 +209,24 @@ resource "aws_iam_role_policy" "task_media" {
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task_media[0].json
 }
+
+# Least-privilege backup access: write-only on the dump bucket. The scheduled
+# backup task assumes this same task role, so it may upload dumps but never read
+# or delete an existing one. Scoped to the one bucket and only attached when its
+# ARN is supplied.
+data "aws_iam_policy_document" "task_db_backup" {
+  count = var.db_backup_bucket_arn == "" ? 0 : 1
+
+  statement {
+    sid       = "PutBackupObjects"
+    actions   = ["s3:PutObject"]
+    resources = ["${var.db_backup_bucket_arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "task_db_backup" {
+  count  = var.db_backup_bucket_arn == "" ? 0 : 1
+  name   = "db-backup"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_db_backup[0].json
+}
