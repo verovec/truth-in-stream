@@ -9,3 +9,9 @@ variable "include_scheduled_tasks" {
   default     = false
   description = "Include EventBridge Scheduler + scheduled-task actions. Set true when the env creates any scheduled Fargate task (wikisync or db-backup)."
 }
+
+variable "include_bastion" {
+  type        = bool
+  default     = false
+  description = "Include the SSM bastion actions (EC2 instance lifecycle + instance profile). Set from the env's enable_bastion so the manifest only demands them when the plan provisions the bastion."
+}

@@ -30,3 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/iam-apply-guard.test.sh
+  # Unit-test the SSM bastion port-forward helper with a stubbed aws CLI (no AWS
+  # account, no real SSM session).
+  ssm-port-forward-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ssm-port-forward.test.sh

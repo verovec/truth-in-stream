@@ -53,6 +53,7 @@ locals {
     "ec2:DeleteSecurityGroup",
     "ec2:AuthorizeSecurityGroupIngress",
     "ec2:AuthorizeSecurityGroupEgress",
+    "ec2:RevokeSecurityGroupIngress",
     "ec2:RevokeSecurityGroupEgress",
     # Standalone rule resources (aws_vpc_security_group_ingress_rule in
     # modules/service) use the SecurityGroupRule API, not Authorize*.
@@ -214,6 +215,25 @@ locals {
     "scheduler:GetScheduleGroup",
   ]
 
+  # SSM bastion (modules/bastion): the EC2 instance and its instance profile.
+  # Only required when the env provisions the bastion. The instance's own SG and
+  # IAM role/policy are covered by networking_actions and iam_actions; this block
+  # adds the instance lifecycle and the instance-profile binding those omit.
+  bastion_actions = [
+    "ec2:RunInstances",
+    "ec2:TerminateInstances",
+    "ec2:StopInstances",
+    "ec2:StartInstances",
+    "ec2:ModifyInstanceAttribute",
+    "iam:CreateInstanceProfile",
+    "iam:DeleteInstanceProfile",
+    "iam:AddRoleToInstanceProfile",
+    "iam:RemoveRoleFromInstanceProfile",
+    "iam:GetInstanceProfile",
+    # The instance profile carries a Name tag, tagged on create.
+    "iam:TagInstanceProfile",
+  ]
+
   # Aggregate the enabled areas. Sorted+deduped so the output is stable and the
   # guard reports a clean, ordered list.
   _actions = concat(
@@ -231,5 +251,6 @@ locals {
     local.mq_actions,
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
+    var.include_bastion ? local.bastion_actions : [],
   )
 }
