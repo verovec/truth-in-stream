@@ -46,12 +46,15 @@ const (
 // that finalizes after its subtitle reconciles to the right statement. A result
 // event mirrors the batch SegmentResult shape (Segment, Matches, SkipReason)
 // plus the live-only Err, set when analysis failed without ending the stream.
+// Confidence is the corroboration score over Matches, set only on a checked
+// result and nil for a skipped or errored one.
 type LiveEvent struct {
 	Kind       LiveEventKind
 	ID         string
 	Segment    domain.Segment
 	Matches    []domain.SegmentMatch
 	SkipReason domain.SkipReason
+	Confidence *domain.Confidence
 	Err        string
 }
 
@@ -363,7 +366,7 @@ func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue
 // Failures during teardown (ctx canceled) are not logged, as the event is
 // dropped on the closing stream.
 func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, members []unitMember) {
-	matches, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, combinedText(members))
+	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, combinedText(members))
 	if err != nil {
 		if ctx.Err() == nil {
 			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("ids", memberIDs(members)), slog.Any("err", err))
@@ -375,11 +378,16 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, memb
 		}
 		return
 	}
+	// The confidence is attached only to a checked statement; a skipped one
+	// carries no score. It is a flat read-only value, so every member shares one
+	// pointer safely - unlike the matches slice, which each member clones below
+	// because a consumer may sort or filter it in place.
+	var confidence *domain.Confidence
+	if decision.Checkable {
+		confidence = &result.Confidence
+	}
 	for _, m := range members {
-		// Each member gets its own copy of the verdict's matches so the per-member
-		// events stay independent: a consumer that mutates one result's matches
-		// (sort, filter) cannot corrupt its siblings through a shared backing array.
-		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason, Matches: slices.Clone(matches)}) {
+		if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason, Matches: slices.Clone(result.Matches), Confidence: confidence}) {
 			return
 		}
 	}

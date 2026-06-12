@@ -198,43 +198,56 @@ func LoadAuth() (Auth, error) {
 // stay well inside the Voyage rate limits, and 10s bounds a single segment
 // end to end. Evidence retrieval pulls 5 Wikipedia chunks at a higher 0.6
 // threshold (the corpus is far larger, so a stricter bar avoids loosely related
-// noise), and the merged result is capped at 5 across both corpora.
+// noise), and the merged result is capped at 5 across both corpora. Confidence
+// scoring aggregates the top-5 matches; a lead chunk corroborates at full weight
+// and a body chunk at 0.6, since a lead summary is higher-signal than buried
+// prose.
 const (
-	defaultMatchTopK              = 5
-	defaultMatchScoreThreshold    = 0.5
-	defaultMatchEvidenceTopK      = 5
-	defaultMatchEvidenceThreshold = 0.6
-	defaultMatchMaxResults        = 5
-	defaultMatchEmbedConcurrency  = 4
-	defaultMatchTimeout           = 10 * time.Second
+	defaultMatchTopK                  = 5
+	defaultMatchScoreThreshold        = 0.5
+	defaultMatchEvidenceTopK          = 5
+	defaultMatchEvidenceThreshold     = 0.6
+	defaultMatchMaxResults            = 5
+	defaultMatchEmbedConcurrency      = 4
+	defaultMatchTimeout               = 10 * time.Second
+	defaultMatchConfidenceClusterSize = 5
+	defaultMatchConfidenceLeadWeight  = 1.0
+	defaultMatchConfidenceBodyWeight  = 0.6
 )
 
 // Match holds the segment matching configuration across the curated claims and
-// Wikipedia evidence corpora.
+// Wikipedia evidence corpora, plus the confidence-scoring knobs that aggregate a
+// statement's matched cluster into a corroboration score.
 type Match struct {
-	TopK              int
-	ScoreThreshold    float64
-	EvidenceTopK      int
-	EvidenceThreshold float64
-	MaxResults        int
-	EmbedConcurrency  int
-	Timeout           time.Duration
+	TopK                  int
+	ScoreThreshold        float64
+	EvidenceTopK          int
+	EvidenceThreshold     float64
+	MaxResults            int
+	EmbedConcurrency      int
+	Timeout               time.Duration
+	ConfidenceClusterSize int
+	ConfidenceLeadWeight  float64
+	ConfidenceBodyWeight  float64
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
 // defaults and failing fast on values that would make matching meaningless
 // (out-of-range k or concurrency, a threshold outside cosine similarity's
-// [-1, 1] range, a non-positive timeout). MATCH_EVIDENCE_TOP_K 0 disables
-// Wikipedia evidence retrieval.
+// [-1, 1] range, a non-positive timeout, a confidence weight outside [0, 1]).
+// MATCH_EVIDENCE_TOP_K 0 disables Wikipedia evidence retrieval.
 func LoadMatch() (Match, error) {
 	m := Match{
-		TopK:              defaultMatchTopK,
-		ScoreThreshold:    defaultMatchScoreThreshold,
-		EvidenceTopK:      defaultMatchEvidenceTopK,
-		EvidenceThreshold: defaultMatchEvidenceThreshold,
-		MaxResults:        defaultMatchMaxResults,
-		EmbedConcurrency:  defaultMatchEmbedConcurrency,
-		Timeout:           defaultMatchTimeout,
+		TopK:                  defaultMatchTopK,
+		ScoreThreshold:        defaultMatchScoreThreshold,
+		EvidenceTopK:          defaultMatchEvidenceTopK,
+		EvidenceThreshold:     defaultMatchEvidenceThreshold,
+		MaxResults:            defaultMatchMaxResults,
+		EmbedConcurrency:      defaultMatchEmbedConcurrency,
+		Timeout:               defaultMatchTimeout,
+		ConfidenceClusterSize: defaultMatchConfidenceClusterSize,
+		ConfidenceLeadWeight:  defaultMatchConfidenceLeadWeight,
+		ConfidenceBodyWeight:  defaultMatchConfidenceBodyWeight,
 	}
 	var err error
 	if m.TopK, err = intEnv("MATCH_TOP_K", m.TopK, 1, math.MaxInt32); err != nil {
@@ -266,6 +279,15 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	if m.Timeout, err = positiveDurationEnv("MATCH_TIMEOUT", m.Timeout); err != nil {
+		return Match{}, err
+	}
+	if m.ConfidenceClusterSize, err = intEnv("MATCH_CONFIDENCE_CLUSTER_SIZE", m.ConfidenceClusterSize, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.ConfidenceLeadWeight, err = floatEnv("MATCH_CONFIDENCE_LEAD_WEIGHT", m.ConfidenceLeadWeight, 0, 1); err != nil {
+		return Match{}, err
+	}
+	if m.ConfidenceBodyWeight, err = floatEnv("MATCH_CONFIDENCE_BODY_WEIGHT", m.ConfidenceBodyWeight, 0, 1); err != nil {
 		return Match{}, err
 	}
 	return m, nil

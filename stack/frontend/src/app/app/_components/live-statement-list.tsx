@@ -7,7 +7,7 @@ import {
 } from "@/components/playback/playback-provider";
 import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
-import type { LiveStatement } from "@/lib/live/statements";
+import { isScored, type LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
 
 // speakerLabel renders the diarized speaker label as a reader-facing tag. The
@@ -138,9 +138,17 @@ function skipLabel(reason: string): string {
   return SKIP_LABELS[reason as SkipReason] ?? "an unrecognised reason";
 }
 
+// formatConfidence renders a corroboration score (a fraction in [0, 1]) as a
+// whole-number percentage, the form the operator reads.
+function formatConfidence(score: number): string {
+  return `${Math.round(score * 100)}%`;
+}
+
 // SubtitleStatus is the light per-row marker. It never shows a verdict (those
-// live in the fact-check list); it only signals progress or why a statement
-// produced no fact-check, so a row is never silently empty after analysis.
+// live in the fact-check list); it signals progress, why a statement produced no
+// fact-check, or - for a checked statement with evidence - how strongly the
+// reference corpus corroborates it, so a row is never silently empty after
+// analysis.
 function SubtitleStatus({ statement }: { statement: LiveStatement }) {
   if (statement.status === "analysing") {
     return (
@@ -177,6 +185,19 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
     return (
       <p className="pb-1 text-xs text-zinc-500 dark:text-zinc-400">
         No confident match.
+      </p>
+    );
+  }
+
+  // A scored statement with evidence shows its corroboration percentage: how
+  // strongly the matched cluster supports the statement, not a per-source verdict.
+  if (isScored(statement) && statement.confidence) {
+    return (
+      <p className="pb-1 text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">
+          {formatConfidence(statement.confidence.score)}
+        </span>{" "}
+        corroborated by the reference corpus
       </p>
     );
   }

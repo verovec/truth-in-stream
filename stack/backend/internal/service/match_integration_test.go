@@ -259,12 +259,15 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := NewMatcher(embedder, store, store, MatcherConfig{
-				TopK:             tc.topK,
-				ScoreThreshold:   tc.threshold,
-				EvidenceTopK:     0,
-				MaxResults:       10,
-				EmbedConcurrency: 2,
-				Timeout:          30 * time.Second,
+				TopK:                  tc.topK,
+				ScoreThreshold:        tc.threshold,
+				EvidenceTopK:          0,
+				MaxResults:            10,
+				EmbedConcurrency:      2,
+				Timeout:               30 * time.Second,
+				ConfidenceClusterSize: 5,
+				ConfidenceLeadWeight:  1,
+				ConfidenceBodyWeight:  0.5,
 			})
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)

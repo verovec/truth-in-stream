@@ -142,4 +142,38 @@ describe("normalizeSegment", () => {
       { kind: "claim", claim: "", verdict: "unclear", sources: [], similarity: 0.3 },
     ]);
   });
+
+  test("maps the confidence score onto the camelCase domain shape", () => {
+    const segment = normalizeSegment({
+      start: 0,
+      end: 4,
+      text: "checked",
+      matches: [{ kind: "claim", claim: "c", verdict: "corroborates", similarity: 0.9 }],
+      confidence: {
+        score: 0.82,
+        supporting: 1.4,
+        contradicting: 0.3,
+        evidence_items: 3,
+      },
+    });
+
+    expect(segment.confidence).toEqual({
+      score: 0.82,
+      supporting: 1.4,
+      contradicting: 0.3,
+      evidenceItems: 3,
+    });
+  });
+
+  test("leaves confidence absent when the wire carries none", () => {
+    const segment = normalizeSegment({
+      start: 4.5,
+      end: 9,
+      text: "skipped",
+      matches: [],
+      skip_reason: "not_checked",
+    });
+
+    expect(segment.confidence).toBeUndefined();
+  });
 });
