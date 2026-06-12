@@ -79,5 +79,13 @@ the right card. `/roadmap` writes three things into `agent/<org_slug>/plans/ROAD
 `/pick` reads the Ready queue top-down and claims the first card it can. Never hand-edit the
 Ready queue - it is derived; fix `depends_on` or card states and re-run `/roadmap`.
 
+A dependency only sequences `Todo` work. Two refinements at delivery time (see
+`delivering-linear-cards`): a session that has just delivered a card MAY continue to a dependent
+whose only unmerged dependency is that card, stacking the dependent's branch on the dependency's
+branch (a single chain, not a multi-dependency card); and once both a dependency and its dependent
+are `In Review`, the link is removed and the rebased branches alone guarantee a conflict-free
+in-order merge. Because the Ready queue only considers `Todo` cards, removing a link from an
+`In Review` card never changes it.
+
 ## Version card
 - A card titled `agent-industry-version` mirrors the local `VERSION` file. Keep it in `Done`.
