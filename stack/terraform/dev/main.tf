@@ -3,6 +3,11 @@ data "aws_caller_identity" "current" {}
 locals {
   project           = "truth-in-stream"
   github_repository = "verovec/truth-in-stream"
+
+  # DATABASE_URL secret ARN, or null when RDS is gated off (dev develops the
+  # database locally). DB consumers read this: the backend drops the secret and
+  # the migration task / embedding worker gate themselves off when it is null.
+  rds_dsn_secret_arn = one(module.rds[*].dsn_secret_arn)
 }
 
 module "vpc" {
@@ -31,6 +36,7 @@ module "ecr" {
 
 module "rds" {
   source = "../modules/rds"
+  count  = var.enable_rds ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -110,12 +116,14 @@ module "iam" {
   cluster_arn          = module.ecs.cluster_id
   media_bucket_arn     = module.media_storage.bucket_arn
   db_backup_bucket_arn = module.db_backup_storage.bucket_arn
-  secret_arns = [
-    module.rds.dsn_secret_arn,
-    aws_secretsmanager_secret.embedding_api_key.arn,
-    aws_secretsmanager_secret.transcription_api_key.arn,
-    module.rabbitmq.url_secret_arn,
-  ]
+  secret_arns = concat(
+    local.rds_dsn_secret_arn != null ? [local.rds_dsn_secret_arn] : [],
+    [
+      aws_secretsmanager_secret.embedding_api_key.arn,
+      aws_secretsmanager_secret.transcription_api_key.arn,
+      module.rabbitmq.url_secret_arn,
+    ],
+  )
   ssm_parameter_arns = [
     aws_ssm_parameter.private_subnet_ids.arn,
     aws_ssm_parameter.tasks_security_group_id.arn,
@@ -151,11 +159,13 @@ module "backend" {
     STORAGE_BUCKET = module.media_storage.bucket_id
     STORAGE_REGION = var.aws_region
   }
-  secrets = {
-    DATABASE_URL          = module.rds.dsn_secret_arn
-    EMBEDDING_API_KEY     = aws_secretsmanager_secret.embedding_api_key.arn
-    TRANSCRIPTION_API_KEY = aws_secretsmanager_secret.transcription_api_key.arn
-  }
+  secrets = merge(
+    {
+      EMBEDDING_API_KEY     = aws_secretsmanager_secret.embedding_api_key.arn
+      TRANSCRIPTION_API_KEY = aws_secretsmanager_secret.transcription_api_key.arn
+    },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
 
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
@@ -205,14 +215,18 @@ module "frontend" {
   health_check_path = "/login"
 }
 
+# The migration task runs golang-migrate against RDS, so it only exists when RDS
+# does. With the database developed locally (enable_rds = false) there is nothing
+# to migrate in the cloud, and the deploy workflow's migrate step is skipped.
 module "migration" {
   source = "../modules/migration"
+  count  = var.enable_rds ? 1 : 0
 
   project     = local.project
   environment = var.environment
 
   image                   = "${module.ecr.repository_urls["migrate"]}:latest"
-  dsn_secret_arn          = module.rds.dsn_secret_arn
+  dsn_secret_arn          = local.rds_dsn_secret_arn
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
@@ -221,7 +235,8 @@ module "migration" {
 # Weekly Wikipedia delta sync as a one-shot scheduled Fargate task.
 module "wiki_sync" {
   source = "../modules/scheduled-task"
-  count  = var.enable_wiki_sync ? 1 : 0
+  # Writes to the database, so it requires RDS as well as its own enable flag.
+  count = var.enable_wiki_sync && var.enable_rds ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -238,10 +253,10 @@ module "wiki_sync" {
   environment_variables = {
     WIKI_CORPUS = var.wiki_corpus
   }
-  secrets = {
-    DATABASE_URL      = module.rds.dsn_secret_arn
-    EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
-  }
+  secrets = merge(
+    { EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
 
   cluster_arn             = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
@@ -257,7 +272,8 @@ module "wiki_sync" {
 # enable_db_backup once the backup image ships and the schedule is wanted.
 module "db_backup" {
   source = "../modules/scheduled-task"
-  count  = var.enable_db_backup ? 1 : 0
+  # Dumps RDS, so it requires RDS as well as its own enable flag.
+  count = var.enable_db_backup && var.enable_rds ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -276,9 +292,7 @@ module "db_backup" {
     DB_BACKUP_BUCKET = module.db_backup_storage.bucket_id
     AWS_REGION       = var.aws_region
   }
-  secrets = {
-    DATABASE_URL = module.rds.dsn_secret_arn
-  }
+  secrets = local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {}
 
   cluster_arn             = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
@@ -294,7 +308,9 @@ module "db_backup" {
 # off by default; enable during a corpus ingest that publishes jobs.
 module "embed_worker" {
   source = "../modules/worker"
-  count  = var.enable_embed_worker ? 1 : 0
+  # Writes embeddings to the database, so it requires RDS as well as its own
+  # enable flag. The cloud worker stays gated off while the database is local.
+  count = var.enable_embed_worker && var.enable_rds ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -311,11 +327,13 @@ module "embed_worker" {
     EMBED_WORKER_CONCURRENCY  = tostring(var.embed_worker_concurrency)
     EMBED_WORKER_MAX_ATTEMPTS = tostring(var.embed_worker_max_attempts)
   }
-  secrets = {
-    DATABASE_URL      = module.rds.dsn_secret_arn
-    EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
-    RABBITMQ_URL      = module.rabbitmq.url_secret_arn
-  }
+  secrets = merge(
+    {
+      EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+      RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+    },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
 
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids

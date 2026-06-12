@@ -24,13 +24,13 @@ output "deploy_role_arn" {
 }
 
 output "rds_endpoint" {
-  value       = module.rds.endpoint
-  description = "RDS endpoint (private; reachable from ECS tasks only)."
+  value       = one(module.rds[*].endpoint)
+  description = "RDS endpoint (private; reachable from ECS tasks only). Null when enable_rds is false."
 }
 
 output "dsn_secret_arn" {
-  value       = module.rds.dsn_secret_arn
-  description = "Secrets Manager ARN holding DATABASE_URL."
+  value       = local.rds_dsn_secret_arn
+  description = "Secrets Manager ARN holding DATABASE_URL. Null when enable_rds is false."
 }
 
 output "rabbitmq_url_secret_arn" {

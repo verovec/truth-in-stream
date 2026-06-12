@@ -95,6 +95,13 @@ jobs:
         run: |
           set -euo pipefail
           CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          # The migrate task definition only exists when RDS is provisioned
+          # (enable_rds). With the database developed locally it is absent, so
+          # there is nothing to migrate; skip rather than fail the deploy.
+          if ! aws ecs describe-task-definition --task-definition "${PROJECT}-${ENVIRONMENT}-migrate" >/dev/null 2>&1; then
+            echo "No migrate task definition (enable_rds=false); skipping migrations."
+            exit 0
+          fi
           SUBNETS=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/private-subnet-ids" --query 'Parameter.Value' --output text)
           SG=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/tasks-security-group-id" --query 'Parameter.Value' --output text)
           TASK_ARN=$(aws ecs run-task \

@@ -20,10 +20,16 @@ variable "media_cors_allowed_origins" {
   description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Defaults to any origin while there is no fixed frontend domain; restrict to the app origin once one exists."
 }
 
+variable "enable_rds" {
+  type        = bool
+  default     = false
+  description = "Provision the RDS PostgreSQL instance and wire its DATABASE_URL into the app stack. Default false in dev: the database is developed locally, so dev creates no RDS and the DB-dependent migration task and embedding worker stay gated off (they require enable_rds). Set true to bring the managed database online."
+}
+
 variable "enable_wiki_sync" {
   type        = bool
   default     = false
-  description = "Create the scheduled Wikipedia delta-sync task. Keep false until the wikisync binary ships in the backend image."
+  description = "Create the scheduled Wikipedia delta-sync task. Requires enable_rds (the sync writes to the database). Keep false until the wikisync binary ships in the backend image."
 }
 
 variable "wiki_corpus" {

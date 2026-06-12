@@ -14,3 +14,11 @@ jobs:
   backend-test:
     uses: ./.github/workflows/_test.yml
     with: { path: stack/backend, lang: go }
+  # Unit-test the Terraform state-bucket bootstrap script with a stubbed aws CLI
+  # (no AWS account or credentials involved).
+  bootstrap-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/bootstrap-tfstate.test.sh
