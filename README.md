@@ -218,13 +218,18 @@ cd stack/frontend && npm test
 
 ## Infrastructure
 
-State lives in the S3 bucket `truth-in-stream-tfstate` (native S3 locking). The bucket must
-be bootstrapped once before the first `terraform init` - see
-[`stack/terraform/README.md`](stack/terraform/README.md). Then:
+Operator tooling targets AWS through one SSO profile (`truth-in-stream-dev`, region `eu-west-3`).
+State lives in the S3 bucket `truth-in-stream-tfstate` (native S3 locking). Bootstrap the bucket
+once before the first `terraform init` with the idempotent script:
 
 ```bash
+./scripts/bootstrap-tfstate.sh
 cd stack/terraform/dev && terraform init && terraform plan
 ```
+
+Dev provisions no RDS by default (`enable_rds = false`); the database is developed locally. See
+[`stack/terraform/README.md`](stack/terraform/README.md) for the SSO profile setup and the
+`enable_rds` toggle.
 
 ### Database backups
 
@@ -238,8 +243,9 @@ versioned, lifecycle-retained S3 bucket and restored without re-embedding.
   `stack/backend/internal/dbbackup`.
 - **Scheduled (cloud):** a Fargate task runs the same dump on a cron and uploads
   under the same `db-backups/<db>-<timestamp>.dump` key, so `make restore`
-  consumes either. It is gated by `enable_db_backup` (default `false`) with the
-  cron in `db_backup_schedule`; see
+  consumes either. It is gated by `enable_db_backup` (default `false`) and
+  requires `enable_rds` (it dumps RDS), with the cron in `db_backup_schedule`;
+  see
   [`modules/scheduled-task`](stack/terraform/modules/scheduled-task/README.md#scheduled-database-backup).
 
 ## CI
