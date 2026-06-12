@@ -85,6 +85,8 @@ func LoadWikiChunks(r io.Reader) ([]domain.WikiChunk, error) {
 			RevisionID: f.RevisionID,
 			Corpus:     f.Corpus,
 			Content:    f.Content,
+			// Seed fixtures are lead-section chunks, like live ingestion.
+			Kind: domain.WikiChunkKindLead,
 		}
 	}
 	return chunks, nil

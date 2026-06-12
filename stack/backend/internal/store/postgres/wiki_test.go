@@ -21,6 +21,7 @@ func wikiChunk(pageID int64, idx int, content string) domain.WikiChunk {
 		RevisionID: 100,
 		Corpus:     "simplewiki",
 		Content:    content,
+		Kind:       domain.WikiChunkKindLead,
 	}
 }
 
@@ -29,7 +30,8 @@ func wikiChunk(pageID int64, idx int, content string) domain.WikiChunk {
 func setEmbedding(ctx context.Context, t *testing.T, store *Store, pageID int64, idx int, v []float32) {
 	t.Helper()
 	emb := pgvector.NewHalfVector(v)
-	if _, err := store.pool.Exec(ctx,
+	if _, err := store.pool.Exec(
+		ctx,
 		"UPDATE wiki_chunks SET embedding = $1 WHERE page_id = $2 AND chunk_index = $3",
 		emb, pageID, idx,
 	); err != nil {
@@ -42,9 +44,9 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 	ctx := t.Context()
 
 	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Alpha", URL: "https://w/alpha", RevisionID: 1, Corpus: "simplewiki", Content: "alpha lead"},
-		{PageID: 2, ChunkIndex: 0, Title: "Bravo", URL: "https://w/bravo", RevisionID: 1, Corpus: "simplewiki", Content: "bravo lead"},
-		{PageID: 3, ChunkIndex: 0, Title: "Charlie", URL: "https://w/charlie", RevisionID: 1, Corpus: "simplewiki", Content: "charlie lead, never embedded"},
+		{PageID: 1, ChunkIndex: 0, Title: "Alpha", URL: "https://w/alpha", RevisionID: 1, Corpus: "simplewiki", Content: "alpha lead", Kind: domain.WikiChunkKindLead},
+		{PageID: 2, ChunkIndex: 0, Title: "Bravo", URL: "https://w/bravo", RevisionID: 1, Corpus: "simplewiki", Content: "bravo lead", Kind: domain.WikiChunkKindLead},
+		{PageID: 3, ChunkIndex: 0, Title: "Charlie", URL: "https://w/charlie", RevisionID: 1, Corpus: "simplewiki", Content: "charlie lead, never embedded", Kind: domain.WikiChunkKindLead},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
@@ -123,10 +125,101 @@ func TestUpsertChunksRoundTrip(t *testing.T) {
 		RevisionID:      100,
 		Corpus:          "simplewiki",
 		Content:         "Paris\n\nIt sits on the Seine.",
+		Section:         "",
+		Kind:            "lead",
 		EmbeddingIsNull: true,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("stored chunk mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestUpsertChunksPersistsSectionAndKind(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunk := wikiChunk(1, 0, "Paris\n\nParis is the capital of France.")
+	chunk.Section = "History"
+	chunk.Kind = domain.WikiChunkKindBody
+	if err := store.UpsertChunks(ctx, []domain.WikiChunk{chunk}); err != nil {
+		t.Fatalf("UpsertChunks: %v", err)
+	}
+
+	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	if err != nil {
+		t.Fatalf("GetWikiChunk: %v", err)
+	}
+	if got.Section != "History" || got.Kind != "body" {
+		t.Errorf("stored (section, kind) = (%q, %q), want (History, body)", got.Section, got.Kind)
+	}
+}
+
+func TestWikiChunkMetadataColumnsBackfillToDefaults(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	// A row written without the metadata columns - a pre-migration row, or any
+	// insert that omits them - falls to the column defaults: an empty section
+	// and the lead kind. This is the additive-backfill guarantee that lets the
+	// migration add the columns without a data backfill step.
+	if _, err := store.pool.Exec(
+		ctx,
+		"INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content) VALUES (1, 0, 'Paris', 'https://w/p', 1, 'simplewiki', 'lead text')",
+	); err != nil {
+		t.Fatalf("insert without metadata: %v", err)
+	}
+	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	if err != nil {
+		t.Fatalf("GetWikiChunk: %v", err)
+	}
+	if got.Section != "" || got.Kind != "lead" {
+		t.Errorf("defaulted (section, kind) = (%q, %q), want (\"\", lead)", got.Section, got.Kind)
+	}
+}
+
+func TestSearchWikiCarriesSectionAndKind(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunk := wikiChunk(1, 0, "alpha lead")
+	chunk.Section = "History"
+	chunk.Kind = domain.WikiChunkKindBody
+	if err := store.UpsertChunks(ctx, []domain.WikiChunk{chunk}); err != nil {
+		t.Fatalf("UpsertChunks: %v", err)
+	}
+	setEmbedding(ctx, t, store, 1, 0, unitVec(0))
+
+	got, err := store.SearchWiki(ctx, unitVec(0), 1)
+	if err != nil {
+		t.Fatalf("SearchWiki: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d evidence, want 1", len(got))
+	}
+	if got[0].Section != "History" || got[0].Kind != domain.WikiChunkKindBody {
+		t.Errorf("evidence (section, kind) = (%q, %q), want (History, body)", got[0].Section, got[0].Kind)
+	}
+}
+
+func TestUpsertChunksRejectsInvalidKind(t *testing.T) {
+	store := setupStore(t)
+	chunk := wikiChunk(1, 0, "Paris\n\nLead.")
+	chunk.Kind = "bogus"
+	if err := store.UpsertChunks(t.Context(), []domain.WikiChunk{chunk}); err == nil {
+		t.Fatal("UpsertChunks accepted an invalid kind, want error")
+	}
+}
+
+func TestUpsertStagingChunksRejectsInvalidKind(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	if err := store.ResetStaging(ctx, "v1"); err != nil {
+		t.Fatalf("ResetStaging: %v", err)
+	}
+	chunk := wikiChunk(1, 0, "Paris\n\nLead.")
+	chunk.Kind = "bogus"
+	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{chunk}); err == nil {
+		t.Fatal("UpsertStagingChunks accepted an invalid kind, want error")
 	}
 }
 

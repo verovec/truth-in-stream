@@ -185,14 +185,16 @@ func (b *UpsertClaimBatchResults) Close() error {
 }
 
 const upsertWikiChunk = `-- name: UpsertWikiChunk :batchexec
-INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (page_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         revision_id = EXCLUDED.revision_id,
         corpus = EXCLUDED.corpus,
         content = EXCLUDED.content,
+        section = EXCLUDED.section,
+        kind = EXCLUDED.kind,
         embedding = CASE
             WHEN wiki_chunks.content = EXCLUDED.content THEN wiki_chunks.embedding
             ELSE NULL
@@ -214,6 +216,8 @@ type UpsertWikiChunkParams struct {
 	RevisionID int64
 	Corpus     string
 	Content    string
+	Section    string
+	Kind       string
 }
 
 // Ingest never writes embeddings; the CASE keeps an existing embedding only
@@ -230,6 +234,8 @@ func (q *Queries) UpsertWikiChunk(ctx context.Context, arg []UpsertWikiChunkPara
 			a.RevisionID,
 			a.Corpus,
 			a.Content,
+			a.Section,
+			a.Kind,
 		}
 		batch.Queue(upsertWikiChunk, vals...)
 	}

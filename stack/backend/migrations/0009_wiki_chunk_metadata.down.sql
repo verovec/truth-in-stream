@@ -1,0 +1,3 @@
+ALTER TABLE wiki_chunks
+    DROP COLUMN IF EXISTS kind,
+    DROP COLUMN IF EXISTS section;

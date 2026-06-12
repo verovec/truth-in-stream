@@ -75,6 +75,8 @@ func (s *Store) SearchWiki(ctx context.Context, query []float32, topK int) ([]do
 			Title:   r.Title,
 			URL:     r.Url,
 			Content: r.Content,
+			Section: r.Section,
+			Kind:    domain.WikiChunkKind(r.Kind),
 			// Cosine distance is in [0,2]; the float32 narrowing matches
 			// domain.WikiEvidence and is plenty precise for ranking.
 			Distance: float32(r.Distance),
@@ -96,6 +98,9 @@ func (s *Store) UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) err
 		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
 			return fmt.Errorf("postgres: upsert wiki chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
 		}
+		if !c.Kind.Valid() {
+			return fmt.Errorf("postgres: upsert wiki chunk page %d: invalid kind %q", c.PageID, c.Kind)
+		}
 		params[i] = db.UpsertWikiChunkParams{
 			PageID:     c.PageID,
 			ChunkIndex: int32(c.ChunkIndex),
@@ -104,6 +109,8 @@ func (s *Store) UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) err
 			RevisionID: c.RevisionID,
 			Corpus:     c.Corpus,
 			Content:    c.Content,
+			Section:    c.Section,
+			Kind:       string(c.Kind),
 		}
 	}
 

@@ -91,7 +91,7 @@ func (q *Queries) GetOtherWikiCorpus(ctx context.Context, corpus string) (string
 }
 
 const getWikiChunk = `-- name: GetWikiChunk :one
-SELECT page_id, chunk_index, title, url, revision_id, corpus, content, (embedding IS NULL)::boolean AS embedding_is_null
+SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, (embedding IS NULL)::boolean AS embedding_is_null
 FROM wiki_chunks
 WHERE page_id = $1 AND chunk_index = $2
 `
@@ -109,6 +109,8 @@ type GetWikiChunkRow struct {
 	RevisionID      int64
 	Corpus          string
 	Content         string
+	Section         string
+	Kind            string
 	EmbeddingIsNull bool
 }
 
@@ -123,6 +125,8 @@ func (q *Queries) GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (Get
 		&i.RevisionID,
 		&i.Corpus,
 		&i.Content,
+		&i.Section,
+		&i.Kind,
 		&i.EmbeddingIsNull,
 	)
 	return i, err
@@ -147,7 +151,7 @@ func (q *Queries) GetWikiSyncState(ctx context.Context, corpus string) (WikiSync
 }
 
 const searchWikiChunks = `-- name: SearchWikiChunks :many
-SELECT title, url, content, (embedding <=> $1)::float8 AS distance
+SELECT title, url, content, section, kind, (embedding <=> $1)::float8 AS distance
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> $1
@@ -163,6 +167,8 @@ type SearchWikiChunksRow struct {
 	Title    string
 	Url      string
 	Content  string
+	Section  string
+	Kind     string
 	Distance float64
 }
 
@@ -185,6 +191,8 @@ func (q *Queries) SearchWikiChunks(ctx context.Context, arg SearchWikiChunksPara
 			&i.Title,
 			&i.Url,
 			&i.Content,
+			&i.Section,
+			&i.Kind,
 			&i.Distance,
 		); err != nil {
 			return nil, err

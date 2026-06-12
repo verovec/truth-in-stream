@@ -158,7 +158,7 @@ func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChu
 		return nil
 	}
 	stmt := fmt.Sprintf(
-		"INSERT INTO %s (page_id, chunk_index, title, url, revision_id, corpus, content) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+		"INSERT INTO %s (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
 		wikiStagingTable,
 	)
 	batch := &pgx.Batch{}
@@ -166,7 +166,10 @@ func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChu
 		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
 			return fmt.Errorf("postgres: stage chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
 		}
-		batch.Queue(stmt, c.PageID, int32(c.ChunkIndex), c.Title, c.URL, c.RevisionID, c.Corpus, c.Content)
+		if !c.Kind.Valid() {
+			return fmt.Errorf("postgres: stage chunk page %d: invalid kind %q", c.PageID, c.Kind)
+		}
+		batch.Queue(stmt, c.PageID, int32(c.ChunkIndex), c.Title, c.URL, c.RevisionID, c.Corpus, c.Content, c.Section, string(c.Kind))
 	}
 	br := s.pool.SendBatch(ctx, batch)
 	defer func() { _ = br.Close() }()

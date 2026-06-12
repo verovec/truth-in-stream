@@ -2,14 +2,16 @@
 -- Ingest never writes embeddings; the CASE keeps an existing embedding only
 -- while the content it was computed from is unchanged, so re-ingesting a
 -- changed revision invalidates the stale vector instead of serving it.
-INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (page_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         revision_id = EXCLUDED.revision_id,
         corpus = EXCLUDED.corpus,
         content = EXCLUDED.content,
+        section = EXCLUDED.section,
+        kind = EXCLUDED.kind,
         embedding = CASE
             WHEN wiki_chunks.content = EXCLUDED.content THEN wiki_chunks.embedding
             ELSE NULL
@@ -46,7 +48,7 @@ WHERE page_id = $2 AND chunk_index = $3;
 -- non-null rows, so the filter does not degrade index use. query_embedding is
 -- referenced twice but sqlc collapses it to one parameter, so the index still
 -- drives the ORDER BY.
-SELECT title, url, content, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+SELECT title, url, content, section, kind, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> sqlc.arg(query_embedding)
@@ -80,7 +82,7 @@ SELECT corpus FROM wiki_sync_state WHERE corpus <> $1 LIMIT 1;
 SELECT count(*) FROM wiki_chunks WHERE page_id = $1;
 
 -- name: GetWikiChunk :one
-SELECT page_id, chunk_index, title, url, revision_id, corpus, content, (embedding IS NULL)::boolean AS embedding_is_null
+SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, (embedding IS NULL)::boolean AS embedding_is_null
 FROM wiki_chunks
 WHERE page_id = $1 AND chunk_index = $2;
 

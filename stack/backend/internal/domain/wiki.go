@@ -2,9 +2,37 @@ package domain
 
 import "time"
 
+// WikiChunkKind classifies a chunk by the article region it was extracted
+// from. Ingestion extracts only lead sections today, so every chunk is
+// WikiChunkKindLead; the type and the wiki_chunks.kind column exist so later
+// body extraction and confidence weighting can tell a lead from body prose.
+type WikiChunkKind string
+
+// WikiChunkKindLead tags a chunk from an article's lead section; WikiChunkKindBody
+// tags one from a later body section.
+const (
+	WikiChunkKindLead WikiChunkKind = "lead"
+	WikiChunkKindBody WikiChunkKind = "body"
+)
+
+// Valid reports whether k is a known chunk kind. The wiki_chunks.kind column is
+// plain text (no CHECK, so the runtime staging table stays byte-identical under
+// LIKE INCLUDING DEFAULTS), so the store guards writes with this instead.
+func (k WikiChunkKind) Valid() bool {
+	switch k {
+	case WikiChunkKindLead, WikiChunkKindBody:
+		return true
+	default:
+		return false
+	}
+}
+
 // WikiChunk is one embedded-or-pending chunk of a Wikipedia article's lead
 // section. (PageID, ChunkIndex) within a corpus identifies it; RevisionID is
 // the article revision the text came from and drives the later delta sync.
+// Section is the heading the chunk's text sits under ("" for the lead, which
+// has none) and Kind is its coarse classification; together they let
+// downstream retrieval and confidence scoring reason about what a chunk is.
 // Embedding is nil at ingest and filled by the bulk-embedding pipeline, which
 // reads the stored Content, embeds it, and loads the completed chunk.
 type WikiChunk struct {
@@ -15,6 +43,8 @@ type WikiChunk struct {
 	RevisionID int64
 	Corpus     string
 	Content    string
+	Section    string
+	Kind       WikiChunkKind
 	Embedding  []float32
 }
 
@@ -26,6 +56,8 @@ type WikiEvidence struct {
 	Title    string
 	URL      string
 	Content  string
+	Section  string
+	Kind     WikiChunkKind
 	Distance float32
 }
 

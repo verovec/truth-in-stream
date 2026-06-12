@@ -44,6 +44,8 @@ type WikiChunk struct {
 	Content    string
 	Embedding  *pgvector.HalfVector
 	SyncedAt   pgtype.Timestamptz
+	Section    string
+	Kind       string
 }
 
 type WikiSyncState struct {

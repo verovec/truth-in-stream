@@ -20,9 +20,9 @@ func TestStoredRevisions(t *testing.T) {
 	ctx := t.Context()
 
 	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "a"},
-		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "b"},
-		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 200, Corpus: "simplewiki", Content: "c"},
+		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "a", Kind: domain.WikiChunkKindLead},
+		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "b", Kind: domain.WikiChunkKindLead},
+		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 200, Corpus: "simplewiki", Content: "c", Kind: domain.WikiChunkKindLead},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
@@ -74,9 +74,9 @@ func TestDeletePagesByTitle(t *testing.T) {
 	ctx := t.Context()
 
 	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "a"},
-		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "b"},
-		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "c"},
+		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "a", Kind: domain.WikiChunkKindLead},
+		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "b", Kind: domain.WikiChunkKindLead},
+		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "c", Kind: domain.WikiChunkKindLead},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
