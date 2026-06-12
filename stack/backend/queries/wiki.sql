@@ -109,3 +109,23 @@ WHERE embedding IS NULL
   AND (page_id, chunk_index) > (sqlc.arg(after_page_id)::bigint, sqlc.arg(after_chunk_index)::integer)
 ORDER BY page_id, chunk_index
 LIMIT sqlc.arg(row_limit);
+
+-- name: EmbeddedWikiChunks :many
+-- The clustering job reads the embedded live corpus in keyset order to group it
+-- into topic clusters and score importance. The embedding IS NOT NULL filter
+-- scopes the scan to the chunks that actually carry a vector to cluster.
+SELECT page_id, chunk_index, embedding
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+  AND (page_id, chunk_index) > (sqlc.arg(after_page_id)::bigint, sqlc.arg(after_chunk_index)::integer)
+ORDER BY page_id, chunk_index
+LIMIT sqlc.arg(row_limit);
+
+-- name: SetWikiChunkClustering :batchexec
+-- The clustering job writes each chunk's cluster id and importance back into the
+-- live table. The casts pin the params to plain integer/double so a non-null
+-- write is a value, not a nullable pointer.
+UPDATE wiki_chunks
+SET cluster_id = sqlc.arg(cluster_id)::integer,
+    importance = sqlc.arg(importance)::double precision
+WHERE page_id = sqlc.arg(page_id)::bigint AND chunk_index = sqlc.arg(chunk_index)::integer;

@@ -268,6 +268,37 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Offline topic-clustering job. Groups the embedded corpus into topic clusters
+  # and scores each chunk's importance, writing cluster_id + importance back so
+  # the next ingest's producer embeds the most important content first. Opt-in
+  # (profile "wiki"), one-shot, no API key: it reads existing embeddings and
+  # writes scores. Run it after a corpus is embedded; re-running it over an
+  # unchanged corpus is idempotent (the clustering is deterministically seeded):
+  #   docker compose --profile wiki run --rm wiki-cluster
+  # WIKI_CLUSTER_* tunes the cluster count (raise WIKI_CLUSTER_K for a larger
+  # corpus), iterations, seed, and batch sizes.
+  wiki-cluster:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/wikicluster"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      # Optional clustering tuning (empty uses the binary defaults).
+      WIKI_CLUSTER_K: "${WIKI_CLUSTER_K:-}"
+      WIKI_CLUSTER_MAX_ITERS: "${WIKI_CLUSTER_MAX_ITERS:-}"
+      WIKI_CLUSTER_SEED: "${WIKI_CLUSTER_SEED:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: ./stack/backend

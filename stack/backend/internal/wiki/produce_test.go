@@ -419,3 +419,76 @@ func TestPriorityForKind(t *testing.T) {
 		})
 	}
 }
+
+func TestPriorityFromImportance(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		importance  float64
+		maxPriority uint8
+		want        uint8
+	}{
+		{"top importance maps to ceiling", 1.0, 10, 10},
+		{"half importance maps to half", 0.5, 10, 5},
+		{"zero importance floors", 0.0, 10, 0},
+		{"rounds to nearest band", 0.46, 10, 5},
+		{"above-one score clamps to ceiling", 1.4, 10, 10},
+		{"negative score clamps to zero", -0.2, 10, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := priorityFromImportance(tc.importance, tc.maxPriority); got != tc.want {
+				t.Errorf("priorityFromImportance(%v, %d) = %d, want %d", tc.importance, tc.maxPriority, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPriorityForPrefersImportanceOverKind(t *testing.T) {
+	t.Parallel()
+	imp := 0.9
+	// A body chunk (kind heuristic would give half) that carries a high importance
+	// score must be prioritized by the score, not the kind.
+	scored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Importance: &imp}
+	if got := priorityFor(scored, 10); got != 9 {
+		t.Errorf("scored body chunk priority = %d, want 9 (importance drives it)", got)
+	}
+	// With no score, the same chunk falls back to the kind heuristic.
+	unscored := domain.WikiChunk{Kind: domain.WikiChunkKindBody}
+	if got := priorityFor(unscored, 10); got != 5 {
+		t.Errorf("unscored body chunk priority = %d, want 5 (kind fallback)", got)
+	}
+}
+
+func TestRunBulkEnqueueUsesImportanceForPriority(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		high := 1.0
+		low := 0.2
+		// Both chunks are lead (kind heuristic would tie them at the ceiling), but
+		// their importance scores must produce distinct priorities.
+		c1 := domain.WikiChunk{PageID: 1, ChunkIndex: 0, Corpus: "simplewiki", Content: "important", Kind: domain.WikiChunkKindLead, Importance: &high}
+		c2 := domain.WikiChunk{PageID: 2, ChunkIndex: 0, Corpus: "simplewiki", Content: "minor", Kind: domain.WikiChunkKindLead, Importance: &low}
+		store := &fakeProducerStore{staging: []domain.WikiChunk{c1, c2}, remaining: []int64{2, 0}}
+		pub := &fakePublisher{}
+
+		if _, err := RunBulkEnqueue(t.Context(), discardLogger(), store, pub, producerConfig()); err != nil {
+			t.Fatalf("RunBulkEnqueue: %v", err)
+		}
+		prio := map[string]uint8{}
+		for _, m := range pub.published() {
+			var j embedjob.Job
+			if err := json.Unmarshal(m.body, &j); err != nil {
+				t.Fatalf("decode published job: %v", err)
+			}
+			prio[j.Content] = m.priority
+		}
+		if prio["important"] != 10 {
+			t.Errorf("high-importance chunk priority = %d, want 10", prio["important"])
+		}
+		if prio["minor"] != 2 {
+			t.Errorf("low-importance chunk priority = %d, want 2", prio["minor"])
+		}
+	})
+}

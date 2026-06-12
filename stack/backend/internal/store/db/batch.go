@@ -17,6 +17,65 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const setWikiChunkClustering = `-- name: SetWikiChunkClustering :batchexec
+UPDATE wiki_chunks
+SET cluster_id = $1::integer,
+    importance = $2::double precision
+WHERE page_id = $3::bigint AND chunk_index = $4::integer
+`
+
+type SetWikiChunkClusteringBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type SetWikiChunkClusteringParams struct {
+	ClusterID  int32
+	Importance float64
+	PageID     int64
+	ChunkIndex int32
+}
+
+// The clustering job writes each chunk's cluster id and importance back into the
+// live table. The casts pin the params to plain integer/double so a non-null
+// write is a value, not a nullable pointer.
+func (q *Queries) SetWikiChunkClustering(ctx context.Context, arg []SetWikiChunkClusteringParams) *SetWikiChunkClusteringBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.ClusterID,
+			a.Importance,
+			a.PageID,
+			a.ChunkIndex,
+		}
+		batch.Queue(setWikiChunkClustering, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &SetWikiChunkClusteringBatchResults{br, len(arg), false}
+}
+
+func (b *SetWikiChunkClusteringBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *SetWikiChunkClusteringBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const setWikiChunkEmbedding = `-- name: SetWikiChunkEmbedding :batchexec
 UPDATE wiki_chunks
 SET embedding = $1, synced_at = now()

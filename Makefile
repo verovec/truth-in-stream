@@ -15,7 +15,7 @@ COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disabl
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings wiki-populate wiki-update migrate logs ps
+.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings wiki-populate wiki-update wiki-cluster migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -63,6 +63,9 @@ wiki-populate: ## Bulk-ingest the Wikipedia corpus and enqueue embedding jobs; t
 
 wiki-update: ## Incrementally update the embedded Wikipedia corpus via the MediaWiki API (delta sync, foreground; keys/tuning from .env)
 	$(COMPOSE) --profile wiki run --rm wiki-populate go run ./cmd/wikisync -mode=delta
+
+wiki-cluster: ## Cluster the embedded corpus into topics and score importance so the next ingest embeds the most important content first (idempotent; run after embedding; WIKI_CLUSTER_* tuning from .env)
+	$(COMPOSE) --profile wiki run --rm wiki-cluster
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up

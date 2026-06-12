@@ -46,6 +46,8 @@ type WikiChunk struct {
 	SyncedAt   pgtype.Timestamptz
 	Section    string
 	Kind       string
+	ClusterID  pgtype.Int4
+	Importance pgtype.Float8
 }
 
 type WikiSyncState struct {
