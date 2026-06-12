@@ -502,7 +502,7 @@ func TestLoadDebugSearch(t *testing.T) {
 }
 
 func TestLoadPrecheck(t *testing.T) {
-	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4}
+	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.6}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -517,11 +517,13 @@ func TestLoadPrecheck(t *testing.T) {
 		{
 			name: "all overrides applied",
 			env: map[string]string{
-				"PRECHECK_ENABLED":            "false",
-				"PRECHECK_MIN_WORDS":          "6",
-				"PRECHECK_COVERAGE_THRESHOLD": "0.6",
+				"PRECHECK_ENABLED":                 "false",
+				"PRECHECK_MIN_WORDS":               "6",
+				"PRECHECK_COVERAGE_THRESHOLD":      "0.6",
+				"PRECHECK_WIKI_COVERAGE_ENABLED":   "false",
+				"PRECHECK_WIKI_COVERAGE_THRESHOLD": "0.5",
 			},
-			want: Precheck{Enabled: false, MinWords: 6, CoverageThreshold: 0.6},
+			want: Precheck{Enabled: false, MinWords: 6, CoverageThreshold: 0.6, WikiCoverageEnabled: false, WikiCoverageThreshold: 0.5},
 		},
 		{
 			name:    "non-bool enabled fails",
@@ -541,6 +543,21 @@ func TestLoadPrecheck(t *testing.T) {
 		{
 			name:    "NaN threshold fails",
 			env:     map[string]string{"PRECHECK_COVERAGE_THRESHOLD": "NaN"},
+			wantErr: true,
+		},
+		{
+			name:    "non-bool wiki coverage enabled fails",
+			env:     map[string]string{"PRECHECK_WIKI_COVERAGE_ENABLED": "maybe"},
+			wantErr: true,
+		},
+		{
+			name:    "wiki threshold above cosine range fails",
+			env:     map[string]string{"PRECHECK_WIKI_COVERAGE_THRESHOLD": "1.5"},
+			wantErr: true,
+		},
+		{
+			name:    "NaN wiki threshold fails",
+			env:     map[string]string{"PRECHECK_WIKI_COVERAGE_THRESHOLD": "NaN"},
 			wantErr: true,
 		},
 	}

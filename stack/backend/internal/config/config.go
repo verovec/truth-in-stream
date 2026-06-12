@@ -318,16 +318,25 @@ func LoadDebugSearch() (DebugSearch, error) {
 const (
 	defaultPrecheckMinWords          = 4
 	defaultPrecheckCoverageThreshold = 0.4
+	// defaultPrecheckWikiCoverageThreshold is stricter than the claims floor:
+	// the wiki corpus is far larger and noisier, so it mirrors the evidence
+	// threshold to keep coverage precision-over-recall.
+	defaultPrecheckWikiCoverageThreshold = 0.6
 )
 
 // Precheck holds the check-worthiness gate configuration. Enabled toggles the
 // whole gate; MinWords bounds the claim-worthiness fragment filter;
-// CoverageThreshold is the minimum corpus similarity a claim must reach to be
-// checked.
+// CoverageThreshold is the minimum curated-claims similarity a claim must reach
+// to be checked. WikiCoverageEnabled adds the embedded wiki corpus as a second
+// coverage source (PRECHECK_WIKI_COVERAGE_ENABLED, default on), and
+// WikiCoverageThreshold (PRECHECK_WIKI_COVERAGE_THRESHOLD) is its own stricter
+// floor; a segment is covered when either corpus clears its threshold.
 type Precheck struct {
-	Enabled           bool
-	MinWords          int
-	CoverageThreshold float64
+	Enabled               bool
+	MinWords              int
+	CoverageThreshold     float64
+	WikiCoverageEnabled   bool
+	WikiCoverageThreshold float64
 }
 
 // LoadPrecheck reads the precheck-gate configuration from the environment,
@@ -335,9 +344,11 @@ type Precheck struct {
 // similarity's [-1, 1] range or a non-positive minimum word count.
 func LoadPrecheck() (Precheck, error) {
 	p := Precheck{
-		Enabled:           true,
-		MinWords:          defaultPrecheckMinWords,
-		CoverageThreshold: defaultPrecheckCoverageThreshold,
+		Enabled:               true,
+		MinWords:              defaultPrecheckMinWords,
+		CoverageThreshold:     defaultPrecheckCoverageThreshold,
+		WikiCoverageEnabled:   true,
+		WikiCoverageThreshold: defaultPrecheckWikiCoverageThreshold,
 	}
 	if raw := os.Getenv("PRECHECK_ENABLED"); raw != "" {
 		enabled, err := strconv.ParseBool(raw)
@@ -359,6 +370,16 @@ func LoadPrecheck() (Precheck, error) {
 			return Precheck{}, fmt.Errorf("config: PRECHECK_COVERAGE_THRESHOLD %v outside cosine similarity range [-1, 1]", threshold)
 		}
 		p.CoverageThreshold = threshold
+	}
+	if raw := os.Getenv("PRECHECK_WIKI_COVERAGE_ENABLED"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Precheck{}, fmt.Errorf("config: PRECHECK_WIKI_COVERAGE_ENABLED %q: %w", raw, err)
+		}
+		p.WikiCoverageEnabled = enabled
+	}
+	if p.WikiCoverageThreshold, err = thresholdEnv("PRECHECK_WIKI_COVERAGE_THRESHOLD", p.WikiCoverageThreshold); err != nil {
+		return Precheck{}, err
 	}
 	return p, nil
 }
