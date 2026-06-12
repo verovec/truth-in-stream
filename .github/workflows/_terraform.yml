@@ -34,6 +34,19 @@ jobs:
           terraform validate
           terraform plan -input=false -out=tfplan
 
+      # Fail if the apply role is missing any IAM permission the plan needs. The
+      # apply role cannot grant itself new permissions, so this avoids a
+      # half-applied change: the guard names the missing actions and the one
+      # manual apply to run with elevated credentials. It runs on every plan with
+      # credentials (PR and main), so a missing permission is caught before merge,
+      # not only at the apply step.
+      - if: env.AWS_ROLE_ARN != ''
+        env:
+          ENV_DIR: ${{ inputs.path }}
+        run: |
+          terraform show -json tfplan > tfplan.json
+          bash "$GITHUB_WORKSPACE/scripts/iam-apply-guard.sh" tfplan.json "$AWS_ROLE_ARN" "$ENV_DIR"
+
       # Apply exactly the plan produced above (main only).
       - if: ${{ inputs.apply && env.AWS_ROLE_ARN != '' }}
         run: terraform apply -input=false tfplan

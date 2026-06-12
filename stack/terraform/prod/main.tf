@@ -351,3 +351,15 @@ resource "aws_ssm_parameter" "tasks_security_group_id" {
   type  = "String"
   value = module.vpc.ecs_tasks_security_group_id
 }
+
+# Apply-time IAM permission manifest: the actions the CI apply role must hold to
+# provision this environment, surfaced as the apply_required_actions output the
+# pre-apply guard (scripts/iam-apply-guard.sh) checks before `terraform apply`.
+# include_* track the env's gated areas so the guard never demands a permission
+# for a resource the current plan does not create.
+module "apply_permissions" {
+  source = "../modules/apply-permissions"
+
+  include_rds             = var.enable_rds
+  include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
+}

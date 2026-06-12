@@ -42,3 +42,8 @@ output "db_backup_bucket" {
   value       = module.db_backup_storage.bucket_id
   description = "Database backup bucket; export as DB_BACKUP_BUCKET for make backup/restore."
 }
+
+output "apply_required_actions" {
+  value       = module.apply_permissions.actions
+  description = "IAM actions the apply role must hold to provision this environment. The pre-apply guard reads this from the plan and fails before apply if the role is missing any."
+}

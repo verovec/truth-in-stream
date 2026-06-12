@@ -125,7 +125,71 @@ terraform apply
 `.github/workflows/terraform.yml` runs fmt/validate/plan on PRs and plan+apply for
 `dev` on merge to `main`. CI authenticates to AWS via GitHub OIDC; set the
 `AWS_ROLE_ARN` repository secret to an IAM role whose trust policy is scoped to this
-repo. The state-bucket bootstrap script is unit-tested with a stubbed `aws` CLI in
-the `pr.yml` `bootstrap-script` job. The application deploy workflow uses the
-separate, narrower `AWS_DEPLOY_ROLE_ARN` created by the `iam` module. See
+repo. The state-bucket bootstrap script and the pre-apply IAM guard are unit-tested
+with a stubbed `aws` CLI in the `pr.yml` `bootstrap-script` and
+`iam-apply-guard-script` jobs. The application deploy workflow uses the separate,
+narrower `AWS_DEPLOY_ROLE_ARN` created by the `iam` module. See
 `.github/workflows/_terraform.yml` and `deploy.yml`.
+
+## CI/CD roles and the pre-apply IAM guard
+
+Two CI roles, each least-privilege and scoped per concern:
+
+- **Apply role** (`AWS_ROLE_ARN`) — assumed by `terraform.yml` to plan/apply.
+  Bootstrapped out of band (it cannot be managed by the terraform it runs without
+  a chicken-and-egg), so its policy lives next to the bootstrap procedure, not in
+  a module it would have to create before it can act.
+- **Deploy role** (`AWS_DEPLOY_ROLE_ARN`) — created by `modules/iam`, narrow:
+  ECR push, ECS deploy, run the migrate task, read the deploy SSM parameters. Its
+  trust is pinned to `repo:<org/repo>:ref:refs/heads/main` — PR branches and forks
+  can never assume it. Resource-scoped, no blanket `*` actions (the only `*`
+  resources are `ecr:GetAuthorizationToken` and the `ecs:Describe*` calls AWS
+  itself requires at account scope).
+
+### The required-actions manifest
+
+`modules/apply-permissions` declares, grouped by resource area, the IAM actions the
+apply role must hold to provision an environment, and each env root surfaces them
+as the `apply_required_actions` output. This is the single source of truth that
+stays in sync with what terraform provisions: **when a card adds a resource area,
+it appends that area's actions to the matching block in
+`modules/apply-permissions/main.tf` in the same change.** `include_rds` /
+`include_scheduled_tasks` track the env's gated flags so the manifest only demands
+permissions for resources the current plan actually creates.
+
+### The chicken-and-egg guard
+
+The apply role cannot grant itself permissions it lacks, so the first apply that
+introduces a new resource type would otherwise fail halfway. To catch that up
+front, `_terraform.yml` runs `scripts/iam-apply-guard.sh` between `terraform plan`
+and `terraform apply`: it reads `apply_required_actions` from the plan and checks
+each against the apply role with `aws iam simulate-principal-policy`. If any action
+is denied, CI fails **before** applying and prints the missing actions and the one
+manual command to run:
+
+```sh
+# A change needs new permissions the apply role lacks. Grant them to the apply
+# role with elevated credentials, then re-run CI:
+cd stack/terraform/dev
+terraform apply
+```
+
+When the change needs no new permissions, the guard passes and the normal
+auto-apply proceeds — no false positives. It runs on every plan that has AWS
+credentials (PRs and `main`), so a missing permission surfaces before merge, not
+only at the apply step. The apply role must itself hold
+`iam:SimulatePrincipalPolicy` and `iam:GetRole` for the guard to run (declared in
+the manifest); if it does not, the guard says so explicitly.
+
+The guard assumes the environment is already bootstrapped — the apply role exists
+and can simulate its own policy. The first-ever apply of a fresh account creates
+that role and is the out-of-band bootstrap run with elevated credentials (see
+[First deploy of an environment](#first-deploy-of-an-environment)); the guard
+gates the automated applies that follow.
+
+The manifest is the maintained source of truth, not an automatically-derived one:
+no static list can be proven complete without applying, so when a real apply
+surfaces a missing action, add it to the matching block — the guard then catches
+that gap on the next change instead of failing mid-apply. The guard is exercised
+offline (stubbed `aws`, fixture plans) by `scripts/iam-apply-guard.test.sh`, run
+in CI as the `iam-apply-guard-script` job.
