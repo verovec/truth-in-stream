@@ -285,7 +285,9 @@ module "embed_worker" {
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
-} # Network config the deploy workflow needs for `aws ecs run-task`.
+}
+
+# Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
   type  = "String"

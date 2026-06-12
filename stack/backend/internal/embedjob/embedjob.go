@@ -30,7 +30,8 @@ type Job struct {
 
 // validate rejects a job that can never succeed, so the worker drops it instead
 // of embedding nonsense or looping. Wikipedia page ids are positive and chunk
-// indices are non-negative; empty content has nothing to embed.
+// indices are non-negative; empty content has nothing to embed; a negative
+// attempt is a corrupt or overflowed counter that must not be retried.
 func (j Job) validate() error {
 	switch {
 	case j.PageID <= 0:
@@ -39,6 +40,8 @@ func (j Job) validate() error {
 		return fmt.Errorf("chunk index %d must not be negative", j.ChunkIndex)
 	case j.Content == "":
 		return fmt.Errorf("page %d chunk %d has empty content", j.PageID, j.ChunkIndex)
+	case j.Attempt < 0:
+		return fmt.Errorf("page %d chunk %d has a negative attempt %d", j.PageID, j.ChunkIndex, j.Attempt)
 	default:
 		return nil
 	}
@@ -148,11 +151,14 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 }
 
 // Run consumes the queue until ctx is canceled, processing up to Concurrency
-// jobs in parallel. It returns when the delivery stream closes (the broker shut
-// it down or ctx was canceled) after every in-flight handler has finished, so a
-// caller that cancels ctx and waits for Run gets a clean drain: handlers that
-// completed acked their work, and any still in flight left their delivery
-// unacknowledged for the broker to redeliver.
+// jobs in parallel. It returns once it stops admitting work - the delivery
+// stream closed or ctx was canceled - and every in-flight handler has finished.
+// On shutdown a handler that finished acks its work; one still embedding or
+// writing sees the canceled context and leaves its delivery unacknowledged, and
+// any delivery already pulled from the stream but not yet handed to a handler is
+// dropped unacknowledged too - the broker redelivers all of them, so a
+// scale-down loses nothing (at the cost of re-embedding the interrupted few,
+// which the idempotent write makes safe).
 func (w *Worker) Run(ctx context.Context) error {
 	deliveries, err := w.stream.Consume(ctx)
 	if err != nil {
@@ -161,9 +167,23 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, w.concurrency)
+loop:
 	for d := range deliveries {
+		// Take a free slot immediately when one is available, so a delivery
+		// already pulled from the stream is always handled (its handler requeues
+		// it if ctx is already canceled). Only when every slot is busy do we wait,
+		// and there a canceled ctx stops us admitting work rather than blocking on
+		// a slow in-flight embed - the broker redelivers this unhandled delivery.
+		select {
+		case sem <- struct{}{}:
+		default:
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break loop
+			}
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(d Delivery) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -272,20 +292,22 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 		return Result{Action: ActionRequeue}
 	}
 
-	attempt := job.Attempt + 1
-	if attempt >= w.maxAttempts {
+	// Compare the incoming attempt against the budget rather than Attempt+1, so a
+	// corrupt or crafted job with a near-max attempt cannot overflow past the cap
+	// and loop forever; validate already rejected a negative attempt.
+	if job.Attempt >= w.maxAttempts-1 {
 		w.logger.ErrorContext(ctx, "dropping embedding job after exhausting retries",
 			slog.String("stage", stage),
 			slog.Int64("page_id", job.PageID),
 			slog.Int("chunk_index", job.ChunkIndex),
-			slog.Int("attempts", attempt),
+			slog.Int("attempt", job.Attempt),
 			slog.Int("max_attempts", w.maxAttempts),
 			slog.Any("err", cause))
 		return Result{Action: ActionAck}
 	}
 
 	retry := job
-	retry.Attempt = attempt
+	retry.Attempt = job.Attempt + 1
 	encoded, err := json.Marshal(retry)
 	if err != nil {
 		// Marshaling a value just unmarshaled cannot realistically fail; if it
@@ -300,7 +322,7 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 		slog.String("stage", stage),
 		slog.Int64("page_id", job.PageID),
 		slog.Int("chunk_index", job.ChunkIndex),
-		slog.Int("next_attempt", attempt),
+		slog.Int("next_attempt", retry.Attempt),
 		slog.Int("max_attempts", w.maxAttempts),
 		slog.Any("err", cause))
 	return Result{Action: ActionRepublish, RepublishBody: encoded, RepublishPriority: priority}

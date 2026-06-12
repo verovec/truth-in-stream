@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,7 @@ func TestProcessInvalidJobDropsWithoutEmbedding(t *testing.T) {
 		{name: "zero page id", job: Job{PageID: 0, ChunkIndex: 0, Content: "x"}},
 		{name: "negative chunk index", job: Job{PageID: 1, ChunkIndex: -1, Content: "x"}},
 		{name: "empty content", job: Job{PageID: 1, ChunkIndex: 0, Content: ""}},
+		{name: "negative attempt", job: Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: -1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,6 +216,22 @@ func TestProcessExhaustedRetriesDrops(t *testing.T) {
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck (drop after exhausting attempts)", got.Action)
+	}
+}
+
+func TestProcessHugeAttemptDropsWithoutLooping(t *testing.T) {
+	t.Parallel()
+	// A crafted job whose attempt is near the integer ceiling must be dropped,
+	// not re-enqueued: computing attempt+1 would overflow negative and dodge the
+	// cap, looping forever.
+	emb := &fakeEmbedder{err: errors.New("down")}
+	st := &fakeStore{updated: true}
+	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 5})
+
+	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: math.MaxInt}), 5)
+
+	if got.Action != ActionAck {
+		t.Fatalf("action = %v, want ActionAck (a near-max attempt must drop, not loop)", got.Action)
 	}
 }
 

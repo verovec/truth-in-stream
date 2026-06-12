@@ -30,6 +30,11 @@ resource "aws_ecs_task_definition" "main" {
         image     = var.image
         essential = true
 
+        # On task stop the worker has stop_timeout seconds to drain in-flight
+        # embeds before SIGKILL; whatever it cannot finish stays unacked and the
+        # broker redelivers it, so a scale-down or rolling deploy loses no work.
+        stopTimeout = var.stop_timeout
+
         environment = [
           for k, v in var.environment_variables : { name = k, value = v }
         ]
@@ -71,8 +76,8 @@ resource "aws_ecs_service" "main" {
     assign_public_ip = false
   }
 
-  # SIGTERM drains in-flight jobs; give the worker room to finish or requeue
-  # before the task is force-killed.
+  # Allow `aws ecs execute-command` for operational debugging, matching the other
+  # services. The graceful-drain window is the task definition's stopTimeout.
   enable_execute_command = true
 
   # One replica can stop before a replacement is healthy: the broker requeues

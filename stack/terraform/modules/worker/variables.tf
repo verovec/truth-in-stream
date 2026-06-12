@@ -45,6 +45,12 @@ variable "desired_count" {
   description = "Number of worker replicas to run. Scale this to scale embedding throughput."
 }
 
+variable "stop_timeout" {
+  type        = number
+  default     = 120
+  description = "Seconds between SIGTERM and SIGKILL on task stop, giving an in-flight embed room to finish or requeue before the container is force-killed. Fargate caps this at 120."
+}
+
 variable "environment_variables" {
   type        = map(string)
   default     = {}
