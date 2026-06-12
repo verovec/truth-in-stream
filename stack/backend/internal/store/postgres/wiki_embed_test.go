@@ -263,6 +263,63 @@ func TestFinalizeStagingSwapAndHeal(t *testing.T) {
 	}
 }
 
+func TestStagingSwapPreservesSectionAndKind(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureCorpus: %v", err)
+	}
+	// Stage two chunks carrying distinct metadata, embed them, and swap live.
+	body := wikiChunk(1, 0, "v1")
+	body.Section = "History"
+	body.Kind = domain.WikiChunkKindBody
+	lead := wikiChunk(2, 0, "v2") // helper default: section "", kind lead
+	stageChunks(t, store, "v2", []domain.WikiChunk{body, lead})
+	b, _ := store.UnembeddedStaging(ctx, 10)
+	for i := range b {
+		b[i] = withEmbedding(b[i], unitVec(int(b[i].PageID)))
+	}
+	if err := store.UpdateStagingEmbeddings(ctx, b); err != nil {
+		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	}
+	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
+	}
+	if err := store.FinalizeStaging(ctx, "simplewiki", "v2", time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
+	}
+
+	if s, k := wikiChunkMeta(t, store, 1, 0); s != "History" || k != "body" {
+		t.Errorf("page1 after swap (section, kind) = (%q, %q), want (History, body)", s, k)
+	}
+	if s, k := wikiChunkMeta(t, store, 2, 0); s != "" || k != "lead" {
+		t.Errorf("page2 after swap (section, kind) = (%q, %q), want (\"\", lead)", s, k)
+	}
+}
+
+func TestCarryForwardIgnoresMetadataOnlyChange(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	// Live: page1/0 content "v1", embedded, tagged History/body.
+	live := withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))
+	live.Section = "History"
+	live.Kind = domain.WikiChunkKindBody
+	seedChunks(t, store, []domain.WikiChunk{live})
+	// New dump: identical content, metadata-only change (back to lead/"").
+	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(1, 0, "v1")})
+
+	carried, err := store.CarryForwardEmbeddings(ctx)
+	if err != nil {
+		t.Fatalf("CarryForwardEmbeddings: %v", err)
+	}
+	if carried != 1 {
+		t.Fatalf("carried = %d; want 1 (content unchanged: a metadata-only change must not re-embed)", carried)
+	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 0 {
+		t.Fatalf("remaining unembedded = %d; want 0 (embedding carried despite the metadata change)", rem.Chunks)
+	}
+}
+
 func TestFinalizeStagingRefusesNull(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
@@ -381,6 +438,18 @@ func stagingExistsT(t *testing.T, store *Store) bool {
 		t.Fatalf("check staging existence: %v", err)
 	}
 	return exists
+}
+
+func wikiChunkMeta(t *testing.T, store *Store, pageID int64, idx int) (section, kind string) {
+	t.Helper()
+	if err := store.pool.QueryRow(
+		t.Context(),
+		"SELECT section, kind FROM wiki_chunks WHERE page_id = $1 AND chunk_index = $2",
+		pageID, idx,
+	).Scan(&section, &kind); err != nil {
+		t.Fatalf("read metadata for (%d, %d): %v", pageID, idx, err)
+	}
+	return section, kind
 }
 
 func scalarInt(t *testing.T, store *Store, query string) int {

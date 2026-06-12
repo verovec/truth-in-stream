@@ -151,6 +151,7 @@ func storePages(ctx context.Context, store Store, pages []Page, corpus string) (
 				RevisionID: p.RevisionID,
 				Corpus:     corpus,
 				Content:    content,
+				Kind:       domain.WikiChunkKindLead,
 			})
 		}
 	}

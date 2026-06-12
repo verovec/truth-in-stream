@@ -282,6 +282,7 @@ func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string
 				RevisionID: revID,
 				Corpus:     corpus,
 				Content:    content,
+				Kind:       domain.WikiChunkKindLead,
 			})
 		}
 	}

@@ -112,6 +112,17 @@ func TestRunBulk(t *testing.T) {
 	if first.URL != "https://simple.wikipedia.org/wiki/Paris" {
 		t.Errorf("chunk URL = %q", first.URL)
 	}
+	// Ingestion extracts only lead sections, so every staged chunk is tagged
+	// as the lead: the section heading is empty (the lead has none) and the
+	// kind is WikiChunkKindLead.
+	for key, c := range store.chunks {
+		if c.Section != "" {
+			t.Errorf("chunk (%d, %d) section = %q, want empty for a lead chunk", key[0], key[1], c.Section)
+		}
+		if c.Kind != domain.WikiChunkKindLead {
+			t.Errorf("chunk (%d, %d) kind = %q, want %q", key[0], key[1], c.Kind, domain.WikiChunkKindLead)
+		}
+	}
 	if !strings.HasPrefix(first.Content, "Paris\n\n") {
 		t.Errorf("chunk content missing title prefix: %q", first.Content)
 	}
