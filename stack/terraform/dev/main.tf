@@ -47,6 +47,24 @@ module "rds" {
   security_group_id  = module.vpc.postgres_security_group_id
 }
 
+# Message broker for the embedding-job queue. Dev runs a single instance in one
+# private subnet to keep cost down; nothing consumes the queue yet, so a single
+# node is sufficient until the worker fleet drives real throughput.
+module "rabbitmq" {
+  source = "../modules/rabbitmq"
+
+  project     = local.project
+  environment = var.environment
+
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = [module.vpc.private_subnet_ids[0]]
+  allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+
+  # Dev secrets purge immediately so destroy/apply cycles do not collide with
+  # the recovery window.
+  secret_recovery_window_days = 0
+}
+
 # External API keys. Terraform creates the containers only; set the values out
 # of band (aws secretsmanager put-secret-value) before the first deploy.
 resource "aws_secretsmanager_secret" "embedding_api_key" {
@@ -95,6 +113,7 @@ module "iam" {
     module.rds.dsn_secret_arn,
     aws_secretsmanager_secret.embedding_api_key.arn,
     aws_secretsmanager_secret.transcription_api_key.arn,
+    module.rabbitmq.url_secret_arn,
   ]
   ssm_parameter_arns = [
     aws_ssm_parameter.private_subnet_ids.arn,

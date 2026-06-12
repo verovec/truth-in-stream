@@ -32,3 +32,8 @@ output "dsn_secret_arn" {
   value       = module.rds.dsn_secret_arn
   description = "Secrets Manager ARN holding DATABASE_URL."
 }
+
+output "rabbitmq_url_secret_arn" {
+  value       = module.rabbitmq.url_secret_arn
+  description = "Secrets Manager ARN holding RABBITMQ_URL for the embedding-job queue."
+}

@@ -725,3 +725,55 @@ func TestLoadWikiDelta(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadQueue(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Queue
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  map[string]string{"RABBITMQ_URL": "amqp://guest:guest@localhost:5672/"},
+			want: Queue{URL: "amqp://guest:guest@localhost:5672/", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1},
+		},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				"RABBITMQ_URL":          "amqps://user:pass@broker:5671/",
+				"RABBITMQ_QUEUE":        "embedding.priority",
+				"RABBITMQ_MAX_PRIORITY": "255",
+				"RABBITMQ_PREFETCH":     "16",
+			},
+			want: Queue{URL: "amqps://user:pass@broker:5671/", Name: "embedding.priority", MaxPriority: 255, Prefetch: 16},
+		},
+		{name: "missing url rejected", env: map[string]string{}, wantErr: true},
+		{name: "max priority zero rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "0"}, wantErr: true},
+		{name: "max priority above byte rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "256"}, wantErr: true},
+		{name: "max priority non-numeric rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "high"}, wantErr: true},
+		{name: "negative prefetch rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "-1"}, wantErr: true},
+		{name: "prefetch above uint16 rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "65536"}, wantErr: true},
+		{name: "prefetch non-numeric rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "lots"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadQueue()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
