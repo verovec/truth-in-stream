@@ -58,7 +58,7 @@ seed-videos: ## Seed only the curated sample videos (records + best-effort media
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh
 
-wiki-populate: ## Bulk-ingest+embed the full Wikipedia corpus in the foreground (streams logs; resumable, reuses an on-disk dump). EMBEDDING_API_KEY and WIKI_* tuning come from .env
+wiki-populate: ## Bulk-ingest the Wikipedia corpus and enqueue embedding jobs; the worker fleet embeds and the corpus swaps in once drained (resumable, reuses an on-disk dump). Brings up the broker and one worker; scale throughput first with `docker compose --profile wiki up -d --scale embedworker=N`
 	$(COMPOSE) --profile wiki run --rm wiki-populate
 
 wiki-update: ## Incrementally update the embedded Wikipedia corpus via the MediaWiki API (delta sync, foreground; keys/tuning from .env)

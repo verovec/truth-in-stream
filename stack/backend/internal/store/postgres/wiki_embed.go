@@ -1,9 +1,7 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"math"
@@ -216,19 +214,37 @@ func (s *Store) StagingRemaining(ctx context.Context) (domain.WikiRemaining, err
 	return r, nil
 }
 
+// CountUnembeddedStaging counts the staging chunks still lacking an embedding.
+// The producer's drain wait polls it every few seconds, so unlike
+// StagingRemaining it counts rows only - it never reads content or counts
+// distinct pages - keeping each poll cheap even on a large staging table.
+func (s *Store) CountUnembeddedStaging(ctx context.Context) (int64, error) {
+	var n int64
+	if err := s.pool.QueryRow(
+		ctx, fmt.Sprintf("SELECT count(*)::bigint FROM %s WHERE embedding IS NULL", wikiStagingTable),
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres: count un-embedded staging: %w", err)
+	}
+	return n, nil
+}
+
 // UnembeddedStaging returns up to limit staging chunks still lacking an
-// embedding, in keyset order. The WHERE embedding IS NULL filter is the resume
-// cursor: a crash leaves the embedded rows committed and the next run reads only
-// what is left.
-func (s *Store) UnembeddedStaging(ctx context.Context, limit int) ([]domain.WikiChunk, error) {
+// embedding, ordered after cur in keyset order and carrying the VER-49 metadata
+// (section, kind) the producer maps to a job priority. The WHERE embedding IS
+// NULL filter is the resume cursor: a re-run pages from the start and the fleet
+// has already filled the embedded prefix, so only the still-pending chunks come
+// back.
+func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded staging: limit %d out of range", limit)
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
-		SELECT page_id, chunk_index, title, url, revision_id, corpus, content
-		FROM %s WHERE embedding IS NULL
+		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind
+		FROM %s
+		WHERE embedding IS NULL
+		  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
 		ORDER BY page_id, chunk_index
-		LIMIT $1`, wikiStagingTable), limit)
+		LIMIT $3`, wikiStagingTable), cur.PageID, cur.ChunkIndex, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: unembedded staging: %w", err)
 	}
@@ -236,13 +252,15 @@ func (s *Store) UnembeddedStaging(ctx context.Context, limit int) ([]domain.Wiki
 	out := []domain.WikiChunk{}
 	for rows.Next() {
 		var (
-			c   domain.WikiChunk
-			idx int32
+			c    domain.WikiChunk
+			idx  int32
+			kind string
 		)
-		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content); err != nil {
+		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind); err != nil {
 			return nil, fmt.Errorf("postgres: scan staging chunk: %w", err)
 		}
 		c.ChunkIndex = int(idx)
+		c.Kind = domain.WikiChunkKind(kind)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -279,63 +297,6 @@ func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, lim
 		}
 	}
 	return out, nil
-}
-
-// UpdateStagingEmbeddings writes embeddings onto existing staging rows. It loads
-// (page_id, chunk_index, embedding) into a temp table via a text-format COPY
-// (pgvector-go has no binary halfvec encoder, so a binary COPY corrupts the
-// stream) and joins it back, so a batch update is one COPY plus one UPDATE. The
-// temp table is dropped at commit. Every chunk must carry a full-dimension
-// embedding.
-func (s *Store) UpdateStagingEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error {
-	if len(chunks) == 0 {
-		return nil
-	}
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	for _, c := range chunks {
-		if len(c.Embedding) != domain.EmbeddingDim {
-			return fmt.Errorf("postgres: update staging page %d: embedding has %d dims, want %d", c.PageID, len(c.Embedding), domain.EmbeddingDim)
-		}
-		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
-			return fmt.Errorf("postgres: update staging page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
-		}
-		if err := w.Write([]string{
-			strconv.FormatInt(c.PageID, 10),
-			strconv.Itoa(c.ChunkIndex),
-			formatHalfVec(c.Embedding),
-		}); err != nil {
-			return fmt.Errorf("postgres: encode staging update row for page %d: %w", c.PageID, err)
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return fmt.Errorf("postgres: encode staging update rows: %w", err)
-	}
-
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, fmt.Sprintf(
-			"CREATE TEMP TABLE staging_embed_update (page_id bigint, chunk_index integer, embedding halfvec(%d)) ON COMMIT DROP",
-			domain.EmbeddingDim,
-		)); err != nil {
-			return fmt.Errorf("create temp table: %w", err)
-		}
-		if _, err := tx.Conn().PgConn().CopyFrom(ctx, &buf,
-			"COPY staging_embed_update (page_id, chunk_index, embedding) FROM STDIN WITH (FORMAT csv)"); err != nil {
-			return fmt.Errorf("copy temp embeddings: %w", err)
-		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf(`
-			UPDATE %s s SET embedding = u.embedding
-			FROM staging_embed_update u
-			WHERE s.page_id = u.page_id AND s.chunk_index = u.chunk_index`, wikiStagingTable)); err != nil {
-			return fmt.Errorf("apply staging embeddings: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("postgres: update staging embeddings: %w", err)
-	}
-	return nil
 }
 
 // undefinedTableCode is PostgreSQL's SQLSTATE for "relation does not exist". A

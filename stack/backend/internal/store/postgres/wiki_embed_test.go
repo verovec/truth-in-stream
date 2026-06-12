@@ -1,11 +1,7 @@
 package postgres
 
 import (
-	"context"
-	"log/slog"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,44 +11,28 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
 
-// vecEmbedder embeds each chunk to the orthogonal unit vector its content
-// names ("v<n>" -> unitVec(n)), so nearest-neighbor assertions are exact, and
-// counts how many texts it embedded so resume tests can prove work was skipped.
-type vecEmbedder struct {
-	mu       sync.Mutex
-	embedded int
-}
-
-func (e *vecEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
-	e.mu.Lock()
-	e.embedded += len(texts)
-	e.mu.Unlock()
-	out := make([][]float32, len(texts))
-	for i, t := range texts {
-		n, _ := strconv.Atoi(strings.TrimPrefix(t, "v"))
-		out[i] = unitVec(n)
-	}
-	return out, nil
-}
-
-func (e *vecEmbedder) count() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.embedded
-}
-
 func withEmbedding(c domain.WikiChunk, v []float32) domain.WikiChunk {
 	c.Embedding = v
 	return c
 }
 
-// testDumpVersion is the dump version the bulk-embed integration tests run
-// under.
-const testDumpVersion = "Mon, 01 Jun 2026 00:00:00 GMT"
-
-func bulkConfig() wiki.Config {
-	return wiki.Config{Corpus: "simplewiki", DumpVersion: testDumpVersion, BatchSize: 2, Concurrency: 2, MaintenanceWorkMem: "64MB", MaxParallelWorkers: 0}
+// embedStagingChunk drives the embedding worker's per-chunk write, the path that
+// now fills a staged chunk's vector (the producer publishes a job, the fleet
+// embeds and calls this). Tests use it to stand in for a worker that has drained
+// the queue.
+func embedStagingChunk(t *testing.T, store *Store, pageID int64, chunkIndex int, v []float32) {
+	t.Helper()
+	updated, err := store.SetStagingChunkEmbedding(t.Context(), pageID, chunkIndex, v)
+	if err != nil {
+		t.Fatalf("SetStagingChunkEmbedding(%d,%d): %v", pageID, chunkIndex, err)
+	}
+	if !updated {
+		t.Fatalf("SetStagingChunkEmbedding(%d,%d): no staging row matched", pageID, chunkIndex)
+	}
 }
+
+// testDumpVersion is the dump version the staging integration tests run under.
+const testDumpVersion = "Mon, 01 Jun 2026 00:00:00 GMT"
 
 // seedChunks claims the corpus and stores chunks in the live table; chunks
 // carrying embeddings also have those written, so the live corpus is searchable,
@@ -212,18 +192,22 @@ func TestStagingEmbedInPlace(t *testing.T) {
 		wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2"), wikiChunk(3, 0, "v3"),
 	})
 
-	batch, err := store.UnembeddedStaging(ctx, 2)
+	batch, err := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 2)
 	if err != nil || len(batch) != 2 || batch[0].PageID != 1 || batch[1].PageID != 2 {
 		t.Fatalf("batch = %+v, %v; want pages 1,2 in keyset order", batch, err)
 	}
-	for i := range batch {
-		batch[i] = withEmbedding(batch[i], unitVec(int(batch[i].PageID)))
-	}
-	if err := store.UpdateStagingEmbeddings(ctx, batch); err != nil {
-		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	for _, c := range batch {
+		embedStagingChunk(t, store, c.PageID, c.ChunkIndex, unitVec(int(c.PageID)))
 	}
 	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 1 {
 		t.Fatalf("remaining = %d; want 1", rem.Chunks)
+	}
+
+	// The keyset cursor pages past the embedded prefix: a read after page 2 yields
+	// only the still-pending page 3.
+	rest, err := store.UnembeddedStaging(ctx, domain.WikiCursor{PageID: 2, ChunkIndex: 0}, 10)
+	if err != nil || len(rest) != 1 || rest[0].PageID != 3 {
+		t.Fatalf("rest = %+v, %v; want only page 3", rest, err)
 	}
 }
 
@@ -234,12 +218,9 @@ func TestFinalizeStagingSwapAndHeal(t *testing.T) {
 	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(9, 0, "v9"), unitVec(9))})
 	// Build a fully embedded staging for two real pages.
 	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
-	b, _ := store.UnembeddedStaging(ctx, 10)
-	for i := range b {
-		b[i] = withEmbedding(b[i], unitVec(int(b[i].PageID)))
-	}
-	if err := store.UpdateStagingEmbeddings(ctx, b); err != nil {
-		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	b, _ := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 10)
+	for _, c := range b {
+		embedStagingChunk(t, store, c.PageID, c.ChunkIndex, unitVec(int(c.PageID)))
 	}
 	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
 		t.Fatalf("MarkStagingReady: %v", err)
@@ -275,12 +256,9 @@ func TestStagingSwapPreservesSectionAndKind(t *testing.T) {
 	body.Kind = domain.WikiChunkKindBody
 	lead := wikiChunk(2, 0, "v2") // helper default: section "", kind lead
 	stageChunks(t, store, "v2", []domain.WikiChunk{body, lead})
-	b, _ := store.UnembeddedStaging(ctx, 10)
-	for i := range b {
-		b[i] = withEmbedding(b[i], unitVec(int(b[i].PageID)))
-	}
-	if err := store.UpdateStagingEmbeddings(ctx, b); err != nil {
-		t.Fatalf("UpdateStagingEmbeddings: %v", err)
+	b, _ := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 10)
+	for _, c := range b {
+		embedStagingChunk(t, store, c.PageID, c.ChunkIndex, unitVec(int(c.PageID)))
 	}
 	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
 		t.Fatalf("MarkStagingReady: %v", err)
@@ -342,28 +320,35 @@ func TestFinalizeStagingRefusesNull(t *testing.T) {
 	}
 }
 
-func TestBulkEmbedEndToEnd(t *testing.T) {
+func TestStagingEmbedAndSwapEndToEnd(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
 		t.Fatalf("EnsureCorpus: %v", err)
 	}
-	// Staging built by ingest: three pages, no embeddings yet.
+	// Staging built by ingest: three pages, no embeddings yet. The fleet drains
+	// the queue by writing each chunk's vector through the worker's per-chunk path.
 	stageChunks(t, store, testDumpVersion, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"), wikiChunk(2, 0, "v1"), wikiChunk(3, 0, "v2"),
+		wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2"), wikiChunk(3, 0, "v3"),
 	})
 	if err := store.MarkStagingReady(ctx, testDumpVersion); err != nil {
 		t.Fatalf("MarkStagingReady: %v", err)
 	}
 
-	emb := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
+	batch, err := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 10)
 	if err != nil {
-		t.Fatalf("RunBulkEmbed: %v", err)
+		t.Fatalf("UnembeddedStaging: %v", err)
 	}
-	if stats.Embedded != 3 {
-		t.Errorf("embedded = %d, want 3", stats.Embedded)
+	for _, c := range batch {
+		embedStagingChunk(t, store, c.PageID, c.ChunkIndex, unitVec(int(c.PageID)))
 	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 0 {
+		t.Fatalf("remaining after the fleet drained = %d; want 0", rem.Chunks)
+	}
+	if err := store.FinalizeStaging(ctx, "simplewiki", testDumpVersion, time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
+	}
+
 	if stagingExistsT(t, store) {
 		t.Error("staging table was not dropped after the swap")
 	}
@@ -378,12 +363,12 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 	if err := store.pool.QueryRow(
 		ctx,
 		"SELECT page_id FROM wiki_chunks ORDER BY embedding <=> $1 LIMIT 1",
-		pgvector.NewHalfVector(unitVec(1)),
+		pgvector.NewHalfVector(unitVec(2)),
 	).Scan(&nearest); err != nil {
 		t.Fatalf("similarity query: %v", err)
 	}
 	if nearest != 2 {
-		t.Errorf("nearest to unitVec(1) = page %d, want 2", nearest)
+		t.Errorf("nearest to unitVec(2) = page %d, want 2", nearest)
 	}
 
 	// The swap checkpointed the dump version, so a re-run is a no-op.
@@ -392,35 +377,32 @@ func TestBulkEmbedEndToEnd(t *testing.T) {
 	}
 }
 
-func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
+func TestUnembeddedStagingSkipsEmbeddedPrefixOnResume(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
 		t.Fatalf("EnsureCorpus: %v", err)
 	}
-	// A prior run already embedded page 1 into staging before dying.
+	// A prior run already embedded page 1 into staging before dying; the resume
+	// read must offer only the still-pending chunks so the producer re-enqueues
+	// only the remainder.
 	stageChunks(t, store, testDumpVersion, []domain.WikiChunk{
-		wikiChunk(1, 0, "v0"), wikiChunk(2, 0, "v1"), wikiChunk(3, 0, "v2"),
+		wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2"), wikiChunk(3, 0, "v3"),
 	})
-	if err := store.UpdateStagingEmbeddings(ctx, []domain.WikiChunk{
-		withEmbedding(wikiChunk(1, 0, "v0"), unitVec(0)),
-	}); err != nil {
-		t.Fatalf("UpdateStagingEmbeddings: %v", err)
-	}
-	if err := store.MarkStagingReady(ctx, testDumpVersion); err != nil {
-		t.Fatalf("MarkStagingReady: %v", err)
-	}
+	embedStagingChunk(t, store, 1, 0, unitVec(1))
 
-	emb := &vecEmbedder{}
-	stats, err := wiki.RunBulkEmbed(ctx, slog.New(slog.DiscardHandler), store, emb, bulkConfig())
+	remaining, err := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 10)
 	if err != nil {
-		t.Fatalf("RunBulkEmbed (resume): %v", err)
+		t.Fatalf("UnembeddedStaging: %v", err)
 	}
-	if emb.count() != 2 {
-		t.Errorf("embedded %d texts, want 2 (page 1 was already staged)", emb.count())
+	if len(remaining) != 2 || remaining[0].PageID != 2 || remaining[1].PageID != 3 {
+		t.Fatalf("resume read = %+v; want only pages 2 and 3", remaining)
 	}
-	if stats.Embedded != 2 {
-		t.Errorf("stats.Embedded = %d, want 2", stats.Embedded)
+	for _, c := range remaining {
+		embedStagingChunk(t, store, c.PageID, c.ChunkIndex, unitVec(int(c.PageID)))
+	}
+	if err := store.FinalizeStaging(ctx, "simplewiki", testDumpVersion, time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
 	}
 	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL"); n != 0 {
 		t.Errorf("%d chunks unembedded after resume completed", n)
@@ -492,7 +474,7 @@ func TestSetStagingChunkEmbeddingSearchableAfterSwap(t *testing.T) {
 	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
 
 	// Drive the worker's per-chunk write for every staged chunk, then swap live.
-	batch, err := store.UnembeddedStaging(ctx, 10)
+	batch, err := store.UnembeddedStaging(ctx, domain.WikiCursor{}, 10)
 	if err != nil {
 		t.Fatalf("UnembeddedStaging: %v", err)
 	}
