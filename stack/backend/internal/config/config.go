@@ -384,6 +384,40 @@ func LoadPrecheck() (Precheck, error) {
 	return p, nil
 }
 
+// Live analysis defaults. Concurrency 4 is the long-standing in-flight scoring
+// bound. QueueDepth 32 buffers a burst of ready units behind the workers so a
+// short surge of fast speech is scored rather than shed; only sustained demand
+// past worker-plus-queue capacity falls back to not_checked. These are the
+// env-layer defaults; the service package keeps matching library defaults for
+// direct construction (service.NewLiveAnalyzer) and must stay in sync with them.
+const (
+	defaultLiveConcurrency = 4
+	defaultLiveQueueDepth  = 32
+)
+
+// Live holds the live-analyzer scoring configuration. Concurrency is the number
+// of verdict workers; QueueDepth is the bounded backlog those workers drain
+// before a ready unit is shed to not_checked.
+type Live struct {
+	Concurrency int
+	QueueDepth  int
+}
+
+// LoadLive reads the live-analyzer configuration from the environment, applying
+// defaults and failing fast when concurrency or queue depth is not a positive
+// integer (a zero pool or zero buffer would stall or drop every statement).
+func LoadLive() (Live, error) {
+	l := Live{Concurrency: defaultLiveConcurrency, QueueDepth: defaultLiveQueueDepth}
+	var err error
+	if l.Concurrency, err = intEnv("LIVE_CONCURRENCY", l.Concurrency, 1, math.MaxInt32); err != nil {
+		return Live{}, err
+	}
+	if l.QueueDepth, err = intEnv("LIVE_QUEUE_DEPTH", l.QueueDepth, 1, math.MaxInt32); err != nil {
+		return Live{}, err
+	}
+	return l, nil
+}
+
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
 // rejecting values (including NaN) outside [-1, 1].
 func thresholdEnv(key string, fallback float64) (float64, error) {

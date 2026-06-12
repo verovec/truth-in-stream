@@ -794,3 +794,50 @@ func TestLoadQueue(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadLive(t *testing.T) {
+	defaults := Live{Concurrency: 4, QueueDepth: 32}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Live
+		wantErr bool
+	}{
+		{
+			name: "defaults applied",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "overrides applied",
+			env:  map[string]string{"LIVE_CONCURRENCY": "8", "LIVE_QUEUE_DEPTH": "64"},
+			want: Live{Concurrency: 8, QueueDepth: 64},
+		},
+		{name: "zero concurrency rejected", env: map[string]string{"LIVE_CONCURRENCY": "0"}, wantErr: true},
+		{name: "negative concurrency rejected", env: map[string]string{"LIVE_CONCURRENCY": "-1"}, wantErr: true},
+		{name: "non-numeric concurrency rejected", env: map[string]string{"LIVE_CONCURRENCY": "lots"}, wantErr: true},
+		{name: "zero queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "0"}, wantErr: true},
+		{name: "negative queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "-4"}, wantErr: true},
+		{name: "non-numeric queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "deep"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadLive()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

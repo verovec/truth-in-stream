@@ -519,12 +519,13 @@ func TestLiveAnalyzerForwardsInterimCaptionsWithoutScoring(t *testing.T) {
 	}
 }
 
-func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
+func TestLiveAnalyzerShedsToNotCheckedOnlyWhenQueueFull(t *testing.T) {
 	t.Parallel()
-	// Distinct speakers make each turn its own unit. With a single verdict worker
-	// pinned on the first unit, the later units cannot get a slot. They must still
-	// surface as subtitles and be reported not_checked rather than stalling the
-	// transcript behind the busy worker.
+	// Distinct speakers make each turn its own unit. One verdict worker is pinned
+	// on the first unit and the backlog queue holds one more, so total capacity is
+	// two units; the third exceeds it. The capacity-bound units shed to
+	// not_checked, but every statement still surfaces as a subtitle - shedding
+	// never stalls the transcript behind the busy worker.
 	release := make(chan struct{})
 	segs := []domain.Segment{
 		{Start: 1 * time.Second, End: 2 * time.Second, Text: "first", Speaker: "A"},
@@ -537,6 +538,7 @@ func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
 		Prechecker:  livePrechecker{},
 		Logger:      discardLogger(),
 		Concurrency: 1,
+		QueueDepth:  1,
 	})
 	if err != nil {
 		t.Fatalf("NewLiveAnalyzer: %v", err)
@@ -552,9 +554,10 @@ func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
 	released := false
 	timeout := time.After(2 * time.Second)
 	for done := false; !done; {
-		// The three subtitles and the two not_checked results arrive without the
-		// pinned worker; once they are in, release it so the channel can close.
-		if len(subtitles) == 3 && len(notChecked) == 2 && !released {
+		// Worker (1) plus queue (1) absorb two units; the third must shed. Once
+		// every subtitle is in and at least one statement has shed, release the
+		// pinned worker so the buffered and in-flight units finish and out closes.
+		if len(subtitles) == 3 && len(notChecked) >= 1 && !released {
 			close(release)
 			released = true
 		}
@@ -580,10 +583,171 @@ func TestLiveAnalyzerKeepsSubtitlesFlowingWhenScoringSaturated(t *testing.T) {
 	if len(subtitles) != 3 {
 		t.Errorf("got %d subtitles, want 3 (every statement must surface)", len(subtitles))
 	}
-	// Statements 1 and 2 could not get a worker slot, so they stay unscored.
-	if !notChecked["1"] || !notChecked["2"] {
-		t.Errorf("statements 1 and 2 should be not_checked, got %v", notChecked)
+	// Two units fit (one in-flight, one queued); the rest shed. At least one
+	// statement is over capacity, and the in-flight unit 0 is never shed.
+	if len(notChecked) == 0 {
+		t.Errorf("expected at least one statement to shed to not_checked, got none")
 	}
+	if notChecked["0"] {
+		t.Errorf("unit 0 held the worker slot and must not shed, got %v", notChecked)
+	}
+}
+
+func TestLiveAnalyzerBuffersBurstWithinCapacity(t *testing.T) {
+	t.Parallel()
+	// The behavior change this card delivers: a burst that a single worker cannot
+	// score at once is buffered rather than dropped. Three distinct-speaker units
+	// arrive while the only worker is pinned; the queue depth exceeds the backlog,
+	// so none shed. When the worker is released every unit is scored - no statement
+	// is reported not_checked merely because the worker was momentarily busy.
+	release := make(chan struct{})
+	segs := []domain.Segment{
+		{Start: 1 * time.Second, End: 2 * time.Second, Text: "first", Speaker: "A"},
+		{Start: 2 * time.Second, End: 3 * time.Second, Text: "second", Speaker: "B"},
+		{Start: 3 * time.Second, End: 4 * time.Second, Text: "third", Speaker: "C"},
+	}
+	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+		Stream:      &fakeSegmentStream{transcripts: finalize(segs...)},
+		Matcher:     blockingMatcher{release: release},
+		Prechecker:  livePrechecker{},
+		Logger:      discardLogger(),
+		Concurrency: 1,
+		QueueDepth:  4,
+	})
+	if err != nil {
+		t.Fatalf("NewLiveAnalyzer: %v", err)
+	}
+
+	out, err := analyzer.Run(t.Context(), make(chan []byte))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	subtitles := map[string]bool{}
+	results := map[string]LiveEvent{}
+	released := false
+	timeout := time.After(2 * time.Second)
+	for done := false; !done; {
+		// Capacity (1 worker + 4 queued) exceeds the 3-unit backlog, so nothing
+		// sheds before the worker is freed. Release once every subtitle is in.
+		if len(subtitles) == 3 && !released {
+			close(release)
+			released = true
+		}
+		select {
+		case ev, ok := <-out:
+			if !ok {
+				done = true
+				break
+			}
+			switch ev.Kind {
+			case LiveEventSubtitle:
+				subtitles[ev.ID] = true
+			case LiveEventResult:
+				results[ev.ID] = ev
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for buffered burst to be scored (subtitles=%d results=%d)", len(subtitles), len(results))
+		}
+	}
+
+	if len(subtitles) != 3 {
+		t.Errorf("got %d subtitles, want 3", len(subtitles))
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want a result per statement", len(results))
+	}
+	// Every buffered unit was scored once the worker freed up; none was shed.
+	for _, id := range []string{"0", "1", "2"} {
+		if results[id].SkipReason == domain.SkipReasonNotChecked {
+			t.Errorf("statement %s was shed to not_checked despite spare queue capacity", id)
+		}
+	}
+}
+
+func TestLiveAnalyzerEmitsUnitMembersInOrder(t *testing.T) {
+	t.Parallel()
+	// One same-speaker unit is scored by a single worker, which emits a result per
+	// member in member order; the wire must preserve that order so each subtitle's
+	// verdict follows in sequence.
+	segs := []domain.Segment{
+		{Text: "one.", Speaker: "A"},
+		{Text: "two.", Speaker: "A"},
+		{Text: "three.", Speaker: "A"},
+	}
+	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+		Stream:     &fakeSegmentStream{transcripts: finalize(segs...)},
+		Matcher:    &countingMatcher{},
+		Prechecker: livePrechecker{},
+		Logger:     discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveAnalyzer: %v", err)
+	}
+
+	out, err := analyzer.Run(t.Context(), make(chan []byte))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var resultIDs []string
+	for _, ev := range drainLiveEvents(t, out) {
+		if ev.Kind == LiveEventResult {
+			resultIDs = append(resultIDs, ev.ID)
+		}
+	}
+	if diff := cmp.Diff([]string{"0", "1", "2"}, resultIDs); diff != "" {
+		t.Errorf("unit member results out of order (-want +got):\n%s", diff)
+	}
+}
+
+func TestLiveAnalyzerNoGoroutineLeakOnCancel(t *testing.T) {
+	// Cancel mid-flight while a worker is pinned and units sit in the backlog
+	// queue, then drain to completion. synctest fails the test if any analyzer
+	// goroutine (worker pool or producer) is still running when the bubble's root
+	// returns, so a clean exit is asserted by construction.
+	synctest.Test(t, func(t *testing.T) {
+		segs := []domain.Segment{
+			{Text: "first", Speaker: "A"},
+			{Text: "second", Speaker: "B"},
+			{Text: "third", Speaker: "C"},
+		}
+		analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+			Stream: pausingStream{transcripts: finalize(segs...)},
+			// Never released: the worker stays pinned until ctx cancel unblocks it.
+			Matcher:     blockingMatcher{release: make(chan struct{})},
+			Prechecker:  livePrechecker{},
+			Logger:      discardLogger(),
+			Concurrency: 1,
+			QueueDepth:  4,
+		})
+		if err != nil {
+			t.Fatalf("NewLiveAnalyzer: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		out, err := analyzer.Run(ctx, make(chan []byte))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		// Drain in a goroutine so canceling does not deadlock on an unread event.
+		drained := make(chan struct{})
+		seen := 0
+		go func() {
+			defer close(drained)
+			for range out {
+				seen++
+			}
+		}()
+
+		// Let the producer enqueue the units and pin the worker, then cancel and
+		// confirm everything tears down: the worker's matcher returns on ctx.Done,
+		// the producer returns, the queue closes, and out closes.
+		synctest.Wait()
+		cancel()
+		<-drained
+		t.Logf("drained %d events after cancel", seen)
+	})
 }
 
 func TestLiveAnalyzerStopsOnContextCancel(t *testing.T) {

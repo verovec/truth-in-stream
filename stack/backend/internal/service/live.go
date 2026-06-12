@@ -57,9 +57,17 @@ type LiveEvent struct {
 
 // defaultLiveConcurrency bounds in-flight unit analyses. Subtitles emit in order
 // regardless; this caps how many verdicts compute at once so a burst of speech
-// cannot spawn unbounded work. A unit beyond the bound surfaces its subtitles
-// and is reported not_checked rather than stalling the live transcript.
+// cannot spawn unbounded work.
 const defaultLiveConcurrency = 4
+
+// defaultLiveQueueDepth bounds the backlog of ready units waiting for a worker.
+// A short burst that outpaces the workers is buffered here rather than dropped,
+// so transient saturation no longer reports statements not_checked; only when
+// this backlog is also full does a unit shed to not_checked rather than stall
+// the live transcript. This and defaultLiveConcurrency are the library defaults
+// applied when a caller leaves the field zero; the env layer mirrors them in
+// config.LoadLive and the two must stay in sync.
+const defaultLiveQueueDepth = 32
 
 // defaultMaxSentences bounds an analysis unit to a few sentences so a verdict
 // reads as one tight, coherent claim instead of a paragraph.
@@ -72,14 +80,16 @@ const defaultIdleFlush = 2 * time.Second
 
 // LiveAnalyzerConfig wires a LiveAnalyzer. Stream and Matcher are required;
 // Prechecker defaults to the no-op gate that checks every segment, Logger to
-// slog.Default, Concurrency to defaultLiveConcurrency, MaxSentences to
-// defaultMaxSentences, and IdleFlush to defaultIdleFlush.
+// slog.Default, Concurrency to defaultLiveConcurrency, QueueDepth to
+// defaultLiveQueueDepth, MaxSentences to defaultMaxSentences, and IdleFlush to
+// defaultIdleFlush.
 type LiveAnalyzerConfig struct {
 	Stream       SegmentStream
 	Matcher      SegmentMatcher
 	Prechecker   SegmentPrechecker
 	Logger       *slog.Logger
 	Concurrency  int
+	QueueDepth   int
 	MaxSentences int
 	IdleFlush    time.Duration
 }
@@ -97,6 +107,7 @@ type LiveAnalyzer struct {
 	prechecker   SegmentPrechecker
 	logger       *slog.Logger
 	concurrency  int
+	queueDepth   int
 	maxSentences int
 	idleFlush    time.Duration
 }
@@ -122,6 +133,10 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 	if concurrency <= 0 {
 		concurrency = defaultLiveConcurrency
 	}
+	queueDepth := cfg.QueueDepth
+	if queueDepth <= 0 {
+		queueDepth = defaultLiveQueueDepth
+	}
 	maxSentences := cfg.MaxSentences
 	if maxSentences <= 0 {
 		maxSentences = defaultMaxSentences
@@ -136,6 +151,7 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 		prechecker:   prechecker,
 		logger:       logger,
 		concurrency:  concurrency,
+		queueDepth:   queueDepth,
 		maxSentences: maxSentences,
 		idleFlush:    idleFlush,
 	}, nil
@@ -212,14 +228,32 @@ func combinedText(members []unitMember) string {
 // scoring) and is buffered into the current analysis unit. The unit flushes - is
 // scored once and a verdict emitted per member - when the speaker changes, the
 // unit reaches the sentence cap, or it idles, so every verdict stays within one
-// speaker and reads as a tight claim. It closes out only after every dispatched
-// worker has finished, so no event is ever sent on a closed channel.
+// speaker and reads as a tight claim. A fixed pool of workers drains the backlog
+// queue; the loop closes that queue and waits for the pool before it closes out,
+// so no event is ever sent on a closed channel.
 func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domain.LiveTranscript, out chan<- LiveEvent) {
 	defer close(out)
 
-	sem := make(chan struct{}, a.concurrency)
+	// A fixed worker pool drains a bounded backlog of ready units. Sizing the
+	// queue separately from the pool lets a burst of fast speech wait for a worker
+	// instead of being shed the instant every worker is busy. The deferred close
+	// runs before close(out) (LIFO): it stops new work, lets the workers finish
+	// the backlog, and only then is out closed.
+	queue := make(chan []unitMember, a.queueDepth)
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	for range a.concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for members := range queue {
+				a.scoreUnit(ctx, out, members)
+			}
+		}()
+	}
+	defer func() {
+		close(queue)
+		wg.Wait()
+	}()
 
 	// The idle timer starts stopped; it is armed whenever a segment is buffered
 	// and disarmed on every flush, so it only fires on a genuinely idle buffer.
@@ -236,7 +270,7 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 			return true
 		}
 		timer.Stop()
-		return a.dispatch(ctx, out, sem, &wg, unit.take())
+		return a.dispatch(ctx, out, queue, unit.take())
 	}
 
 	for {
@@ -293,22 +327,18 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	}
 }
 
-// dispatch scores one analysis unit and emits its verdict to every member. It
-// scores only when a worker slot is free, so a slow match never stalls the
-// transcript; when every worker is busy the unit's members are reported
-// not_checked at once and not re-queued, so sustained saturation simply leaves
-// more statements unscored. It reports false when ctx is canceled mid-emit.
-func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, sem chan struct{}, wg *sync.WaitGroup, members []unitMember) bool {
+// dispatch hands one analysis unit to the worker pool through the bounded queue.
+// The enqueue is non-blocking, so the transcript reader never stalls behind
+// scoring: while a worker or queue slot is free the unit is buffered and scored
+// in order; only when the queue is full are the unit's members reported
+// not_checked at once, so a statement is shed only under genuine sustained
+// saturation rather than on the first busy worker. It reports false when ctx is
+// canceled mid-emit.
+func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue chan<- []unitMember, members []unitMember) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case sem <- struct{}{}:
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			a.scoreUnit(ctx, out, members)
-		}()
+	case queue <- members:
 		return true
 	default:
 		for _, m := range members {
