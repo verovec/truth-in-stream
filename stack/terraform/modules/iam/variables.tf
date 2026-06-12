@@ -51,3 +51,9 @@ variable "media_bucket_arn" {
   default     = ""
   description = "S3 media bucket ARN the application task role may read and write. Empty disables the grant."
 }
+
+variable "db_backup_bucket_arn" {
+  type        = string
+  default     = ""
+  description = "S3 database-backup bucket ARN the task role may write dumps to (s3:PutObject). Empty disables the grant."
+}

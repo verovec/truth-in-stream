@@ -6,9 +6,13 @@ group, the schedule, and the IAM role Scheduler assumes to call `ecs:RunTask`
 (scoped to this task family and cluster, with `iam:PassRole` limited to the
 task's two roles; the trust policy is pinned to the module-owned group ARN).
 
-Used for the weekly Wikipedia delta sync (`wikisync -mode=delta`). Both env
-roots instantiate it behind `enable_wiki_sync`, which defaults to `false` so
-plans stay no-op until a human flips it.
+Used for two jobs, each instantiated in both env roots behind its own enable
+flag that defaults to `false` so plans stay no-op until a human flips it:
+
+- the weekly Wikipedia delta sync (`wikisync -mode=delta`), behind
+  `enable_wiki_sync`;
+- the nightly database backup (`dbbackup`), behind `enable_db_backup` (see
+  [Scheduled database backup](#scheduled-database-backup)).
 
 ## Usage
 
@@ -47,6 +51,34 @@ Prerequisites before enabling:
 Known limitation: invocation retries are bounded (see `retry_policy` in
 `main.tf`) and there is no dead letter queue. Add a DLQ and an alarm when an
 alerting stack exists.
+
+## Scheduled database backup
+
+The `db_backup` block in `dev/main.tf` / `prod/main.tf` runs `pg_dump` against
+RDS on a cron and uploads the custom-format archive to the `s3-backup` bucket,
+so a snapshot exists without anyone running `make backup`. Scheduled and manual
+dumps share the `db-backups/<db>-<timestamp>.dump` key convention, so
+`make restore` consumes either unchanged.
+
+Enable and tune it with the env roots' variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `enable_db_backup` | `false` | Create the schedule. Flipping it is a no-op on running services. |
+| `db_backup_schedule` | `cron(0 4 * * ? *)` | EventBridge Scheduler expression, UTC. Default is daily at 04:00. (6 fields: `cron(min hour day-of-month month day-of-week year)`; use `?` in one of the day fields.) |
+| `db_backup_cpu` / `db_backup_memory` | `512` / `1024` | Fargate task size. |
+
+Prerequisites before enabling:
+
+- The `backup` ECR repository holds an image built from
+  `stack/backend/Dockerfile.backup` (a static `dbbackup` binary plus the
+  PostgreSQL 17 client; the client major must match or exceed the RDS server).
+  The image's `ENTRYPOINT` is the binary, so the block passes empty
+  `entry_point`/`command`.
+- The task role can write the backup bucket: the `iam` module grants
+  `s3:PutObject` when `db_backup_bucket_arn` is set, which both roots wire from
+  the `db_backup_storage` module. The DSN is injected from Secrets Manager
+  (already in the execution role's `secret_arns`).
 
 ## RDS sizing for the Wikipedia corpus
 

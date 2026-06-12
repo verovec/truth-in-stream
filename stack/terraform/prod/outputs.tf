@@ -37,3 +37,8 @@ output "rabbitmq_url_secret_arn" {
   value       = module.rabbitmq.url_secret_arn
   description = "Secrets Manager ARN holding RABBITMQ_URL for the embedding-job queue."
 }
+
+output "db_backup_bucket" {
+  value       = module.db_backup_storage.bucket_id
+  description = "Database backup bucket; export as DB_BACKUP_BUCKET for make backup/restore."
+}

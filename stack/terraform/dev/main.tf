@@ -26,7 +26,7 @@ module "ecr" {
 
   project      = local.project
   environment  = var.environment
-  repositories = ["backend", "frontend", "migrate"]
+  repositories = ["backend", "frontend", "migrate", "backup"]
 }
 
 module "rds" {
@@ -106,9 +106,10 @@ module "iam" {
   environment       = var.environment
   github_repository = local.github_repository
 
-  ecr_repository_arns = module.ecr.repository_arns
-  cluster_arn         = module.ecs.cluster_id
-  media_bucket_arn    = module.media_storage.bucket_arn
+  ecr_repository_arns  = module.ecr.repository_arns
+  cluster_arn          = module.ecs.cluster_id
+  media_bucket_arn     = module.media_storage.bucket_arn
+  db_backup_bucket_arn = module.db_backup_storage.bucket_arn
   secret_arns = [
     module.rds.dsn_secret_arn,
     aws_secretsmanager_secret.embedding_api_key.arn,
@@ -240,6 +241,43 @@ module "wiki_sync" {
   secrets = {
     DATABASE_URL      = module.rds.dsn_secret_arn
     EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Scheduled database backup: a one-shot Fargate task that runs pg_dump against
+# RDS and uploads the dump to the backup bucket on a cron, so a snapshot exists
+# without anyone running `make backup`. Gated off by default; flip
+# enable_db_backup once the backup image ships and the schedule is wanted.
+module "db_backup" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_db_backup ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "dbbackup"
+
+  image = "${module.ecr.repository_urls["backup"]}:latest"
+  # The image's ENTRYPOINT is the dbbackup binary; keep it and pass no command.
+  entry_point = []
+  command     = []
+
+  schedule_expression = var.db_backup_schedule
+  cpu                 = var.db_backup_cpu
+  memory              = var.db_backup_memory
+
+  environment_variables = {
+    DB_BACKUP_BUCKET = module.db_backup_storage.bucket_id
+    AWS_REGION       = var.aws_region
+  }
+  secrets = {
+    DATABASE_URL = module.rds.dsn_secret_arn
   }
 
   cluster_arn             = module.ecs.cluster_id
