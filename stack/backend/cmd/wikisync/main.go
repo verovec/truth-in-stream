@@ -50,10 +50,11 @@ func main() {
 	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest), delta (incremental catch-up), or reset (clear the corpus and checkpoint for a from-scratch reingest)")
 	dir := flag.String("dir", os.TempDir(), "directory for downloaded dump files")
 	dryRun := flag.Bool("dry-run", false, "ingest and report the embedding cost estimate without embedding or swapping")
+	publishOnly := flag.Bool("publish-only", false, "bulk mode only: publish embedding jobs and exit without waiting for the fleet to drain or swapping staging live; the consumer owns the drain and swap (the cloud producer path)")
 	maxDuration := flag.Duration("max-duration", 0, "stop the run after this much wall-clock time, leaving progress for the next run to resume (0 = run to completion)")
 	flag.Parse()
 
-	err := run(logger, *mode, *dir, *dryRun, *maxDuration)
+	err := run(logger, *mode, *dir, *dryRun, *publishOnly, *maxDuration)
 	switch {
 	case err == nil:
 		return
@@ -100,9 +101,15 @@ func classifyStop(workErr, ctxErr error) error {
 	return workErr
 }
 
-func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Duration) error {
+func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly bool, maxDuration time.Duration) error {
 	if mode != "bulk" && mode != "delta" && mode != "reset" {
 		return fmt.Errorf("wikisync: unsupported mode %q (want bulk, delta, or reset)", mode)
+	}
+	if publishOnly && mode != "bulk" {
+		return fmt.Errorf("wikisync: -publish-only is only supported for bulk mode, got %q", mode)
+	}
+	if publishOnly && dryRun {
+		return errors.New("wikisync: -publish-only and -dry-run are mutually exclusive")
 	}
 
 	cfg, err := config.Load()
@@ -138,7 +145,7 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Du
 	case "delta":
 		workErr = runDelta(ctx, logger, store, wikiCfg, dryRun)
 	default:
-		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun)
+		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun, publishOnly)
 	}
 	return classifyStop(workErr, ctx.Err())
 }
@@ -160,9 +167,10 @@ func runReset(ctx context.Context, logger *slog.Logger, store *postgres.Store) e
 }
 
 // runBulk downloads the dump, ingests it, then either reports the embedding cost
-// (dry-run) or publishes one embedding job per chunk and swaps once the worker
-// fleet has drained the queue.
-func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun bool) error {
+// (dry-run), publishes one embedding job per chunk and exits without draining
+// (publish-only, the cloud producer), or publishes and swaps once the worker
+// fleet has drained the queue (the default co-located run).
+func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun, publishOnly bool) error {
 	// LoadWikiEmbed supplies the post-drain HNSW index-build settings the finalize
 	// step forwards to the store.
 	embedCfg, err := config.LoadWikiEmbed()
@@ -255,7 +263,7 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 	}
 	defer func() { _ = client.Close() }()
 
-	stats, err := wiki.RunBulkEnqueue(ctx, logger, store, qPublisher{client: client}, wiki.ProducerConfig{
+	producer := wiki.ProducerConfig{
 		Corpus:             wikiCfg.Corpus,
 		DumpVersion:        files.Version,
 		MaxPriority:        queueCfg.MaxPriority,
@@ -264,7 +272,23 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		DrainStallTimeout:  producerCfg.DrainStallTimeout,
 		MaintenanceWorkMem: embedCfg.MaintenanceWorkMem,
 		MaxParallelWorkers: embedCfg.MaxParallelWorkers,
-	})
+	}
+
+	// The cloud producer fills the queue and exits; the consumer (a worker against
+	// the database it writes to) owns the drain and the live swap. The default
+	// co-located run publishes, waits for the fleet to drain, and swaps itself.
+	if publishOnly {
+		stats, err := wiki.RunBulkPublish(ctx, logger, store, qPublisher{client: client}, producer)
+		if err != nil {
+			return err
+		}
+		logger.InfoContext(ctx, "publish-only enqueue complete; the consumer will drain and swap",
+			slog.String("corpus", wikiCfg.Corpus),
+			slog.Int("published_chunks", stats.Published))
+		return nil
+	}
+
+	stats, err := wiki.RunBulkEnqueue(ctx, logger, store, qPublisher{client: client}, producer)
 	if err != nil {
 		return err
 	}

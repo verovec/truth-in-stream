@@ -1,6 +1,11 @@
 locals {
   name = "${var.project}-${var.environment}-${var.name}"
 
+  # An empty schedule_expression yields a task definition only - no EventBridge
+  # schedule - so an operator can run it on demand with `aws ecs run-task`. A
+  # non-empty expression additionally provisions the schedule and its role.
+  scheduled = var.schedule_expression != ""
+
   # entryPoint/command are emitted only when set so an empty override never
   # masks the image's own entrypoint.
   container_overrides = merge(
@@ -54,11 +59,35 @@ resource "aws_ecs_task_definition" "main" {
 # (per-schedule scoping is unsupported), so owning the group is what keeps the
 # role's trust boundary per-task instead of shared with every schedule in the
 # account's default group.
+# The scheduler resources gained a count when the schedule became optional. These
+# moved blocks map the old count-less addresses to index 0 so an environment that
+# already applied a scheduled task (a non-empty expression keeps count at 1) sees
+# no destroy/recreate of its live schedule, role, or group.
+moved {
+  from = aws_scheduler_schedule_group.main
+  to   = aws_scheduler_schedule_group.main[0]
+}
+moved {
+  from = aws_iam_role.scheduler
+  to   = aws_iam_role.scheduler[0]
+}
+moved {
+  from = aws_iam_role_policy.scheduler
+  to   = aws_iam_role_policy.scheduler[0]
+}
+moved {
+  from = aws_scheduler_schedule.main
+  to   = aws_scheduler_schedule.main[0]
+}
+
 resource "aws_scheduler_schedule_group" "main" {
-  name = local.name
+  count = local.scheduled ? 1 : 0
+  name  = local.name
 }
 
 data "aws_iam_policy_document" "scheduler_assume" {
+  count = local.scheduled ? 1 : 0
+
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRole"]
@@ -77,17 +106,20 @@ data "aws_iam_policy_document" "scheduler_assume" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = [aws_scheduler_schedule_group.main.arn]
+      values   = [aws_scheduler_schedule_group.main[0].arn]
     }
   }
 }
 
 resource "aws_iam_role" "scheduler" {
+  count              = local.scheduled ? 1 : 0
   name               = "${local.name}-scheduler"
-  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume[0].json
 }
 
 data "aws_iam_policy_document" "scheduler" {
+  count = local.scheduled ? 1 : 0
+
   statement {
     effect  = "Allow"
     actions = ["ecs:RunTask"]
@@ -115,14 +147,16 @@ data "aws_iam_policy_document" "scheduler" {
 }
 
 resource "aws_iam_role_policy" "scheduler" {
+  count  = local.scheduled ? 1 : 0
   name   = "run-task"
-  role   = aws_iam_role.scheduler.id
-  policy = data.aws_iam_policy_document.scheduler.json
+  role   = aws_iam_role.scheduler[0].id
+  policy = data.aws_iam_policy_document.scheduler[0].json
 }
 
 resource "aws_scheduler_schedule" "main" {
+  count      = local.scheduled ? 1 : 0
   name       = local.name
-  group_name = aws_scheduler_schedule_group.main.name
+  group_name = aws_scheduler_schedule_group.main[0].name
 
   # The schedule only references the role ARN, so without this an apply that
   # fails between role and policy creation leaves an enabled schedule whose
@@ -137,7 +171,7 @@ resource "aws_scheduler_schedule" "main" {
 
   target {
     arn      = var.cluster_arn
-    role_arn = aws_iam_role.scheduler.arn
+    role_arn = aws_iam_role.scheduler[0].arn
 
     ecs_parameters {
       task_definition_arn = aws_ecs_task_definition.main.arn

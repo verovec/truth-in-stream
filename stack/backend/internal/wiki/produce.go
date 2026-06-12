@@ -170,6 +170,56 @@ func RunBulkEnqueue(ctx context.Context, logger *slog.Logger, store ProducerStor
 	return EnqueueStats{Published: published}, nil
 }
 
+// RunBulkPublish publishes one prioritized embedding job per un-embedded staging
+// chunk and returns, without waiting for the fleet to drain or swapping staging
+// live. It is the cloud producer's path: a deployable task fills the queue with
+// self-contained jobs (each carries its content) and exits, leaving the drain and
+// the live swap to whoever owns the database the fleet writes to - in the hybrid
+// model a worker running against a local database, not this producer. It shares
+// publishJobs with RunBulkEnqueue, so the at-least-once, idempotent, keyset-resume
+// publishing is identical; only the post-publish drain-and-swap is omitted. A
+// re-run enqueues only what is still un-embedded. A nil logger falls back to
+// slog.Default.
+func RunBulkPublish(ctx context.Context, logger *slog.Logger, store ProducerStore, pub Publisher, cfg ProducerConfig) (EnqueueStats, error) {
+	if err := cfg.validatePublish(); err != nil {
+		return EnqueueStats{}, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	pending, err := store.CountUnembeddedStaging(ctx)
+	if err != nil {
+		return EnqueueStats{}, fmt.Errorf("wiki: count un-embedded staging: %w", err)
+	}
+	logger.InfoContext(ctx, "starting publish-only embedding-job enqueue",
+		slog.String("corpus", cfg.Corpus),
+		slog.Int64("pending_chunks", pending))
+
+	published, err := publishJobs(ctx, logger, store, pub, cfg)
+	if err != nil {
+		return EnqueueStats{}, err
+	}
+	logger.InfoContext(ctx, "all embedding jobs enqueued; the consumer owns the drain and swap",
+		slog.String("corpus", cfg.Corpus),
+		slog.Int("published", published))
+	return EnqueueStats{Published: published}, nil
+}
+
+// validatePublish rejects a config that would loop or publish out of range. The
+// publish-only path needs only the fields publishJobs uses, so it does not
+// require the drain/finalize settings full validate does.
+func (cfg ProducerConfig) validatePublish() error {
+	switch {
+	case cfg.MaxPriority < 1:
+		return fmt.Errorf("wiki: publish needs a positive max priority, got %d", cfg.MaxPriority)
+	case cfg.EnqueueBatchSize < 1:
+		return fmt.Errorf("wiki: publish needs a positive batch size, got %d", cfg.EnqueueBatchSize)
+	default:
+		return nil
+	}
+}
+
 // validate rejects a producer config that would loop, hang, or publish out of
 // range, so the run fails fast at the call site rather than mid-publish.
 func (cfg ProducerConfig) validate() error {

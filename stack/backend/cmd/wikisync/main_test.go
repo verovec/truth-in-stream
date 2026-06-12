@@ -14,8 +14,28 @@ func TestRunRejectsUnknownMode(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// An unsupported mode is rejected before any config load or DB connection,
 	// so this needs no environment.
-	if err := run(logger, "frobnicate", t.TempDir(), false, 0); err == nil {
+	if err := run(logger, "frobnicate", t.TempDir(), false, false, 0); err == nil {
 		t.Fatal("run accepted an unsupported mode, want error")
+	}
+}
+
+func TestRunRejectsPublishOnlyOutsideBulk(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// -publish-only only makes sense for bulk; delta and reset reject it before
+	// any config load, so this needs no environment.
+	for _, mode := range []string{"delta", "reset"} {
+		err := run(logger, mode, t.TempDir(), false, true, 0)
+		if err == nil || !strings.Contains(err.Error(), "publish-only") {
+			t.Errorf("run(%q, publishOnly=true) error = %v, want a publish-only rejection", mode, err)
+		}
+	}
+}
+
+func TestRunRejectsPublishOnlyWithDryRun(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	err := run(logger, "bulk", t.TempDir(), true, true, 0)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("run(bulk, dryRun+publishOnly) error = %v, want mutually-exclusive rejection", err)
 	}
 }
 
@@ -24,7 +44,7 @@ func TestRunAcceptsResetMode(t *testing.T) {
 	// reset is a recognized mode: it passes mode validation and only fails later
 	// (here, on config load without DATABASE_URL), never with the unsupported-mode
 	// error a typo would trigger.
-	err := run(logger, "reset", t.TempDir(), false, 0)
+	err := run(logger, "reset", t.TempDir(), false, false, 0)
 	if err == nil {
 		t.Skip("reset succeeded (DATABASE_URL is set in this env); mode-acceptance still holds")
 	}
