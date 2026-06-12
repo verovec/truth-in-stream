@@ -296,6 +296,7 @@ func TestProcessRedeliveryIsIdempotent(t *testing.T) {
 type recDelivery struct {
 	body     []byte
 	priority uint8
+	version  string
 	mu       sync.Mutex
 	acked    bool
 	nacked   bool
@@ -304,6 +305,7 @@ type recDelivery struct {
 
 func (d *recDelivery) Body() []byte    { return d.body }
 func (d *recDelivery) Priority() uint8 { return d.priority }
+func (d *recDelivery) Version() string { return d.version }
 func (d *recDelivery) Ack() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -363,6 +365,35 @@ func (e *recEnqueuer) count() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return len(e.bodies)
+}
+
+// TestRunDropsUnknownVersionWithoutEmbedding proves the version guard: a worker
+// configured to know only version "1" drops a delivery stamped "2" (acks it, no
+// nack) without ever calling the embedder, so a stray message from another queue
+// version is parked rather than mis-processed; a known version still flows.
+func TestRunDropsUnknownVersionWithoutEmbedding(t *testing.T) {
+	t.Parallel()
+	unknown := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "stray"}), priority: 5, version: "2"}
+	known := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "ok"}), priority: 5, version: "1"}
+	emb := &fakeEmbedder{vec: testVec(1)}
+	st := &fakeStore{updated: true}
+	w := NewWorker(emb, st, &sliceStream{[]Delivery{unknown, known}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, MaxAttempts: 3, KnownVersions: []string{"1"}})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if acked, nacked, _ := unknown.state(); !acked || nacked {
+		t.Fatalf("unknown-version delivery acked=%v nacked=%v, want dropped (acked)", acked, nacked)
+	}
+	if acked, nacked, _ := known.state(); !acked || nacked {
+		t.Fatalf("known-version delivery acked=%v nacked=%v, want processed (acked)", acked, nacked)
+	}
+	// Only the known-version job reached the embedder.
+	if got := emb.calls.Load(); got != 1 {
+		t.Fatalf("embedder calls = %d, want 1 (the unknown version must not embed)", got)
+	}
 }
 
 func TestRunAcksSuccessfulDeliveries(t *testing.T) {

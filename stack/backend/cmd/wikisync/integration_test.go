@@ -60,6 +60,7 @@ type wDelivery struct{ d queue.Delivery }
 
 func (q wDelivery) Body() []byte            { return q.d.Body }
 func (q wDelivery) Priority() uint8         { return q.d.Priority }
+func (q wDelivery) Version() string         { return q.d.Version }
 func (q wDelivery) Ack() error              { return q.d.Ack() }
 func (q wDelivery) Nack(requeue bool) error { return q.d.Nack(requeue) }
 
@@ -150,7 +151,7 @@ func TestBulkEnqueueDrainsFleetAndSwapsLive(t *testing.T) {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
 
-	client, err := queue.New(queue.Config{URL: broker, QueueName: "embedding.jobs.wikisync_e2e", MaxPriority: 10, Prefetch: 1})
+	client, err := queue.New(queue.Config{URL: broker, QueueName: "embedding.jobs.wikisync_e2e.v1", Version: "1", MaxPriority: 10, Prefetch: 1})
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestBulkEnqueueDrainsFleetAndSwapsLive(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	worker := embedjob.NewWorker(nnEmbedder{}, store, wStream{client: client}, wEnqueuer{client: client},
-		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 2, MaxAttempts: 3})
+		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 2, MaxAttempts: 3, KnownVersions: []string{"1"}})
 	workerErr := make(chan error, 1)
 	wg.Add(1)
 	go func() {

@@ -72,7 +72,8 @@ func run(logger *slog.Logger) error {
 	// slots filled without handing it a backlog it cannot work in parallel.
 	client, err := queue.New(queue.Config{
 		URL:         queueCfg.URL,
-		QueueName:   queueCfg.Name,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
 		MaxPriority: queueCfg.MaxPriority,
 		Prefetch:    workerCfg.Concurrency,
 	})
@@ -87,11 +88,11 @@ func run(logger *slog.Logger) error {
 		qStream{client: client},
 		qEnqueuer{client: client},
 		logger,
-		embedjob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts},
+		embedjob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
 	)
 
 	logger.InfoContext(ctx, "embedding worker started",
-		slog.String("queue", queueCfg.Name),
+		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
 		slog.Int("max_attempts", workerCfg.MaxAttempts))
 	if err := worker.Run(ctx); err != nil {

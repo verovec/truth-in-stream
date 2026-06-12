@@ -89,10 +89,12 @@ type Store interface {
 
 // Delivery is one job message awaiting acknowledgement, abstracting the broker
 // so the worker stays transport-free. The consumer MUST eventually Ack or Nack
-// each delivery.
+// each delivery. Version is the queue schema version the producer stamped; the
+// worker drops a delivery whose version it does not recognize.
 type Delivery interface {
 	Body() []byte
 	Priority() uint8
+	Version() string
 	Ack() error
 	Nack(requeue bool) error
 }
@@ -110,20 +112,26 @@ type Enqueuer interface {
 // Config tunes a Worker. Concurrency caps the jobs one replica embeds in
 // parallel (the fleet scales by replica count); MaxAttempts is the total
 // delivery budget for a job before a persistent failure is dropped with a log.
+// KnownVersions is the set of queue schema versions this worker understands: a
+// delivery stamped with any other version is dropped rather than mis-processed.
+// An empty KnownVersions disables the check (every version is accepted), which
+// keeps a worker that does not configure versions working unchanged.
 type Config struct {
-	Concurrency int
-	MaxAttempts int
+	Concurrency   int
+	MaxAttempts   int
+	KnownVersions []string
 }
 
 // Worker drains embedding jobs and writes their vectors into staging.
 type Worker struct {
-	embedder    Embedder
-	store       Store
-	stream      Stream
-	enqueuer    Enqueuer
-	logger      *slog.Logger
-	concurrency int
-	maxAttempts int
+	embedder      Embedder
+	store         Store
+	stream        Stream
+	enqueuer      Enqueuer
+	logger        *slog.Logger
+	concurrency   int
+	maxAttempts   int
+	knownVersions map[string]struct{}
 }
 
 // NewWorker builds a Worker. Concurrency and MaxAttempts below one are clamped
@@ -139,15 +147,34 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{
-		embedder:    embedder,
-		store:       store,
-		stream:      stream,
-		enqueuer:    enqueuer,
-		logger:      logger,
-		concurrency: cfg.Concurrency,
-		maxAttempts: cfg.MaxAttempts,
+	var known map[string]struct{}
+	if len(cfg.KnownVersions) > 0 {
+		known = make(map[string]struct{}, len(cfg.KnownVersions))
+		for _, v := range cfg.KnownVersions {
+			known[v] = struct{}{}
+		}
 	}
+	return &Worker{
+		embedder:      embedder,
+		store:         store,
+		stream:        stream,
+		enqueuer:      enqueuer,
+		logger:        logger,
+		concurrency:   cfg.Concurrency,
+		maxAttempts:   cfg.MaxAttempts,
+		knownVersions: known,
+	}
+}
+
+// knowsVersion reports whether the worker should process a delivery stamped with
+// version. With no configured versions the check is disabled and every version
+// is accepted; otherwise only a configured version is.
+func (w *Worker) knowsVersion(version string) bool {
+	if w.knownVersions == nil {
+		return true
+	}
+	_, ok := w.knownVersions[version]
+	return ok
 }
 
 // Run consumes the queue until ctx is canceled, processing up to Concurrency
@@ -196,8 +223,21 @@ loop:
 
 // handle processes one delivery and applies the broker action Process chose. A
 // failed republish requeues the original rather than acking it, so a transient
-// failure can never silently drop the job.
+// failure can never silently drop the job. A delivery whose schema version the
+// worker does not understand is dropped (acked) with an ERROR log before any
+// embedding, so a stray message from another queue version is discarded rather
+// than mis-processed. This mirrors how Process drops a malformed or invalid job:
+// a message that cannot be processed is removed, not requeued into a loop. In
+// normal operation it never fires - each worker consumes only its own versioned
+// queue and the producer stamps that version - so a hit means a corrupt or
+// misrouted message, which the ERROR log makes visible.
 func (w *Worker) handle(ctx context.Context, d Delivery) {
+	if !w.knowsVersion(d.Version()) {
+		w.logger.ErrorContext(ctx, "dropping embedding job with unknown queue version",
+			slog.String("version", d.Version()))
+		w.ack(ctx, d)
+		return
+	}
 	res := w.Process(ctx, d.Body(), d.Priority())
 	switch res.Action {
 	case ActionRepublish:

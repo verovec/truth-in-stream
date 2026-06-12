@@ -17,6 +17,7 @@ type qDelivery struct{ d queue.Delivery }
 
 func (q qDelivery) Body() []byte            { return q.d.Body }
 func (q qDelivery) Priority() uint8         { return q.d.Priority }
+func (q qDelivery) Version() string         { return q.d.Version }
 func (q qDelivery) Ack() error              { return q.d.Ack() }
 func (q qDelivery) Nack(requeue bool) error { return q.d.Nack(requeue) }
 

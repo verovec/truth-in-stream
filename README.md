@@ -318,6 +318,23 @@ tool then:
 ECS task definitions consume these secrets by ARN, which always resolves `AWSCURRENT`, so a roll
 needs no task-definition re-pin. An unchanged edit, or declining the confirmation, pushes nothing.
 
+### Embedding queue (versioned)
+
+The embedding producer (`wikisync`) and the worker fleet (`embedworker`) exchange jobs over an
+Amazon MQ for RabbitMQ broker (a single `mq.t3.micro` in dev; locally the compose `rabbitmq`
+service). Connection comes from `RABBITMQ_URL` (the broker URL secret in AWS); the broker is
+provisioned by the `rabbitmq` terraform module and its apply permissions live in the
+`apply-permissions` manifest.
+
+Queues carry an explicit version so a message-schema change can roll without losing work: the
+queue is named `<RABBITMQ_QUEUE>.v<version>` and `RABBITMQ_QUEUE_VERSIONS` is a comma-separated,
+oldest-first list (default `1`). The newest version is active - the producer publishes to it and
+stamps it on every message (an AMQP header, so the job payload is unchanged), and the worker drops
+a message stamped with a version it does not know rather than mis-processing it. To roll, append a
+new version (new active queue); workers still on the old version drain the old queue, and once it
+is empty the old version is removed from the list. Delivery stays at-least-once with publisher
+confirms and durable, priority-ordered queues.
+
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.

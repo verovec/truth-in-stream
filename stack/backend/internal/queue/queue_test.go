@@ -19,10 +19,11 @@ func TestNewValidatesConfig(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{name: "empty url", cfg: Config{QueueName: "q", MaxPriority: 10}},
-		{name: "empty queue name", cfg: Config{URL: "amqp://localhost", MaxPriority: 10}},
-		{name: "zero max priority", cfg: Config{URL: "amqp://localhost", QueueName: "q", MaxPriority: 0}},
-		{name: "negative prefetch", cfg: Config{URL: "amqp://localhost", QueueName: "q", MaxPriority: 10, Prefetch: -1}},
+		{name: "empty url", cfg: Config{QueueName: "q", Version: "1", MaxPriority: 10}},
+		{name: "empty queue name", cfg: Config{URL: "amqp://localhost", Version: "1", MaxPriority: 10}},
+		{name: "empty version", cfg: Config{URL: "amqp://localhost", QueueName: "q", MaxPriority: 10}},
+		{name: "zero max priority", cfg: Config{URL: "amqp://localhost", QueueName: "q", Version: "1", MaxPriority: 0}},
+		{name: "negative prefetch", cfg: Config{URL: "amqp://localhost", QueueName: "q", Version: "1", MaxPriority: 10, Prefetch: -1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,7 +106,7 @@ func TestClientRoundTrip(t *testing.T) {
 	ctx := t.Context()
 	// A unique queue per run keeps repeated runs and parallel CI jobs isolated.
 	queueName := "test.embedding.jobs." + time.Now().Format("20060102150405.000")
-	client, err := New(Config{URL: url, QueueName: queueName, MaxPriority: 10, Prefetch: 1})
+	client, err := New(Config{URL: url, QueueName: queueName, Version: "1", MaxPriority: 10, Prefetch: 1})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -135,6 +136,9 @@ func TestClientRoundTrip(t *testing.T) {
 		select {
 		case d := <-deliveries:
 			got = append(got, string(d.Body))
+			if d.Version != "1" {
+				t.Fatalf("delivery version = %q, want %q (publisher stamps the active version)", d.Version, "1")
+			}
 			if err := d.Ack(); err != nil {
 				t.Fatalf("Ack() error = %v", err)
 			}
@@ -158,7 +162,7 @@ func TestClientCloseEndsConsumerWithoutCancel(t *testing.T) {
 	}
 
 	queueName := "test.embedding.jobs." + time.Now().Format("20060102150405.000") + ".close"
-	client, err := New(Config{URL: url, QueueName: queueName, MaxPriority: 10, Prefetch: 1})
+	client, err := New(Config{URL: url, QueueName: queueName, Version: "1", MaxPriority: 10, Prefetch: 1})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -194,7 +198,7 @@ func TestClientConcurrentPublish(t *testing.T) {
 
 	ctx := t.Context()
 	queueName := "test.embedding.jobs." + time.Now().Format("20060102150405.000") + ".concurrent"
-	client, err := New(Config{URL: url, QueueName: queueName, MaxPriority: 10, Prefetch: 10})
+	client, err := New(Config{URL: url, QueueName: queueName, Version: "1", MaxPriority: 10, Prefetch: 10})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

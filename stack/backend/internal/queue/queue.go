@@ -18,18 +18,27 @@ import (
 // message priority is a single byte, so 255 is the highest the broker honors.
 const maxQueuePriority = 255
 
+// versionHeader carries the queue's schema version on every published message,
+// so a consumer can reject a message stamped with a version it does not
+// understand rather than mis-process it. It travels in the AMQP message headers,
+// not the application body, so the producer's payload construction is untouched.
+const versionHeader = "x-queue-version"
+
 // Config selects and shapes the embedding-job queue.
 //
 // URL is the AMQP broker connection string (amqp:// locally, amqps:// against
 // Amazon MQ); it carries the credentials and is sourced from configuration
-// only, never logged. QueueName is the durable queue both sides bind to.
-// MaxPriority is the queue's x-max-priority ceiling (1-255): messages with a
-// higher Priority byte are delivered first, and a publish above this value is
-// rejected. Prefetch caps the unacknowledged messages the broker pushes to one
-// consumer, giving the worker fleet fair dispatch; zero leaves it unbounded.
+// only, never logged. QueueName is the durable, version-suffixed queue both
+// sides bind to (e.g. embedding.jobs.v1); Version is that queue's schema version,
+// stamped on every published message. MaxPriority is the queue's x-max-priority
+// ceiling (1-255): messages with a higher Priority byte are delivered first, and
+// a publish above this value is rejected. Prefetch caps the unacknowledged
+// messages the broker pushes to one consumer, giving the worker fleet fair
+// dispatch; zero leaves it unbounded.
 type Config struct {
 	URL         string
 	QueueName   string
+	Version     string
 	MaxPriority uint8
 	Prefetch    int
 }
@@ -44,10 +53,12 @@ type Message struct {
 // Delivery is a consumed message awaiting acknowledgement. The consumer MUST
 // call Ack once it has durably handled the message, or Nack to drop or requeue
 // it; an unacknowledged delivery is redelivered when its channel closes, so the
-// broker never loses work to a crashed worker.
+// broker never loses work to a crashed worker. Version is the schema version the
+// producer stamped, empty if the message carried none.
 type Delivery struct {
 	Body     []byte
 	Priority uint8
+	Version  string
 
 	acker amqp.Acknowledger
 	tag   uint64
@@ -93,6 +104,7 @@ type Client struct {
 	consumers sync.WaitGroup
 
 	queueName   string
+	version     string
 	maxPriority uint8
 	prefetch    int
 }
@@ -108,6 +120,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.QueueName == "" {
 		return nil, errors.New("queue: queue name is required")
+	}
+	if cfg.Version == "" {
+		return nil, errors.New("queue: version is required")
 	}
 	if cfg.MaxPriority < 1 {
 		return nil, fmt.Errorf("queue: max priority must be in [1, %d], got %d", maxQueuePriority, cfg.MaxPriority)
@@ -138,6 +153,7 @@ func New(cfg Config) (*Client, error) {
 		conn:        conn,
 		pubCh:       ch,
 		queueName:   cfg.QueueName,
+		version:     cfg.Version,
 		maxPriority: cfg.MaxPriority,
 		prefetch:    cfg.Prefetch,
 	}, nil
@@ -164,6 +180,7 @@ func (c *Client) Publish(ctx context.Context, msg Message) error {
 	confirm, err := c.pubCh.PublishWithDeferredConfirmWithContext(ctx, "", c.queueName, false, false, amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		Priority:     msg.Priority,
+		Headers:      amqp.Table{versionHeader: c.version},
 		Body:         msg.Body,
 	})
 	c.pubMu.Unlock()
@@ -238,7 +255,8 @@ func forward(ctx context.Context, ch *amqp.Channel, raw <-chan amqp.Delivery, ou
 			if !ok {
 				return
 			}
-			wrapped := Delivery{Body: d.Body, Priority: d.Priority, acker: d.Acknowledger, tag: d.DeliveryTag}
+			version, _ := d.Headers[versionHeader].(string)
+			wrapped := Delivery{Body: d.Body, Priority: d.Priority, Version: version, acker: d.Acknowledger, tag: d.DeliveryTag}
 			select {
 			case out <- wrapped:
 			case <-ctx.Done():
