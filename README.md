@@ -214,6 +214,7 @@ knobs:
 ```bash
 cd stack/backend  && go test -race ./...
 cd stack/frontend && npm test
+./scripts/secrets_test.sh          # operator secrets tool (stubs AWS + editor)
 ```
 
 ## Infrastructure
@@ -241,6 +242,35 @@ versioned, lifecycle-retained S3 bucket and restored without re-embedding.
   consumes either. It is gated by `enable_db_backup` (default `false`) with the
   cron in `db_backup_schedule`; see
   [`modules/scheduled-task`](stack/terraform/modules/scheduled-task/README.md#scheduled-database-backup).
+
+### Secrets management
+
+Terraform creates the application secret *containers* (the embedding and transcription API keys,
+the broker URL); their values are set out of band. `scripts/secrets.sh` is the operator workflow
+to list, edit, and roll those values in AWS Secrets Manager without a value ever passing through a
+shell argument, a log, or a chat:
+
+```bash
+./scripts/secrets.sh dev      # or: prod
+```
+
+It resolves the environment to its AWS SSO profile (`verovec-dev` / `verovec-prod`, region
+`eu-west-3`) and refreshes an expired session with `aws sso login` automatically. Configure the
+profile once with `aws configure sso` (SSO start URL and account from the AWS access portal). The
+tool then:
+
+1. Lists the secrets under `truth-in-stream/<env>/` and lets you pick one.
+2. Fetches the current value into a `600`-mode temp file and opens it in `$EDITOR` (falling back
+   to VS Code `code --wait`, then `vi`).
+3. Shows a diff and asks for confirmation; **prod additionally requires typing `prod`**.
+4. Pushes the new value with `put-secret-value --secret-string file://…` (so the value is never an
+   argv), making it `AWSCURRENT`.
+5. Labels the outgoing version with a timestamped stage `v-YYYYMMDD-HHMMSS` via
+   `update-secret-version-stage`, so the previous value is retained beyond the single `AWSPREVIOUS`
+   slot and stays recoverable.
+
+ECS task definitions consume these secrets by ARN, which always resolves `AWSCURRENT`, so a roll
+needs no task-definition re-pin. An unchanged edit, or declining the confirmation, pushes nothing.
 
 ## CI
 
