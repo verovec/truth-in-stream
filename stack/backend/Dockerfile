@@ -30,9 +30,12 @@ RUN set -eux; \
 EXPOSE 8080
 CMD ["go", "run", "./cmd/server"]
 
-# Builder: static binary.
+# Builder: static binaries. The HTTP server and the embedding worker ship in the
+# one image; the worker runs as its own ECS service with /embedworker as its
+# entrypoint (see stack/terraform/modules/worker).
 FROM base AS builder
 RUN go build -o /out/server ./cmd/server
+RUN go build -o /out/embedworker ./cmd/embedworker
 
 # Prod: a slim Debian base (not distroless/static) because the pinned yt-dlp
 # binary and ffmpeg both need a glibc userland. Runs as a non-root system user.
@@ -50,6 +53,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --uid 65532 --user-group --no-create-home nonroot
 COPY --from=builder /out/server /server
+COPY --from=builder /out/embedworker /embedworker
 EXPOSE 8080
 USER 65532:65532
 ENTRYPOINT ["/server"]

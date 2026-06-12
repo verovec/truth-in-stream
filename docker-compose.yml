@@ -209,6 +209,48 @@ services:
       timeout: 5s
       retries: 10
 
+  # Embedding worker fleet. Drains prioritized embedding jobs from the broker,
+  # embeds each chunk through Voyage, and writes the vector into the staging
+  # corpus; higher-priority chunks are embedded first. It is the local mirror of
+  # the production worker service and scales horizontally - run several replicas
+  # with `docker compose --profile wiki up --scale embedworker=4`. It lives under
+  # the "wiki" profile because the corpus ingest is what publishes its jobs, so a
+  # plain `up` does not start an idle worker. No container_name, so the service
+  # can scale.
+  embedworker:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/embedworker"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Required for a real embed run; the worker fails fast if unset.
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Must match the ingest/query model everywhere or similarity is meaningless;
+      # empty falls back to the binary default (voyage-4-large, 1024 dims).
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # Per-replica tuning. Concurrency bounds the parallel embeds one replica
+      # runs (the fleet scales by replica count); MAX_ATTEMPTS is the per-job
+      # delivery budget before a persistent failure is dropped with a log; RPM
+      # caps outbound Voyage requests per minute (0 = unpaced) for a constrained
+      # tier. A shell or .env value overrides each default.
+      EMBED_WORKER_CONCURRENCY: "${EMBED_WORKER_CONCURRENCY:-4}"
+      EMBED_WORKER_MAX_ATTEMPTS: "${EMBED_WORKER_MAX_ATTEMPTS:-5}"
+      EMBED_WORKER_RPM: "${EMBED_WORKER_RPM:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
   backend:
     build:
       context: ./stack/backend

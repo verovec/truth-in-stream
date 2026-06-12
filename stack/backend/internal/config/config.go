@@ -763,6 +763,65 @@ func LoadQueue() (Queue, error) {
 	}, nil
 }
 
+// Embedding-worker defaults. A worker embeds one chunk per job, so a 30s HTTP
+// timeout is ample and a concurrency of 4 keeps a single replica well under
+// Voyage's per-key limits while the fleet scales by replica count. A delivery is
+// tried five times before it is dropped with a log, and the embedder retries a
+// transient Voyage 429 or timeout six times within each of those attempts.
+const (
+	defaultEmbedWorkerConcurrency       = 4
+	defaultEmbedWorkerMaxAttempts       = 5
+	defaultEmbedWorkerHTTPTimeout       = 30 * time.Second
+	defaultEmbedWorkerRequestsPerMinute = 0
+	defaultEmbedWorkerEmbedMaxRetries   = 6
+)
+
+// EmbedWorker holds the embedding-worker configuration. Concurrency bounds the
+// jobs one replica embeds in parallel; MaxAttempts is the per-job delivery budget
+// before a persistent failure is dropped with a log; HTTPTimeout bounds each
+// Voyage request; RequestsPerMinute optionally paces outbound requests onto a
+// tier's budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry
+// count for a transient Voyage 429 or network timeout.
+type EmbedWorker struct {
+	Concurrency       int
+	MaxAttempts       int
+	HTTPTimeout       time.Duration
+	RequestsPerMinute int
+	EmbedMaxRetries   int
+}
+
+// LoadEmbedWorker reads the embedding-worker configuration from the environment,
+// applying defaults and failing fast on out-of-range values. It carries no
+// secret: the broker URL and embedding key load from LoadQueue and LoadEmbedding.
+func LoadEmbedWorker() (EmbedWorker, error) {
+	w := EmbedWorker{
+		Concurrency:       defaultEmbedWorkerConcurrency,
+		MaxAttempts:       defaultEmbedWorkerMaxAttempts,
+		HTTPTimeout:       defaultEmbedWorkerHTTPTimeout,
+		RequestsPerMinute: defaultEmbedWorkerRequestsPerMinute,
+		EmbedMaxRetries:   defaultEmbedWorkerEmbedMaxRetries,
+	}
+	var err error
+	if w.Concurrency, err = intEnv("EMBED_WORKER_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
+		return EmbedWorker{}, err
+	}
+	if w.MaxAttempts, err = intEnv("EMBED_WORKER_MAX_ATTEMPTS", w.MaxAttempts, 1, math.MaxInt32); err != nil {
+		return EmbedWorker{}, err
+	}
+	if w.HTTPTimeout, err = positiveDurationEnv("EMBED_WORKER_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
+		return EmbedWorker{}, err
+	}
+	// 0 disables pacing; a positive value caps outbound requests per minute so a
+	// constrained tier is not overrun.
+	if w.RequestsPerMinute, err = intEnv("EMBED_WORKER_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
+		return EmbedWorker{}, err
+	}
+	if w.EmbedMaxRetries, err = intEnv("EMBED_WORKER_EMBED_MAX_RETRIES", w.EmbedMaxRetries, 1, math.MaxInt32); err != nil {
+		return EmbedWorker{}, err
+	}
+	return w, nil
+}
+
 // boolEnv reads a boolean environment variable, applying fallback when unset.
 func boolEnv(key string, fallback bool) (bool, error) {
 	raw := os.Getenv(key)

@@ -250,7 +250,42 @@ module "wiki_sync" {
   log_group_name          = module.ecs.log_group_name
 }
 
-# Network config the deploy workflow needs for `aws ecs run-task`.
+# Embedding-worker fleet. A headless ECS service that drains the broker queue and
+# embeds chunks into the staging corpus; scale embed_worker_desired_count to scale
+# throughput. Outbound-only (broker, RDS, Voyage) on the shared tasks SG. Gated
+# off by default; enable during a corpus ingest that publishes jobs.
+module "embed_worker" {
+  source = "../modules/worker"
+  count  = var.enable_embed_worker ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "embedworker"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/embedworker"]
+
+  cpu           = var.embed_worker_cpu
+  memory        = var.embed_worker_memory
+  desired_count = var.embed_worker_desired_count
+
+  environment_variables = {
+    EMBED_WORKER_CONCURRENCY  = tostring(var.embed_worker_concurrency)
+    EMBED_WORKER_MAX_ATTEMPTS = tostring(var.embed_worker_max_attempts)
+  }
+  secrets = {
+    DATABASE_URL      = module.rds.dsn_secret_arn
+    EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+    RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+  }
+
+  cluster_id              = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+} # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
   type  = "String"
