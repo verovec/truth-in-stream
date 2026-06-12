@@ -30,7 +30,8 @@ variable "command" {
 
 variable "schedule_expression" {
   type        = string
-  description = "EventBridge Scheduler expression, e.g. cron(0 3 ? * SUN *) or rate(7 days)."
+  default     = ""
+  description = "EventBridge Scheduler expression, e.g. cron(0 3 ? * SUN *) or rate(7 days). Empty creates the task definition only (no schedule), for on-demand `aws ecs run-task`."
 }
 
 variable "cpu" {

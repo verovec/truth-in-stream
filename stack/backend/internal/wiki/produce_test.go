@@ -217,6 +217,51 @@ func TestRunBulkEnqueuePublishesOneJobPerChunk(t *testing.T) {
 	})
 }
 
+// TestRunBulkPublishPublishesWithoutDrainOrSwap proves the cloud producer path:
+// it enqueues one self-contained job per un-embedded chunk and returns without
+// waiting for the fleet to drain or finalizing staging - the consumer owns the
+// drain and swap. Two assertions guard that: store.finalized must stay false (a
+// re-introduced FinalizeStaging would flip it), and remaining is pinned at a
+// positive count that never drains (a re-introduced drain wait would loop on it
+// until DrainStallTimeout and return an error, failing the test).
+func TestRunBulkPublishPublishesWithoutDrainOrSwap(t *testing.T) {
+	t.Parallel()
+	store := &fakeProducerStore{staging: producerChunks(3), remaining: []int64{6}}
+	pub := &fakePublisher{}
+
+	stats, err := RunBulkPublish(t.Context(), discardLogger(), store, pub, producerConfig())
+	if err != nil {
+		t.Fatalf("RunBulkPublish: %v", err)
+	}
+	if stats.Published != 6 {
+		t.Errorf("published = %d, want 6 (one per un-embedded chunk)", stats.Published)
+	}
+	if len(pub.published()) != 6 {
+		t.Fatalf("publisher saw %d messages, want 6", len(pub.published()))
+	}
+	// Every job carries its chunk's content, so the worker needs no database to
+	// embed it.
+	for _, j := range decodeJobs(t, pub.published()) {
+		if j.Content == "" {
+			t.Fatalf("published job for %d/%d has empty content; jobs must be self-contained", j.PageID, j.ChunkIndex)
+		}
+	}
+	if store.finalized {
+		t.Error("RunBulkPublish finalized staging; the consumer, not the producer, owns the swap")
+	}
+}
+
+// TestRunBulkPublishValidatesConfig rejects a config the publish path cannot use
+// even though it does not need the drain settings.
+func TestRunBulkPublishValidatesConfig(t *testing.T) {
+	t.Parallel()
+	cfg := producerConfig()
+	cfg.EnqueueBatchSize = 0
+	if _, err := RunBulkPublish(t.Context(), discardLogger(), &fakeProducerStore{}, &fakePublisher{}, cfg); err == nil {
+		t.Fatal("RunBulkPublish with a zero batch size = nil error, want validation error")
+	}
+}
+
 func TestRunBulkEnqueuePrioritizesLeadOverBody(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

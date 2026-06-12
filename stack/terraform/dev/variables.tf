@@ -97,6 +97,24 @@ variable "enable_db_backup" {
   description = "Create the scheduled pg_dump-to-S3 backup task. Keep false until the backup image ships; flipping it is a no-op on running services."
 }
 
+variable "enable_producer" {
+  type        = bool
+  default     = false
+  description = "Create the on-demand embedding-queue producer task. Requires enable_rds (the producer stages and reads corpus chunks from the database). Launch it with `aws ecs run-task` once enabled; keep false until a corpus run is wanted."
+}
+
+variable "producer_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units for the producer task (1024 = 1 vCPU)."
+}
+
+variable "producer_memory" {
+  type        = number
+  default     = 4096
+  description = "Fargate memory in MiB for the producer task; sized for the dump ingest before publishing."
+}
+
 variable "db_backup_schedule" {
   type        = string
   default     = "cron(0 4 * * ? *)"

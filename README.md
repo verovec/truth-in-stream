@@ -335,6 +335,31 @@ new version (new active queue); workers still on the old version drain the old q
 is empty the old version is removed from the list. Delivery stays at-least-once with publisher
 confirms and durable, priority-ordered queues.
 
+#### Producer task (on demand)
+
+A deployable Fargate task fills the queue from the corpus: it runs `wikisync -mode=bulk
+-publish-only`, which ingests the dump, publishes one self-contained, versioned job per chunk
+(each job carries its content, so the worker needs no database), and exits - the consumer fleet
+owns the drain and the live swap. The terraform (`enable_producer`, off by default) creates a
+task definition with no schedule; launch a run on demand with the deploy network config the
+stack publishes to SSM:
+
+```bash
+cd stack/terraform/dev
+SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
+SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
+aws ecs run-task \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --task-definition truth-in-stream-dev-producer \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}"
+```
+
+The run is resumable: re-running publishes only the chunks still un-embedded (keyset cursor over
+the staging table), and publishing is at-least-once with idempotent workers. The producer needs a
+database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
+consumer database - the messages are self-contained.
+
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.

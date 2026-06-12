@@ -343,6 +343,50 @@ module "embed_worker" {
   log_group_name          = module.ecs.log_group_name
 }
 
+# Embedding-queue producer. An on-demand Fargate task (no schedule) that runs the
+# wikisync producer in publish-only mode: it ingests the corpus dump and fills the
+# broker queue with self-contained, versioned embedding jobs, then exits - the
+# consumer fleet owns the drain and the live swap. Launch it with
+# `aws ecs run-task` against the task definition this module outputs. Gated off by
+# default; it needs a database to stage and read chunks (RDS, or a tunnelled local
+# database), so it is bound to enable_rds like the other DB-backed tasks.
+module "producer" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_producer && var.enable_rds ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "producer"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/wikisync"]
+  command     = ["-mode=bulk", "-publish-only"]
+
+  # No schedule: the producer runs on demand, not on a cron - re-ingesting a full
+  # corpus on a timer would be wasteful. An empty expression yields a task
+  # definition only.
+  schedule_expression = ""
+  cpu                 = var.producer_cpu
+  memory              = var.producer_memory
+
+  environment_variables = {
+    WIKI_CORPUS = var.wiki_corpus
+  }
+  # The producer publishes to the broker and reads staged chunks from the
+  # database; it does not embed, so it needs no embedding key.
+  secrets = merge(
+    { RABBITMQ_URL = module.rabbitmq.url_secret_arn },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"

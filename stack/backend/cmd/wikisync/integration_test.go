@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -89,6 +90,97 @@ type wEnqueuer struct{ client *queue.Client }
 
 func (e wEnqueuer) Enqueue(ctx context.Context, body []byte, priority uint8) error {
 	return e.client.Publish(ctx, queue.Message{Body: body, Priority: priority})
+}
+
+// TestBulkPublishFillsQueueWithoutSwapping drives the cloud producer path end to
+// end against a real broker and database: stage chunks, run RunBulkPublish, and
+// assert the broker received one self-contained, version-stamped job per chunk
+// while staging was NOT swapped live - the producer fills the queue and leaves the
+// drain and swap to the consumer. It skips unless both TEST_RABBITMQ_URL and
+// TEST_DATABASE_URL are set; the schema reset drops tables, so use a throwaway
+// database.
+func TestBulkPublishFillsQueueWithoutSwapping(t *testing.T) {
+	broker, dsn := wikisyncIntegrationEnv(t)
+	ctx := t.Context()
+	resetSchema(ctx, t, dsn)
+
+	store, err := postgres.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureCorpus: %v", err)
+	}
+	if err := store.ResetStaging(ctx, "v2"); err != nil {
+		t.Fatalf("ResetStaging: %v", err)
+	}
+	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{
+		stagedChunk(1, "v1", domain.WikiChunkKindLead),
+		stagedChunk(2, "v2", domain.WikiChunkKindBody),
+	}); err != nil {
+		t.Fatalf("UpsertStagingChunks: %v", err)
+	}
+
+	queueName := "test.producer.e2e." + time.Now().Format("20060102150405.000")
+	client, err := queue.New(queue.Config{URL: broker, QueueName: queueName, Version: "1", MaxPriority: 10, Prefetch: 1})
+	if err != nil {
+		t.Fatalf("queue.New: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	stats, err := wiki.RunBulkPublish(ctx, slog.New(slog.DiscardHandler), store, qPublisher{client: client}, wiki.ProducerConfig{
+		Corpus:           "simplewiki",
+		DumpVersion:      "v2",
+		MaxPriority:      10,
+		EnqueueBatchSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("RunBulkPublish: %v", err)
+	}
+	if stats.Published != 2 {
+		t.Errorf("published = %d, want 2", stats.Published)
+	}
+
+	// The two jobs are durably on the broker, each self-contained and stamped with
+	// the active version.
+	deliveries, err := client.Consume(ctx)
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case d := <-deliveries:
+			if d.Version != "1" {
+				t.Errorf("job version = %q, want 1", d.Version)
+			}
+			var job embedjob.Job
+			if err := json.Unmarshal(d.Body, &job); err != nil {
+				t.Fatalf("job is not valid JSON: %v", err)
+			}
+			if job.Content == "" {
+				t.Errorf("job %d/%d has empty content; producer jobs must be self-contained", job.PageID, job.ChunkIndex)
+			}
+			seen[job.Content] = true
+			_ = d.Ack()
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for published jobs; saw %v", seen)
+		}
+	}
+	if !seen["v1"] || !seen["v2"] {
+		t.Errorf("published contents = %v, want both v1 and v2", seen)
+	}
+
+	// Staging was NOT swapped: the corpus is not yet current, so the consumer
+	// still owns the drain and the live swap.
+	plan, err := store.StagingPlan(ctx, "v2")
+	if err != nil {
+		t.Fatalf("StagingPlan: %v", err)
+	}
+	if plan == wiki.PlanAlreadyCurrent {
+		t.Fatal("staging is already current after publish-only; the producer must not swap")
+	}
 }
 
 func resetSchema(ctx context.Context, t *testing.T, dsn string) {
