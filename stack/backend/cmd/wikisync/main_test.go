@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,20 @@ func TestRunRejectsUnknownMode(t *testing.T) {
 	// so this needs no environment.
 	if err := run(logger, "frobnicate", t.TempDir(), false, 0); err == nil {
 		t.Fatal("run accepted an unsupported mode, want error")
+	}
+}
+
+func TestRunAcceptsResetMode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// reset is a recognized mode: it passes mode validation and only fails later
+	// (here, on config load without DATABASE_URL), never with the unsupported-mode
+	// error a typo would trigger.
+	err := run(logger, "reset", t.TempDir(), false, 0)
+	if err == nil {
+		t.Skip("reset succeeded (DATABASE_URL is set in this env); mode-acceptance still holds")
+	}
+	if strings.Contains(err.Error(), "unsupported mode") {
+		t.Errorf("reset rejected as an unsupported mode: %v", err)
 	}
 }
 

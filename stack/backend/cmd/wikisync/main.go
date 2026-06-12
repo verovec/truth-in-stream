@@ -11,7 +11,10 @@
 // EMBEDDING_API_KEY), removes deleted pages, and advances the checkpoint. The
 // corpus comes from WIKI_CORPUS (default simplewiki) and the database from
 // DATABASE_URL. With -dry-run, bulk ingests and reports the embedding cost
-// estimate without enqueuing or swapping anything, so it needs no broker.
+// estimate without enqueuing or swapping anything, so it needs no broker. Reset
+// mode clears the live corpus and its checkpoint so the next bulk run rebuilds it
+// from scratch - the first step of a full reingest after the chunker or metadata
+// has changed, which the dump-version checkpoint alone would not notice.
 package main
 
 import (
@@ -44,7 +47,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest) or delta (incremental catch-up)")
+	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest), delta (incremental catch-up), or reset (clear the corpus and checkpoint for a from-scratch reingest)")
 	dir := flag.String("dir", os.TempDir(), "directory for downloaded dump files")
 	dryRun := flag.Bool("dry-run", false, "ingest and report the embedding cost estimate without embedding or swapping")
 	maxDuration := flag.Duration("max-duration", 0, "stop the run after this much wall-clock time, leaving progress for the next run to resume (0 = run to completion)")
@@ -98,8 +101,8 @@ func classifyStop(workErr, ctxErr error) error {
 }
 
 func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Duration) error {
-	if mode != "bulk" && mode != "delta" {
-		return fmt.Errorf("wikisync: unsupported mode %q (want bulk or delta)", mode)
+	if mode != "bulk" && mode != "delta" && mode != "reset" {
+		return fmt.Errorf("wikisync: unsupported mode %q (want bulk, delta, or reset)", mode)
 	}
 
 	cfg, err := config.Load()
@@ -129,12 +132,31 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Du
 	defer store.Close()
 
 	var workErr error
-	if mode == "delta" {
+	switch mode {
+	case "reset":
+		workErr = runReset(ctx, logger, store)
+	case "delta":
 		workErr = runDelta(ctx, logger, store, wikiCfg, dryRun)
-	} else {
+	default:
 		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun)
 	}
 	return classifyStop(workErr, ctx.Err())
+}
+
+// runReset clears the live corpus and its sync checkpoint so the next bulk run
+// rebuilds it from scratch. It is the first step of a full reingest, kept
+// separate so the rebuild is explicit and so resetting needs neither the broker
+// nor the embedding config. The checkpoint keys on the dump version, not the
+// code, so a code change that alters chunking or metadata is invisible to a plain
+// re-run (it would short-circuit as "already current"); clearing the checkpoint
+// is what forces the rebuild.
+func runReset(ctx context.Context, logger *slog.Logger, store *postgres.Store) error {
+	logger.InfoContext(ctx, "resetting wiki corpus for a full reingest")
+	if err := store.ResetWikiCorpus(ctx); err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "wiki corpus reset; the next bulk run rebuilds it from scratch")
+	return nil
 }
 
 // runBulk downloads the dump, ingests it, then either reports the embedding cost

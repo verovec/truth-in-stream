@@ -103,6 +103,8 @@ managed with one-command reset and reseed targets (root `Makefile`):
 | `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
 | `make wiki-populate` | Bulk-embed the full Wikipedia corpus (paid, foreground, resumable) - see [Wikipedia corpus](#wikipedia-corpus) |
 | `make wiki-update` | Incrementally update the embedded corpus via the MediaWiki API - see [Wikipedia corpus](#wikipedia-corpus) |
+| `make reingest` | Full corpus reingest: reset, bulk-embed, cluster, then verify (paid, unattended) - see [Wikipedia corpus](#wikipedia-corpus) |
+| `make wiki-verify` | Check the live corpus is fully rebuilt; exits non-zero on any defect - see [Wikipedia corpus](#wikipedia-corpus) |
 
 The offline seed loads claims, the Wikipedia subset, and the demo results - but not the curated
 sample-video record, which the backend upserts on startup (`VideoService.EnsureSamples`). A soft
@@ -190,6 +192,38 @@ defaults to `simplewiki`. Set any of them in `.env` to make the choice stick acr
 Pipe to a file or `jq` for a readable trace: `make wiki-populate 2>&1 | tee wiki.log`. If a prior
 run left `wiki_chunks_staging` behind, `make wiki-update` refuses to start until a bulk run
 finishes it - just re-run `make wiki-populate` to resume to the swap.
+
+### Full reingest
+
+After the chunker or the per-chunk metadata changes, a corpus already in the local volume is
+**stale**: its chunk boundaries, metadata, and vectors no longer match the shipped pipeline. A
+plain `make wiki-populate` will not fix it - the sync checkpoint keys on the dump version, not the
+code, so it short-circuits as "already current". `make reingest` rebuilds the corpus from scratch
+under the current code in one command:
+
+```bash
+make reingest 2>&1 | tee reingest.log   # paid, long - run it unattended
+```
+
+It runs four steps in order: **reset** clears `wiki_chunks` and the sync checkpoint (and any
+leftover staging) so the next run is a full rebuild; **bulk** re-ingests from the on-disk dump and
+the worker fleet embeds the corpus, swapping it live once whole (it brings up the broker and one
+worker; scale throughput first with `docker compose --profile wiki up -d --scale embedworker=N`);
+**cluster** scores topic importance; and **verify** checks the result. Runtime is dominated by the
+embed step, so it scales with the worker count and your Voyage tier - run it overnight on
+`simplewiki` and find a ready database in the morning. It reuses the downloaded dump and is
+idempotent: re-running reproduces the same corpus.
+
+`make wiki-verify` runs the verification step on its own. It asserts the live corpus is servable -
+chunks present, every chunk carries a non-null, non-zero, 1024-dimension embedding, the per-chunk
+metadata is populated, and the HNSW index is live - logging each check and **exiting non-zero** the
+moment one fails, so a partial or stale corpus is caught loudly rather than served:
+
+```
+{"msg":"corpus check","check":"all chunks embedded","ok":true,"detail":"0 chunks with a null embedding"}
+{"msg":"corpus check","check":"HNSW index valid","ok":true,"detail":"valid=true"}
+{"msg":"corpus verification passed","chunks":214631,"embedding_type":"halfvec(1024)"}
+```
 
 With a local Go toolchain you can instead run the pipeline directly from `stack/backend`
 (`make wiki-populate` / `make wikisync`, against the Compose Postgres on `localhost:5432`);

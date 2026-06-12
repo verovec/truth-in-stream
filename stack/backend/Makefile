@@ -16,7 +16,7 @@ WIKI_MAX_DURATION ?= 15m
 # Persisted across runs so a resume reuses the downloaded dump dir.
 WIKI_DUMP_DIR     ?= /tmp/wikisync-dump
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync wiki-populate wiki-cluster digest
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -69,6 +69,9 @@ wiki-populate: ## Bulk-ingest+embed the Wikipedia corpus for up to WIKI_MAX_DURA
 
 wiki-cluster: ## Cluster the embedded corpus into topics and score importance, written back so the next ingest embeds the most important content first (idempotent; run after embedding; WIKI_CLUSTER_* tuning, DATABASE_URL)
 	go run ./cmd/wikicluster
+
+wiki-verify: ## Verify the live corpus is fully rebuilt: chunks present, every chunk embedded (non-null, non-zero, 1024-dim), metadata populated, HNSW index live; exits non-zero on any defect (DATABASE_URL)
+	go run ./cmd/wikiverify
 
 digest: ## Post the daily development digest to Slack (needs SLACK_DIGEST_WEBHOOK_URL)
 	go run ./cmd/digest
