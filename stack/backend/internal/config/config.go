@@ -623,6 +623,67 @@ func LoadWikiProducer() (WikiProducer, error) {
 	return w, nil
 }
 
+// Clustering-job defaults. K is the number of topic clusters - 64 gives a useful
+// spread over a simplewiki-sized corpus while keeping each Lloyd iteration
+// (O(n*k*dim)) tractable; raise it for a larger corpus. 20 iterations is well
+// past where spherical k-means converges on embedding data. The seed is fixed so
+// re-running the job over an unchanged corpus reproduces the same clustering (the
+// idempotency the batch step needs); change it only to explore a different
+// initialization. Read pages of 5000 chunks balance round-trips against memory;
+// writes go back 1000 rows per batch.
+const (
+	defaultWikiClusterK          = 64
+	defaultWikiClusterMaxIters   = 20
+	defaultWikiClusterSeed       = 1
+	defaultWikiClusterReadBatch  = 5000
+	defaultWikiClusterWriteBatch = 1000
+)
+
+// WikiCluster holds the offline clustering-job configuration. K is the cluster
+// count and MaxIters the Lloyd iteration cap; Seed makes the k-means++
+// initialization deterministic so re-runs are idempotent; ReadBatch and
+// WriteBatch size the keyset read of embeddings and the batched write-back of
+// cluster ids and importance scores.
+type WikiCluster struct {
+	K          int
+	MaxIters   int
+	Seed       uint64
+	ReadBatch  int
+	WriteBatch int
+}
+
+// LoadWikiCluster reads the clustering-job configuration from the environment,
+// applying defaults and failing fast on out-of-range values. It carries no
+// secret: the job reads embeddings from the database and writes scores back.
+func LoadWikiCluster() (WikiCluster, error) {
+	w := WikiCluster{
+		K:          defaultWikiClusterK,
+		MaxIters:   defaultWikiClusterMaxIters,
+		Seed:       defaultWikiClusterSeed,
+		ReadBatch:  defaultWikiClusterReadBatch,
+		WriteBatch: defaultWikiClusterWriteBatch,
+	}
+	var err error
+	if w.K, err = intEnv("WIKI_CLUSTER_K", w.K, 1, math.MaxInt32); err != nil {
+		return WikiCluster{}, err
+	}
+	if w.MaxIters, err = intEnv("WIKI_CLUSTER_MAX_ITERS", w.MaxIters, 1, math.MaxInt32); err != nil {
+		return WikiCluster{}, err
+	}
+	seed, err := intEnv("WIKI_CLUSTER_SEED", defaultWikiClusterSeed, 0, math.MaxInt32)
+	if err != nil {
+		return WikiCluster{}, err
+	}
+	w.Seed = uint64(seed)
+	if w.ReadBatch, err = intEnv("WIKI_CLUSTER_READ_BATCH", w.ReadBatch, 1, math.MaxInt32); err != nil {
+		return WikiCluster{}, err
+	}
+	if w.WriteBatch, err = intEnv("WIKI_CLUSTER_WRITE_BATCH", w.WriteBatch, 1, math.MaxInt32); err != nil {
+		return WikiCluster{}, err
+	}
+	return w, nil
+}
+
 // Storage presign defaults: a 15-minute upload window is long enough for a
 // browser PUT of a large video yet short enough to limit a leaked URL, and a
 // 1-hour playback window covers a viewing session without constant re-signing.

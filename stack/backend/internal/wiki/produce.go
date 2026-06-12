@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -76,13 +77,39 @@ type EnqueueStats struct {
 	Published int
 }
 
-// priorityForKind maps a chunk's VER-49 metadata to a queue priority band. Lead
-// sections are an article's summary - its highest-value evidence - so they embed
-// first; body prose embeds after at half the ceiling; an unknown kind floors to
-// zero. The result is bounded by the queue's configured MaxPriority and is
-// deterministic. Ingestion stores only lead chunks today, so every job currently
-// lands in the top band; the mapping is in place for body extraction, and real
-// importance-driven priority (topic clustering) is a later card.
+// priorityFor maps a staging chunk to a queue priority. When the offline
+// clustering job has scored the chunk - its importance carried forward from the
+// live corpus by the staging read - that semantic score drives priority, so the
+// most important content embeds first. Absent a score (a new chunk, or a corpus
+// not yet clustered) it falls back to the kind heuristic. Both paths are bounded
+// by the queue's configured MaxPriority.
+func priorityFor(c domain.WikiChunk, maxPriority uint8) uint8 {
+	if c.Importance != nil {
+		return priorityFromImportance(*c.Importance, maxPriority)
+	}
+	return priorityForKind(c.Kind, maxPriority)
+}
+
+// priorityFromImportance maps a [0,1] importance onto the queue's priority band,
+// rounding to the nearest level and clamping to [0, maxPriority] in case a stored
+// score drifted just outside the unit interval.
+func priorityFromImportance(importance float64, maxPriority uint8) uint8 {
+	scaled := math.Round(importance * float64(maxPriority))
+	switch {
+	case scaled < 0:
+		return 0
+	case scaled > float64(maxPriority):
+		return maxPriority
+	default:
+		return uint8(scaled)
+	}
+}
+
+// priorityForKind maps a chunk's VER-49 metadata to a queue priority band when no
+// importance score is present. Lead sections are an article's summary - its
+// highest-value evidence - so they embed first; body prose embeds after at half
+// the ceiling; an unknown kind floors to zero. The result is bounded by the
+// queue's configured MaxPriority and is deterministic.
 func priorityForKind(kind domain.WikiChunkKind, maxPriority uint8) uint8 {
 	switch kind {
 	case domain.WikiChunkKindLead:
@@ -192,7 +219,7 @@ func publishJobs(ctx context.Context, logger *slog.Logger, store ProducerStore, 
 				if err != nil {
 					return fmt.Errorf("wiki: encode embedding job for page %d chunk %d: %w", c.PageID, c.ChunkIndex, err)
 				}
-				if err := pub.Publish(gctx, body, priorityForKind(c.Kind, cfg.MaxPriority)); err != nil {
+				if err := pub.Publish(gctx, body, priorityFor(c, cfg.MaxPriority)); err != nil {
 					return fmt.Errorf("wiki: publish embedding job for page %d chunk %d: %w", c.PageID, c.ChunkIndex, err)
 				}
 				published.Add(1)

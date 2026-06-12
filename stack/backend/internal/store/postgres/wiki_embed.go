@@ -230,20 +230,29 @@ func (s *Store) CountUnembeddedStaging(ctx context.Context) (int64, error) {
 
 // UnembeddedStaging returns up to limit staging chunks still lacking an
 // embedding, ordered after cur in keyset order and carrying the VER-49 metadata
-// (section, kind) the producer maps to a job priority. The WHERE embedding IS
-// NULL filter is the resume cursor: a re-run pages from the start and the fleet
-// has already filled the embedded prefix, so only the still-pending chunks come
-// back.
+// (section, kind) the producer maps to a job priority. It LEFT JOINs the live
+// table to carry forward each chunk's prior importance (the offline clustering
+// job writes importance onto live wiki_chunks after a corpus is embedded), so
+// the producer prioritizes a re-ingest by the last run's clustering and falls
+// back to the kind heuristic for a new chunk with no prior importance. The join
+// matches on content as well as identity - exactly as CarryForwardEmbeddings
+// does - so a chunk whose text changed does not inherit the stale importance of
+// the old text; it falls back to the heuristic until the next clustering run
+// rescores it. The WHERE embedding IS NULL filter is the resume cursor: a re-run
+// pages from the start and the fleet has already filled the embedded prefix, so
+// only the still-pending chunks come back.
 func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded staging: limit %d out of range", limit)
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
-		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind
-		FROM %s
-		WHERE embedding IS NULL
-		  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
-		ORDER BY page_id, chunk_index
+		SELECT s.page_id, s.chunk_index, s.title, s.url, s.revision_id, s.corpus, s.content, s.section, s.kind, l.importance
+		FROM %s s
+		LEFT JOIN wiki_chunks l
+		  ON l.page_id = s.page_id AND l.chunk_index = s.chunk_index AND l.content = s.content
+		WHERE s.embedding IS NULL
+		  AND (s.page_id, s.chunk_index) > ($1::bigint, $2::integer)
+		ORDER BY s.page_id, s.chunk_index
 		LIMIT $3`, wikiStagingTable), cur.PageID, cur.ChunkIndex, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: unembedded staging: %w", err)
@@ -252,15 +261,17 @@ func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, li
 	out := []domain.WikiChunk{}
 	for rows.Next() {
 		var (
-			c    domain.WikiChunk
-			idx  int32
-			kind string
+			c          domain.WikiChunk
+			idx        int32
+			kind       string
+			importance *float64
 		)
-		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind); err != nil {
+		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind, &importance); err != nil {
 			return nil, fmt.Errorf("postgres: scan staging chunk: %w", err)
 		}
 		c.ChunkIndex = int(idx)
 		c.Kind = domain.WikiChunkKind(kind)
+		c.Importance = importance
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

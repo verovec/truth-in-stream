@@ -34,7 +34,11 @@ func (k WikiChunkKind) Valid() bool {
 // has none) and Kind is its coarse classification; together they let
 // downstream retrieval and confidence scoring reason about what a chunk is.
 // Embedding is nil at ingest and filled by the bulk-embedding pipeline, which
-// reads the stored Content, embeds it, and loads the completed chunk.
+// reads the stored Content, embeds it, and loads the completed chunk. ClusterID
+// and Importance are nil until the offline clustering job has run over the
+// embedded corpus: ClusterID is the chunk's topic cluster and Importance is a
+// [0,1] score the producer maps onto embedding-job priority (absent it falls
+// back to the kind heuristic).
 type WikiChunk struct {
 	PageID     int64
 	ChunkIndex int
@@ -46,6 +50,8 @@ type WikiChunk struct {
 	Section    string
 	Kind       WikiChunkKind
 	Embedding  []float32
+	ClusterID  *int32
+	Importance *float64
 }
 
 // WikiEvidence is a retrieval hit from the Wikipedia corpus: a chunk's article

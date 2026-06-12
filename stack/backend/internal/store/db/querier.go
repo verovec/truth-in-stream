@@ -31,6 +31,10 @@ type Querier interface {
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
 	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
+	// The clustering job reads the embedded live corpus in keyset order to group it
+	// into topic clusters and score importance. The embedding IS NOT NULL filter
+	// scopes the scan to the chunks that actually carry a vector to cluster.
+	EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
@@ -58,6 +62,10 @@ type Querier interface {
 	// prior error, and flip the record to ready.
 	SetVideoReady(ctx context.Context, arg SetVideoReadyParams) (Video, error)
 	SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) (Video, error)
+	// The clustering job writes each chunk's cluster id and importance back into the
+	// live table. The casts pin the params to plain integer/double so a non-null
+	// write is a value, not a nullable pointer.
+	SetWikiChunkClustering(ctx context.Context, arg []SetWikiChunkClusteringParams) *SetWikiChunkClusteringBatchResults
 	// Delta sync writes embeddings straight into the live table: at delta volume the
 	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
 	SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults

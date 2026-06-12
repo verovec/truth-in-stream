@@ -877,6 +877,53 @@ func TestLoadWikiProducer(t *testing.T) {
 	}
 }
 
+func TestLoadWikiCluster(t *testing.T) {
+	defaults := WikiCluster{K: 64, MaxIters: 20, Seed: 1, ReadBatch: 5000, WriteBatch: 1000}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    WikiCluster
+		wantErr bool
+	}{
+		{name: "defaults applied", env: map[string]string{}, want: defaults},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				"WIKI_CLUSTER_K":           "128",
+				"WIKI_CLUSTER_MAX_ITERS":   "10",
+				"WIKI_CLUSTER_SEED":        "99",
+				"WIKI_CLUSTER_READ_BATCH":  "2000",
+				"WIKI_CLUSTER_WRITE_BATCH": "500",
+			},
+			want: WikiCluster{K: 128, MaxIters: 10, Seed: 99, ReadBatch: 2000, WriteBatch: 500},
+		},
+		{name: "zero K rejected", env: map[string]string{"WIKI_CLUSTER_K": "0"}, wantErr: true},
+		{name: "zero iterations rejected", env: map[string]string{"WIKI_CLUSTER_MAX_ITERS": "0"}, wantErr: true},
+		{name: "non-numeric seed rejected", env: map[string]string{"WIKI_CLUSTER_SEED": "abc"}, wantErr: true},
+		{name: "zero read batch rejected", env: map[string]string{"WIKI_CLUSTER_READ_BATCH": "0"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadWikiCluster()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEmbedWorker(t *testing.T) {
 	defaults := EmbedWorker{Concurrency: 4, MaxAttempts: 5, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
 	tests := []struct {

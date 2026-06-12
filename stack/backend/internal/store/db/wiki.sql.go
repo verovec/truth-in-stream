@@ -79,6 +79,50 @@ func (q *Queries) DeleteWikiPagesByTitle(ctx context.Context, titles []string) e
 	return err
 }
 
+const embeddedWikiChunks = `-- name: EmbeddedWikiChunks :many
+SELECT page_id, chunk_index, embedding
+FROM wiki_chunks
+WHERE embedding IS NOT NULL
+  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
+ORDER BY page_id, chunk_index
+LIMIT $3
+`
+
+type EmbeddedWikiChunksParams struct {
+	AfterPageID     int64
+	AfterChunkIndex int32
+	RowLimit        int32
+}
+
+type EmbeddedWikiChunksRow struct {
+	PageID     int64
+	ChunkIndex int32
+	Embedding  *pgvector.HalfVector
+}
+
+// The clustering job reads the embedded live corpus in keyset order to group it
+// into topic clusters and score importance. The embedding IS NOT NULL filter
+// scopes the scan to the chunks that actually carry a vector to cluster.
+func (q *Queries) EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error) {
+	rows, err := q.db.Query(ctx, embeddedWikiChunks, arg.AfterPageID, arg.AfterChunkIndex, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EmbeddedWikiChunksRow{}
+	for rows.Next() {
+		var i EmbeddedWikiChunksRow
+		if err := rows.Scan(&i.PageID, &i.ChunkIndex, &i.Embedding); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getOtherWikiCorpus = `-- name: GetOtherWikiCorpus :one
 SELECT corpus FROM wiki_sync_state WHERE corpus <> $1 LIMIT 1
 `
