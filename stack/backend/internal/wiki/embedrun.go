@@ -46,23 +46,14 @@ type Estimate struct {
 	CostUSD float64
 }
 
-// EmbedStats summarizes a completed bulk-embedding run.
-type EmbedStats struct {
-	Embedded int
-}
-
-// Config tunes the bulk-embedding run. BatchSize is the number of chunks per
-// Voyage request (bounded by the API's per-request limits); Concurrency is how
-// many requests run at once, capping load against the rate limit.
-// MaintenanceWorkMem and MaxParallelWorkers tune the post-load HNSW index
-// build; the pipeline forwards them to the store without interpreting them.
+// Config bounds an embedding pass over a set of chunks: BatchSize is the number
+// of chunks per Voyage request (under the API's per-request limit) and
+// Concurrency is how many requests run at once, capping load against the rate
+// limit. The delta sync embeds its changed chunks in place with it; the bulk
+// path fans embedding out to the worker fleet, so it no longer embeds inline.
 type Config struct {
-	Corpus             string
-	DumpVersion        string
-	BatchSize          int
-	Concurrency        int
-	MaintenanceWorkMem string
-	MaxParallelWorkers int
+	BatchSize   int
+	Concurrency int
 }
 
 // Embedder embeds documents for storage (input_type=document). The bulk
@@ -81,23 +72,6 @@ type EmbedSource interface {
 	StagingRemaining(ctx context.Context) (domain.WikiRemaining, error)
 }
 
-// BulkStore is the full store surface a bulk run drives: the embed loop reads
-// the pending staging chunks and writes their embeddings in place, then
-// finalize indexes the staging table and swaps it atomically into wiki_chunks,
-// checkpointing the corpus at the dump version.
-type BulkStore interface {
-	EmbedSource
-	// UnembeddedStaging returns up to limit staging chunks lacking an embedding,
-	// in keyset order. The next run reads whatever an interrupted one left.
-	UnembeddedStaging(ctx context.Context, limit int) ([]domain.WikiChunk, error)
-	// UpdateStagingEmbeddings writes embeddings onto existing staging rows.
-	UpdateStagingEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error
-	// FinalizeStaging indexes staging and swaps it into wiki_chunks, checkpointing
-	// the corpus at version with lastChangeTS. The build settings tune the HNSW
-	// index build session.
-	FinalizeStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error
-}
-
 // EstimateBulkEmbed projects the cost of embedding the staging chunks still
 // pending, without calling the embedding API. On a freshly built staging this is
 // the whole corpus; on a resumed one it is only what is left to embed.
@@ -113,63 +87,6 @@ func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
 		Tokens:  tokens,
 		CostUSD: float64(tokens) / 1e6 * pricePerMTokenUSD,
 	}, nil
-}
-
-// RunBulkEmbed embeds every staging chunk still lacking an embedding and swaps
-// the result into place. It embeds in keyset order and writes each batch back
-// onto staging before reading the next, so a crash leaves the embedded rows
-// committed and the next run resumes past them; only once nothing remains does
-// it index and swap atomically. It logs the pending total at the start, one line
-// per embedded HTTP batch, and the finalize step, so a long or stalled run is
-// observable; a nil logger falls back to slog.Default.
-func RunBulkEmbed(ctx context.Context, logger *slog.Logger, store BulkStore, embedder Embedder, cfg Config) (EmbedStats, error) {
-	if cfg.BatchSize < 1 || cfg.Concurrency < 1 {
-		return EmbedStats{}, fmt.Errorf("wiki: bulk embed needs positive batch size and concurrency, got %d and %d", cfg.BatchSize, cfg.Concurrency)
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	rem, err := store.StagingRemaining(ctx)
-	if err != nil {
-		return EmbedStats{}, fmt.Errorf("wiki: staging remaining: %w", err)
-	}
-	logger.InfoContext(ctx, "starting bulk embed",
-		slog.String("corpus", cfg.Corpus),
-		slog.Int64("pending_chunks", rem.Chunks))
-
-	var (
-		stats      EmbedStats
-		embedded64 atomic.Int64
-	)
-	superBatch := cfg.BatchSize * cfg.Concurrency
-	for {
-		chunks, err := store.UnembeddedStaging(ctx, superBatch)
-		if err != nil {
-			return EmbedStats{}, fmt.Errorf("wiki: read pending staging chunks: %w", err)
-		}
-		if len(chunks) == 0 {
-			break
-		}
-		embedded, err := embedChunks(ctx, logger, embedder, chunks, cfg, &embedded64, rem.Chunks)
-		if err != nil {
-			return EmbedStats{}, err
-		}
-		if err := store.UpdateStagingEmbeddings(ctx, embedded); err != nil {
-			return EmbedStats{}, fmt.Errorf("wiki: write staging embeddings: %w", err)
-		}
-		stats.Embedded += len(embedded)
-	}
-
-	logger.InfoContext(ctx, "all pending chunks embedded; building index and swapping staging into wiki_chunks",
-		slog.String("corpus", cfg.Corpus),
-		slog.Int("embedded_this_run", stats.Embedded))
-	if err := store.FinalizeStaging(ctx, cfg.Corpus, cfg.DumpVersion, parseDumpTime(cfg.DumpVersion), cfg.MaintenanceWorkMem, cfg.MaxParallelWorkers); err != nil {
-		return EmbedStats{}, fmt.Errorf("wiki: finalize staging: %w", err)
-	}
-	logger.InfoContext(ctx, "bulk embed finalized; wiki_chunks now serves the embedded corpus",
-		slog.String("corpus", cfg.Corpus))
-	return stats, nil
 }
 
 // embedChunks embeds a super-batch by splitting it into BatchSize requests run

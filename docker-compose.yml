@@ -90,17 +90,23 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # Opt-in (profile "wiki"), not part of `docker compose up`: bulk-ingests and
-  # embeds the full Wikipedia corpus into pgvector. Unlike `seed` (a committed
-  # subset, no key), this calls the paid Voyage embedding API and is long, so it
-  # runs only on demand and the backend never waits for it:
+  # Opt-in (profile "wiki"), not part of `docker compose up`: bulk-ingests the
+  # full Wikipedia corpus into pgvector and publishes one prioritized embedding
+  # job per chunk to the broker. The worker fleet (embedworker) drains the queue
+  # and calls the paid Voyage API; the corpus only goes live (atomic swap) once
+  # the fleet has embedded every chunk. This is the producer half of the pipeline,
+  # so it needs the broker and at least one worker running - start them, then run
+  # the producer:
+  #   docker compose --profile wiki up -d --scale embedworker=4 rabbitmq embedworker
   #   docker compose --profile wiki run --rm wiki-populate
-  # Each run goes to completion by default (WIKI_MAX_DURATION=0); set it to box a
-  # session, e.g. 15m, and the run stops cleanly at the budget with its embedded
-  # prefix committed so re-running resumes. The corpus only goes live (atomic
-  # swap) once a run finishes the whole embed. The downloaded dump lives in a
-  # named volume and is reused across runs (conditional refresh). Override
-  # WIKI_MAX_DURATION and WIKI_CORPUS (default simplewiki) via .env or the shell.
+  # Embedding throughput scales with the worker replica count, not with this
+  # process - that is what makes a large corpus (e.g. enwiki) feasible: raise
+  # --scale embedworker, do not tune a single embed loop. Each run goes to
+  # completion by default (WIKI_MAX_DURATION=0); set it to box a session, e.g.
+  # 15m, and the run stops cleanly with its embedded prefix committed so a re-run
+  # re-enqueues only the still-unembedded chunks. The downloaded dump lives in a
+  # named volume and is reused across runs. Override WIKI_MAX_DURATION and
+  # WIKI_CORPUS (default simplewiki) via .env or the shell.
   wiki-populate:
     profiles: ["wiki"]
     build:
@@ -118,27 +124,32 @@ services:
       - "-dir=/wiki-dump"
     environment:
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
-      # Required for the real embed run; the program fails fast if unset.
+      # Bulk (the default) publishes jobs to the broker and the worker fleet does
+      # the embedding, so it needs no Voyage key. Delta (`make wiki-update`) reuses
+      # this service with -mode=delta and still embeds inline, so it needs the
+      # Voyage key, model, and embed tuning below; bulk ignores them.
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       # Embedding model for ingest and query - must be the SAME everywhere or
       # similarity is meaningless. Empty falls back to the binary default
-      # (voyage-4-large: 1024 dims, and its batch endpoint works where base
-      # voyage-4's currently hangs). Override only with another 1024-dim Voyage
-      # model, and note the committed seed cache is keyed under the default - a
-      # different model needs `make refresh-embeddings` to rebuild it.
+      # (voyage-4-large, 1024 dims). A different 1024-dim model needs
+      # `make refresh-embeddings` to rebuild the committed seed cache.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
-      # Embed tuning for a slow or rate-limited Voyage tier. The defaults here are
-      # gentle - small batches, low concurrency, a generous per-request timeout -
-      # so a constrained tier completes without timing out; raise the batch and
-      # concurrency on a higher tier for speed. Set any of these in the root .env
-      # or per run (e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate); a shell or
-      # .env value overrides the default. The per-batch "embed_duration" log shows
-      # real request latency; when it nears the timeout, lower the batch and/or
-      # concurrency or raise the timeout. WIKI_EMBED_RPM caps outbound requests
-      # per minute (0 = unpaced) so a constrained tier is not overrun - set it to
-      # your tier's RPM. The free Voyage tier (3 RPM / 10k TPM) cannot embed a
-      # full corpus in any reasonable time; a paid tier is required.
+      # Producer (bulk) tuning (optional; empty uses the binary defaults).
+      # WIKI_ENQUEUE_BATCH_SIZE is the staging page size while publishing.
+      # WIKI_DRAIN_POLL_INTERVAL/WIKI_DRAIN_STALL_TIMEOUT bound the wait for the
+      # fleet to finish: the run aborts if the remaining count stalls for the
+      # timeout, so a dead or absent fleet cannot hang the producer. Raise the
+      # stall timeout for a slow or rate-limited Voyage tier.
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+      WIKI_DRAIN_POLL_INTERVAL: "${WIKI_DRAIN_POLL_INTERVAL:-}"
+      WIKI_DRAIN_STALL_TIMEOUT: "${WIKI_DRAIN_STALL_TIMEOUT:-}"
+      # Inline-embed tuning for the delta path (`make wiki-update`); bulk ignores
+      # these. A constrained Voyage tier completes with gentle defaults; raise the
+      # batch and concurrency on a higher tier. WIKI_EMBED_RPM caps outbound
+      # requests per minute (0 = unpaced). The free tier cannot embed a full
+      # corpus in any reasonable time; a paid tier is required.
       WIKI_EMBED_HTTP_TIMEOUT: "${WIKI_EMBED_HTTP_TIMEOUT:-300s}"
       WIKI_EMBED_BATCH_SIZE: "${WIKI_EMBED_BATCH_SIZE:-32}"
       WIKI_EMBED_CONCURRENCY: "${WIKI_EMBED_CONCURRENCY:-2}"
@@ -152,6 +163,12 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      # Bring up at least one worker so a bare `make wiki-populate` drains; scale
+      # the fleet with `up --scale embedworker=N` beforehand for more throughput.
+      embedworker:
+        condition: service_started
 
   # Object storage for uploaded video. Local mirror of the production S3 bucket;
   # the backend talks to both through one storage abstraction selected by config

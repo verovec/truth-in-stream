@@ -1,15 +1,17 @@
 // Command wikisync builds and maintains the Wikipedia corpus in the
 // verification store. Bulk mode downloads the corpus's multistream dump,
 // extracts and chunks each article's lead section, upserts the chunks, then
-// embeds every chunk and swaps the embedded corpus into place; re-running it is
-// idempotent and an interrupted embed run resumes. Delta mode asks the
-// MediaWiki RecentChanges API what changed since the stored checkpoint,
-// refetches and re-embeds only those articles in place, removes deleted pages,
-// and advances the checkpoint. The corpus comes from WIKI_CORPUS (default
-// simplewiki), the database from DATABASE_URL, and embeddings from the Voyage
-// API (EMBEDDING_API_KEY). With -dry-run, bulk ingests and reports the
-// embedding cost estimate without calling the embedding API or swapping
-// anything.
+// publishes one prioritized embedding job per chunk to the RabbitMQ queue
+// (RABBITMQ_URL) and waits for the worker fleet to embed them before swapping the
+// embedded corpus into place; re-running it is idempotent and an interrupted run
+// re-enqueues only the still-unembedded chunks. Embedding throughput scales with
+// the worker replica count, not with this process. Delta mode asks the MediaWiki
+// RecentChanges API what changed since the stored checkpoint, refetches and
+// re-embeds only those articles in place (still inline, via the Voyage API and
+// EMBEDDING_API_KEY), removes deleted pages, and advances the checkpoint. The
+// corpus comes from WIKI_CORPUS (default simplewiki) and the database from
+// DATABASE_URL. With -dry-run, bulk ingests and reports the embedding cost
+// estimate without enqueuing or swapping anything, so it needs no broker.
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
@@ -135,17 +138,28 @@ func run(logger *slog.Logger, mode, dir string, dryRun bool, maxDuration time.Du
 }
 
 // runBulk downloads the dump, ingests it, then either reports the embedding cost
-// (dry-run) or embeds the corpus and swaps it into place.
+// (dry-run) or publishes one embedding job per chunk and swaps once the worker
+// fleet has drained the queue.
 func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun bool) error {
+	// LoadWikiEmbed supplies the post-drain HNSW index-build settings the finalize
+	// step forwards to the store.
 	embedCfg, err := config.LoadWikiEmbed()
 	if err != nil {
 		return err
 	}
-	// The embedding provider key is only needed for a real embed run; a dry-run
-	// estimates locally and must work without it.
-	var embProvider config.Embedding
+	// A real run fans embedding out to the worker fleet over the broker, so load
+	// and validate the broker and producer settings up front - a misconfiguration
+	// fails before the ingest, not after it. A dry-run only estimates locally and
+	// needs neither.
+	var (
+		queueCfg    config.Queue
+		producerCfg config.WikiProducer
+	)
 	if !dryRun {
-		if embProvider, err = config.LoadEmbedding(); err != nil {
+		if queueCfg, err = config.LoadQueue(); err != nil {
+			return err
+		}
+		if producerCfg, err = config.LoadWikiProducer(); err != nil {
 			return err
 		}
 	}
@@ -186,7 +200,7 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 			slog.Int("chunks", ingestStats.Chunks),
 			slog.Int64("embeddings_carried", ingestStats.Carried))
 	} else {
-		logger.InfoContext(ctx, "resuming embed of staged corpus",
+		logger.InfoContext(ctx, "resuming enqueue of staged corpus",
 			slog.String("corpus", wikiCfg.Corpus), slog.String("version", files.Version))
 	}
 
@@ -204,20 +218,33 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		return nil
 	}
 
-	embedStats, err := wiki.RunBulkEmbed(ctx, logger, store, newEmbedder(logger, embProvider, embedCfg), wiki.Config{
+	client, err := queue.New(queue.Config{
+		URL:         queueCfg.URL,
+		QueueName:   queueCfg.Name,
+		MaxPriority: queueCfg.MaxPriority,
+		Prefetch:    queueCfg.Prefetch,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	stats, err := wiki.RunBulkEnqueue(ctx, logger, store, qPublisher{client: client}, wiki.ProducerConfig{
 		Corpus:             wikiCfg.Corpus,
 		DumpVersion:        files.Version,
-		BatchSize:          embedCfg.BatchSize,
-		Concurrency:        embedCfg.Concurrency,
+		MaxPriority:        queueCfg.MaxPriority,
+		EnqueueBatchSize:   producerCfg.EnqueueBatchSize,
+		DrainPollInterval:  producerCfg.DrainPollInterval,
+		DrainStallTimeout:  producerCfg.DrainStallTimeout,
 		MaintenanceWorkMem: embedCfg.MaintenanceWorkMem,
 		MaxParallelWorkers: embedCfg.MaxParallelWorkers,
 	})
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "bulk embed complete",
+	logger.InfoContext(ctx, "bulk enqueue complete",
 		slog.String("corpus", wikiCfg.Corpus),
-		slog.Int("embedded_chunks", embedStats.Embedded))
+		slog.Int("published_chunks", stats.Published))
 	return nil
 }
 

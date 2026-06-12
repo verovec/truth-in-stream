@@ -831,6 +831,52 @@ func TestLoadQueue(t *testing.T) {
 	}
 }
 
+func TestLoadWikiProducer(t *testing.T) {
+	defaults := WikiProducer{EnqueueBatchSize: 1000, DrainPollInterval: 5 * time.Second, DrainStallTimeout: 30 * time.Minute}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    WikiProducer
+		wantErr bool
+	}{
+		{name: "defaults applied", env: map[string]string{}, want: defaults},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				"WIKI_ENQUEUE_BATCH_SIZE":  "250",
+				"WIKI_DRAIN_POLL_INTERVAL": "2s",
+				"WIKI_DRAIN_STALL_TIMEOUT": "10m",
+			},
+			want: WikiProducer{EnqueueBatchSize: 250, DrainPollInterval: 2 * time.Second, DrainStallTimeout: 10 * time.Minute},
+		},
+		{name: "zero batch size rejected", env: map[string]string{"WIKI_ENQUEUE_BATCH_SIZE": "0"}, wantErr: true},
+		{name: "non-numeric batch size rejected", env: map[string]string{"WIKI_ENQUEUE_BATCH_SIZE": "lots"}, wantErr: true},
+		{name: "zero poll interval rejected", env: map[string]string{"WIKI_DRAIN_POLL_INTERVAL": "0s"}, wantErr: true},
+		{name: "bad stall timeout rejected", env: map[string]string{"WIKI_DRAIN_STALL_TIMEOUT": "soon"}, wantErr: true},
+		{name: "stall timeout below poll interval rejected", env: map[string]string{"WIKI_DRAIN_POLL_INTERVAL": "30s", "WIKI_DRAIN_STALL_TIMEOUT": "10s"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadWikiProducer()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEmbedWorker(t *testing.T) {
 	defaults := EmbedWorker{Concurrency: 4, MaxAttempts: 5, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
 	tests := []struct {

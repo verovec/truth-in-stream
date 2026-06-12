@@ -574,6 +574,55 @@ func LoadWikiEmbed() (WikiEmbed, error) {
 	return w, nil
 }
 
+// Bulk-enqueue producer defaults. A 1000-row keyset page keeps each staging
+// scan cheap while publishing a large corpus. The fleet's progress is polled
+// every 5s - frequent enough to be observable, light on the database - and a run
+// aborts if the remaining count stands still for 30m: long enough to ride out a
+// slow or rate-limited Voyage tier, yet bounded so a dead fleet cannot hang the
+// producer forever.
+const (
+	defaultWikiEnqueueBatchSize  = 1000
+	defaultWikiDrainPollInterval = 5 * time.Second
+	defaultWikiDrainStallTimeout = 30 * time.Minute
+)
+
+// WikiProducer holds the bulk-enqueue producer configuration. EnqueueBatchSize
+// is how many staging rows are read per keyset scan while publishing embedding
+// jobs; DrainPollInterval is how often the producer polls the remaining count
+// while the worker fleet embeds; DrainStallTimeout is how long that count may
+// stand still before the run aborts as a stalled fleet (it must be at least the
+// poll interval).
+type WikiProducer struct {
+	EnqueueBatchSize  int
+	DrainPollInterval time.Duration
+	DrainStallTimeout time.Duration
+}
+
+// LoadWikiProducer reads the bulk-enqueue producer configuration from the
+// environment, applying defaults and failing fast on values that would loop or
+// hang. It carries no secret: the broker URL loads from LoadQueue.
+func LoadWikiProducer() (WikiProducer, error) {
+	w := WikiProducer{
+		EnqueueBatchSize:  defaultWikiEnqueueBatchSize,
+		DrainPollInterval: defaultWikiDrainPollInterval,
+		DrainStallTimeout: defaultWikiDrainStallTimeout,
+	}
+	var err error
+	if w.EnqueueBatchSize, err = intEnv("WIKI_ENQUEUE_BATCH_SIZE", w.EnqueueBatchSize, 1, math.MaxInt32); err != nil {
+		return WikiProducer{}, err
+	}
+	if w.DrainPollInterval, err = positiveDurationEnv("WIKI_DRAIN_POLL_INTERVAL", w.DrainPollInterval); err != nil {
+		return WikiProducer{}, err
+	}
+	if w.DrainStallTimeout, err = positiveDurationEnv("WIKI_DRAIN_STALL_TIMEOUT", w.DrainStallTimeout); err != nil {
+		return WikiProducer{}, err
+	}
+	if w.DrainStallTimeout < w.DrainPollInterval {
+		return WikiProducer{}, fmt.Errorf("config: WIKI_DRAIN_STALL_TIMEOUT %s must be at least WIKI_DRAIN_POLL_INTERVAL %s", w.DrainStallTimeout, w.DrainPollInterval)
+	}
+	return w, nil
+}
+
 // Storage presign defaults: a 15-minute upload window is long enough for a
 // browser PUT of a large video yet short enough to limit a leaked URL, and a
 // 1-hour playback window covers a viewing session without constant re-signing.
