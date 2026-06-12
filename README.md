@@ -214,7 +214,8 @@ knobs:
 ```bash
 cd stack/backend  && go test -race ./...
 cd stack/frontend && npm test
-./scripts/secrets_test.sh          # operator secrets tool (stubs AWS + editor)
+./scripts/secrets_test.sh           # operator secrets tool (stubs AWS + editor)
+./scripts/iam-apply-guard.test.sh   # pre-apply IAM guard (stubs the aws CLI)
 ```
 
 ## Infrastructure
@@ -231,6 +232,11 @@ cd stack/terraform/dev && terraform init && terraform plan
 Dev provisions no RDS by default (`enable_rds = false`); the database is developed locally. See
 [`stack/terraform/README.md`](stack/terraform/README.md) for the SSO profile setup and the
 `enable_rds` toggle.
+
+The CI/CD roles are least-privilege and scoped per concern. A pre-apply guard checks the apply
+role holds every IAM permission the plan needs and fails before applying if not (the apply role
+cannot grant itself permissions) — see
+[CI/CD roles and the pre-apply IAM guard](stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard).
 
 ### Database backups
 

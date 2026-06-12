@@ -22,3 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/bootstrap-tfstate.test.sh
+  # Unit-test the pre-apply IAM guard with a stubbed aws CLI (no AWS account or
+  # credentials involved).
+  iam-apply-guard-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/iam-apply-guard.test.sh
