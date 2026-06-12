@@ -14,6 +14,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pgvector/pgvector-go v0.4.0
 	github.com/pgvector/pgvector-go/pgx v0.4.0
+	github.com/rabbitmq/amqp091-go v1.11.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/time v0.15.0
 )

@@ -184,6 +184,31 @@ services:
         done
         mc mb --ignore-existing local/media
 
+  # Message broker for the embedding-job queue. The producer (wiki ingest) will
+  # publish prioritized embedding jobs and the worker fleet will drain them; this
+  # is the local mirror of the production Amazon MQ for RabbitMQ broker, selected
+  # by config (RABBITMQ_URL). 3.13 matches the managed broker's engine line. The
+  # default user is loopback-only, so dev credentials are set to allow the other
+  # containers (a non-loopback source) to connect. Management UI on :15672, AMQP
+  # on :5672.
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      # Dev-only credentials; production uses Amazon MQ with a Secrets Manager
+      # password and never these defaults.
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: dev
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   backend:
     build:
       context: ./stack/backend
@@ -283,3 +308,4 @@ volumes:
   pgdata:
   minio-data:
   wiki-dump:
+  rabbitmq-data:

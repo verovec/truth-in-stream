@@ -635,6 +635,57 @@ func LoadYouTube() (YouTube, error) {
 	return y, nil
 }
 
+// Queue defaults. The queue name is shared by the producer and the worker fleet.
+// A max priority of 10 gives enough distinct bands for the importance mapping a
+// later card introduces without the per-message memory a 255-band queue costs. A
+// prefetch of 1 gives the fleet fair dispatch: the broker hands a worker one
+// unacknowledged message at a time, so a slow worker does not hoard a backlog.
+const (
+	defaultQueueName        = "embedding.jobs"
+	defaultQueueMaxPriority = 10
+	defaultQueuePrefetch    = 1
+)
+
+// Queue holds the RabbitMQ embedding-job queue configuration. URL is required
+// and carries the broker credentials, so it is sourced from the environment
+// only and never logged. MaxPriority sets the queue's x-max-priority ceiling and
+// Prefetch the per-consumer unacknowledged-message limit (0 leaves it unbounded).
+type Queue struct {
+	URL         string
+	Name        string
+	MaxPriority uint8
+	Prefetch    int
+}
+
+// LoadQueue reads the broker configuration from the environment. RABBITMQ_URL is
+// required; the queue name defaults to embedding.jobs, the max priority to 10
+// (validated to [1, 255]) and the prefetch to 1 (validated non-negative). Bad
+// values fail fast at startup rather than surfacing as a broker error later.
+func LoadQueue() (Queue, error) {
+	url, err := requireEnv("RABBITMQ_URL")
+	if err != nil {
+		return Queue{}, err
+	}
+	// A message priority is a single byte, so the queue's x-max-priority ceiling
+	// is math.MaxUint8.
+	maxPriority, err := intEnv("RABBITMQ_MAX_PRIORITY", defaultQueueMaxPriority, 1, math.MaxUint8)
+	if err != nil {
+		return Queue{}, err
+	}
+	// The AMQP prefetch_count field is a uint16; cap the value here rather than
+	// let a larger number silently truncate when the consumer sets QoS.
+	prefetch, err := intEnv("RABBITMQ_PREFETCH", defaultQueuePrefetch, 0, math.MaxUint16)
+	if err != nil {
+		return Queue{}, err
+	}
+	return Queue{
+		URL:         url,
+		Name:        getenv("RABBITMQ_QUEUE", defaultQueueName),
+		MaxPriority: uint8(maxPriority),
+		Prefetch:    prefetch,
+	}, nil
+}
+
 // boolEnv reads a boolean environment variable, applying fallback when unset.
 func boolEnv(key string, fallback bool) (bool, error) {
 	raw := os.Getenv(key)

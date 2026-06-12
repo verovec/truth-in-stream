@@ -45,6 +45,21 @@ module "rds" {
   security_group_id  = module.vpc.postgres_security_group_id
 }
 
+# Message broker for the embedding-job queue. The queue carries no consumer yet,
+# so prod ships the single-instance foundation; promoting to CLUSTER_MULTI_AZ on
+# an mq.m5/mq.m7g instance for HA is a deliberate follow-up once the worker fleet
+# drives production traffic (deployment_mode and host_instance_type are inputs).
+module "rabbitmq" {
+  source = "../modules/rabbitmq"
+
+  project     = local.project
+  environment = var.environment
+
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = [module.vpc.private_subnet_ids[0]]
+  allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+}
+
 # External API keys. Terraform creates the containers only; set the values out
 # of band (aws secretsmanager put-secret-value) before the first deploy.
 resource "aws_secretsmanager_secret" "embedding_api_key" {
@@ -82,6 +97,7 @@ module "iam" {
     module.rds.dsn_secret_arn,
     aws_secretsmanager_secret.embedding_api_key.arn,
     aws_secretsmanager_secret.transcription_api_key.arn,
+    module.rabbitmq.url_secret_arn,
   ]
   ssm_parameter_arns = [
     aws_ssm_parameter.private_subnet_ids.arn,
