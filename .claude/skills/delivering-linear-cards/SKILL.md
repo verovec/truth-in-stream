@@ -1,18 +1,18 @@
 ---
 name: delivering-linear-cards
-description: Use when implementing a Linear card or feature, when opening a PR for tracked work, or when asked to update Linear cards/status/checkboxes. Defines what you own (execute through open PR) versus what the human owns (merge).
+description: Use when implementing a Linear card or feature, when opening a PR for tracked work, or when asked to update Linear cards/status/checkboxes. Defines the autonomous delivery flow - execute, e2e-verify, open the PR, auto-merge on green CI, mark Done - and the one action (production deploy) the human still gates.
 ---
 
 # Delivering Linear Cards
 
 ## Overview
 
-You own the work from card to open PR. The human owns the merge. When asked to "update Linear," just do it: flip status, check boxes, add a one-line comment. No option menus, no "want me to..?". Act.
+You own the work end to end: card -> implementation -> e2e verification -> PR -> auto-merge on green CI -> Done. The only thing the human still gates is a production deploy. When asked to "update Linear," just do it: flip status, check boxes, add a one-line comment. No option menus, no "want me to..?". Act.
 
 ## Responsibility split
 
-- **You:** enrich the card if thin, branch, implement with tests, run `/code-review` and apply it, verify the full suite is green, check off the card's todos, open the PR, set status to In Review, link the PR.
-- **The human:** reviews and merges. Whether or when it merges is not yours to track, poll, or gate on. When told it merged (or asked to update), set the card to Done.
+- **You:** enrich the card if thin, branch, implement with tests, run `/code-review` and apply it, verify the full suite is green AND an end-to-end check of the feature passes, check off the card's todos, rebase on `main`, open the PR (status In Review), wait for the PR's CI to go green, merge the PR to `main`, then set the card to Done.
+- **The human:** gates production deploys only (`terraform apply`, dispatching the deploy workflow). They do not need to approve the merge; the green-CI gate stands in for review. If CI is red, you do not merge - you fix and re-push, or leave the card In Review and report.
 
 ## Workflow (per card)
 
@@ -24,12 +24,22 @@ You own the work from card to open PR. The human owns the merge. When asked to "
 4. **TDD with regression safety.** Write tests first (REQUIRED: superpowers:test-driven-development). Tests must prove the new behavior AND guard existing behavior, so a merge cannot silently break something else. The WHOLE suite must pass, not just the new test.
 5. **Run `/code-review`, then apply it.** Before pushing, run `/code-review` and apply the findings. Re-run tests afterward.
 6. **Verify green, never push broken code.** Build plus the full test suite pass locally (REQUIRED: superpowers:verification-before-completion). A failing build or a red or skipped test means do not push.
-7. **Check the card's boxes** you completed (edit the description, `- [ ]` to `- [X]`).
-8. **Open the PR** with a summary and a test plan that references the card. The feature-branch push and PR are the delivery hand-off; that part does not need separate approval.
-9. **Set the card to In Review** and link the PR in a comment.
-10. **Stop, or continue to a dependent card.** The human merges; do not poll PR state. After the
-    PR is open you MAY continue to a card that depends on the one you just delivered (see below),
-    instead of ending the session.
+7. **End-to-end check of the feature.** Beyond unit tests, exercise the behaviour the card adds the way an operator would - drive the real path end to end (the `verify`/`run` skills, an integration/e2e test, or the running stack) and confirm it actually works. An absent or failing e2e check means do not open the PR. Capture the evidence in the PR test plan.
+8. **Check the card's boxes** you completed (edit the description, `- [ ]` to `- [X]`).
+9. **Rebase on `main`, then open the PR.** Rebase the branch onto latest `origin/main` (independent card) or its dependency branch (stacked card) so the merge is conflict-free, then open the PR with a summary and a test plan that references the card and the e2e evidence. Set the card to In Review and link the PR in a comment. The push and PR are the delivery hand-off; they do not need separate approval.
+10. **Auto-merge on green CI, then Done.** See "Auto-merge on green CI" below: watch the PR's checks, merge to `main` when they pass, and move the card to Done. Then stop, or continue to a dependent card (see below).
+
+## Auto-merge on green CI
+
+Once the PR is open, the merge is automatic and gated only on the PR's CI. No human approval for the merge; the green-CI gate replaces it. Only a production deploy stays human-gated, and the deploy workflow is `workflow_dispatch`-only so an auto-merge never deploys.
+
+1. **Wait for the PR's checks.** Watch them to completion: `gh pr checks <pr> --watch --fail-fast`. The PR CI is `frontend-lint`, `frontend-test`, `backend-lint`, `backend-test` (plus a terraform plan when `stack/terraform/**` changed). Do not poll in a tight busy-loop; let `--watch` block.
+2. **Green -> merge.** When every required check passes, merge to the PR's base: `gh pr merge <pr> --merge --delete-branch` (an independent card's PR targets `main`; a stacked card's PR targets its dependency branch and merges there - it reaches `main` only after the dependency does, preserving dependency-first order). Confirm the merge landed (`gh pr view <pr> --json state,mergedAt`).
+3. **Merged to `main` -> Done.** Once the change is on `main`, set the card to Done and check any remaining boxes. For a stacked PR not yet retargeted to `main`, the card moves to Done only when its change actually reaches `main` (after the dependency merges and the PR fast-forwards); until then leave it In Review.
+4. **Red CI -> do not merge.** If any check fails, the merge does not fire. Fix the failure and push again (CI re-runs), or if it cannot be fixed now leave the card In Review and report the failing check. Never merge over a red or pending check; never override a failing required check.
+5. **Clean up the worktree** after the branch merges and is deleted (`ExitWorktree`, or remove `.claude/worktrees/<branch>`).
+
+This requires the harness to allow `gh pr merge` and `gh pr checks` for this repo (a one-time user-granted permission; an agent cannot grant itself merge rights). Without it the merge step prompts the user - an acceptable manual fallback, but the flow assumes the rules are in place. See the `/pick` command's "One-time permission" note for the exact rules.
 
 ## Continue to a dependent card (optional, stacked)
 
@@ -68,9 +78,12 @@ the rebased branches carry correctness:
 - **Rebase for a clean in-order merge.** Keep the dependent rebased on the dependency branch (then
   on `main` once the dependency lands) so that merging in dependency-first order is always
   conflict-free. The branches, not the Linear link, are what prevent conflicts.
-- **Merge order stays the human's call,** and it is dependency-first: merge the dependency PR, then
-  the dependent (which GitHub has retargeted to `main`). Because the dependent was rebased on the
-  dependency, that second merge is a fast-forward with nothing to resolve.
+- **Merge order is dependency-first and automatic.** Each PR auto-merges when its own CI is green
+  (no human gate). The dependency PR merges to `main` first; GitHub retargets the dependent to
+  `main`, its CI re-runs, and because it was rebased on the dependency that second merge is a
+  fast-forward with nothing to resolve. In practice the dependency usually auto-merges to `main`
+  before you finish the dependent, so the dependent is simply an independent branch off `main` by
+  the time you open its PR.
 
 ## Claiming a card (parallel-safe)
 
@@ -99,8 +112,9 @@ To reclaim a card stuck `In Progress` after a session died, use `/pick --steal <
 | Event | Card status |
 |---|---|
 | You claim the card (before any work) | In Progress |
-| PR opened | In Review |
-| Human says merged, or asks you to update | Done (check any remaining boxes) |
+| PR opened (after rebase + e2e green) | In Review |
+| PR's CI green and PR merged to `main` | Done (check any remaining boxes) |
+| PR's CI red | stay In Review; fix and re-push, never merge on red |
 | Work blocked on an external dependency (e.g. cloud infra) | leave In Progress; note the blocker in a comment |
 
 ## Red flags, stop
@@ -109,12 +123,15 @@ To reclaim a card stuck `In Progress` after a session died, use `/pick --steal <
 - Lost a claim race and about to revert the card to `Todo`: don't. The winner owns it; move on.
 - About to push without running `/code-review`: run it and apply it first.
 - About to push with a failing build or a red or skipped test: fix first. Never push broken code.
+- About to open a PR without an end-to-end check of the feature: run it first. Unit-green is not enough.
+- About to merge with a red or still-pending check: don't. The merge fires only on all-green CI.
+- About to mark a card Done before the change is on `main`: don't. Done is after the merge lands.
 - Handed (or writing) a thin card for another agent to execute: enrich it first.
 - Asked to "update Linear" and you are drafting a paragraph of options: just make the update.
-- Watching or polling whether the PR merged: not your job. Stop.
 
 ## Don't
 
-- Don't merge or deploy on your own; those stay the human's call. (Opening the PR is yours.)
-- Don't mark a card Done on PR-open; Done is after merge.
-- Don't ship only a happy-path test; include regression coverage.
+- Don't merge on red or pending CI, and don't override a failing required check. The green-CI gate is the only thing standing in for human review.
+- Don't deploy on your own: `terraform apply` and dispatching the deploy workflow stay the human's call.
+- Don't mark a card Done before its change is on `main`; Done is after the merge lands.
+- Don't ship only a happy-path test; include regression coverage and an e2e check of the feature.
