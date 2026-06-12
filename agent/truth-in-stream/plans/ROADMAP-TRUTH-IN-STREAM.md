@@ -47,9 +47,9 @@
 | VER-46 | Database backup & restore: full pg_dump with S3 upload | Done | Medium | |
 | VER-47 | Wiki-grounded coverage: let the embedded corpus decide checkability | In Review | High | |
 | VER-48 | Live scoring backpressure: stop dropping statements as not_checked | In Review | High | |
-| VER-49 | Structured wiki ingestion: per-chunk metadata for classification | In Progress | Medium | |
+| VER-49 | Structured wiki ingestion: per-chunk metadata for classification | In Review | Medium | |
 | VER-50 | Confidence scoring: cluster corpus evidence into a corroboration % | Todo | Medium | VER-47, VER-48, VER-49 |
-| VER-51 | RabbitMQ broker and embedding-queue connection (infra + client) | In Progress | High | |
+| VER-51 | RabbitMQ broker and embedding-queue connection (infra + client) | In Review | High | |
 | VER-52 | Embedding worker service: drain the priority queue and embed chunks | Todo | High | VER-49, VER-51 |
 | VER-53 | Adapt ingestion to enqueue embedding jobs and scale corpus | Todo | Medium | VER-49, VER-52 |
 | VER-54 | Topic clustering and importance scoring to drive embedding priority | Todo | Low | VER-53 |
@@ -70,6 +70,14 @@ VER-53 -> VER-54
 Cards whose state is `Todo` and whose every `depends_on` is `Done`, ordered by
 priority, then unblock-count (transitive blocks), then card number.
 
-(empty) - every base card is claimed: VER-51/47/49 In Progress, VER-48 In Review.
-The dependent cards VER-50/52/53/54 are blocked: their dependencies are still
-In Progress/In Review, not yet Done (merged to main). Nothing is ready to pick.
+(empty) - the four foundation cards VER-47/48/49/51 are all In Review (PRs open,
+awaiting human merge). The dependent cards are blocked because each needs more
+than one still-unmerged dependency, which the single-chain stacking rule does
+not cover:
+- VER-50 <- VER-47, VER-48, VER-49 (all three In Review, none Done).
+- VER-52 <- VER-49, VER-51 (both In Review, none Done).
+- VER-53 <- VER-49 (In Review), VER-52 (Todo).
+- VER-54 <- VER-53 (Todo).
+Nothing is ready to pick. The queue unblocks once the foundation PRs merge to
+main: merging VER-47+VER-48+VER-49 makes VER-50 ready; merging VER-49 (leaving
+VER-51 the lone In-Review dep) makes VER-52 a stackable single-chain pick.
