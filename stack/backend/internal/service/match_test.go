@@ -24,9 +24,11 @@ type fakeEmbedder struct {
 	vecs     [][]float32
 	err      error
 	gotTexts []string
+	calls    int
 }
 
 func (f *fakeEmbedder) EmbedQueries(_ context.Context, texts []string) ([][]float32, error) {
+	f.calls++
 	f.gotTexts = texts
 	if f.err != nil {
 		return nil, f.err

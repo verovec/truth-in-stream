@@ -148,7 +148,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	prechecker, err := buildPrechecker(precheckCfg, embedder, store)
+	prechecker, err := buildPrechecker(precheckCfg, embedder, store, store)
 	if err != nil {
 		return err
 	}
@@ -261,17 +261,22 @@ func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, ev
 // buildPrechecker assembles the check-worthiness gate from config. A disabled
 // gate returns a nil prechecker, which the processor treats as "check
 // everything" - the pre-gate behavior - with no special-casing. An enabled
-// gate pairs the deterministic claim classifier with corpus coverage over the
-// same embedder and claim store the matcher uses.
-func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, store service.ClaimSearcher) (service.SegmentPrechecker, error) {
+// gate pairs the deterministic claim classifier with combined corpus coverage
+// over the same embedder, claim store, and wiki store the matcher uses, so a
+// segment grounded by either the curated claims or the embedded wiki corpus is
+// checked.
+func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
 	classifier := service.NewHeuristicClassifier(cfg.MinWords)
-	retriever := service.NewCoverageRetriever(embedder, store)
-	gate, err := service.NewGate(classifier, retriever, service.GateConfig{CoverageThreshold: cfg.CoverageThreshold})
+	coverage, err := service.NewCombinedCoverage(embedder, claims, wiki, service.CoverageConfig{
+		ClaimsThreshold: cfg.CoverageThreshold,
+		WikiThreshold:   cfg.WikiCoverageThreshold,
+		WikiEnabled:     cfg.WikiCoverageEnabled,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return gate, nil
+	return service.NewGate(classifier, coverage), nil
 }
