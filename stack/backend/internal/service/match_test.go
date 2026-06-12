@@ -78,7 +78,7 @@ func queryVec() []float32 {
 // claims-only cases are unaffected by the merge path; MaxResults is generous so
 // nothing is truncated. Tests that exercise evidence override these.
 func testMatcherConfig() MatcherConfig {
-	return MatcherConfig{TopK: 3, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 10, EmbedConcurrency: 4, Timeout: time.Minute}
+	return MatcherConfig{TopK: 3, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 10, EmbedConcurrency: 4, Timeout: time.Minute, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.5}
 }
 
 func TestMatchSegment(t *testing.T) {
@@ -261,6 +261,7 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 		TopK: 5, ScoreThreshold: 0.5,
 		EvidenceTopK: 4, EvidenceThreshold: 0.6,
 		MaxResults: 3, EmbedConcurrency: 4, Timeout: time.Minute,
+		ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.5,
 	}
 	searcher := &fakeSearcher{hits: []domain.ClaimMatch{claimHit("a", 0.05), claimHit("b", 0.5)}}
 	// ev2 at distance 0.45 scores 0.55, below the 0.6 evidence threshold, so it
@@ -375,6 +376,13 @@ func TestNewMatcherValidatesConfig(t *testing.T) {
 		{name: "zero max results rejected", mutate: func(c *MatcherConfig) { c.MaxResults = 0 }, wantErr: true},
 		{name: "zero concurrency rejected", mutate: func(c *MatcherConfig) { c.EmbedConcurrency = 0 }, wantErr: true},
 		{name: "zero timeout rejected", mutate: func(c *MatcherConfig) { c.Timeout = 0 }, wantErr: true},
+		{name: "zero confidence cluster size rejected", mutate: func(c *MatcherConfig) { c.ConfidenceClusterSize = 0 }, wantErr: true},
+		{name: "confidence cluster size beyond int32 rejected", mutate: func(c *MatcherConfig) { c.ConfidenceClusterSize = math.MaxInt32 + 1 }, wantErr: true},
+		{name: "negative lead weight rejected", mutate: func(c *MatcherConfig) { c.ConfidenceLeadWeight = -0.1 }, wantErr: true},
+		{name: "lead weight above 1 rejected", mutate: func(c *MatcherConfig) { c.ConfidenceLeadWeight = 1.1 }, wantErr: true},
+		{name: "NaN body weight rejected", mutate: func(c *MatcherConfig) { c.ConfidenceBodyWeight = math.NaN() }, wantErr: true},
+		{name: "body weight above 1 rejected", mutate: func(c *MatcherConfig) { c.ConfidenceBodyWeight = 2 }, wantErr: true},
+		{name: "zero body weight accepted", mutate: func(c *MatcherConfig) { c.ConfidenceBodyWeight = 0 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

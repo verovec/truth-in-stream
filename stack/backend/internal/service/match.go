@@ -40,16 +40,18 @@ var ErrEmptySegment = errors.New("service: segment text is empty")
 // Match is one fact-check hit for a transcript segment. Kind tells a curated
 // claim (with Verdict and Sources) from Wikipedia evidence (with Article and no
 // verdict). Text is the matched reference text - the claim statement or the
-// article excerpt. Score is cosine similarity in [-1, 1]; higher is more
-// similar.
+// article excerpt. WikiKind is the chunk classification of an evidence hit (lead
+// or body), empty for a claim; confidence scoring weights evidence by it. Score
+// is cosine similarity in [-1, 1]; higher is more similar.
 type Match struct {
-	Kind    domain.MatchKind
-	ClaimID string
-	Text    string
-	Verdict domain.Verdict
-	Sources []domain.Source
-	Article domain.Article
-	Score   float64
+	Kind     domain.MatchKind
+	ClaimID  string
+	Text     string
+	Verdict  domain.Verdict
+	Sources  []domain.Source
+	Article  domain.Article
+	WikiKind domain.WikiChunkKind
+	Score    float64
 }
 
 // MatcherConfig bounds a Matcher. TopK and ScoreThreshold govern the curated
@@ -58,14 +60,23 @@ type Match struct {
 // EvidenceTopK 0 disables evidence retrieval entirely. MaxResults caps the
 // merged, similarity-ranked output. EmbedConcurrency caps in-flight embedding
 // API calls across all segments; Timeout bounds one segment end to end.
+//
+// ConfidenceClusterSize caps how many of the strongest matches feed the
+// corroboration score; ConfidenceLeadWeight and ConfidenceBodyWeight scale a
+// Wikipedia evidence hit's weight by its chunk kind (a lead summary outweighs
+// buried body prose). Both weights live in [0, 1] - a curated claim is the unit
+// weight and evidence corroborates no more strongly than that.
 type MatcherConfig struct {
-	TopK              int
-	ScoreThreshold    float64
-	EvidenceTopK      int
-	EvidenceThreshold float64
-	MaxResults        int
-	EmbedConcurrency  int
-	Timeout           time.Duration
+	TopK                  int
+	ScoreThreshold        float64
+	EvidenceTopK          int
+	EvidenceThreshold     float64
+	MaxResults            int
+	EmbedConcurrency      int
+	Timeout               time.Duration
+	ConfidenceClusterSize int
+	ConfidenceLeadWeight  float64
+	ConfidenceBodyWeight  float64
 }
 
 func (c MatcherConfig) validate() error {
@@ -84,8 +95,21 @@ func (c MatcherConfig) validate() error {
 		return fmt.Errorf("service: matcher embed concurrency must be at least 1, got %d", c.EmbedConcurrency)
 	case c.Timeout <= 0:
 		return fmt.Errorf("service: matcher timeout must be positive, got %s", c.Timeout)
+	case c.ConfidenceClusterSize < 1 || c.ConfidenceClusterSize > math.MaxInt32:
+		return fmt.Errorf("service: matcher confidence cluster size must be in [1, %d], got %d", math.MaxInt32, c.ConfidenceClusterSize)
+	case !validWeight(c.ConfidenceLeadWeight):
+		return fmt.Errorf("service: matcher confidence lead weight %v outside [0, 1]", c.ConfidenceLeadWeight)
+	case !validWeight(c.ConfidenceBodyWeight):
+		return fmt.Errorf("service: matcher confidence body weight %v outside [0, 1]", c.ConfidenceBodyWeight)
 	}
 	return nil
+}
+
+// validWeight reports whether w is a usable corroboration weight: a real number
+// in [0, 1]. The inverted comparison also rejects NaN, which would otherwise
+// poison every score it touched.
+func validWeight(w float64) bool {
+	return w >= 0 && w <= 1
 }
 
 // Matcher turns transcript segments into ranked fact-check matches: embed the
@@ -153,6 +177,18 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, er
 	return matches, nil
 }
 
+// Confidence aggregates a matched cluster into the statement's corroboration
+// score, using the matcher's configured cluster cap and chunk-kind weights. It
+// is pure over the supplied matches - the cluster MatchSegment already returned -
+// and runs no further retrieval.
+func (m *Matcher) Confidence(matches []Match) domain.Confidence {
+	return computeConfidence(matches, confidenceParams{
+		clusterSize: m.cfg.ConfidenceClusterSize,
+		leadWeight:  m.cfg.ConfidenceLeadWeight,
+		bodyWeight:  m.cfg.ConfidenceBodyWeight,
+	})
+}
+
 // claimMatches retrieves and threshold-filters curated claim hits.
 func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, error) {
 	hits, err := m.claims.Search(ctx, query, m.cfg.TopK)
@@ -196,10 +232,11 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 			break
 		}
 		matches = append(matches, Match{
-			Kind:    domain.MatchKindEvidence,
-			Text:    h.Content,
-			Article: domain.Article{Title: h.Title, URL: h.URL},
-			Score:   score,
+			Kind:     domain.MatchKindEvidence,
+			Text:     h.Content,
+			Article:  domain.Article{Title: h.Title, URL: h.URL},
+			WikiKind: h.Kind,
+			Score:    score,
 		})
 	}
 	return matches, nil

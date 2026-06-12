@@ -213,7 +213,7 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 	return wsjson.Write(ctx, conn, resultFrame{
 		Type:        string(ev.Kind),
 		ID:          ev.ID,
-		segmentJSON: toSegmentJSON(domain.SegmentResult{Segment: ev.Segment, Matches: ev.Matches, SkipReason: ev.SkipReason}),
+		segmentJSON: toSegmentJSON(domain.SegmentResult{Segment: ev.Segment, Matches: ev.Matches, SkipReason: ev.SkipReason, Confidence: ev.Confidence}),
 		Error:       ev.Err,
 	})
 }

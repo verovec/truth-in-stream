@@ -140,13 +140,16 @@ func run(logger *slog.Logger) error {
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
 	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
-		TopK:              matchCfg.TopK,
-		ScoreThreshold:    matchCfg.ScoreThreshold,
-		EvidenceTopK:      matchCfg.EvidenceTopK,
-		EvidenceThreshold: matchCfg.EvidenceThreshold,
-		MaxResults:        matchCfg.MaxResults,
-		EmbedConcurrency:  matchCfg.EmbedConcurrency,
-		Timeout:           matchCfg.Timeout,
+		TopK:                  matchCfg.TopK,
+		ScoreThreshold:        matchCfg.ScoreThreshold,
+		EvidenceTopK:          matchCfg.EvidenceTopK,
+		EvidenceThreshold:     matchCfg.EvidenceThreshold,
+		MaxResults:            matchCfg.MaxResults,
+		EmbedConcurrency:      matchCfg.EmbedConcurrency,
+		Timeout:               matchCfg.Timeout,
+		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
+		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
+		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
 	})
 	if err != nil {
 		return err

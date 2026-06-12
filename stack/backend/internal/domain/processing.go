@@ -91,6 +91,22 @@ func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Confidence is the corroboration strength of a checked statement, aggregated
+// over its retrieved evidence cluster. Score is the bounded [0, 1] fraction of
+// stance-bearing evidence weight that corroborates the statement (rendered as a
+// percentage); Supporting and Contradicting are the raw aggregated weights it is
+// derived from, and EvidenceItems counts how many matches contributed weight, so
+// the score is explainable rather than opaque. Its zero value is the honest
+// reading for a checked statement whose cluster carries no stance: nothing
+// corroborates it, so the score is 0. A statement that was never checked carries
+// no Confidence at all (a nil *Confidence), distinct from a checked score of 0.
+type Confidence struct {
+	Score         float64 `json:"score"`
+	Supporting    float64 `json:"supporting"`
+	Contradicting float64 `json:"contradicting"`
+	EvidenceItems int     `json:"evidence_items"`
+}
+
 // SegmentResult is the fact-check outcome for one transcript segment: the shape
 // the live source emits per finalized statement and the wire form the handler
 // renders into a result frame.
@@ -99,8 +115,13 @@ func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 // one that was checked: when it is SkipReasonNone the segment was matched and
 // Matches holds the (possibly empty) hits; when it is set the segment was
 // skipped, Matches is empty, and no verdict is implied.
+//
+// Confidence is the corroboration score aggregated over Matches; it is set only
+// for a checked segment and nil for a skipped one, so an absent score reads as
+// "not checked" rather than "no corroboration".
 type SegmentResult struct {
 	Segment
 	Matches    []SegmentMatch
 	SkipReason SkipReason
+	Confidence *Confidence
 }

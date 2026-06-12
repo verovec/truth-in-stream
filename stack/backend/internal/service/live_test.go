@@ -115,15 +115,16 @@ func (f livePrechecker) Evaluate(_ context.Context, text string) (domain.Prechec
 }
 
 type liveMatcher struct {
-	matches map[string][]domain.SegmentMatch
-	err     map[string]error
+	matches    map[string][]domain.SegmentMatch
+	confidence map[string]domain.Confidence
+	err        map[string]error
 }
 
-func (f liveMatcher) Match(_ context.Context, text string) ([]domain.SegmentMatch, error) {
+func (f liveMatcher) Match(_ context.Context, text string) (MatchResult, error) {
 	if err := f.err[text]; err != nil {
-		return nil, err
+		return MatchResult{}, err
 	}
-	return f.matches[text], nil
+	return MatchResult{Matches: f.matches[text], Confidence: f.confidence[text]}, nil
 }
 
 // countingMatcher records the text of every Match call in order, so a test can
@@ -135,11 +136,11 @@ type countingMatcher struct {
 	seen []string
 }
 
-func (m *countingMatcher) Match(_ context.Context, text string) ([]domain.SegmentMatch, error) {
+func (m *countingMatcher) Match(_ context.Context, text string) (MatchResult, error) {
 	m.mu.Lock()
 	m.seen = append(m.seen, text)
 	m.mu.Unlock()
-	return m.matches[text], nil
+	return MatchResult{Matches: m.matches[text]}, nil
 }
 
 func (m *countingMatcher) calls() []string {
@@ -171,12 +172,12 @@ type blockingMatcher struct {
 	release <-chan struct{}
 }
 
-func (m blockingMatcher) Match(ctx context.Context, _ string) ([]domain.SegmentMatch, error) {
+func (m blockingMatcher) Match(ctx context.Context, _ string) (MatchResult, error) {
 	select {
 	case <-m.release:
-		return nil, nil
+		return MatchResult{}, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return MatchResult{}, ctx.Err()
 	}
 }
 
@@ -218,8 +219,9 @@ func TestLiveAnalyzerScoresEachSpeakerTurnAsItsOwnUnit(t *testing.T) {
 	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
 		Stream: &fakeSegmentStream{transcripts: finalize(segs...)},
 		Matcher: liveMatcher{
-			matches: map[string][]domain.SegmentMatch{"the earth is round.": claimMatch},
-			err:     map[string]error{"obscure unmatched claim.": errors.New("embed failed")},
+			matches:    map[string][]domain.SegmentMatch{"the earth is round.": claimMatch},
+			confidence: map[string]domain.Confidence{"the earth is round.": {Score: 0.91, Supporting: 0.91, EvidenceItems: 1}},
+			err:        map[string]error{"obscure unmatched claim.": errors.New("embed failed")},
 		},
 		Prechecker: livePrechecker{
 			skip: map[string]domain.SkipReason{"how are you?": domain.SkipReasonNotAClaim},
@@ -249,20 +251,31 @@ func TestLiveAnalyzerScoresEachSpeakerTurnAsItsOwnUnit(t *testing.T) {
 	if len(results) != 3 {
 		t.Fatalf("expected 3 result events, got %d", len(results))
 	}
-	// id 0: checkable, carries the claim match.
+	// id 0: checkable, carries the claim match and its confidence score.
 	if diff := cmp.Diff(claimMatch, results["0"].Matches); diff != "" {
 		t.Errorf("result 0 matches mismatch (-want +got):\n%s", diff)
 	}
 	if results["0"].SkipReason != domain.SkipReasonNone || results["0"].Err != "" {
 		t.Errorf("result 0 should be a clean checked verdict, got %+v", results["0"])
 	}
-	// id 1: skipped as not a claim, never matched.
+	wantConfidence := domain.Confidence{Score: 0.91, Supporting: 0.91, EvidenceItems: 1}
+	if results["0"].Confidence == nil || *results["0"].Confidence != wantConfidence {
+		t.Errorf("result 0 confidence = %v, want %+v", results["0"].Confidence, wantConfidence)
+	}
+	// id 1: skipped as not a claim, never matched, so it carries no confidence.
 	if results["1"].SkipReason != domain.SkipReasonNotAClaim || len(results["1"].Matches) != 0 {
 		t.Errorf("result 1 should be skipped not_a_claim, got %+v", results["1"])
 	}
-	// id 2: checkable but matching failed; reported as a non-fatal error.
+	if results["1"].Confidence != nil {
+		t.Errorf("result 1 should carry no confidence, got %+v", results["1"].Confidence)
+	}
+	// id 2: checkable but matching failed; reported as a non-fatal error with no
+	// confidence (there is no cluster to score).
 	if results["2"].Err != "analysis failed" || len(results["2"].Matches) != 0 {
 		t.Errorf("result 2 should carry an analysis error, got %+v", results["2"])
+	}
+	if results["2"].Confidence != nil {
+		t.Errorf("result 2 should carry no confidence, got %+v", results["2"].Confidence)
 	}
 }
 

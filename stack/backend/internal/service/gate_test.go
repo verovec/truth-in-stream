@@ -23,51 +23,54 @@ func (g gatePrechecker) Evaluate(context.Context, string) (domain.PrecheckDecisi
 // gateMatcher returns fixed matches (or an error); calls records invocations so
 // a test can assert the matcher is skipped for a non-checkable segment.
 type gateMatcher struct {
-	matches []domain.SegmentMatch
-	err     error
-	calls   int
+	result MatchResult
+	err    error
+	calls  int
 }
 
-func (g *gateMatcher) Match(context.Context, string) ([]domain.SegmentMatch, error) {
+func (g *gateMatcher) Match(context.Context, string) (MatchResult, error) {
 	g.calls++
-	return g.matches, g.err
+	return g.result, g.err
 }
 
 func TestGateAndMatch(t *testing.T) {
 	t.Parallel()
 	errPrecheck := errors.New("precheck boom")
 	errMatch := errors.New("match boom")
-	someMatches := []domain.SegmentMatch{{Kind: domain.MatchKindClaim, Claim: "c", Similarity: 0.9}}
+	someResult := MatchResult{
+		Matches:    []domain.SegmentMatch{{Kind: domain.MatchKindClaim, Claim: "c", Similarity: 0.9}},
+		Confidence: domain.Confidence{Score: 0.9, Supporting: 0.9, EvidenceItems: 1},
+	}
 
 	tests := []struct {
 		name         string
 		prechecker   gatePrechecker
 		matcher      *gateMatcher
-		wantMatches  []domain.SegmentMatch
+		wantResult   MatchResult
 		wantDecision domain.PrecheckDecision
 		wantErr      error
 		wantMatched  bool
 	}{
 		{
-			name:         "checkable segment is matched",
+			name:         "checkable segment is matched with its confidence",
 			prechecker:   gatePrechecker{decision: domain.Checkable()},
-			matcher:      &gateMatcher{matches: someMatches},
-			wantMatches:  someMatches,
+			matcher:      &gateMatcher{result: someResult},
+			wantResult:   someResult,
 			wantDecision: domain.Checkable(),
 			wantMatched:  true,
 		},
 		{
 			name:         "skipped segment never reaches the matcher",
 			prechecker:   gatePrechecker{decision: domain.Skipped(domain.SkipReasonNotAClaim)},
-			matcher:      &gateMatcher{matches: someMatches},
-			wantMatches:  nil,
+			matcher:      &gateMatcher{result: someResult},
+			wantResult:   MatchResult{},
 			wantDecision: domain.Skipped(domain.SkipReasonNotAClaim),
 			wantMatched:  false,
 		},
 		{
 			name:       "precheck error surfaces and the matcher is skipped",
 			prechecker: gatePrechecker{err: errPrecheck},
-			matcher:    &gateMatcher{matches: someMatches},
+			matcher:    &gateMatcher{result: someResult},
 			wantErr:    errPrecheck,
 		},
 		{
@@ -81,7 +84,7 @@ func TestGateAndMatch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			matches, decision, err := gateAndMatch(t.Context(), tc.prechecker, tc.matcher, "some text")
+			result, decision, err := gateAndMatch(t.Context(), tc.prechecker, tc.matcher, "some text")
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -91,8 +94,8 @@ func TestGateAndMatch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
-			if diff := cmp.Diff(tc.wantMatches, matches); diff != "" {
-				t.Errorf("matches mismatch (-want +got):\n%s", diff)
+			if diff := cmp.Diff(tc.wantResult, result); diff != "" {
+				t.Errorf("result mismatch (-want +got):\n%s", diff)
 			}
 			if decision != tc.wantDecision {
 				t.Errorf("decision = %+v, want %+v", decision, tc.wantDecision)

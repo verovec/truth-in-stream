@@ -316,13 +316,16 @@ func TestLoadAuth(t *testing.T) {
 
 func TestLoadMatch(t *testing.T) {
 	defaults := Match{
-		TopK:              5,
-		ScoreThreshold:    0.5,
-		EvidenceTopK:      5,
-		EvidenceThreshold: 0.6,
-		MaxResults:        5,
-		EmbedConcurrency:  4,
-		Timeout:           10 * time.Second,
+		TopK:                  5,
+		ScoreThreshold:        0.5,
+		EvidenceTopK:          5,
+		EvidenceThreshold:     0.6,
+		MaxResults:            5,
+		EmbedConcurrency:      4,
+		Timeout:               10 * time.Second,
+		ConfidenceClusterSize: 5,
+		ConfidenceLeadWeight:  1,
+		ConfidenceBodyWeight:  0.6,
 	}
 	tests := []struct {
 		name    string
@@ -345,18 +348,26 @@ func TestLoadMatch(t *testing.T) {
 				"MATCH_MAX_RESULTS":              "6",
 				"MATCH_EMBED_CONCURRENCY":        "2",
 				"MATCH_TIMEOUT":                  "30s",
+				"MATCH_CONFIDENCE_CLUSTER_SIZE":  "3",
+				"MATCH_CONFIDENCE_LEAD_WEIGHT":   "0.9",
+				"MATCH_CONFIDENCE_BODY_WEIGHT":   "0.4",
 			},
-			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second},
+			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second, ConfidenceClusterSize: 3, ConfidenceLeadWeight: 0.9, ConfidenceBodyWeight: 0.4},
 		},
 		{
 			name: "negative threshold accepted",
 			env:  map[string]string{"MATCH_SCORE_THRESHOLD": "-1"},
-			want: Match{TopK: 5, ScoreThreshold: -1, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+			want: Match{TopK: 5, ScoreThreshold: -1, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6},
 		},
 		{
 			name: "evidence retrieval can be disabled",
 			env:  map[string]string{"MATCH_EVIDENCE_TOP_K": "0"},
-			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6},
+		},
+		{
+			name: "zero body weight accepted disables body evidence",
+			env:  map[string]string{"MATCH_CONFIDENCE_BODY_WEIGHT": "0"},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0},
 		},
 		{
 			name:    "evidence threshold above cosine range fails",
@@ -416,6 +427,31 @@ func TestLoadMatch(t *testing.T) {
 		{
 			name:    "non-positive timeout fails",
 			env:     map[string]string{"MATCH_TIMEOUT": "0s"},
+			wantErr: true,
+		},
+		{
+			name:    "zero confidence cluster size fails",
+			env:     map[string]string{"MATCH_CONFIDENCE_CLUSTER_SIZE": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "non-numeric confidence cluster size fails",
+			env:     map[string]string{"MATCH_CONFIDENCE_CLUSTER_SIZE": "lots"},
+			wantErr: true,
+		},
+		{
+			name:    "lead weight above one fails",
+			env:     map[string]string{"MATCH_CONFIDENCE_LEAD_WEIGHT": "1.5"},
+			wantErr: true,
+		},
+		{
+			name:    "negative body weight fails",
+			env:     map[string]string{"MATCH_CONFIDENCE_BODY_WEIGHT": "-0.1"},
+			wantErr: true,
+		},
+		{
+			name:    "non-numeric body weight fails",
+			env:     map[string]string{"MATCH_CONFIDENCE_BODY_WEIGHT": "heavy"},
 			wantErr: true,
 		},
 	}

@@ -45,6 +45,18 @@ export type EvidenceMatch = {
 
 export type SegmentMatch = ClaimMatch | EvidenceMatch;
 
+// Confidence is the corroboration strength of a checked statement, aggregated
+// over its evidence cluster. score is bounded [0, 1] and rendered as a
+// percentage; supporting and contradicting are the raw weights it was derived
+// from and evidenceItems how many matches contributed, kept so the score is
+// explainable rather than opaque. It is present only on a checked statement.
+export type Confidence = {
+  score: number;
+  supporting: number;
+  contradicting: number;
+  evidenceItems: number;
+};
+
 export type FactCheckSegment = {
   start: number;
   end: number;
@@ -53,6 +65,9 @@ export type FactCheckSegment = {
   // Set only when the segment was skipped; absent means it was checked and
   // matches (possibly empty) is authoritative.
   skipReason?: SkipReason;
+  // The corroboration score, present only on a checked segment; absent on a
+  // skipped one, so a missing score reads as "not checked" rather than 0%.
+  confidence?: Confidence;
 };
 
 // A match's kind may be absent on results stored before the Wikipedia evidence
@@ -66,6 +81,15 @@ export type MatchWire = {
   article?: ArticleRef;
 };
 
+// ConfidenceWire is the corroboration score's wire shape (snake_case
+// evidence_items), present on a checked segment's result frame.
+export type ConfidenceWire = {
+  score: number;
+  supporting: number;
+  contradicting: number;
+  evidence_items: number;
+};
+
 // SegmentWire is the per-segment wire shape carried in each live result frame
 // (stack/backend internal/handler), normalized by normalizeSegment.
 export type SegmentWire = {
@@ -74,6 +98,7 @@ export type SegmentWire = {
   text: string;
   matches: MatchWire[];
   skip_reason?: SkipReason;
+  confidence?: ConfidenceWire;
 };
 
 function normalizeMatch(wire: MatchWire): SegmentMatch {
@@ -101,6 +126,23 @@ function normalizeMatch(wire: MatchWire): SegmentMatch {
   };
 }
 
+// normalizeConfidence maps the snake_case wire score onto the camelCase domain
+// shape. An absent score stays absent, so a skipped segment carries no
+// confidence rather than a fabricated zero.
+function normalizeConfidence(
+  wire: ConfidenceWire | undefined,
+): Confidence | undefined {
+  if (!wire) {
+    return undefined;
+  }
+  return {
+    score: wire.score,
+    supporting: wire.supporting,
+    contradicting: wire.contradicting,
+    evidenceItems: wire.evidence_items,
+  };
+}
+
 export function normalizeSegment(wire: SegmentWire): FactCheckSegment {
   return {
     start: wire.start,
@@ -108,5 +150,6 @@ export function normalizeSegment(wire: SegmentWire): FactCheckSegment {
     text: wire.text,
     matches: wire.matches.map(normalizeMatch),
     skipReason: wire.skip_reason,
+    confidence: normalizeConfidence(wire.confidence),
   };
 }

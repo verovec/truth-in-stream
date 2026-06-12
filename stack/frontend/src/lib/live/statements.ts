@@ -2,7 +2,12 @@
 // order; this store reconciles them into a timestamp-ordered list of
 // statements, each either still "analysing" or "checked". It is a pure reducer
 // so the React layer only mirrors it.
-import type { FactCheckSegment, SegmentMatch, SkipReason } from "@/lib/fact-check/api";
+import type {
+  Confidence,
+  FactCheckSegment,
+  SegmentMatch,
+  SkipReason,
+} from "@/lib/fact-check/api";
 import type { ResultFrame, SubtitleFrame } from "./frames";
 
 // LiveStatement is one spoken statement on screen. The two states are a
@@ -27,6 +32,9 @@ export type LiveStatement =
       matches: SegmentMatch[];
       skipReason?: SkipReason;
       error?: string;
+      // The corroboration score, present only on a checked, non-skipped,
+      // non-errored statement; absent otherwise.
+      confidence?: Confidence;
     };
 
 // StatementsState keys statements by correlation id (namespaced per session by
@@ -65,6 +73,7 @@ function checkedFromResult(
     matches: segment.matches,
     skipReason: segment.skipReason,
     error,
+    confidence: segment.confidence,
   };
 }
 
