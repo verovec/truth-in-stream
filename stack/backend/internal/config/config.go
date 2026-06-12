@@ -341,10 +341,20 @@ func LoadDebugSearch() (DebugSearch, error) {
 const (
 	defaultPrecheckMinWords          = 4
 	defaultPrecheckCoverageThreshold = 0.4
-	// defaultPrecheckWikiCoverageThreshold is stricter than the claims floor:
-	// the wiki corpus is far larger and noisier, so it mirrors the evidence
-	// threshold to keep coverage precision-over-recall.
-	defaultPrecheckWikiCoverageThreshold = 0.6
+	// defaultPrecheckWikiCoverageThreshold is the wiki corpus's coverage floor.
+	// Coverage answers "is this topic present in the corpus at all", a strictly
+	// lower bar than the evidence/match threshold (defaultMatchEvidenceThreshold),
+	// which answers "is this hit strong enough to drive a verdict"; the two must
+	// not be conflated, and the floor inherited from the latter is what wrongly
+	// skipped grounded segments before VER-67. It is calibrated instead to the
+	// band the seeded corpus actually retrieves in: with
+	// voyage-4-large (input_type=query) on-topic factual statements top out at
+	// 0.51-0.65 (e.g. "Weed is a serious drug..." -> Legality of cannabis 0.5143)
+	// while off-topic conversational filler tops out at 0.32-0.42. 0.46 sits in
+	// that separation gap, admitting the on-topic band while still rejecting
+	// filler; the old 0.6 sat above the on-topic band entirely.
+	// PRECHECK_WIKI_COVERAGE_THRESHOLD overrides it.
+	defaultPrecheckWikiCoverageThreshold = 0.46
 )
 
 // Precheck holds the check-worthiness gate configuration. Enabled toggles the
@@ -352,8 +362,9 @@ const (
 // CoverageThreshold is the minimum curated-claims similarity a claim must reach
 // to be checked. WikiCoverageEnabled adds the embedded wiki corpus as a second
 // coverage source (PRECHECK_WIKI_COVERAGE_ENABLED, default on), and
-// WikiCoverageThreshold (PRECHECK_WIKI_COVERAGE_THRESHOLD) is its own stricter
-// floor; a segment is covered when either corpus clears its threshold.
+// WikiCoverageThreshold (PRECHECK_WIKI_COVERAGE_THRESHOLD) is its own floor,
+// calibrated to the wiki corpus's retrieval band rather than inherited from the
+// evidence threshold; a segment is covered when either corpus clears its floor.
 type Precheck struct {
 	Enabled               bool
 	MinWords              int
