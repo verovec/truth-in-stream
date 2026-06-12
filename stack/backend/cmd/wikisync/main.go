@@ -240,9 +240,13 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		return nil
 	}
 
+	// The producer publishes to the active versioned queue resolved from the same
+	// configuration the worker consumes, so both bind to the same queue without
+	// touching the enqueue logic.
 	client, err := queue.New(queue.Config{
 		URL:         queueCfg.URL,
-		QueueName:   queueCfg.Name,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
 		MaxPriority: queueCfg.MaxPriority,
 		Prefetch:    queueCfg.Prefetch,
 	})

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
@@ -789,7 +790,7 @@ func TestLoadQueue(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{"RABBITMQ_URL": "amqp://guest:guest@localhost:5672/"},
-			want: Queue{URL: "amqp://guest:guest@localhost:5672/", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1},
+			want: Queue{URL: "amqp://guest:guest@localhost:5672/", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "1", KnownVersions: []string{"1"}},
 		},
 		{
 			name: "overrides applied",
@@ -799,7 +800,15 @@ func TestLoadQueue(t *testing.T) {
 				"RABBITMQ_MAX_PRIORITY": "255",
 				"RABBITMQ_PREFETCH":     "16",
 			},
-			want: Queue{URL: "amqps://user:pass@broker:5671/", Name: "embedding.priority", MaxPriority: 255, Prefetch: 16},
+			want: Queue{URL: "amqps://user:pass@broker:5671/", Name: "embedding.priority", MaxPriority: 255, Prefetch: 16, Version: "1", KnownVersions: []string{"1"}},
+		},
+		{
+			name: "version list takes the newest as active",
+			env: map[string]string{
+				"RABBITMQ_URL":            "amqp://localhost",
+				"RABBITMQ_QUEUE_VERSIONS": "1, 2, 20260612",
+			},
+			want: Queue{URL: "amqp://localhost", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "20260612", KnownVersions: []string{"1", "2", "20260612"}},
 		},
 		{name: "missing url rejected", env: map[string]string{}, wantErr: true},
 		{name: "max priority zero rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "0"}, wantErr: true},
@@ -808,6 +817,9 @@ func TestLoadQueue(t *testing.T) {
 		{name: "negative prefetch rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "-1"}, wantErr: true},
 		{name: "prefetch above uint16 rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "65536"}, wantErr: true},
 		{name: "prefetch non-numeric rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_PREFETCH": "lots"}, wantErr: true},
+		{name: "empty version rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_QUEUE_VERSIONS": "1,,2"}, wantErr: true},
+		{name: "version with dot rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_QUEUE_VERSIONS": "1.2"}, wantErr: true},
+		{name: "duplicate version rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_QUEUE_VERSIONS": "1,1"}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -824,10 +836,17 @@ func TestLoadQueue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Fatalf("LoadQueue() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestQueueVersionedName(t *testing.T) {
+	q := Queue{Name: "embedding.jobs", Version: "20260612"}
+	if got, want := q.VersionedName(), "embedding.jobs.v20260612"; got != want {
+		t.Fatalf("VersionedName() = %q, want %q", got, want)
 	}
 }
 

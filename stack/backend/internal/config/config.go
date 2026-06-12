@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -831,23 +832,47 @@ const (
 	defaultQueueName        = "embedding.jobs"
 	defaultQueueMaxPriority = 10
 	defaultQueuePrefetch    = 1
+	// defaultQueueVersion is the single active version when none is configured,
+	// so a fresh local dev runs against embedding.jobs.v1.
+	defaultQueueVersion = "1"
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
 // and carries the broker credentials, so it is sourced from the environment
 // only and never logged. MaxPriority sets the queue's x-max-priority ceiling and
 // Prefetch the per-consumer unacknowledged-message limit (0 leaves it unbounded).
+//
+// Versions drives the versioned-queue convention: every queue name embeds an
+// explicit version (Name.v<version>) so the system can roll to a new message
+// schema by draining the old version while a new one fills, without losing
+// messages. The list is ordered oldest-first; Version is the active (newest)
+// version that the producer publishes to and a worker consumes, and KnownVersions
+// is every configured version so a worker can reject a message stamped with a
+// version it does not understand rather than mis-process it. Adding a version is a
+// configuration change, no new transport code.
 type Queue struct {
-	URL         string
-	Name        string
-	MaxPriority uint8
-	Prefetch    int
+	URL           string
+	Name          string
+	MaxPriority   uint8
+	Prefetch      int
+	Version       string
+	KnownVersions []string
+}
+
+// VersionedName is the broker queue name for the active version: the base name
+// with an explicit .v<version> suffix. Producer and worker both resolve it from
+// the same configuration, so they bind to the same queue.
+func (q Queue) VersionedName() string {
+	return q.Name + ".v" + q.Version
 }
 
 // LoadQueue reads the broker configuration from the environment. RABBITMQ_URL is
 // required; the queue name defaults to embedding.jobs, the max priority to 10
-// (validated to [1, 255]) and the prefetch to 1 (validated non-negative). Bad
-// values fail fast at startup rather than surfacing as a broker error later.
+// (validated to [1, 255]) and the prefetch to 1 (validated non-negative). The
+// versions default to a single "1"; RABBITMQ_QUEUE_VERSIONS overrides them as a
+// comma-separated, oldest-first list, with the newest taken as the active
+// version. Bad values fail fast at startup rather than surfacing as a broker
+// error later.
 func LoadQueue() (Queue, error) {
 	url, err := requireEnv("RABBITMQ_URL")
 	if err != nil {
@@ -865,12 +890,58 @@ func LoadQueue() (Queue, error) {
 	if err != nil {
 		return Queue{}, err
 	}
+	versions, err := queueVersions(getenv("RABBITMQ_QUEUE_VERSIONS", defaultQueueVersion))
+	if err != nil {
+		return Queue{}, err
+	}
 	return Queue{
-		URL:         url,
-		Name:        getenv("RABBITMQ_QUEUE", defaultQueueName),
-		MaxPriority: uint8(maxPriority),
-		Prefetch:    prefetch,
+		URL:           url,
+		Name:          getenv("RABBITMQ_QUEUE", defaultQueueName),
+		MaxPriority:   uint8(maxPriority),
+		Prefetch:      prefetch,
+		Version:       versions[len(versions)-1],
+		KnownVersions: versions,
 	}, nil
+}
+
+// queueVersions parses the comma-separated version list, oldest-first. Each token
+// is a queue-name suffix, so it must be a non-empty run of letters, digits,
+// underscores, or dashes (no dot, which separates the suffix from the base name);
+// duplicates are an operator mistake worth failing on rather than silently
+// collapsing. The list must be non-empty.
+func queueVersions(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	versions := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		if v == "" {
+			return nil, fmt.Errorf("config: RABBITMQ_QUEUE_VERSIONS has an empty version in %q", raw)
+		}
+		if !isQueueVersion(v) {
+			return nil, fmt.Errorf("config: RABBITMQ_QUEUE_VERSIONS version %q must be letters, digits, '_' or '-'", v)
+		}
+		if _, dup := seen[v]; dup {
+			return nil, fmt.Errorf("config: RABBITMQ_QUEUE_VERSIONS has duplicate version %q", v)
+		}
+		seen[v] = struct{}{}
+		versions = append(versions, v)
+	}
+	return versions, nil
+}
+
+func isQueueVersion(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Embedding-worker defaults. A worker embeds one chunk per job, so a 30s HTTP

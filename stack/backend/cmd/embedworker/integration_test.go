@@ -163,7 +163,7 @@ func TestWorkerEmbedsQueuedChunksEndToEnd(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	worker := embedjob.NewWorker(&recordingEmbedder{}, store, qStream{client: client}, qEnqueuer{client: client},
-		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 2, MaxAttempts: 3})
+		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 2, MaxAttempts: 3, KnownVersions: []string{"1"}})
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(runCtx) }()
 
@@ -220,7 +220,7 @@ func TestWorkerEmbedsHigherPriorityFirst(t *testing.T) {
 	rec := &recordingEmbedder{}
 	runCtx, cancel := context.WithCancel(ctx)
 	worker := embedjob.NewWorker(rec, store, qStream{client: client}, qEnqueuer{client: client},
-		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 1, MaxAttempts: 3})
+		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 1, MaxAttempts: 3, KnownVersions: []string{"1"}})
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(runCtx) }()
 
@@ -240,7 +240,7 @@ func newQueue(t *testing.T, broker, name string) *queue.Client {
 	t.Helper()
 	// A test-scoped queue name keeps these runs off the real embedding.jobs queue
 	// and isolates the two tests from each other.
-	client, err := queue.New(queue.Config{URL: broker, QueueName: name, MaxPriority: 10, Prefetch: 1})
+	client, err := queue.New(queue.Config{URL: broker, QueueName: name, Version: "1", MaxPriority: 10, Prefetch: 1})
 	if err != nil {
 		t.Fatalf("queue.New: %v", err)
 	}
