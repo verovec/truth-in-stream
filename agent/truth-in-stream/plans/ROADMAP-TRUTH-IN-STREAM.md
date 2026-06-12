@@ -1,5 +1,10 @@
 # ROADMAP - TRUTH-IN-STREAM
 
+Synced from Linear project `Truth in Stream` (team Veroveit). Derived state; do not hand-edit
+the Ready queue. Rules live in the `roadmap-linear` skill.
+
+Counts: 46 Done, 3 Todo, 1 In Progress (VER-53), 1 Duplicate (VER-25). Ready queue size: 1.
+
 ## Card list
 
 | ID | Title | State | Priority | depends_on |
@@ -32,47 +37,51 @@
 | VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Done | High | |
 | VER-32 | Local dev data environment: one-command reset, seeds, and offline fixtures | Done | High | |
 | VER-33 | Public landing page and login-modal entry into the analyser | Done | High | |
-| VER-34 | Ingest a YouTube video by link: download, store, list as playlist item | Done | High | |
+| VER-34 | Ingest a YouTube video by link: download, store in object storage, list as playlist item | Done | High | |
 | VER-35 | Daily Slack digest and /report command | Done | Low | |
-| VER-36 | Library video tiles: render a real frame thumbnail | Done | Low | |
-| VER-37 | Paste a YouTube URL to add a video: frontend ingest affordance and polling | Done | Medium | |
-| VER-38 | Live panel: stacked subtitles-over-fact-checks layout | Done | Medium | |
+| VER-36 | Library video tiles: render a real frame thumbnail instead of the gradient monogram | Done | Low | |
+| VER-37 | Paste a YouTube URL to add a video: frontend ingest affordance and pending-to-ready polling | Done | Medium | |
+| VER-38 | Live panel: stacked subtitles-over-fact-checks layout with independent scroll regions | Done | Medium | |
 | VER-39 | Live analysis summary: top-of-page running findings strip | Done | Medium | |
-| VER-40 | Unify dev seeding: one command for a complete environment | Done | High | |
-| VER-41 | Speaker-aware live analysis: diarized segmentation | Done | High | |
-| VER-42 | Rework make wiki-populate: auto-load .env keys, skip re-download | Done | Medium | |
-| VER-43 | Make AssemblyAI the only transcriber: stream imported videos live | Done | Medium | |
-| VER-44 | Dev-only debug bar: real-time WebSocket search over wiki corpus | Done | High | |
+| VER-40 | Unify dev seeding: one command for a complete environment | Done | Medium | |
+| VER-41 | Speaker-aware live analysis: diarized segmentation, group up to 3 sentences per turn | Done | High | |
+| VER-42 | Rework make wiki-populate: auto-load .env keys and skip re-download | Done | Medium | |
+| VER-43 | Make AssemblyAI the only transcriber: stream imported videos live, remove ElevenLabs Scribe | Done | Medium | |
+| VER-44 | Dev-only debug bar: real-time WebSocket search over embedded wiki corpus | Done | Medium | |
 | VER-45 | Fix live speaker labels: split mixed-speaker turns at word boundaries | Done | High | |
-| VER-46 | Database backup & restore: full pg_dump with S3 upload | Done | Medium | |
+| VER-46 | Database backup & restore: full pg_dump with S3 upload to skip re-embedding | Done | Medium | |
 | VER-47 | Wiki-grounded coverage: let the embedded corpus decide checkability | Done | High | |
-| VER-48 | Live scoring backpressure: stop dropping statements as not_checked | Done | High | |
-| VER-49 | Structured wiki ingestion: per-chunk metadata for classification | Done | High | |
-| VER-50 | Confidence scoring: cluster corpus evidence into a corroboration percentage | Done | Medium | VER-47, VER-48, VER-49 |
+| VER-48 | Live scoring backpressure: stop dropping statements as not_checked under load | Done | High | |
+| VER-49 | Structured wiki ingestion: per-chunk metadata for classification | Done | Medium | |
+| VER-50 | Confidence scoring: cluster corpus evidence into a corroboration percentage | Done | Medium | |
 | VER-51 | RabbitMQ broker and embedding-queue connection (infra + shared client) | Done | High | |
-| VER-52 | Embedding worker service: drain the priority queue and embed chunks | Done | High | VER-49, VER-51 |
-| VER-53 | Adapt ingestion to enqueue embedding jobs and scale to a larger corpus | Todo | Medium | VER-49, VER-52 |
+| VER-52 | Embedding worker service: drain the priority queue and embed chunks | Done | High | |
+| VER-53 | Adapt ingestion to enqueue embedding jobs and scale to a larger corpus | In Progress | Medium | VER-49, VER-52 |
 | VER-54 | Topic clustering and importance scoring to drive embedding priority | Todo | Low | VER-53 |
-| VER-55 | Full local corpus reingest after the ingestion rework | Todo | High | VER-49, VER-52, VER-53, VER-54 |
+| VER-55 | Full local corpus reingest after the ingestion rework: rebuild chunks and embeddings | Todo | High | VER-49, VER-52, VER-53, VER-54 |
+| VER-56 | Scheduled database backups: cron the pg_dump-to-S3 job in the cloud | Todo | Medium | |
 
 ## Dependency graph
 
-VER-47 -> VER-50
-VER-48 -> VER-50
-VER-49 -> VER-50
-VER-49 -> VER-52
-VER-51 -> VER-52
+```
 VER-49 -> VER-53
 VER-52 -> VER-53
 VER-53 -> VER-54
-VER-49 -> VER-55
-VER-52 -> VER-55
 VER-53 -> VER-55
 VER-54 -> VER-55
+VER-49 -> VER-55
+VER-52 -> VER-55
+```
 
 ## Ready queue
 
-1. VER-53 - Adapt ingestion to enqueue embedding jobs (Medium) - deps VER-49 + VER-52 both Done;
-   unblocks VER-54, VER-55. Branch off `main`.
+A card is READY when its state is `Todo` AND every `depends_on` card is cleared (Done, or
+In Review for a single stacked dependency). Ordered by priority, then unblock-count, then number.
 
-VER-54 (waits on VER-53) and VER-55 (waits on VER-53, VER-54) stay blocked until VER-53 advances.
+1. **VER-56** (Medium) - Scheduled database backups: cron the pg_dump-to-S3 job in the cloud.
+   No dependencies -> branches off `main`. Additive Terraform, no file overlap with open cards.
+
+Not ready:
+- VER-53 - already `In Progress` (claimed by another session); not a `Todo` candidate.
+- VER-54 - blocked by VER-53 (In Progress; a dependency clears only when Done or In Review).
+- VER-55 - blocked by VER-53 (In Progress) and VER-54 (Todo); two uncleared dependencies.

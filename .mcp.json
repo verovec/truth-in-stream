@@ -16,6 +16,14 @@
       "command": "npx",
       "args": ["-y", "@mkusaka/mcp-server-linear"],
       "env": { "LINEAR_API_KEY": "${LINEAR_API_KEY}" }
+    },
+    "postgres": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["postgres-mcp", "--access-mode=restricted"],
+      "env": {
+        "DATABASE_URI": "postgresql://postgres:dev@localhost:5432/truthinstream?sslmode=disable"
+      }
     }
   }
 }
