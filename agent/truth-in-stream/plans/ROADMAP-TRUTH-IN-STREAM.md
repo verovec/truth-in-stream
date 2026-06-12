@@ -3,7 +3,8 @@
 Synced from Linear project `Truth in Stream` (team Veroveit). Derived state; do not hand-edit
 the Ready queue. Rules live in the `roadmap-linear` skill.
 
-Counts: 46 Done, 3 Todo, 1 In Progress (VER-53), 1 Duplicate (VER-25). Ready queue size: 1.
+Counts: 46 Done, 11 Todo, 1 In Progress (VER-56), 1 In Review (VER-53), 1 Duplicate (VER-25).
+Ready queue size: 3.
 
 ## Card list
 
@@ -56,10 +57,19 @@ Counts: 46 Done, 3 Todo, 1 In Progress (VER-53), 1 Duplicate (VER-25). Ready que
 | VER-50 | Confidence scoring: cluster corpus evidence into a corroboration percentage | Done | Medium | |
 | VER-51 | RabbitMQ broker and embedding-queue connection (infra + shared client) | Done | High | |
 | VER-52 | Embedding worker service: drain the priority queue and embed chunks | Done | High | |
-| VER-53 | Adapt ingestion to enqueue embedding jobs and scale to a larger corpus | In Progress | Medium | VER-49, VER-52 |
+| VER-53 | Adapt ingestion to enqueue embedding jobs and scale to a larger corpus | In Review | Medium | VER-49, VER-52 |
 | VER-54 | Topic clustering and importance scoring to drive embedding priority | Todo | Low | VER-53 |
 | VER-55 | Full local corpus reingest after the ingestion rework: rebuild chunks and embeddings | Todo | High | VER-49, VER-52, VER-53, VER-54 |
-| VER-56 | Scheduled database backups: cron the pg_dump-to-S3 job in the cloud | Todo | Medium | |
+| VER-56 | Scheduled database backups: cron the pg_dump-to-S3 job in the cloud | In Progress | Medium | |
+| VER-57 | AWS bootstrap: S3-native-locked tfstate and first-apply readiness on the dev account | Todo | High | |
+| VER-58 | Secrets management tooling with AWSCURRENT version pinning per environment | Todo | High | |
+| VER-59 | Least-privilege CI/CD IAM roles with terraform-driven policy sync and chicken-egg apply guard | Todo | High | VER-57 |
+| VER-60 | Enable the Amazon MQ broker in dev and add per-queue message versioning | Todo | High | VER-59 |
+| VER-61 | Deployable producer job on ECS that populates the embedding queue from the corpus | Todo | High | VER-60, VER-53 |
+| VER-62 | SSM bastion and port-forward tooling to consume the cloud queue into a local database | Todo | High | VER-61 |
+| VER-63 | RabbitMQ metrics lambda and CloudWatch dashboard for the ingestion pipeline | Todo | Medium | VER-62 |
+| VER-64 | Worker-lifecycle lambda: queue-depth autoscaling and rollout for ECS embedding workers | Todo | Medium | VER-63 |
+| VER-65 | GitHub Action to build and deploy the producer and worker images with queue version roll | Todo | Medium | VER-64 |
 
 ## Dependency graph
 
@@ -71,6 +81,14 @@ VER-53 -> VER-55
 VER-54 -> VER-55
 VER-49 -> VER-55
 VER-52 -> VER-55
+VER-53 -> VER-61
+VER-57 -> VER-59
+VER-59 -> VER-60
+VER-60 -> VER-61
+VER-61 -> VER-62
+VER-62 -> VER-63
+VER-63 -> VER-64
+VER-64 -> VER-65
 ```
 
 ## Ready queue
@@ -78,10 +96,17 @@ VER-52 -> VER-55
 A card is READY when its state is `Todo` AND every `depends_on` card is cleared (Done, or
 In Review for a single stacked dependency). Ordered by priority, then unblock-count, then number.
 
-1. **VER-56** (Medium) - Scheduled database backups: cron the pg_dump-to-S3 job in the cloud.
-   No dependencies -> branches off `main`. Additive Terraform, no file overlap with open cards.
+1. VER-57 - AWS bootstrap (High, no deps -> branch off `main`). Unblocks the whole infra chain (VER-59..65).
+2. VER-58 - Secrets management tooling (High, no deps -> branch off `main`). Independent operator tooling.
+3. VER-54 - Topic clustering and importance scoring (Low, single dep VER-53 In Review -> stack on VER-53 branch).
 
 Not ready:
-- VER-53 - already `In Progress` (claimed by another session); not a `Todo` candidate.
-- VER-54 - blocked by VER-53 (In Progress; a dependency clears only when Done or In Review).
-- VER-55 - blocked by VER-53 (In Progress) and VER-54 (Todo); two uncleared dependencies.
+- VER-55 - blocked by VER-54 (Todo) and VER-53 (In Review); more than one uncleared dependency.
+- VER-56 - already `In Progress` (claimed by another session); not a `Todo` candidate.
+- VER-59 - blocked by VER-57 (Todo).
+- VER-60 - blocked by VER-59 (Todo).
+- VER-61 - blocked by VER-60 (Todo) and VER-53 (In Review); VER-60 uncleared.
+- VER-62 - blocked by VER-61 (Todo).
+- VER-63 - blocked by VER-62 (Todo).
+- VER-64 - blocked by VER-63 (Todo).
+- VER-65 - blocked by VER-64 (Todo).
