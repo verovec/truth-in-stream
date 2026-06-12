@@ -49,3 +49,38 @@ variable "wiki_sync_memory" {
   default     = 4096
   description = "Fargate memory in MiB for the wikisync task."
 }
+variable "enable_embed_worker" {
+  type        = bool
+  default     = false
+  description = "Create the embedding-worker service. Default false; enable it (and set embed_worker_desired_count) when running a corpus ingest that publishes embedding jobs."
+}
+
+variable "embed_worker_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units per worker replica (1024 = 1 vCPU)."
+}
+
+variable "embed_worker_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB per worker replica."
+}
+
+variable "embed_worker_desired_count" {
+  type        = number
+  default     = 2
+  description = "Number of worker replicas. Scale this to scale embedding throughput."
+}
+
+variable "embed_worker_concurrency" {
+  type        = number
+  default     = 4
+  description = "Jobs one replica embeds in parallel (EMBED_WORKER_CONCURRENCY)."
+}
+
+variable "embed_worker_max_attempts" {
+  type        = number
+  default     = 5
+  description = "Per-job delivery budget before a persistent failure is dropped with a log (EMBED_WORKER_MAX_ATTEMPTS)."
+}

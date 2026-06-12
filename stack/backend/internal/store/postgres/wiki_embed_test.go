@@ -430,6 +430,99 @@ func TestBulkEmbedResumeEmbedsOnlyRemaining(t *testing.T) {
 	}
 }
 
+func TestSetStagingChunkEmbedding(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	stageChunks(t, store, "v1", []domain.WikiChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
+
+	updated, err := store.SetStagingChunkEmbedding(ctx, 1, 0, unitVec(1))
+	if err != nil || !updated {
+		t.Fatalf("first write: updated=%v, err=%v; want true, nil", updated, err)
+	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 1 {
+		t.Fatalf("remaining after one write = %d; want 1", rem.Chunks)
+	}
+
+	// A redelivery rewrites the same row safely and leaves the corpus unchanged.
+	updated, err = store.SetStagingChunkEmbedding(ctx, 1, 0, unitVec(1))
+	if err != nil || !updated {
+		t.Fatalf("idempotent rewrite: updated=%v, err=%v; want true, nil", updated, err)
+	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 1 {
+		t.Fatalf("remaining after rewrite = %d; want 1 (idempotent)", rem.Chunks)
+	}
+
+	// A job for a chunk not in staging matches nothing: dropped, not an error.
+	updated, err = store.SetStagingChunkEmbedding(ctx, 999, 0, unitVec(1))
+	if err != nil {
+		t.Fatalf("absent row: err=%v; want nil", err)
+	}
+	if updated {
+		t.Fatal("absent row: updated=true; want false")
+	}
+}
+
+func TestSetStagingChunkEmbeddingRejectsWrongDimension(t *testing.T) {
+	store := setupStore(t)
+	stageChunks(t, store, "v1", []domain.WikiChunk{wikiChunk(1, 0, "v1")})
+	if _, err := store.SetStagingChunkEmbedding(t.Context(), 1, 0, []float32{1, 2, 3}); err == nil {
+		t.Fatal("want error for wrong embedding dimension")
+	}
+}
+
+func TestSetStagingChunkEmbeddingNoStagingTable(t *testing.T) {
+	store := setupStore(t)
+	// No staging table exists (none reset): a late job after a completed swap
+	// must drop cleanly rather than error and loop.
+	updated, err := store.SetStagingChunkEmbedding(t.Context(), 1, 0, unitVec(1))
+	if err != nil {
+		t.Fatalf("absent staging table: err=%v; want nil", err)
+	}
+	if updated {
+		t.Fatal("absent staging table: updated=true; want false")
+	}
+}
+
+func TestSetStagingChunkEmbeddingSearchableAfterSwap(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureCorpus: %v", err)
+	}
+	stageChunks(t, store, "v2", []domain.WikiChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
+
+	// Drive the worker's per-chunk write for every staged chunk, then swap live.
+	batch, err := store.UnembeddedStaging(ctx, 10)
+	if err != nil {
+		t.Fatalf("UnembeddedStaging: %v", err)
+	}
+	for _, c := range batch {
+		if _, err := store.SetStagingChunkEmbedding(ctx, c.PageID, c.ChunkIndex, unitVec(int(c.PageID))); err != nil {
+			t.Fatalf("SetStagingChunkEmbedding(%d): %v", c.PageID, err)
+		}
+	}
+	if rem, _ := store.StagingRemaining(ctx); rem.Chunks != 0 {
+		t.Fatalf("remaining after writing every chunk = %d; want 0", rem.Chunks)
+	}
+	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
+	}
+	if err := store.FinalizeStaging(ctx, "simplewiki", "v2", time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
+	}
+
+	got, err := store.SearchWiki(ctx, unitVec(2), 1)
+	if err != nil {
+		t.Fatalf("SearchWiki: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "v2" {
+		t.Fatalf("nearest to unitVec(2) = %+v; want the chunk written with content v2", got)
+	}
+	if got[0].Distance > 1e-4 {
+		t.Errorf("nearest distance = %v; want ~0 (the worker's vector is searchable)", got[0].Distance)
+	}
+}
+
 func stagingExistsT(t *testing.T, store *Store) bool {
 	t.Helper()
 	var exists bool

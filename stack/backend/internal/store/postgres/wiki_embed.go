@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -335,6 +336,42 @@ func (s *Store) UpdateStagingEmbeddings(ctx context.Context, chunks []domain.Wik
 		return fmt.Errorf("postgres: update staging embeddings: %w", err)
 	}
 	return nil
+}
+
+// undefinedTableCode is PostgreSQL's SQLSTATE for "relation does not exist". A
+// single-chunk embedding write hits it when the staging table is gone because
+// the corpus was already swapped live, which the worker treats as an obsolete
+// job rather than an error.
+const undefinedTableCode = "42P01"
+
+// SetStagingChunkEmbedding writes one embedding onto the staging row identified
+// by (pageID, chunkIndex). The vector is sent in pgvector's text form and cast
+// server-side - the same text-format path UpdateStagingEmbeddings uses, because
+// the runtime staging table is outside the sqlc-modeled schema and pgvector-go
+// has no binary halfvec encoder. The write is idempotent: a redelivered job
+// rewrites the same vector. updated is false, with no error, when nothing
+// matched - either no staging row carries that identity, or the staging table is
+// gone because the corpus was already swapped live - so the embedding worker
+// drops a late or duplicate job instead of retrying it forever.
+func (s *Store) SetStagingChunkEmbedding(ctx context.Context, pageID int64, chunkIndex int, embedding []float32) (bool, error) {
+	if len(embedding) != domain.EmbeddingDim {
+		return false, fmt.Errorf("postgres: set staging embedding page %d: embedding has %d dims, want %d", pageID, len(embedding), domain.EmbeddingDim)
+	}
+	if chunkIndex < 0 || chunkIndex > math.MaxInt32 {
+		return false, fmt.Errorf("postgres: set staging embedding page %d: chunk index %d out of range", pageID, chunkIndex)
+	}
+	tag, err := s.pool.Exec(ctx, fmt.Sprintf(
+		"UPDATE %s SET embedding = $1::halfvec WHERE page_id = $2 AND chunk_index = $3", wikiStagingTable,
+	),
+		formatHalfVec(embedding), pageID, int32(chunkIndex))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == undefinedTableCode {
+			return false, nil
+		}
+		return false, fmt.Errorf("postgres: set staging embedding page %d chunk %d: %w", pageID, chunkIndex, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // formatHalfVec renders an embedding as pgvector's text form, "[1,2,3]", for a

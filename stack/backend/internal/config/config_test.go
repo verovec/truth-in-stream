@@ -831,6 +831,55 @@ func TestLoadQueue(t *testing.T) {
 	}
 }
 
+func TestLoadEmbedWorker(t *testing.T) {
+	defaults := EmbedWorker{Concurrency: 4, MaxAttempts: 5, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    EmbedWorker
+		wantErr bool
+	}{
+		{name: "defaults applied", env: map[string]string{}, want: defaults},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				"EMBED_WORKER_CONCURRENCY":       "8",
+				"EMBED_WORKER_MAX_ATTEMPTS":      "3",
+				"EMBED_WORKER_HTTP_TIMEOUT":      "45s",
+				"EMBED_WORKER_RPM":               "120",
+				"EMBED_WORKER_EMBED_MAX_RETRIES": "2",
+			},
+			want: EmbedWorker{Concurrency: 8, MaxAttempts: 3, HTTPTimeout: 45 * time.Second, RequestsPerMinute: 120, EmbedMaxRetries: 2},
+		},
+		{name: "zero concurrency rejected", env: map[string]string{"EMBED_WORKER_CONCURRENCY": "0"}, wantErr: true},
+		{name: "zero max attempts rejected", env: map[string]string{"EMBED_WORKER_MAX_ATTEMPTS": "0"}, wantErr: true},
+		{name: "non-positive timeout rejected", env: map[string]string{"EMBED_WORKER_HTTP_TIMEOUT": "0s"}, wantErr: true},
+		{name: "negative rpm rejected", env: map[string]string{"EMBED_WORKER_RPM": "-1"}, wantErr: true},
+		{name: "zero embed retries rejected", env: map[string]string{"EMBED_WORKER_EMBED_MAX_RETRIES": "0"}, wantErr: true},
+		{name: "non-numeric concurrency rejected", env: map[string]string{"EMBED_WORKER_CONCURRENCY": "many"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadEmbedWorker()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadLive(t *testing.T) {
 	defaults := Live{Concurrency: 4, QueueDepth: 32}
 	tests := []struct {
