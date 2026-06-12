@@ -33,7 +33,8 @@ Modules in `stack/terraform/modules/`: `vpc` (2-AZ, configurable `nat_gateway_co
 - Two CI roles: `AWS_ROLE_ARN` (terraform plan/apply, bootstrap out-of-band) and `AWS_DEPLOY_ROLE_ARN` (narrow: ECR push, ECS deploy, run migrate task; output of the iam module).
 - Pin GitHub Actions to commit SHAs, especially `aws-actions/configure-aws-credentials` and `amazon-ecr-login` (they mint/use AWS creds).
 - aws provider v6: use `data.aws_region.current.region` (`.name` is deprecated). An `aws_security_group` with no `egress` block has NO egress (TF strips AWS's default allow-all) — that is intended for the Postgres SG.
-- Deliberate omissions vs the reference: no customer-managed KMS (AWS-managed keys), no RabbitMQ/Redis/bastion, no cross-account Route53, dual NAT only in prod.
+- `bastion` (VER-62): SSM-only EC2 (AL2023 from the `al2023-ami-kernel-default` SSM parameter, `ignore_changes=[ami]`), IMDSv2 required (`http_tokens=required`), no public IP, no inbound rules, egress-only SG, instance profile limited to `AmazonSSMManagedInstanceCore`. It is the develop-locally tunnel: `scripts/ssm-port-forward.sh` opens `AWS-StartPortForwardingSessionToRemoteHost` to the private broker so the worker drains the cloud queue into the LOCAL Postgres. Gated `enable_bastion` (default false — a running instance). The broker-reach rule is wiring, not a standalone SG rule: add the bastion SG to the rabbitmq module's `allowed_security_group_ids` (reuses the broker's inline ingress; a separate `aws_*_security_group_rule` on an inline-ruled SG conflicts, and an egress-to-broker rule would cycle with that ingress).
+- Deliberate omissions vs the reference: no customer-managed KMS (AWS-managed keys), no Redis, no cross-account Route53, dual NAT only in prod. (RabbitMQ via Amazon MQ and the SSM bastion are now present — see `rabbitmq` and `bastion` above.)
 
 ## Pitfalls
 1. Forgetting bucket versioning - native locking silently fails.

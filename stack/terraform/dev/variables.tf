@@ -26,6 +26,18 @@ variable "enable_rds" {
   description = "Provision the RDS PostgreSQL instance and wire its DATABASE_URL into the app stack. Default false in dev: the database is developed locally, so dev creates no RDS and the DB-dependent migration task and embedding worker stay gated off (they require enable_rds). Set true to bring the managed database online."
 }
 
+variable "enable_bastion" {
+  type        = bool
+  default     = false
+  description = "Provision the SSM-only bastion for the local-worker tunnel (scripts/ssm-port-forward.sh). Default false: it is a running instance with a cost, so enable it only for the duration of a corpus ingest, then disable it. When true its security group is allowed to reach the broker on AMQPS."
+}
+
+variable "bastion_instance_type" {
+  type        = string
+  default     = "t3.micro"
+  description = "Bastion instance class (x86_64 family; the AMI is x86_64). t3.micro suffices: the host only relays SSM port-forward traffic, it runs no workload."
+}
+
 variable "enable_wiki_sync" {
   type        = bool
   default     = false

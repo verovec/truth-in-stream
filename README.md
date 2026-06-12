@@ -360,6 +360,63 @@ the staging table), and publishing is at-least-once with idempotent workers. The
 database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
 consumer database - the messages are self-contained.
 
+#### Drain the cloud queue locally (SSM bastion tunnel)
+
+The develop-locally model keeps the data on your machine: the producer fills the cloud broker
+queue, then you run the embedding worker locally against a tunnel so it drains that queue into the
+local Postgres. No cloud database is involved. The broker is private (AMQPS 5671, reachable only
+inside the VPC), so the tunnel goes through a hardened SSM-only bastion - no SSH, no public IP, no
+inbound rules, IMDSv2 required, and an instance role limited to the SSM managed-core policy.
+
+Bring the bastion up for the duration of an ingest (it is a running instance with a cost, so it is
+gated off by default), then take it back down:
+
+```bash
+cd stack/terraform/dev
+terraform apply -var enable_bastion=true   # deploy is human-gated; run with elevated creds
+```
+
+Open the tunnel in one terminal (resolves the bastion by tag, reads the broker host from its
+Secrets Manager URL, and forwards AMQPS 5671 to localhost). It keys off the dev SSO profile, so log
+in first:
+
+```bash
+aws sso login --profile verovec-dev
+./scripts/ssm-port-forward.sh dev          # prints localhost:5671; keep it open
+```
+
+The broker speaks AMQPS, so its TLS certificate is issued for its real hostname, not `localhost`;
+the worker (`amqp.Dial`) verifies it. Point that hostname at the tunnel so verification passes,
+keeping the broker URL exactly as the secret holds it:
+
+```bash
+BROKER_URL=$(aws secretsmanager get-secret-value --secret-id truth-in-stream/dev/rabbitmq/url \
+  --query SecretString --output text --profile verovec-dev)
+BROKER_HOST=$(printf '%s' "$BROKER_URL" | sed -E 's#.*@([^:/]+).*#\1#')
+echo "127.0.0.1 $BROKER_HOST" | sudo tee -a /etc/hosts   # remove this line when done
+```
+
+In a second terminal, run the worker as a host process (not the compose `embedworker`, which is on
+the container network and cannot reach the host-side tunnel) against the tunnel and the local
+database; it drains the cloud queue and writes embeddings locally. Make sure the local Postgres is
+up (`docker compose up -d postgres`) and that `RABBITMQ_QUEUE` / `RABBITMQ_QUEUE_VERSIONS` match the
+producer's run (defaults if unset):
+
+```bash
+cd stack/backend
+RABBITMQ_URL="$BROKER_URL" \
+DATABASE_URL='postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable' \
+EMBEDDING_API_KEY="$EMBEDDING_API_KEY" \
+  go run ./cmd/embedworker
+```
+
+Prerequisites: the AWS CLI v2 and the [Session Manager
+plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+The SSM port-forward document has no TCP keepalive, so an idle tunnel can drop - re-run the script
+to reconnect. When the ingest is done, drop the `/etc/hosts` line and tear the bastion down
+(`terraform apply -var enable_bastion=false`). The script is unit-tested with a stubbed `aws` CLI
+(`scripts/ssm-port-forward.test.sh`, run in CI).
+
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.

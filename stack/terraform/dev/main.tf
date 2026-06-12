@@ -62,13 +62,38 @@ module "rabbitmq" {
   project     = local.project
   environment = var.environment
 
-  vpc_id                     = module.vpc.vpc_id
-  subnet_ids                 = [module.vpc.private_subnet_ids[0]]
-  allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = [module.vpc.private_subnet_ids[0]]
+  # The ECS tasks reach the broker in-cluster; the bastion reaches it for the
+  # operator's local-worker tunnel, so its SG joins the allow-list only when the
+  # bastion is provisioned. Wiring it here (vs. a standalone rule on the broker
+  # SG) reuses the broker module's own ingress and avoids the inline-rule
+  # conflict a separate aws_*_security_group_rule would cause.
+  allowed_security_group_ids = concat(
+    [module.vpc.ecs_tasks_security_group_id],
+    var.enable_bastion ? [module.bastion[0].security_group_id] : [],
+  )
 
   # Dev secrets purge immediately so destroy/apply cycles do not collide with
   # the recovery window.
   secret_recovery_window_days = 0
+}
+
+# SSM-only bastion for the develop-locally model: an operator opens a port-forward
+# through it to the private broker (scripts/ssm-port-forward.sh) and runs the
+# embedding worker locally against the tunnel, draining the cloud queue into the
+# local Postgres. No public IP, no SSH, no inbound rules. Gated off by default
+# (it is a running instance with a cost); enable it for the duration of an ingest.
+module "bastion" {
+  source = "../modules/bastion"
+  count  = var.enable_bastion ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  vpc_id        = module.vpc.vpc_id
+  subnet_id     = module.vpc.private_subnet_ids[0]
+  instance_type = var.bastion_instance_type
 }
 
 # External API keys. Terraform creates the containers only; set the values out
@@ -410,4 +435,5 @@ module "apply_permissions" {
 
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
+  include_bastion         = var.enable_bastion
 }
