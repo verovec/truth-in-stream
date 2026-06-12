@@ -1,10 +1,20 @@
 name: terraform
 on:
-  push: { branches: [main], paths: ['stack/terraform/**'] }
-  pull_request: { paths: ['stack/terraform/**'] }
+  push:
+    branches: [main]
+    paths: ['stack/terraform/**', '.github/workflows/terraform.yml', '.github/workflows/_terraform.yml']
+  pull_request:
+    paths: ['stack/terraform/**', '.github/workflows/terraform.yml', '.github/workflows/_terraform.yml']
 jobs:
   dev:
     uses: ./.github/workflows/_terraform.yml
+    # The reusable job requests id-token: write to assume the AWS OIDC role.
+    # A called workflow only receives permissions the caller already holds, and
+    # the repo default is id-token: none, so the caller must grant it explicitly
+    # or GitHub rejects the file at parse time.
+    permissions:
+      id-token: write
+      contents: read
     with:
       path: stack/terraform/dev
       apply: ${{ github.ref == 'refs/heads/main' }}
