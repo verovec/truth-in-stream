@@ -56,6 +56,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	liveCfg, err := config.LoadLive()
+	if err != nil {
+		return err
+	}
 	debugSearchCfg, err := config.LoadDebugSearch()
 	if err != nil {
 		return err
@@ -160,10 +164,12 @@ func run(logger *slog.Logger) error {
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
-		Stream:     liveStream(transcription, logger),
-		Matcher:    segmentMatcher,
-		Prechecker: prechecker,
-		Logger:     logger,
+		Stream:      liveStream(transcription, logger),
+		Matcher:     segmentMatcher,
+		Prechecker:  prechecker,
+		Logger:      logger,
+		Concurrency: liveCfg.Concurrency,
+		QueueDepth:  liveCfg.QueueDepth,
 	})
 	if err != nil {
 		return err
