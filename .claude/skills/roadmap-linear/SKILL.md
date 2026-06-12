@@ -72,20 +72,31 @@ the right card. `/roadmap` writes three things into `agent/<org_slug>/plans/ROAD
    comma-separated list of card IDs that must reach `Done` first (empty if none). Derive it from
    each card's stated dependencies (Context section); keep it in sync on every `/roadmap`.
 2. **Dependency graph** - the edges as `A -> B` (A must be Done before B starts).
-3. **Ready queue** - the computed pick order. A card is READY when its state is `Todo` AND every
-   `depends_on` card is `Done`. Order READY cards by Linear priority, then by unblock-count (how
-   many cards it transitively blocks, so critical-path work goes first), then by card number.
+3. **Ready queue** - the computed pick order. A card is READY when its state is `Todo` AND its
+   `depends_on` cards are cleared, where a dependency counts as cleared once it is `Done` OR
+   `In Review` (its PR is open). A `Todo` card becomes READY two ways:
+   - **off `main`:** every `depends_on` card is `Done`. The card branches off `main`.
+   - **stacked:** exactly one `depends_on` card is `In Review` and every other is `Done`. The card
+     stacks on that dependency's branch (`delivering-linear-cards`). A card with two or more
+     dependencies not yet `Done` is NOT ready - it waits until at most one remains unmerged, so
+     there is a single branch to stack on; you cannot stack on two open branches at once.
+   Order READY cards by Linear priority, then by unblock-count (how many cards it transitively
+   blocks, so critical-path work goes first), then by card number.
 
 `/pick` reads the Ready queue top-down and claims the first card it can. Never hand-edit the
 Ready queue - it is derived; fix `depends_on` or card states and re-run `/roadmap`.
 
-A dependency only sequences `Todo` work. Two refinements at delivery time (see
-`delivering-linear-cards`): a session that has just delivered a card MAY continue to a dependent
-whose only unmerged dependency is that card, stacking the dependent's branch on the dependency's
-branch (a single chain, not a multi-dependency card); and once both a dependency and its dependent
-are `In Review`, the link is removed and the rebased branches alone guarantee a conflict-free
-in-order merge. Because the Ready queue only considers `Todo` cards, removing a link from an
-`In Review` card never changes it.
+A dependency sequences work until its PR opens; after that it only gates the final merge, so it
+must stop blocking the queue or the chain stalls waiting on a human merge. The moment a dependency
+reaches `In Review`, its dependents become READY and `/pick` delivers them stacked on the
+dependency's branch (`delivering-linear-cards`), so a chain flows link by link without waiting for
+each PR to merge. The Linear `depends_on` link stays in place while it still drives the Ready queue
+- i.e. while the dependent is `Todo` or `In Progress` - because that link is what tells `/pick`
+which branch to stack on. It is removed only once the dependent itself reaches `In Review`, when
+both branches are open and rebased and they alone guarantee a conflict-free in-order merge. NEVER
+remove a link while the dependent is still `Todo`/`In Progress`: that drops the stacking
+information and lets the dependent branch off `main`, reintroducing the merge conflict the link
+exists to prevent.
 
 ## Version card
 - A card titled `agent-industry-version` mirrors the local `VERSION` file. Keep it in `Done`.

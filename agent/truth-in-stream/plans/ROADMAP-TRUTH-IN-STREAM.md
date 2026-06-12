@@ -1,102 +1,75 @@
-# Truth in Stream Roadmap - State File
+# ROADMAP - TRUTH-IN-STREAM
 
-```
-LINEAR_TEAM: Veroveit
-LINEAR_PROJECT: Truth in Stream
-LINEAR_TICKETS: VER-6..VER-43
-AGENT_INDUSTRY_VERSION: 5.0.0
-STATUS: Active
-CREATED: 2026-06-09
-LAST_UPDATED: 2026-06-11 (pick refresh - VER-39/42/43 ready)
-```
-
-Rules live in the `roadmap-linear` skill. This file is derived state; never hand-edit the
-Ready queue.
-
-## Card List (live as of 2026-06-11)
+## Card list
 
 | ID | Title | State | Priority | depends_on |
 |----|-------|-------|----------|------------|
+| VER-6  | Curated verification database: schema and ingestion | Done | High | |
+| VER-7  | Transcription service: audio to timestamped segments | Done | High | |
+| VER-8  | Video player UI with standard playback features | Done | Medium | |
+| VER-9  | Embedding and match service: segments to ranked claims | Done | High | |
+| VER-10 | Processing orchestration: run pipeline on load and serve results | Done | High | |
+| VER-11 | Synced fact-check panel: surface matches for the active segment | Done | Medium | |
+| VER-12 | End-to-end demo and polish on one sample video | Done | Medium | |
 | VER-13 | Local dev stack and layered backend skeleton | Done | High | |
-| VER-14 | AWS runtime: Terraform ECS/RDS/ALB/ECR/OIDC | Done | High | |
-| VER-6 | Curated verification database: schema + ingestion | Done | High | VER-13 |
-| VER-7 | Transcription service: audio to segments | Done | High | VER-13 |
-| VER-9 | Embedding and match service | Done | High | VER-6 |
-| VER-10 | Processing orchestration | Done | High | VER-7, VER-9 |
-| VER-8 | Video player UI | Done | Medium | VER-13 |
-| VER-11 | Synced fact-check panel | Done | Medium | VER-8, VER-10 |
-| VER-16 | Fix CI startup failure | Done | High | |
-| VER-15 | Re-enable backend PR CI + deploy trigger | Done | Medium | VER-16 |
-| VER-17 | golangci-lint config enforcing lint standard | Done | Medium | |
-| VER-12 | End-to-end demo and polish | Done | Medium | VER-6, VER-7, VER-8, VER-9, VER-10, VER-11 |
-| VER-19 | Wikipedia corpus: schema, dump parsing, and chunk storage | Done | High | |
-| VER-23 | Terraform: scheduled wikisync task and RDS sizing readiness | Done | Medium | |
+| VER-14 | AWS runtime: Terraform for ECS Fargate, RDS pgvector, ALB, ECR | Done | High | |
+| VER-15 | Re-enable backend PR CI and restore the deploy trigger | Done | Medium | |
+| VER-16 | Fix CI startup failure: invalid workflow YAML and frontend lint | Done | High | |
+| VER-17 | Add golangci-lint config enforcing the documented backend lint | Done | Medium | |
 | VER-18 | Operator authentication and login (single user) | Done | High | |
-| VER-20 | Wikipedia bulk embedding pipeline with staged HNSW swap | Done | High | VER-19 |
+| VER-19 | Wikipedia corpus: schema, dump parsing, and chunk storage | Done | High | |
+| VER-20 | Wikipedia bulk embedding pipeline with staged HNSW swap | Done | High | |
+| VER-21 | Periodic Wikipedia delta sync | Done | Medium | |
+| VER-22 | Wikipedia evidence in fact-check results | Done | Medium | |
+| VER-23 | Terraform: scheduled wikisync task and RDS sizing readiness | Done | High | |
 | VER-24 | Check-worthiness precheck gate for transcript segments | Done | High | |
+| VER-25 | Real-time continuous fact-check: live subtitles and verdicts | Duplicate | High | |
+| VER-26 | Upload and live-analyse video from the frontend | Done | High | |
 | VER-27 | Object storage foundation: MinIO local + S3 on AWS | Done | High | |
-| VER-22 | Wikipedia evidence in fact-check results | Done | Medium | VER-20 |
-| VER-21 | Periodic Wikipedia delta sync | Done | Medium | VER-20 |
-| VER-28 | Video metadata and presigned upload API (backend) | Done | High | VER-27 |
-| VER-25 | Real-time continuous fact-check: live subtitles and verdicts | Duplicate (canceled) | High | VER-24, VER-30 |
-| VER-32 | Local dev data environment: one-command reset, seeds, offline fixtures | Done | High | |
-| VER-33 | Public landing page and login-modal entry into the analyser | Done | High | VER-18 |
-| VER-34 | Ingest a YouTube video by link (download, store, catalog) | Done | High | VER-28 |
+| VER-28 | Video metadata and presigned upload API (backend) | Done | High | |
+| VER-29 | Upload UI and video library/picker (frontend) | Done | High | |
+| VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WS | Done | High | |
+| VER-31 | Live playback sync: stream audio and render incremental fact-checks | Done | High | |
+| VER-32 | Local dev data environment: one-command reset, seeds, offline | Done | High | |
+| VER-33 | Public landing page and login-modal entry into the analyser | Done | High | |
+| VER-34 | Ingest a YouTube video by link: download, store in object storage | Done | High | |
 | VER-35 | Daily Slack digest and /report command | Done | Low | |
-| VER-29 | Upload UI and video library/picker (frontend) | Done | High | VER-28 |
-| VER-30 | Live streaming analysis transport: Scribe v2 Realtime over WebSocket (backend) | Done | High | VER-28 |
-| VER-26 | Upload and live-analyse video from the frontend (epic) | Done | High | VER-28, VER-29, VER-30, VER-31 |
-| VER-31 | Live playback sync: stream audio and render incremental fact-checks (frontend) | Done | High | VER-29, VER-30 |
-| VER-37 | Paste a YouTube URL to add a video (frontend ingest + pending-to-ready polling) | Done | Medium | VER-34 |
-| VER-36 | Library video tiles: render a real frame thumbnail instead of the gradient monogram | Done | Low | |
-| VER-38 | Live panel: stacked subtitles-over-fact-checks layout with independent scroll regions | Done | Medium | |
-| VER-39 | Live analysis summary: top-of-page running findings strip | Todo | Medium | VER-38 |
-| VER-40 | Unify dev seeding: one command for a complete environment (claims, wiki, demo, sample videos) | Done | Medium | |
-| VER-41 | Speaker-aware live analysis: diarized segmentation, group up to 3 sentences per turn | Done | High | VER-30 |
-| VER-42 | Rework make wiki-populate: auto-load .env keys, skip re-download when dump present | Todo | Medium | VER-40 |
-| VER-43 | Make AssemblyAI the only transcriber: stream imported videos live, remove ElevenLabs Scribe | Todo | Medium | VER-41 |
+| VER-36 | Library video tiles: render a real frame thumbnail | Done | Low | |
+| VER-37 | Paste a YouTube URL to add a video: frontend ingest affordance | Done | Medium | |
+| VER-38 | Live panel: stacked subtitles-over-fact-checks layout | Done | Medium | |
+| VER-39 | Live analysis summary: top-of-page running findings strip | Done | Medium | |
+| VER-40 | Unify dev seeding: one command for a complete environment | Done | Medium | |
+| VER-41 | Speaker-aware live analysis: diarized segmentation, group updates | Done | High | |
+| VER-42 | Rework make wiki-populate: auto-load .env keys and skip re-download | Done | Medium | |
+| VER-43 | Make AssemblyAI the only transcriber: stream imported videos | Done | Medium | |
+| VER-44 | Dev-only debug bar: real-time WebSocket search over embedded corpus | Done | Medium | |
+| VER-45 | Fix live speaker labels: split mixed-speaker turns at word boundaries | Done | High | |
+| VER-46 | Database backup & restore: full pg_dump with S3 upload | Done | Medium | |
+| VER-47 | Wiki-grounded coverage: let the embedded corpus decide checkability | In Review | High | |
+| VER-48 | Live scoring backpressure: stop dropping statements as not_checked | In Review | High | |
+| VER-49 | Structured wiki ingestion: per-chunk metadata for classification | In Progress | Medium | |
+| VER-50 | Confidence scoring: cluster corpus evidence into a corroboration % | Todo | Medium | VER-47, VER-48, VER-49 |
+| VER-51 | RabbitMQ broker and embedding-queue connection (infra + client) | In Progress | High | |
+| VER-52 | Embedding worker service: drain the priority queue and embed chunks | Todo | High | VER-49, VER-51 |
+| VER-53 | Adapt ingestion to enqueue embedding jobs and scale corpus | Todo | Medium | VER-49, VER-52 |
+| VER-54 | Topic clustering and importance scoring to drive embedding priority | Todo | Low | VER-53 |
 
-## Dependency Graph
+## Dependency graph
 
-```
-VER-13 -> VER-6 -> VER-9 -> VER-10 -> VER-11
-VER-13 -> VER-7 -> VER-10
-VER-13 -> VER-8 -> VER-11
-VER-16 -> VER-15
-VER-{6,7,8,9,10,11} -> VER-12
-VER-19 -> VER-20 -> VER-21
-VER-20 -> VER-22
-VER-18 -> VER-33
-VER-27 -> VER-28 -> VER-29 -> VER-31
-VER-28 -> VER-30 -> VER-31
-VER-28 -> VER-34 -> VER-37
-VER-{28,29,30,31} -> VER-26
-VER-38 -> VER-39
-VER-30 -> VER-41
-VER-40 -> VER-42
-VER-41 -> VER-43
-```
+VER-47 -> VER-50
+VER-48 -> VER-50
+VER-49 -> VER-50
+VER-49 -> VER-52
+VER-49 -> VER-53
+VER-51 -> VER-52
+VER-52 -> VER-53
+VER-53 -> VER-54
 
-(VER-25 canceled as Duplicate; its VER-24/VER-30 edges are retired.)
+## Ready queue
 
-VER-42 -> VER-40: formal Linear `blockedBy`; both edit `Makefile` + `docker-compose.yml`.
-VER-43 -> VER-41: VER-43 consolidates the AssemblyAI diarization output and max-speakers
-config that VER-41 introduces, and overlaps `internal/transcribe/assemblyai.go`,
-`internal/config`, and `cmd/server/main.go` - cannot run concurrently with VER-41.
+Cards whose state is `Todo` and whose every `depends_on` is `Done`, ordered by
+priority, then unblock-count (transitive blocks), then card number.
 
-## Ready Queue (computed)
-
-A card is READY when state is `Todo` AND every depends_on card is `Done`.
-
-Ordered by priority, then unblock-count, then card number:
-
-1. VER-39 - Live analysis summary strip - depends on VER-38 (Done). READY.
-2. VER-42 - Rework make wiki-populate - depends on VER-40 (Done). READY.
-3. VER-43 - AssemblyAI sole transcriber - depends on VER-41 (Done). READY.
-
-(All Medium priority, unblock-count 0 each, ordered by card number.)
-
-Blocked / not ready:
-- (none)
-
-END_OF_DOCUMENT
+(empty) - every base card is claimed: VER-51/47/49 In Progress, VER-48 In Review.
+The dependent cards VER-50/52/53/54 are blocked: their dependencies are still
+In Progress/In Review, not yet Done (merged to main). Nothing is ready to pick.
