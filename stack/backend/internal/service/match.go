@@ -141,11 +141,13 @@ func NewMatcher(embedder QueryEmbedder, claims ClaimSearcher, evidence EvidenceS
 
 // MatchSegment embeds segment text once, searches both corpora, and returns the
 // merged matches ranked by similarity (most similar first), each corpus filtered
-// by its own threshold and the whole capped at MaxResults. The returned slice is
-// empty (never nil) when nothing clears either threshold.
-func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, error) {
+// by its own threshold and the whole capped at MaxResults. The returned matches
+// slice is empty (never nil) when nothing clears either threshold. It also
+// returns the query embedding it computed, so a caller can reuse that vector
+// rather than embed the same text again.
+func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, []float32, error) {
 	if strings.TrimSpace(segment) == "" {
-		return nil, ErrEmptySegment
+		return nil, nil, ErrEmptySegment
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
@@ -153,16 +155,16 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, er
 
 	query, err := m.embedSegment(ctx, segment)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	matches, err := m.claimMatches(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	evidence, err := m.evidenceMatches(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	matches = append(matches, evidence...)
 
@@ -174,7 +176,7 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, er
 	if len(matches) > m.cfg.MaxResults {
 		matches = matches[:m.cfg.MaxResults]
 	}
-	return matches, nil
+	return matches, query, nil
 }
 
 // Confidence aggregates a matched cluster into the statement's corroboration

@@ -8,7 +8,18 @@ import type {
   SegmentMatch,
   SkipReason,
 } from "@/lib/fact-check/api";
-import type { ResultFrame, SubtitleFrame } from "./frames";
+import type { ConsistencyFrame, ResultFrame, SubtitleFrame } from "./frames";
+
+// Inconsistency marks a statement that contradicts an earlier statement by the
+// same speaker. earlierId and earlierText identify the conflicting statement so
+// the UI can reference it; rationale is the stance check's one-line reason. It
+// is independent of the fact-check verdict and may attach to a statement in
+// either status.
+export type Inconsistency = {
+  earlierId: string;
+  earlierText: string;
+  rationale?: string;
+};
 
 // LiveStatement is one spoken statement on screen. The two states are a
 // discriminated union so an analysing statement can never carry a verdict and a
@@ -21,6 +32,7 @@ export type LiveStatement =
       text: string;
       speaker?: string;
       status: "analysing";
+      inconsistency?: Inconsistency;
     }
   | {
       id: string;
@@ -35,6 +47,7 @@ export type LiveStatement =
       // The corroboration score, present only on a checked, non-skipped,
       // non-errored statement; absent otherwise.
       confidence?: Confidence;
+      inconsistency?: Inconsistency;
     };
 
 // StatementsState keys statements by correlation id (namespaced per session by
@@ -62,6 +75,7 @@ function checkedFromResult(
   segment: FactCheckSegment,
   error: string | undefined,
   speaker: string | undefined,
+  inconsistency: Inconsistency | undefined,
 ): LiveStatement {
   return {
     id,
@@ -74,6 +88,10 @@ function checkedFromResult(
     skipReason: segment.skipReason,
     error,
     confidence: segment.confidence,
+    // A consistency flag may land before the verdict (out-of-order delivery or
+    // a reconnect replay); carry it across so resolving to checked never drops
+    // an inconsistency already recorded.
+    inconsistency,
   };
 }
 
@@ -87,8 +105,29 @@ function checkedFromResult(
  */
 export function applyFrame(
   state: StatementsState,
-  frame: SubtitleFrame | ResultFrame,
+  frame: SubtitleFrame | ResultFrame | ConsistencyFrame,
 ): StatementsState {
+  // A consistency frame carries no timestamp: it only annotates an existing
+  // statement with the contradiction it forms, leaving the start-bucket index
+  // untouched. If its statement is not present yet (it should be, since the
+  // subtitle and result precede it), there is nothing to annotate.
+  if (frame.type === "consistency") {
+    const target = state.byId.get(frame.id);
+    if (!target) {
+      return state;
+    }
+    const byId = new Map(state.byId);
+    byId.set(frame.id, {
+      ...target,
+      inconsistency: {
+        earlierId: frame.earlierId,
+        earlierText: frame.earlierText,
+        rationale: frame.rationale,
+      },
+    });
+    return { byId, byStart: state.byStart };
+  }
+
   const start = frame.type === "subtitle" ? frame.start : frame.segment.start;
   const key = startKey(start);
   const byId = new Map(state.byId);
@@ -111,6 +150,8 @@ export function applyFrame(
         text: frame.text,
         speaker: frame.speaker,
         status: "analysing",
+        // Preserve a flag that arrived before this subtitle (reconnect replay).
+        inconsistency: existing?.inconsistency,
       });
     } else if (frame.speaker && !existing.speaker) {
       // The verdict landed before its subtitle (out-of-order delivery or a
@@ -123,7 +164,13 @@ export function applyFrame(
     // the verdict inherits the label its subtitle already established.
     byId.set(
       frame.id,
-      checkedFromResult(frame.id, frame.segment, frame.error, existing?.speaker),
+      checkedFromResult(
+        frame.id,
+        frame.segment,
+        frame.error,
+        existing?.speaker,
+        existing?.inconsistency,
+      ),
     );
   }
 

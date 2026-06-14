@@ -134,6 +134,33 @@ Verified 2026-06 against assemblyai.com/docs streaming v3:
   never log the key. Exactly ONE transcription secret exists across `.env`, docker-compose, and
   Terraform Secrets Manager.
 
+## Stance classifier (Anthropic, via internal/stance) - optional live consistency
+
+The live intra-speaker consistency feature (VER-68) needs a pairwise contradiction judgment
+that embeddings cannot give (opposite assertions sit CLOSE in embedding space). The
+`service.StanceClassifier` port (`Contradicts(ctx, earlier, later) (bool, string, error)`) is
+satisfied by `internal/stance`, the Anthropic-backed adapter - the same "external API for the
+hard ML step" pattern as Voyage/AssemblyAI. The official Go SDK
+`github.com/anthropics/anthropic-sdk-go` IS used here (unlike AssemblyAI, which has none);
+verified latest stable **v1.50.1** via Context7 on 2026-06-13.
+
+- Model `claude-haiku-4-5-20251001` (`config.defaultConsistencyModel`) - the cheapest, fastest
+  model, right for a binary classification over two short statements. Do NOT reach for a larger
+  model; this is not generation.
+- FORCE a single structured tool call (`ToolChoice: {OfTool: ...}`) and read the verdict from the
+  `ToolUseBlock.Input` JSON - a one-word text reply is fragile under load. Parse with
+  `json.Unmarshal`, never string-match.
+- The feature is GATED OFF by default: `config.LoadConsistency` reads `CONSISTENCY_ENABLED`
+  (default false) + `CONSISTENCY_API_KEY`; `Consistency.Active()` requires both. With no key the
+  analyzer's `Stance` is a nil interface and live analysis behaves EXACTLY as before. Key from env
+  only, never logged.
+- Any adapter error degrades to "no flag": the live session never ends because a stance call
+  failed. Detection runs only on a Checkable unit with a known speaker, reuses the matcher's query
+  embedding (threaded out via `MatchResult.QueryEmbedding` - no second Voyage call), cosine-ranks
+  the same speaker's prior statements above `CONSISTENCY_SIMILARITY_FLOOR`, and bounds stance
+  concurrency with a semaphore. Per-session `speakerMemory` is created inside `LiveAnalyzer.Run`
+  and discarded with the session.
+
 ## Testing
 
 - Table-driven with `t.Run(tc.name, ...)`; `t.Parallel()` wherever tests are independent; `t.Context()` instead of `context.Background()`.

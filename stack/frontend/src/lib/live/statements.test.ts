@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ResultFrame, SubtitleFrame } from "./frames";
+import type { ConsistencyFrame, ResultFrame, SubtitleFrame } from "./frames";
 import {
   applyFrame,
   clearAnalysing,
@@ -185,5 +185,50 @@ describe("statements store", () => {
     const second = applyFrame(first, subtitle("1", 2, "world"));
     expect(listStatements(first)).toHaveLength(1);
     expect(listStatements(second)).toHaveLength(2);
+  });
+
+  const consistency = (
+    id: string,
+    earlierId: string,
+    earlierText: string,
+    rationale?: string,
+  ): ConsistencyFrame => ({
+    type: "consistency",
+    id,
+    earlierId,
+    earlierText,
+    rationale,
+  });
+
+  test("a consistency frame attaches an inconsistency to its statement", () => {
+    let state = applyFrame(emptyStatements(), result("1", 5, "the bridge opened in 1940"));
+    state = applyFrame(state, consistency("1", "0", "the bridge opened in 1937", "year conflict"));
+    const list = listStatements(state);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      id: "1",
+      status: "checked",
+      inconsistency: {
+        earlierId: "0",
+        earlierText: "the bridge opened in 1937",
+        rationale: "year conflict",
+      },
+    });
+  });
+
+  test("a consistency frame is ignored when its statement is absent", () => {
+    const state = applyFrame(emptyStatements(), consistency("9", "8", "ghost"));
+    expect(listStatements(state)).toHaveLength(0);
+  });
+
+  test("a flag that arrives before the verdict survives the result frame", () => {
+    let state = applyFrame(emptyStatements(), subtitle("1", 5, "the bridge opened in 1940"));
+    state = applyFrame(state, consistency("1", "0", "the bridge opened in 1937"));
+    state = applyFrame(state, result("1", 5, "the bridge opened in 1940"));
+    const list = listStatements(state);
+    expect(list[0]).toMatchObject({
+      status: "checked",
+      inconsistency: { earlierId: "0", earlierText: "the bridge opened in 1937" },
+    });
   });
 });

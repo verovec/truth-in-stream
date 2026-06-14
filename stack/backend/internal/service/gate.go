@@ -12,9 +12,16 @@ import (
 // The confidence is meaningful only alongside its matches, so the two travel
 // together rather than as separate return values that a caller could pair up
 // wrongly.
+//
+// QueryEmbedding is the retrieval vector the matcher already embedded for this
+// statement, surfaced so a consumer (live intra-speaker consistency detection)
+// can reuse it for similarity comparison instead of paying a second embedding
+// call. It is nil when the matcher embedded nothing (an empty segment); the
+// fact-check fields above are unaffected by its presence.
 type MatchResult struct {
-	Matches    []domain.SegmentMatch
-	Confidence domain.Confidence
+	Matches        []domain.SegmentMatch
+	Confidence     domain.Confidence
+	QueryEmbedding []float32
 }
 
 // SegmentMatcher is the slice of the embed-and-match service the live pipeline

@@ -1060,3 +1060,75 @@ func TestLoadLive(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConsistency(t *testing.T) {
+	defaults := Consistency{Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    Consistency
+		wantErr bool
+	}{
+		{
+			name: "off by default",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "enabled with key and overrides",
+			env: map[string]string{
+				"CONSISTENCY_ENABLED":          "true",
+				"CONSISTENCY_API_KEY":          "sk-test",
+				"CONSISTENCY_MODEL":            "claude-haiku-4-5",
+				"CONSISTENCY_TOP_K":            "5",
+				"CONSISTENCY_SIMILARITY_FLOOR": "0.72",
+			},
+			want: Consistency{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", TopK: 5, SimilarityFloor: 0.72},
+		},
+		{name: "non-bool enabled rejected", env: map[string]string{"CONSISTENCY_ENABLED": "maybe"}, wantErr: true},
+		{name: "zero top-k rejected", env: map[string]string{"CONSISTENCY_TOP_K": "0"}, wantErr: true},
+		{name: "non-numeric top-k rejected", env: map[string]string{"CONSISTENCY_TOP_K": "many"}, wantErr: true},
+		{name: "floor above range rejected", env: map[string]string{"CONSISTENCY_SIMILARITY_FLOOR": "1.5"}, wantErr: true},
+		{name: "negative floor rejected", env: map[string]string{"CONSISTENCY_SIMILARITY_FLOOR": "-0.2"}, wantErr: true},
+		{name: "non-numeric floor rejected", env: map[string]string{"CONSISTENCY_SIMILARITY_FLOOR": "close"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadConsistency()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConsistencyActive(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Consistency
+		want bool
+	}{
+		{"enabled with key", Consistency{Enabled: true, APIKey: "k"}, true},
+		{"enabled without key degrades to off", Consistency{Enabled: true, APIKey: ""}, false},
+		{"disabled with key stays off", Consistency{Enabled: false, APIKey: "k"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.Active(); got != tc.want {
+				t.Errorf("Active() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

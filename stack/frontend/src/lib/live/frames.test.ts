@@ -139,4 +139,48 @@ describe("parseLiveFrame", () => {
       ),
     ).toBeNull();
   });
+
+  test("parses a consistency frame, mapping wire keys to camelCase", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "consistency",
+        id: "1",
+        earlier_id: "0",
+        earlier_text: "the bridge opened in 1937",
+        speaker: "A",
+        rationale: "1937 versus 1940",
+      }),
+    );
+    expect(frame).toEqual({
+      type: "consistency",
+      id: "1",
+      earlierId: "0",
+      earlierText: "the bridge opened in 1937",
+      speaker: "A",
+      rationale: "1937 versus 1940",
+    });
+  });
+
+  test("omits optional consistency fields when absent", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "consistency",
+        id: "1",
+        earlier_id: "0",
+        earlier_text: "earlier",
+      }),
+    );
+    expect(frame).toEqual({
+      type: "consistency",
+      id: "1",
+      earlierId: "0",
+      earlierText: "earlier",
+    });
+  });
+
+  test("returns null for a consistency frame missing its earlier reference", () => {
+    expect(
+      parseLiveFrame(JSON.stringify({ type: "consistency", id: "1" })),
+    ).toBeNull();
+  });
 });

@@ -12,7 +12,7 @@ import (
 // runs on the rich Match values (which carry the chunk kind the wire-shaped
 // domain.SegmentMatch drops), so it is computed here, before conversion.
 type segmentMatcher interface {
-	MatchSegment(ctx context.Context, segment string) ([]Match, error)
+	MatchSegment(ctx context.Context, segment string) ([]Match, []float32, error)
 	Confidence(matches []Match) domain.Confidence
 }
 
@@ -37,7 +37,7 @@ func NewSegmentMatchAdapter(matcher segmentMatcher) *SegmentMatchAdapter {
 // and a zero confidence rather than failing the run; the matches slice is empty,
 // never nil.
 func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResult, error) {
-	hits, err := a.matcher.MatchSegment(ctx, text)
+	hits, query, err := a.matcher.MatchSegment(ctx, text)
 	if err != nil {
 		if errors.Is(err, ErrEmptySegment) {
 			return MatchResult{Matches: []domain.SegmentMatch{}}, nil
@@ -63,5 +63,5 @@ func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResu
 		}
 		matches = append(matches, sm)
 	}
-	return MatchResult{Matches: matches, Confidence: a.matcher.Confidence(hits)}, nil
+	return MatchResult{Matches: matches, Confidence: a.matcher.Confidence(hits), QueryEmbedding: query}, nil
 }

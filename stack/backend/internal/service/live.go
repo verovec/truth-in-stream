@@ -39,6 +39,11 @@ const (
 	// LiveEventResult carries the fact-check outcome for a statement: its
 	// matches, or the reason it was not checked, or a non-fatal analysis error.
 	LiveEventResult LiveEventKind = "result"
+	// LiveEventConsistency flags a checkable statement that contradicts an
+	// earlier checkable statement by the same speaker. It is additive: it arrives
+	// when the stance check completes, after the statement's subtitle and result,
+	// and never delays them. Its Consistency field links to the earlier statement.
+	LiveEventConsistency LiveEventKind = "consistency"
 )
 
 // LiveEvent is one incremental output of live analysis. ID is the per-statement
@@ -49,13 +54,14 @@ const (
 // Confidence is the corroboration score over Matches, set only on a checked
 // result and nil for a skipped or errored one.
 type LiveEvent struct {
-	Kind       LiveEventKind
-	ID         string
-	Segment    domain.Segment
-	Matches    []domain.SegmentMatch
-	SkipReason domain.SkipReason
-	Confidence *domain.Confidence
-	Err        string
+	Kind        LiveEventKind
+	ID          string
+	Segment     domain.Segment
+	Matches     []domain.SegmentMatch
+	SkipReason  domain.SkipReason
+	Confidence  *domain.Confidence
+	Err         string
+	Consistency *ConsistencyFlag
 }
 
 // defaultLiveConcurrency bounds in-flight unit analyses. Subtitles emit in order
@@ -81,20 +87,40 @@ const defaultMaxSentences = 3
 // a couple of seconds of silence rather than held until the next speaker.
 const defaultIdleFlush = 2 * time.Second
 
+// defaultConsistencyTopK caps how many of a speaker's topically-closest prior
+// statements get a stance call per new statement, so detection cost is bounded
+// at a few LLM calls even for a speaker with a long history. defaultConsistency
+// Floor is the cosine-similarity floor below which a prior statement is too
+// unrelated to be worth a stance call. These are the library defaults applied
+// when a caller leaves the field zero; the env layer mirrors them in
+// config.LoadConsistency and the two must stay in sync.
+const (
+	defaultConsistencyTopK  = 3
+	defaultConsistencyFloor = 0.6
+)
+
 // LiveAnalyzerConfig wires a LiveAnalyzer. Stream and Matcher are required;
 // Prechecker defaults to the no-op gate that checks every segment, Logger to
 // slog.Default, Concurrency to defaultLiveConcurrency, QueueDepth to
 // defaultLiveQueueDepth, MaxSentences to defaultMaxSentences, and IdleFlush to
 // defaultIdleFlush.
+// Stance is the optional intra-speaker consistency capability. When nil the
+// feature is off and live analysis behaves exactly as before - no consistency
+// events, no errors. ConsistencyTopK and ConsistencyFloor tune detection and
+// default to defaultConsistencyTopK and defaultConsistencyFloor; they matter
+// only when Stance is set.
 type LiveAnalyzerConfig struct {
-	Stream       SegmentStream
-	Matcher      SegmentMatcher
-	Prechecker   SegmentPrechecker
-	Logger       *slog.Logger
-	Concurrency  int
-	QueueDepth   int
-	MaxSentences int
-	IdleFlush    time.Duration
+	Stream           SegmentStream
+	Matcher          SegmentMatcher
+	Prechecker       SegmentPrechecker
+	Logger           *slog.Logger
+	Concurrency      int
+	QueueDepth       int
+	MaxSentences     int
+	IdleFlush        time.Duration
+	Stance           StanceClassifier
+	ConsistencyTopK  int
+	ConsistencyFloor float64
 }
 
 // LiveAnalyzer turns streaming audio into incremental fact-check events. It
@@ -105,14 +131,18 @@ type LiveAnalyzerConfig struct {
 // callers feed it audio bytes and read events, and the socket lives entirely in
 // the handler layer.
 type LiveAnalyzer struct {
-	stream       SegmentStream
-	matcher      SegmentMatcher
-	prechecker   SegmentPrechecker
-	logger       *slog.Logger
-	concurrency  int
-	queueDepth   int
-	maxSentences int
-	idleFlush    time.Duration
+	stream           SegmentStream
+	matcher          SegmentMatcher
+	prechecker       SegmentPrechecker
+	logger           *slog.Logger
+	concurrency      int
+	queueDepth       int
+	maxSentences     int
+	idleFlush        time.Duration
+	stance           StanceClassifier
+	consistencyTopK  int
+	consistencyFloor float64
+	stanceSem        chan struct{}
 }
 
 // NewLiveAnalyzer builds a LiveAnalyzer from cfg, applying defaults and failing
@@ -148,15 +178,34 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 	if idleFlush <= 0 {
 		idleFlush = defaultIdleFlush
 	}
+	consistencyTopK := cfg.ConsistencyTopK
+	if consistencyTopK <= 0 {
+		consistencyTopK = defaultConsistencyTopK
+	}
+	consistencyFloor := cfg.ConsistencyFloor
+	if consistencyFloor == 0 {
+		consistencyFloor = defaultConsistencyFloor
+	}
+	// The stance semaphore bounds in-flight contradiction calls so a burst of
+	// checkable speech cannot fan out unbounded LLM requests; it is sized to the
+	// scoring pool and built only when the feature is on.
+	var stanceSem chan struct{}
+	if cfg.Stance != nil {
+		stanceSem = make(chan struct{}, concurrency)
+	}
 	return &LiveAnalyzer{
-		stream:       cfg.Stream,
-		matcher:      cfg.Matcher,
-		prechecker:   prechecker,
-		logger:       logger,
-		concurrency:  concurrency,
-		queueDepth:   queueDepth,
-		maxSentences: maxSentences,
-		idleFlush:    idleFlush,
+		stream:           cfg.Stream,
+		matcher:          cfg.Matcher,
+		prechecker:       prechecker,
+		logger:           logger,
+		concurrency:      concurrency,
+		queueDepth:       queueDepth,
+		maxSentences:     maxSentences,
+		idleFlush:        idleFlush,
+		stance:           cfg.Stance,
+		consistencyTopK:  consistencyTopK,
+		consistencyFloor: consistencyFloor,
+		stanceSem:        stanceSem,
 	}, nil
 }
 
@@ -169,7 +218,9 @@ func (a *LiveAnalyzer) Run(ctx context.Context, audio <-chan []byte) (<-chan Liv
 		return nil, fmt.Errorf("service: live analyze: %w", err)
 	}
 	out := make(chan LiveEvent)
-	go a.analyzeLoop(ctx, transcripts, out)
+	// Per-speaker memory is created fresh per session and discarded when this
+	// loop ends, so a later session never sees a prior one's statements.
+	go a.analyzeLoop(ctx, transcripts, out, newSpeakerMemory())
 	return out, nil
 }
 
@@ -180,6 +231,16 @@ func (a *LiveAnalyzer) Run(ctx context.Context, audio <-chan []byte) (<-chan Liv
 type unitMember struct {
 	id  string
 	seg domain.Segment
+}
+
+// pendingUnit is one analysis unit handed to the worker pool: the members to
+// score together and the unit's canonical speaker (the label intra-speaker
+// consistency is scoped to). Speaker travels alongside the members because the
+// unit's normalized speaker is resolved during accumulation and would be lost
+// once the members are detached from their liveUnit.
+type pendingUnit struct {
+	speaker string
+	members []unitMember
 }
 
 // liveUnit accumulates consecutive same-speaker committed segments into one
@@ -234,7 +295,7 @@ func combinedText(members []unitMember) string {
 // speaker and reads as a tight claim. A fixed pool of workers drains the backlog
 // queue; the loop closes that queue and waits for the pool before it closes out,
 // so no event is ever sent on a closed channel.
-func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domain.LiveTranscript, out chan<- LiveEvent) {
+func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domain.LiveTranscript, out chan<- LiveEvent, mem *speakerMemory) {
 	defer close(out)
 
 	// A fixed worker pool drains a bounded backlog of ready units. Sizing the
@@ -242,14 +303,14 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	// instead of being shed the instant every worker is busy. The deferred close
 	// runs before close(out) (LIFO): it stops new work, lets the workers finish
 	// the backlog, and only then is out closed.
-	queue := make(chan []unitMember, a.queueDepth)
+	queue := make(chan pendingUnit, a.queueDepth)
 	var wg sync.WaitGroup
 	for range a.concurrency {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for members := range queue {
-				a.scoreUnit(ctx, out, members)
+			for pu := range queue {
+				a.scoreUnit(ctx, out, mem, pu)
 			}
 		}()
 	}
@@ -273,7 +334,11 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 			return true
 		}
 		timer.Stop()
-		return a.dispatch(ctx, out, queue, unit.take())
+		// Read the speaker into a local before take resets the unit: evaluation
+		// order of unit.speaker against unit.take() in one literal is unspecified,
+		// so reading it inline can pick up the post-reset empty label.
+		speaker := unit.speaker
+		return a.dispatch(ctx, out, queue, pendingUnit{speaker: speaker, members: unit.take()})
 	}
 
 	for {
@@ -337,14 +402,14 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 // not_checked at once, so a statement is shed only under genuine sustained
 // saturation rather than on the first busy worker. It reports false when ctx is
 // canceled mid-emit.
-func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue chan<- []unitMember, members []unitMember) bool {
+func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue chan<- pendingUnit, pu pendingUnit) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case queue <- members:
+	case queue <- pu:
 		return true
 	default:
-		for _, m := range members {
+		for _, m := range pu.members {
 			if !sendEvent(ctx, out, LiveEvent{
 				Kind:       LiveEventResult,
 				ID:         m.id,
@@ -365,8 +430,10 @@ func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue
 // non-fatal Err on each member so one bad unit never ends the live session.
 // Failures during teardown (ctx canceled) are not logged, as the event is
 // dropped on the closing stream.
-func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, members []unitMember) {
-	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, combinedText(members))
+func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit) {
+	members := pu.members
+	text := combinedText(members)
+	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, text)
 	if err != nil {
 		if ctx.Err() == nil {
 			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("ids", memberIDs(members)), slog.Any("err", err))
@@ -391,6 +458,84 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, memb
 			return
 		}
 	}
+	// Intra-speaker consistency runs only on a checkable statement, after its
+	// verdict is emitted, so it never blocks the subtitle or result. It reuses
+	// the matcher's query embedding rather than embedding again.
+	if decision.Checkable {
+		a.detectConsistency(ctx, out, mem, pu, text, result.QueryEmbedding)
+	}
+}
+
+// detectConsistency flags a checkable statement that contradicts an earlier
+// checkable statement by the same speaker, then records the statement for later
+// comparisons. It is a no-op unless the feature is configured and the statement
+// carries a known speaker and a reusable embedding - an unknown speaker is never
+// attributed, so it is neither compared against nor remembered. It cosine-ranks
+// the speaker's prior statements, keeps those above the floor, takes the top-k,
+// and runs a bounded stance check on each; on the first contradiction it emits
+// one consistency event linking the new statement to the earlier one. A stance
+// failure is logged and skipped (no flag, no stream termination), so a bad call
+// never ends the live session.
+func (a *LiveAnalyzer) detectConsistency(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, text string, embedding []float32) {
+	if a.stance == nil || pu.speaker == "" || len(embedding) == 0 || len(pu.members) == 0 {
+		return
+	}
+	// Serialize detection for this speaker so the prior-lookup and the append
+	// below bracket the stance check atomically: with the default worker pool,
+	// two of the same speaker's units can be scored at once, and without this
+	// lock both would read an empty history and miss the contradiction between
+	// them. Other speakers hold different locks and run concurrently.
+	lock := mem.speakerLock(pu.speaker)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// The unit's opening subtitle is the statement's canonical id and segment:
+	// the combined text was scored as one statement, so its first member anchors
+	// the flag the UI renders.
+	newID := pu.members[0].id
+	newSeg := pu.members[0].seg
+
+	for _, prior := range rankBySimilarity(embedding, mem.prior(pu.speaker), a.consistencyFloor, a.consistencyTopK) {
+		contradicts, rationale, err := a.classifyStance(ctx, prior.text, text)
+		if err != nil {
+			if ctx.Err() == nil {
+				a.logger.WarnContext(ctx, "stance check failed", slog.String("id", newID), slog.Any("err", err))
+			}
+			continue
+		}
+		if contradicts {
+			if !sendEvent(ctx, out, LiveEvent{
+				Kind:    LiveEventConsistency,
+				ID:      newID,
+				Segment: newSeg,
+				Consistency: &ConsistencyFlag{
+					EarlierID:   prior.id,
+					EarlierText: prior.text,
+					Speaker:     pu.speaker,
+					Rationale:   rationale,
+				},
+			}) {
+				return
+			}
+			break
+		}
+	}
+	// Remember after comparing so a statement is never compared against itself.
+	mem.remember(pu.speaker, priorStatement{id: newID, text: text, embedding: embedding})
+}
+
+// classifyStance runs one stance check under the in-flight bound, so a burst of
+// checkable speech cannot fan out unbounded LLM calls. It reports ctx
+// cancellation as an error so the caller stops rather than treating teardown as
+// "no contradiction".
+func (a *LiveAnalyzer) classifyStance(ctx context.Context, earlier, later string) (bool, string, error) {
+	select {
+	case a.stanceSem <- struct{}{}:
+		defer func() { <-a.stanceSem }()
+	case <-ctx.Done():
+		return false, "", ctx.Err()
+	}
+	return a.stance.Contradicts(ctx, earlier, later)
 }
 
 // memberIDs joins the members' ids for one log line attributing a failed unit.

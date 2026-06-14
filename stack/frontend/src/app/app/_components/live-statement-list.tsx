@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import {
   usePlayback,
   usePlaybackStore,
@@ -42,6 +42,16 @@ export const LiveStatementList = memo(function LiveStatementList({
     findActiveSegmentIndex(statements, snapshot.currentTime),
   );
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
+
+  // Scroll a statement into view by id - used by an inconsistency flag to jump
+  // to the earlier statement it contradicts. A no-op when that statement is not
+  // currently mounted (e.g. cleared after a reset).
+  const scrollToStatement = useCallback((id: string) => {
+    itemRefs.current.get(id)?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, []);
 
   const activeId = activeIndex >= 0 ? statements[activeIndex]?.id : undefined;
   useEffect(() => {
@@ -116,12 +126,46 @@ export const LiveStatementList = memo(function LiveStatementList({
               </span>
             </button>
             <SubtitleStatus statement={statement} />
+            {statement.inconsistency ? (
+              <InconsistencyFlag
+                inconsistency={statement.inconsistency}
+                onJumpToEarlier={scrollToStatement}
+              />
+            ) : null}
           </li>
         );
       })}
     </ol>
   );
 });
+
+// InconsistencyFlag is the inline marker that a statement contradicts an earlier
+// one by the same speaker. It quotes the earlier statement so the viewer can see
+// the conflict, plus the stance check's rationale when present. It is additive
+// to the fact-check status: a statement can be both corroborated and internally
+// inconsistent with the speaker's own earlier words.
+function InconsistencyFlag({
+  inconsistency,
+  onJumpToEarlier,
+}: {
+  inconsistency: NonNullable<LiveStatement["inconsistency"]>;
+  onJumpToEarlier: (id: string) => void;
+}) {
+  return (
+    <p className="pb-1 text-xs text-rose-700 dark:text-rose-400">
+      <span className="font-semibold">Contradicts an earlier statement</span> by
+      this speaker:{" "}
+      <button
+        type="button"
+        onClick={() => onJumpToEarlier(inconsistency.earlierId)}
+        className="italic underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-rose-500"
+      >
+        “{inconsistency.earlierText}”
+      </button>
+      {inconsistency.rationale ? ` — ${inconsistency.rationale}` : null}
+    </p>
+  );
+}
 
 // SKIP_LABELS explains, per skip reason, why a statement was not fact-checked.
 const SKIP_LABELS: Record<SkipReason, string> = {

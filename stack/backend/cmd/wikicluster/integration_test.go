@@ -11,6 +11,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/pgtest"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 )
 
@@ -23,6 +24,15 @@ import (
 
 func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	t.Helper()
+	// Hold the shared schema-reset lock for the whole test, not just the
+	// reset: the integration packages share one database, so releasing after
+	// the reset would let another package drop these tables mid-test. Cleanup
+	// runs at test end, serializing every DB-touching test across packages.
+	release, err := pgtest.AcquireSchemaLock(ctx, dsn)
+	if err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	t.Cleanup(release)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("reset: connect: %v", err)

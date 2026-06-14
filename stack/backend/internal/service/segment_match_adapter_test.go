@@ -12,15 +12,16 @@ import (
 
 type stubSegmentMatcher struct {
 	matches    []Match
+	embedding  []float32
 	confidence domain.Confidence
 	err        error
 	gotText    string
 	gotScored  []Match
 }
 
-func (s *stubSegmentMatcher) MatchSegment(_ context.Context, segment string) ([]Match, error) {
+func (s *stubSegmentMatcher) MatchSegment(_ context.Context, segment string) ([]Match, []float32, error) {
 	s.gotText = segment
-	return s.matches, s.err
+	return s.matches, s.embedding, s.err
 }
 
 // Confidence records the rich matches it was handed (so a test can assert the

@@ -198,6 +198,83 @@ describe("LiveStatementList", () => {
     expect(screen.queryByText(/corroborated by the reference corpus/i)).toBeNull();
   });
 
+  test("renders an inconsistency flag linking back to the earlier statement", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("1", 10, "the bridge opened in 1940", {
+            speaker: "A",
+            inconsistency: {
+              earlierId: "0",
+              earlierText: "the bridge opened in 1937",
+              rationale: "1937 versus 1940 for the same event",
+            },
+          }),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(
+      screen.getByText(/contradicts an earlier statement/i),
+    ).toBeInTheDocument();
+    // The earlier statement is a navigable link, not just quoted text.
+    expect(
+      screen.getByRole("button", { name: /the bridge opened in 1937/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/1937 versus 1940 for the same event/i),
+    ).toBeInTheDocument();
+  });
+
+  test("the inconsistency link scrolls the earlier statement into view", async () => {
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    try {
+      renderWithPlayback(
+        <LiveStatementList
+          statements={[
+            checked("0", 0, "an earlier remark about the bridge", {
+              speaker: "A",
+            }),
+            checked("1", 10, "the bridge opened in 1940", {
+              speaker: "A",
+              inconsistency: {
+                earlierId: "0",
+                earlierText: "the bridge opened in 1937",
+              },
+            }),
+          ]}
+          selectedStatementId={null}
+        />,
+      );
+
+      const earlierRow = screen
+        .getByText("an earlier remark about the bridge")
+        .closest("li");
+      await userEvent.click(
+        screen.getByRole("button", { name: /the bridge opened in 1937/i }),
+      );
+      expect(spy.mock.instances).toContain(earlierRow);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("renders no inconsistency flag when a statement is internally consistent", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "the earth is round")]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/contradicts an earlier statement/i),
+    ).not.toBeInTheDocument();
+  });
+
   test("marks the statement at the playback position active and seeks on click", async () => {
     const { store } = renderWithPlayback(
       <LiveStatementList
