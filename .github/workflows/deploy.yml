@@ -3,6 +3,15 @@ name: deploy
 # Manual-only for now; restore `push: { branches: [main] }` once AWS is ready.
 on:
   workflow_dispatch:
+    inputs:
+      queue_versions:
+        description: >-
+          Roll the embedding-queue message version: the new RABBITMQ_QUEUE_VERSIONS
+          value (comma-separated, oldest-first, newest active, e.g. "1,2"). Leave
+          empty to deploy the image without changing the queue version. Roll back
+          by re-running with the previous list.
+        required: false
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -38,16 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - id: ecr
-        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419 # v2
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
       - id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ matrix.name }}
+          # type=sha yields the immutable sha-<7-char> tag the deploy job repins the
+          # producer and worker to. Keep it in sync with the IMAGE tag computed in
+          # the deploy job ("Deploy ingestion pipeline" step) if you change it.
           tags: |
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
@@ -87,7 +99,8 @@ jobs:
     needs: [images]
     runs-on: ubuntu-latest
     steps:
-      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -133,3 +146,23 @@ jobs:
           done
           aws ecs wait services-stable --cluster "$CLUSTER" --services backend frontend
           echo "Deployment stable"
+      # The producer and embedding-worker run the same backend image (built and
+      # scanned above) with different entry points. The producer task definition
+      # is repinned to the deployed image; the worker fleet rolls via the
+      # worker-lifecycle deploy lambda's task-set rollout so in-flight messages
+      # drain on the old version. queue_versions, when set, advances the queue
+      # message version on both in the same deploy. Workloads not yet provisioned
+      # are skipped, not fatal.
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+      - name: Deploy ingestion pipeline (producer + worker fleet)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          QUEUE_VERSIONS: ${{ inputs.queue_versions }}
+        run: |
+          set -euo pipefail
+          # Mirror docker/metadata-action's type=sha tag (sha- + 7-char short SHA),
+          # so the producer and worker run the exact image built above, not :latest.
+          IMAGE="${REGISTRY}/${PROJECT}-${ENVIRONMENT}-backend:sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          export PROJECT ENVIRONMENT IMAGE QUEUE_VERSIONS
+          bash scripts/deploy-ingestion.sh

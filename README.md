@@ -399,6 +399,40 @@ the staging table), and publishing is at-least-once with idempotent workers. The
 database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
 consumer database - the messages are self-contained.
 
+#### Deploy the producer and worker (CI)
+
+The `deploy.yml` workflow (`workflow_dispatch`-only, human-gated) ships the ingestion pipeline. The
+producer and the worker fleet both run the single backend image with different entry points
+(`/wikisync` and `/embedworker`), so the image the workflow already builds, scans (Trivy, fail on
+HIGH/CRITICAL), and pushes to ECR is the one they run - there is no separate producer or worker
+image. After the backend/frontend services roll, `scripts/deploy-ingestion.sh` ships that image to
+the two ingestion workloads:
+
+- **Producer:** registers a new producer task-definition revision pinned to the deployed image's
+  immutable `sha-<short>` tag (never `:latest`), so the next on-demand `run-task` uses the exact
+  image that was built and scanned.
+- **Worker fleet:** invokes the worker-lifecycle **deploy** lambda
+  (`truth-in-stream-<env>-workerlifecycle-deploy`) with the image and the worker service names. The
+  lambda creates and promotes a new task set under the service's EXTERNAL deployment controller, so
+  in-flight messages drain on the old task set before it is retired. The workflow never updates the
+  worker service directly, which would bypass the lambda and drop in-flight work.
+
+A workload that is not provisioned yet (the producer task definition or the deploy lambda is absent)
+is skipped, not fatal, so the deploy succeeds while the pipeline is being stood up. The script is
+unit-tested with a stubbed `aws` CLI (`scripts/deploy-ingestion.test.sh`, run in CI).
+
+##### Rolling the queue message version
+
+Advancing the active queue version (see [Embedding queue](#embedding-queue-versioned)) is an
+explicit, gated step in the same deploy, not an automatic one. Run `deploy.yml` with the
+`queue_versions` input set to the new comma-separated, oldest-first list - e.g. `1,2` to make `2`
+active while `1` drains. The deploy stamps `RABBITMQ_QUEUE_VERSIONS=<list>` on the producer revision
+and each worker family revision (the lambda copies the rolled version when it registers its image
+revision), so the producer publishes to the new versioned queue while workers still consume the old
+one until it empties. Leave `queue_versions` empty to deploy the image without touching the version.
+Roll back by re-running with the previous list. Because the version lives on the task definitions the
+deploy registers, the roll never edits Terraform and stays reversible.
+
 #### Drain the cloud queue locally (SSM bastion tunnel)
 
 The develop-locally model keeps the data on your machine: the producer fills the cloud broker
@@ -461,9 +495,15 @@ to reconnect. When the ingest is done, drop the `/etc/hosts` line and tear the b
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.
 - `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on
   merge to `main` (requires the `AWS_ROLE_ARN` repo secret, GitHub OIDC).
-- `deploy.yml` - on merge to `main`, builds backend + frontend images, scans them with Trivy
-  (fails on HIGH/CRITICAL OS or library vulns), then pushes to GHCR with SBOM + provenance
-  attestations. The AWS deploy step is a documented TODO pending the runtime target in Terraform.
+- `deploy.yml` - `workflow_dispatch`-only (human-gated; paused while AWS is being set up). Lints and
+  tests, then builds the backend, frontend, migrate, and backup images, scans them with Trivy (fails
+  on HIGH/CRITICAL OS or library vulns), and pushes them to ECR via GitHub OIDC with SBOM +
+  provenance attestations. The deploy job runs migrations, rolls the backend/frontend ECS services,
+  and ships the ingestion pipeline - repins the producer task to the deployed image and rolls the
+  worker fleet via the worker-lifecycle deploy lambda
+  ([deploy the producer and worker](#deploy-the-producer-and-worker-ci)). The optional
+  `queue_versions` input rolls the embedding queue message version in the same run. No long-lived
+  AWS credentials; a production deploy is always a deliberate manual dispatch.
 
 ## Claude Workflow
 
