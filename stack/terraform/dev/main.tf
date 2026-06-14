@@ -4,6 +4,11 @@ locals {
   project           = "truth-in-stream"
   github_repository = "verovec/truth-in-stream"
 
+  # The Amazon MQ broker name (aws_mq_broker.broker_name) and the value of the
+  # Broker metric dimension. Defined once so the metrics lambda (publisher) and
+  # the dashboard (reader) cannot drift to mismatched labels.
+  broker_name = "${local.project}-${var.environment}"
+
   # DATABASE_URL secret ARN, or null when RDS is gated off (dev develops the
   # database locally). DB consumers read this: the backend drops the secret and
   # the migration task / embedding worker gate themselves off when it is null.
@@ -73,6 +78,11 @@ module "rabbitmq" {
     [module.vpc.ecs_tasks_security_group_id],
     var.enable_bastion ? [module.bastion[0].security_group_id] : [],
   )
+
+  # The metrics-poller lambda reaches the broker's management API on 443, which
+  # the application security groups are deliberately not granted. Its SG joins
+  # this separate allow-list only when the lambda is provisioned.
+  management_allowed_security_group_ids = var.enable_metrics_lambda ? [aws_security_group.metrics_lambda[0].id] : []
 
   # Dev secrets purge immediately so destroy/apply cycles do not collide with
   # the recovery window.
@@ -412,6 +422,73 @@ module "producer" {
   log_group_name          = module.ecs.log_group_name
 }
 
+# Observability for the ingestion pipeline. A scheduled lambda polls the broker's
+# RabbitMQ management API (Amazon MQ exposes no per-queue metrics natively) and
+# republishes per-versioned-queue backlog, publish rate and consumer count as
+# custom CloudWatch metrics, plus a version-stripped rollup. A dashboard charts
+# them next to the worker fleet. Gated off by default; enable it alongside the
+# broker and worker to watch the queue. The lambda binary is built by
+# `make lambda-mqmetrics` in stack/backend before apply.
+
+# The lambda's security group lives here (not in the module) so it can be granted
+# on the broker's management allow-list without a module dependency cycle, the
+# same way the application tasks SG is shared from the vpc module. Egress-only:
+# it reaches the in-VPC broker and the AWS control plane (Secrets Manager,
+# CloudWatch) via the NAT gateway.
+resource "aws_security_group" "metrics_lambda" {
+  count = var.enable_metrics_lambda ? 1 : 0
+
+  name        = "${local.project}-${var.environment}-mqmetrics"
+  description = "Metrics-poller lambda: egress only (RabbitMQ management API in-VPC, AWS APIs via NAT)."
+  vpc_id      = module.vpc.vpc_id
+
+  egress {
+    description = "All outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${local.project}-${var.environment}-mqmetrics" }
+}
+
+module "metrics_lambda" {
+  source = "../modules/metrics-lambda"
+  count  = var.enable_metrics_lambda ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  source_binary_path = "${path.module}/../../backend/build/mqmetrics/bootstrap"
+
+  subnet_ids         = module.vpc.private_subnet_ids
+  security_group_ids = [aws_security_group.metrics_lambda[0].id]
+
+  rabbitmq_url_secret_arn = module.rabbitmq.url_secret_arn
+  broker_name             = local.broker_name
+  metrics_namespace       = var.metrics_namespace
+
+  schedule_expression = var.metrics_poll_schedule
+}
+
+# The dashboard visualises the lambda's queue metrics, so it is bound to the same
+# enable flag. Worker widgets appear only when the embedding worker is running.
+module "monitoring" {
+  source = "../modules/monitoring"
+  count  = var.enable_metrics_lambda ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  metrics_namespace = var.metrics_namespace
+  broker_name       = local.broker_name
+  queue_base        = "embedding.jobs"
+
+  cluster_name        = module.ecs.cluster_name
+  worker_service_name = var.enable_embed_worker && var.enable_rds ? module.embed_worker[0].service_name : ""
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
@@ -436,4 +513,5 @@ module "apply_permissions" {
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
   include_bastion         = var.enable_bastion
+  include_metrics_lambda  = var.enable_metrics_lambda
 }

@@ -33,6 +33,22 @@ resource "aws_security_group" "broker" {
     security_groups = var.allowed_security_group_ids
   }
 
+  # Management API over HTTPS, opened only to explicitly granted pollers (the
+  # metrics lambda), never to the application security groups. Default-off: an
+  # empty management_allowed_security_group_ids adds no rule. Inline (vs. a
+  # standalone rule) because this SG already declares inline ingress, which a
+  # separate aws_*_security_group_rule would conflict with.
+  dynamic "ingress" {
+    for_each = length(var.management_allowed_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "RabbitMQ management API (HTTPS) from allowed pollers"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      security_groups = var.management_allowed_security_group_ids
+    }
+  }
+
   egress {
     description = "All outbound"
     from_port   = 0

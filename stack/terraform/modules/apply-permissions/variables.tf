@@ -15,3 +15,9 @@ variable "include_bastion" {
   default     = false
   description = "Include the SSM bastion actions (EC2 instance lifecycle + instance profile). Set from the env's enable_bastion so the manifest only demands them when the plan provisions the bastion."
 }
+
+variable "include_metrics_lambda" {
+  type        = bool
+  default     = false
+  description = "Include the metrics-poller lambda, its CloudWatch dashboard, and EventBridge Scheduler actions. Set from the env's enable_metrics_lambda so the manifest only demands them when the plan provisions the lambda."
+}

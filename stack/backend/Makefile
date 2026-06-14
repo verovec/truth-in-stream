@@ -16,7 +16,7 @@ WIKI_MAX_DURATION ?= 15m
 # Persisted across runs so a resume reuses the downloaded dump dir.
 WIKI_DUMP_DIR     ?= /tmp/wikisync-dump
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build ingest seed refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build lambda-mqmetrics ingest seed refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -50,6 +50,9 @@ tidy: ## go mod tidy
 
 build: ## Static build of the server
 	CGO_ENABLED=0 go build ./...
+
+lambda-mqmetrics: ## Build the mqmetrics lambda bootstrap (provided.al2023, arm64) for terraform to package and deploy
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/mqmetrics/bootstrap ./cmd/mqmetrics
 
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest

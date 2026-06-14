@@ -48,6 +48,49 @@ a fresh `terraform apply` has no dangling references. Prod defaults
 provisioned. Flip `enable_rds = true` in dev (via `terraform.tfvars` or `-var`)
 to bring the managed database online there.
 
+### Ingestion monitoring (`enable_metrics_lambda`)
+
+Amazon MQ for RabbitMQ exposes almost nothing per queue, so there is no native
+way to watch backlog or throughput per queue. With `enable_metrics_lambda = true`
+the `metrics-lambda` module provisions a small Go lambda (`provided.al2023`,
+arm64) that runs on an EventBridge Scheduler tick (default every minute), polls
+the broker's RabbitMQ management API over HTTPS, and republishes per-queue stats
+as custom CloudWatch metrics in the `TruthInStream/RabbitMQ` namespace. The
+`monitoring` module builds the **ingestion dashboard** from those metrics.
+
+Build the lambda binary before applying (the module zips it):
+
+```sh
+cd stack/backend && make lambda-mqmetrics   # -> build/mqmetrics/bootstrap
+```
+
+Published metrics, dimensioned by `Broker` and `Queue` (the full versioned name):
+
+- `Backlog` — messages waiting in the queue (Count).
+- `ConsumerCount` — consumers attached (Count).
+- `PublishRate` — publish rate (Count/Second).
+
+The same three are summed across every active version into a **version-stripped
+rollup** under a `QueueBase` dimension (e.g. `embedding.jobs`), so a dashboard
+widget keeps working as the active queue version rolls (`embedding.jobs.v1` →
+`embedding.jobs.v2`).
+
+Dashboard widgets (`<project>-<env>-ingestion`):
+
+- **Queue backlog / publish rate / consumers by version** — `SEARCH` expressions
+  over the namespace, so a new versioned queue appears automatically without a
+  terraform change.
+- **Backlog rollup** — the stable version-stripped backlog.
+- **Worker running tasks** and **worker CPU / memory** — the embedding-worker ECS
+  service next to the queue, so scaling behaviour is legible. Omitted when the
+  worker is not provisioned.
+
+The lambda's execution role is least-privilege: `secretsmanager:GetSecretValue`
+scoped to the broker URL secret, and `cloudwatch:PutMetricData` scoped by a
+namespace condition. Its security group is egress-only and is added to the
+broker's `management_allowed_security_group_ids` — a separate allow-list from the
+AMQPS data-plane one, so the management API stays closed to the application tasks.
+
 ## AWS SSO profile
 
 All operator tooling targets the account through one AWS SSO profile, named
