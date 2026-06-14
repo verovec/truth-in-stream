@@ -384,6 +384,14 @@ services:
       CONSISTENCY_MODEL: "${CONSISTENCY_MODEL:-}"
       CONSISTENCY_TOP_K: "${CONSISTENCY_TOP_K:-}"
       CONSISTENCY_SIMILARITY_FLOOR: "${CONSISTENCY_SIMILARITY_FLOOR:-}"
+      # Model check-worthiness classifier: upgrade the precheck gate's first stage
+      # so casual or personal declaratives are skipped, not fact-checked. Off
+      # unless CHECKWORTHINESS_ENABLED is true AND CHECKWORTHINESS_API_KEY
+      # (Anthropic) is set; with no key, the heuristic alone decides, exactly as
+      # before. CHECKWORTHINESS_MODEL falls back to claude-haiku-4-5-20251001.
+      CHECKWORTHINESS_ENABLED: "${CHECKWORTHINESS_ENABLED:-}"
+      CHECKWORTHINESS_API_KEY: "${CHECKWORTHINESS_API_KEY:-}"
+      CHECKWORTHINESS_MODEL: "${CHECKWORTHINESS_MODEL:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
       # carries Origin: http://localhost:3000 while the proxy rewrites Host to the

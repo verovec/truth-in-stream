@@ -1132,3 +1132,68 @@ func TestConsistencyActive(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCheckWorthiness(t *testing.T) {
+	defaults := CheckWorthiness{Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    CheckWorthiness
+		wantErr bool
+	}{
+		{
+			name: "off by default",
+			env:  map[string]string{},
+			want: defaults,
+		},
+		{
+			name: "enabled with key and model override",
+			env: map[string]string{
+				"CHECKWORTHINESS_ENABLED": "true",
+				"CHECKWORTHINESS_API_KEY": "sk-test",
+				"CHECKWORTHINESS_MODEL":   "claude-haiku-4-5",
+			},
+			want: CheckWorthiness{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5"},
+		},
+		{name: "non-bool enabled rejected", env: map[string]string{"CHECKWORTHINESS_ENABLED": "maybe"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadCheckWorthiness()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckWorthinessActive(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  CheckWorthiness
+		want bool
+	}{
+		{"enabled with key", CheckWorthiness{Enabled: true, APIKey: "k"}, true},
+		{"enabled without key degrades to off", CheckWorthiness{Enabled: true, APIKey: ""}, false},
+		{"disabled with key stays off", CheckWorthiness{Enabled: false, APIKey: "k"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.Active(); got != tc.want {
+				t.Errorf("Active() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

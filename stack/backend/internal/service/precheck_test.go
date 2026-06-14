@@ -8,9 +8,14 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-type stubClassifier struct{ checkable bool }
+type stubClassifier struct {
+	checkable bool
+	err       error
+}
 
-func (s stubClassifier) Classify(string) bool { return s.checkable }
+func (s stubClassifier) Classify(context.Context, string) (bool, error) {
+	return s.checkable, s.err
+}
 
 // stubCoverage is a CoverageDecider whose verdict and error the gate tests set
 // directly, so they exercise the gate's stage-two policy without a corpus.
@@ -67,6 +72,19 @@ func TestGatePropagatesCoverageError(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("coverage down")
 	g := NewGate(stubClassifier{checkable: true}, stubCoverage{err: sentinel})
+	_, err := g.Evaluate(t.Context(), "a claim")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Evaluate err = %v, want wrapping %v", err, sentinel)
+	}
+}
+
+func TestGatePropagatesClassifierError(t *testing.T) {
+	t.Parallel()
+	// A classifier that reports failure (a model-backed one carrying a deadline
+	// or transport error) surfaces from the gate rather than being swallowed into
+	// a skip; coverage is never consulted.
+	sentinel := errors.New("classifier down")
+	g := NewGate(stubClassifier{checkable: true, err: sentinel}, stubCoverage{covered: true})
 	_, err := g.Evaluate(t.Context(), "a claim")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Evaluate err = %v, want wrapping %v", err, sentinel)

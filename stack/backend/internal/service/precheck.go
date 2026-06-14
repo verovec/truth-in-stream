@@ -10,9 +10,11 @@ import (
 // ClaimClassifier decides whether a transcript segment is a checkable,
 // declarative factual assertion. It is the cheap first stage of the gate;
 // HeuristicClassifier is the default implementation and a model-based one can
-// take its place without touching the gate.
+// take its place, or wrap it, without touching the gate. Classify takes a
+// context and returns an error so a model-backed implementation can carry a
+// deadline and report failure; the deterministic heuristic never errors.
 type ClaimClassifier interface {
-	Classify(text string) bool
+	Classify(ctx context.Context, text string) (bool, error)
 }
 
 // CoverageDecider answers the gate's coverage question - "is this segment
@@ -45,7 +47,11 @@ func NewGate(classifier ClaimClassifier, coverage CoverageDecider) *Gate {
 // declined before any corpus is consulted; a claim no corpus covers is declined
 // as not covered; everything else is checkable.
 func (g *Gate) Evaluate(ctx context.Context, text string) (domain.PrecheckDecision, error) {
-	if !g.classifier.Classify(text) {
+	claim, err := g.classifier.Classify(ctx, text)
+	if err != nil {
+		return domain.PrecheckDecision{}, fmt.Errorf("service: precheck classify: %w", err)
+	}
+	if !claim {
 		return domain.Skipped(domain.SkipReasonNotAClaim), nil
 	}
 

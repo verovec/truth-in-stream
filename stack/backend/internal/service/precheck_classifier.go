@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"unicode"
 )
@@ -62,30 +63,33 @@ var nonClaimPhrases = []string{
 }
 
 // Classify reports whether text is a checkable declarative factual assertion.
-func (c *HeuristicClassifier) Classify(text string) bool {
+// The judgment is deterministic and local, so the context is unused and the
+// error is always nil; both exist to satisfy the ClaimClassifier interface a
+// model-backed classifier also implements.
+func (c *HeuristicClassifier) Classify(_ context.Context, text string) (bool, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return false
+		return false, nil
 	}
 	if strings.HasSuffix(trimmed, "?") {
-		return false
+		return false, nil
 	}
 
 	fields := strings.Fields(trimmed)
 	if len(fields) < c.minWords {
-		return false
+		return false, nil
 	}
 	if _, bad := leadingNonClaim[wordLetters(fields[0])]; bad {
-		return false
+		return false, nil
 	}
 
 	scan := scanText(trimmed)
 	for _, phrase := range nonClaimPhrases {
 		if strings.Contains(scan, " "+phrase+" ") {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // wordLetters lowercases a token and drops everything but its letters, so
