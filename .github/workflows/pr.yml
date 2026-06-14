@@ -47,3 +47,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/deploy-ingestion.test.sh
+  # Unit-test the local-stack preflight (make doctor) with a stubbed docker CLI
+  # (no Docker daemon required).
+  doctor-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/doctor.test.sh

@@ -7,6 +7,10 @@ COMPOSE    := docker compose
 # the one-shot migrate container the reset targets drive.
 COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable
 
+# Go toolchain used by `make bootstrap` to generate the operator credentials.
+# Override if `go` is not on PATH, e.g. `make bootstrap GO=/usr/local/go/bin/go`.
+GO         ?= go
+
 # Worker count for the ingestion fleet target (`make fleet-up`). A small default
 # keeps a first run cheap; raise it per run as a make argument or shell variable
 # (`make fleet-up EMBEDWORKER_REPLICAS=4`) to drain the queue faster on a higher
@@ -21,12 +25,36 @@ EMBEDWORKER_REPLICAS ?= 2
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
 
+doctor: ## Preflight the host for the stack: GNU make, Docker Engine, the Compose v2 plugin, and a running daemon, with a clear remedy for whatever is missing
+	@sh scripts/doctor.sh
+
+bootstrap: ## Generate .env on a fresh checkout (operator email, argon2id hash, session secret, demo placeholder keys); idempotent and never stores the plaintext password. Needs the Go toolchain (override with GO=); prompts for any value still unset, or read them from BOOTSTRAP_EMAIL / BOOTSTRAP_PASSWORD
+	@command -v $(GO) >/dev/null 2>&1 || { \
+	  echo "make bootstrap needs the Go toolchain to generate the operator credentials."; \
+	  echo "Install Go (https://go.dev/dl/) or set GO=/path/to/go, or follow the manual"; \
+	  echo "Configuration steps in the README to fill .env by hand."; exit 1; }
+	@needemail=0; needhash=0; needsecret=0; \
+	if [ ! -f .env ]; then needemail=1; needhash=1; needsecret=1; else \
+	  exline=$$(grep -m1 '^AUTH_PASSWORD_HASH=' .env.example); \
+	  grep -qxF "$$exline" .env && needhash=1; \
+	  grep -qE '^AUTH_EMAIL=$$' .env && needemail=1; \
+	  grep -qE '^SESSION_SECRET=$$' .env && needsecret=1; \
+	fi; \
+	email="$${BOOTSTRAP_EMAIL:-}"; password="$${BOOTSTRAP_PASSWORD:-}"; \
+	if [ "$$needemail" = 1 ] && [ -z "$$email" ] && [ -t 0 ]; then \
+	  printf 'Operator email: '; read -r email; fi; \
+	if [ "$$needhash" = 1 ] && [ -z "$$password" ] && [ -t 0 ]; then \
+	  printf 'Operator password (input hidden): '; stty -echo 2>/dev/null; read -r password || true; stty echo 2>/dev/null; printf '\n'; fi; \
+	BOOTSTRAP_EMAIL="$$email" BOOTSTRAP_PASSWORD="$$password" \
+	  $(GO) -C stack/backend run ./cmd/bootstrap -root "$(CURDIR)"
+
 up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend
+	@sh scripts/doctor.sh --quiet
 	$(COMPOSE) up -d --build
 
 down: ## Stop the stack, keeping the Postgres volume

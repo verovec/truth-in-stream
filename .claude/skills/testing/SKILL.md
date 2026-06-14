@@ -49,6 +49,20 @@ Tests land in the same diff as the behaviour - new logic with no new tests does 
 - Frontend: Server Actions, the data-access layer, and Zod schemas as plain async-function tests; client leaves via `@testing-library/react`; async Server Components by extracting the data logic into a tested function (RTL cannot render them - nextjs skill).
 - Placement: Go `*_test.go` beside the code, same package; frontend `*.test.tsx`/`*.test.ts` colocated with the file under test.
 
+## Local stack baseline (verified versions)
+
+The local stack and every Docker-backed target (`make up`, `make test-integration`,
+`make sqlc-verify`, `migrate-*`) require **Docker Engine 24.0+ with the Compose v2 plugin** (the
+`docker compose` subcommand, never the legacy `docker-compose` binary). Engine 24.0+ bundles
+Compose v2, which is the floor for the `profiles`, `--scale`, and `depends_on` healthcheck
+conditions the root `docker-compose.yml` uses. Baseline verified 2026-06 against the Docker
+documentation via Context7; re-verify before raising it. `make doctor` (`scripts/doctor.sh`, with a
+`scripts/doctor.test.sh` companion) is the canonical preflight - run it when a stack will not start,
+and keep its checks and the README Prerequisites in lockstep with this floor. Operator credentials
+for a fresh checkout come from `make bootstrap` (`cmd/bootstrap`, which reuses
+`service.HashOperatorPassword` so genhash and bootstrap hash identically); never hand-roll a second
+argon2id path.
+
 ## Known gaps (harden via dedicated cards, never silently inside a feature card)
 
 1. No `tsc --noEmit` CI job - type errors can pass CI today; the local step above is the stopgap.

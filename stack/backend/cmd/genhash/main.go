@@ -8,12 +8,9 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/alexedwards/argon2id"
 
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
@@ -31,13 +28,9 @@ func generate(in io.Reader, out io.Writer) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("reading password from stdin: %w", err)
 	}
-	password := scanner.Text()
-	if password == "" {
-		return errors.New("password must not be empty")
-	}
-	hash, err := argon2id.CreateHash(password, service.OperatorHashParams)
+	hash, err := service.HashOperatorPassword(scanner.Text())
 	if err != nil {
-		return fmt.Errorf("hashing password: %w", err)
+		return err
 	}
 	_, err = fmt.Fprintln(out, hash)
 	return err

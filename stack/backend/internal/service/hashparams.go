@@ -1,6 +1,11 @@
 package service
 
-import "github.com/alexedwards/argon2id"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/alexedwards/argon2id"
+)
 
 // OperatorHashParams is the argon2id parameter set for the operator password
 // hash, following the OWASP password-storage recommendation (verified
@@ -14,4 +19,19 @@ var OperatorHashParams = &argon2id.Params{
 	Parallelism: 1,
 	SaltLength:  16,
 	KeyLength:   32,
+}
+
+// HashOperatorPassword returns the encoded argon2id hash of the operator
+// password under OperatorHashParams. It is the single place that turns a
+// plaintext operator password into a storable hash, shared by cmd/genhash and
+// cmd/bootstrap so both produce credentials the verifier accepts.
+func HashOperatorPassword(password string) (string, error) {
+	if password == "" {
+		return "", errors.New("password must not be empty")
+	}
+	hash, err := argon2id.CreateHash(password, OperatorHashParams)
+	if err != nil {
+		return "", fmt.Errorf("hashing operator password: %w", err)
+	}
+	return hash, nil
 }
