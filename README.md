@@ -13,25 +13,55 @@ Real-time fact-checking for live streams.
 
 ## Quick start
 
-The local dataset (curated claims, a Wikipedia evidence subset, and the demo-video results)
-seeds fully offline from a committed embedding cache, so **no API keys are needed to bring the
-stack up and play the demo**. Set the operator login, then start everything with one command:
+From a clean clone to the demo playing in the browser is three commands. The local dataset
+(curated claims, a Wikipedia evidence subset, and the demo-video results) seeds fully offline from
+a committed embedding cache, so **no real API keys are needed to bring the stack up and play the
+demo** (`make bootstrap` writes a placeholder for the two provider keys the backend needs to boot).
+
+### Prerequisites
+
+- **Docker Engine 24.0 or newer** with the **Compose v2** plugin (the `docker compose` subcommand,
+  not the legacy `docker-compose`). Engine 24.0+ bundles Compose v2; confirm with
+  `docker compose version`. (Baseline verified 2026-06 against the Docker documentation - the stack
+  uses Compose `profiles`, `--scale`, and `depends_on` healthcheck conditions, all supported there.)
+- **GNU make**.
+- A few GB of free disk for the Postgres (pgvector) and MinIO volumes.
+- The **Go toolchain** is used only by `make bootstrap` to generate the operator credentials; it is
+  not needed to run the stack or play the demo. Without Go, fill the three auth values by hand per
+  [Configuration](#configuration).
+
+`make doctor` checks the host has make, Docker, the Compose v2 plugin, and a running daemon, and
+prints a clear remedy for whatever is missing rather than a deep compose stack trace.
+
+### Bring it up
 
 ```bash
-cp .env.example .env
-# set AUTH_EMAIL / AUTH_PASSWORD_HASH / SESSION_SECRET (see Configuration);
-# the transcription, live, and embedding keys can stay empty for the demo.
-make up
+make doctor      # optional: preflight Docker, Compose v2, make, and the daemon
+make bootstrap   # generate .env: operator email, argon2id password hash, session secret
+make up          # build and start the whole stack
 # frontend -> http://localhost:3000
 # backend  -> http://localhost:8080/healthz
 ```
 
+`make bootstrap` copies `.env.example` to `.env` (when absent) and fills the three auth secrets
+that have no safe default - `AUTH_EMAIL`, `AUTH_PASSWORD_HASH` (an argon2id hash, never the
+plaintext password), and `SESSION_SECRET`. It writes the hash single-quoted so docker-compose does
+not expand its `$` signs, prompts for the email and password (or reads them from `BOOTSTRAP_EMAIL`
+/ `BOOTSTRAP_PASSWORD`), is idempotent (re-running never clobbers a value you have already set), and
+never writes the plaintext password to disk. It also writes a self-describing placeholder for
+`TRANSCRIPTION_API_KEY` and `EMBEDDING_API_KEY`: the backend requires them present to boot, but the
+offline demo never calls either provider, so the placeholder lets a fresh clone start and play the
+demo - replace it with a real key only when you move on to live analysis. To configure `.env` by
+hand instead, see [Configuration](#configuration).
+
 `make up` (`docker compose up -d --build`) runs, in order: Postgres, a one-shot `migrate`, a
 one-shot `seed` that loads the claims, the Wikipedia subset, and the precomputed demo results
-into pgvector, then the backend and frontend. Open http://localhost:3000, sign in, and the
-bundled demo clip plays with the fact-check panel already populated from the seeded results -
-no transcription or embedding API call. See [Local development data](#local-development-data)
-to reset or reseed, and [Demo](#demo) for the demo itself.
+into pgvector, then the backend and frontend. Open http://localhost:3000, sign in with the operator
+credentials you set in `make bootstrap`, and the bundled demo clip plays with the fact-check panel
+already populated from the seeded results - no transcription or embedding API call. See
+[Local development data](#local-development-data) to reset or reseed, [Demo](#demo) for the demo
+itself, and the [Wikipedia corpus quick start](#quick-start-start-the-fleet-then-fill-the-queue) to
+ingest the full corpus.
 
 ## Configuration
 
@@ -61,8 +91,9 @@ interpolates `.env` into the service environments.
 The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
 `voyage-4-large`) and the pinned 1024-dim index are shared by both paths.
 
-Generate the operator credential secrets - only the hash and the secret are ever configured,
-never the plaintext password:
+`make bootstrap` (see [Quick start](#quick-start)) generates these three values for you and is the
+recommended path. To configure them by hand instead - only the hash and the secret are ever
+stored, never the plaintext password:
 
 ```bash
 cd stack/backend
@@ -70,7 +101,8 @@ printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH
 openssl rand -hex 32                                  # -> SESSION_SECRET
 ```
 
-In `.env`, single-quote the hash so docker-compose does not expand its `$` signs.
+In `.env`, single-quote the hash so docker-compose does not expand its `$` signs (this is exactly
+what `make bootstrap` does automatically).
 
 Sessions are stateless HMAC tokens: logout clears the browser cookie but cannot revoke a
 stolen token. To invalidate every outstanding session immediately, rotate `SESSION_SECRET`
@@ -131,14 +163,8 @@ real `voyage-4-large` vectors. After editing a fixture's text, run `make refresh
 cache miss for the changed text. Transcribing a *new* (non-seeded) video still needs
 `TRANSCRIPTION_API_KEY`; the demo never does.
 
-Generate the operator credentials the login requires (see [Configuration](#configuration) for
-detail):
-
-```bash
-cd stack/backend
-printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH
-openssl rand -hex 32                                  # -> SESSION_SECRET
-```
+The login also needs the operator credentials in `.env`; `make bootstrap` generates them (see
+[Quick start](#quick-start)), or set them by hand (see [Configuration](#configuration)).
 
 ## Wikipedia corpus
 
@@ -287,6 +313,7 @@ knobs:
 ```bash
 cd stack/backend  && go test -race ./...
 cd stack/frontend && npm test
+./scripts/doctor.test.sh            # local-stack preflight (stubs the docker CLI)
 ./scripts/secrets_test.sh           # operator secrets tool (stubs AWS + editor)
 ./scripts/iam-apply-guard.test.sh   # pre-apply IAM guard (stubs the aws CLI)
 ```
