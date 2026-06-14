@@ -92,6 +92,9 @@ export function LiveFactCheckPanel() {
           className="flex min-h-0 flex-col gap-2 overflow-hidden"
         >
           <RegionHeading>Subtitles</RegionHeading>
+          {/* The interim caption is the live utterance, newer than any committed
+              statement, so it sits at the top above the newest-first list. */}
+          <LiveCaption text={caption} />
           {statements.length > 0 && (
             <LiveStatementList
               statements={statements}
@@ -100,7 +103,6 @@ export function LiveFactCheckPanel() {
             />
           )}
           {statements.length === 0 && !caption && <EmptyHint status={status} />}
-          <LiveCaption text={caption} />
         </section>
 
         <PanelSeparator {...separatorProps} />
@@ -132,23 +134,25 @@ function PanelSeparator(props: SeparatorProps) {
       className="group relative flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sky-500"
     >
       <span className="h-px w-full bg-zinc-200 transition-colors group-hover:bg-sky-400 dark:bg-zinc-800 dark:group-hover:bg-sky-500/60" />
-      <span className="absolute h-1 w-10 rounded-full bg-zinc-300 transition-colors group-hover:bg-sky-400 dark:bg-zinc-700 dark:group-hover:bg-sky-500/60" />
+      <span className="absolute h-1 w-12 rounded-full bg-zinc-300 transition-colors group-hover:bg-sky-400 group-focus-visible:bg-sky-400 dark:bg-zinc-700 dark:group-hover:bg-sky-500/60" />
     </div>
   );
 }
 
-// RegionHeading labels each of the two stacked scroll regions.
+// RegionHeading labels each of the two stacked scroll regions. shrink-0 keeps
+// the label from being squeezed when its region is dragged to the minimum.
 function RegionHeading({ children }: { children: string }) {
   return (
-    <h3 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+    <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
       {children}
     </h3>
   );
 }
 
 // LiveCaption shows the current utterance as it is spoken, before it commits to
-// a statement, so the transcript is visible word by word. It is part of the
-// subtitle region and renders nothing between utterances.
+// a statement, so the transcript is visible word by word. It sits at the top of
+// the subtitle region, above the newest committed statement, and renders nothing
+// between utterances.
 function LiveCaption({ text }: { text: string }) {
   if (!text) {
     return null;
@@ -156,7 +160,7 @@ function LiveCaption({ text }: { text: string }) {
   return (
     <p
       aria-live="polite"
-      className="mt-auto flex items-start gap-2 border-t border-dashed border-zinc-200 pt-2 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+      className="flex items-start gap-2 border-b border-dashed border-zinc-200 pb-2 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
     >
       <span
         aria-hidden="true"

@@ -41,6 +41,14 @@ describe("useVerticalSplit", () => {
     expect(screen.getByTestId("sep")).toHaveAttribute("aria-valuenow", "50");
   });
 
+  test("defaults to a top-pane majority so the bottom pane is the minority", () => {
+    render(<Host />);
+    const sep = screen.getByTestId("sep");
+    // The default split favours the top pane (subtitles) so the bottom pane
+    // (fact checks) is the minority of the height.
+    expect(Number(sep.getAttribute("aria-valuenow"))).toBeGreaterThan(50);
+  });
+
   test("clamps an out-of-range initial ratio to the max bound", () => {
     render(<Host initial={0.95} />);
     expect(screen.getByTestId("sep")).toHaveAttribute("aria-valuenow", "80");

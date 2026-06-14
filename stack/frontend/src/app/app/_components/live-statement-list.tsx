@@ -43,98 +43,113 @@ export const LiveStatementList = memo(function LiveStatementList({
   );
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
 
-  // Scroll a statement into view by id - used by an inconsistency flag to jump
-  // to the earlier statement it contradicts. A no-op when that statement is not
-  // currently mounted (e.g. cleared after a reset).
-  const scrollToStatement = useCallback((id: string) => {
-    itemRefs.current.get(id)?.scrollIntoView({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  }, []);
+  // scrollStatementIntoView reveals a statement by id; a no-op when it is not
+  // currently mounted (e.g. cleared after a reset). block defaults to "nearest"
+  // (minimal scroll) for the playback-active line, the selected line, and the
+  // inconsistency jump-to-earlier; the newest-statement auto-reveal passes
+  // "start" to pull the new line to the top.
+  const scrollStatementIntoView = useCallback(
+    (id: string, block: ScrollLogicalPosition = "nearest") => {
+      itemRefs.current.get(id)?.scrollIntoView({ block, behavior: "smooth" });
+    },
+    [],
+  );
 
+  // The active line tracks the playback clock.
   const activeId = activeIndex >= 0 ? statements[activeIndex]?.id : undefined;
   useEffect(() => {
     if (activeId === undefined) {
       return;
     }
-    itemRefs.current.get(activeId)?.scrollIntoView({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  }, [activeId]);
+    scrollStatementIntoView(activeId);
+  }, [activeId, scrollStatementIntoView]);
 
+  // A line selected from the fact-check list scrolls into view on demand.
   useEffect(() => {
     if (selectedStatementId === null) {
       return;
     }
-    itemRefs.current.get(selectedStatementId)?.scrollIntoView({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  }, [selectedStatementId, selectionTick]);
+    scrollStatementIntoView(selectedStatementId);
+  }, [selectedStatementId, selectionTick, scrollStatementIntoView]);
+
+  // The newest statement renders at the top; reveal it there as it arrives so a
+  // new line surfaces without the operator scrolling. Keyed on the newest id so
+  // it fires only when a statement is appended, not on every active-segment or
+  // selection change.
+  const newestId = statements.at(-1)?.id;
+  useEffect(() => {
+    if (newestId === undefined) {
+      return;
+    }
+    scrollStatementIntoView(newestId, "start");
+  }, [newestId, scrollStatementIntoView]);
 
   return (
     <ol
       aria-label="Subtitle transcript"
-      className="-mr-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-2"
+      className="-mr-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-2"
     >
-      {statements.map((statement, index) => {
-        const active = index === activeIndex;
-        const selected = statement.id === selectedStatementId;
-        return (
-          <li
-            key={statement.id}
-            ref={(el) => {
-              const refs = itemRefs.current;
-              if (el) {
-                refs.set(statement.id, el);
-              } else {
-                refs.delete(statement.id);
-              }
-            }}
-            aria-current={active ? "true" : undefined}
-            className={`border-l-2 pl-3 transition-colors ${
-              active
-                ? "border-sky-400 dark:border-sky-500/70"
-                : "border-transparent"
-            } ${selected ? "bg-sky-50/70 dark:bg-sky-500/10" : ""}`}
-          >
-            <button
-              type="button"
-              onClick={() => store.seekTo(statement.start)}
-              className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+      {/* index stays the chronological position so active-segment tracking and
+          selection keep matching; .reverse() then renders newest-first (top)
+          without disturbing those order-dependent computations. */}
+      {statements
+        .map((statement, index) => {
+          const active = index === activeIndex;
+          const selected = statement.id === selectedStatementId;
+          return (
+            <li
+              key={statement.id}
+              ref={(el) => {
+                const refs = itemRefs.current;
+                if (el) {
+                  refs.set(statement.id, el);
+                } else {
+                  refs.delete(statement.id);
+                }
+              }}
+              aria-current={active ? "true" : undefined}
+              className={`border-l-2 pl-3 transition-colors ${
+                active
+                  ? "border-sky-400 dark:border-sky-500/70"
+                  : "border-transparent"
+              } ${selected ? "bg-sky-50/70 dark:bg-sky-500/10" : ""}`}
             >
-              <span className="flex items-baseline gap-2 text-[11px]">
-                {statement.speaker ? (
-                  <span className="font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-300">
-                    {speakerLabel(statement.speaker)}
+              <button
+                type="button"
+                onClick={() => store.seekTo(statement.start)}
+                className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+              >
+                <span className="flex items-baseline gap-2 text-[11px]">
+                  {statement.speaker ? (
+                    <span className="font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-300">
+                      {speakerLabel(statement.speaker)}
+                    </span>
+                  ) : null}
+                  <span
+                    className={`font-mono tabular-nums ${
+                      active
+                        ? "text-sky-700 dark:text-sky-300"
+                        : "text-zinc-400 dark:text-zinc-500"
+                    }`}
+                  >
+                    {formatTime(statement.start)} – {formatTime(statement.end)}
                   </span>
-                ) : null}
-                <span
-                  className={`font-mono tabular-nums ${
-                    active
-                      ? "text-sky-700 dark:text-sky-300"
-                      : "text-zinc-400 dark:text-zinc-500"
-                  }`}
-                >
-                  {formatTime(statement.start)} – {formatTime(statement.end)}
                 </span>
-              </span>
-              <span className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">
-                {statement.text}
-              </span>
-            </button>
-            <SubtitleStatus statement={statement} />
-            {statement.inconsistency ? (
-              <InconsistencyFlag
-                inconsistency={statement.inconsistency}
-                onJumpToEarlier={scrollToStatement}
-              />
-            ) : null}
-          </li>
-        );
-      })}
+                <span className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">
+                  {statement.text}
+                </span>
+              </button>
+              <SubtitleStatus statement={statement} />
+              {statement.inconsistency ? (
+                <InconsistencyFlag
+                  inconsistency={statement.inconsistency}
+                  onJumpToEarlier={scrollStatementIntoView}
+                />
+              ) : null}
+            </li>
+          );
+        })
+        .reverse()}
     </ol>
   );
 });

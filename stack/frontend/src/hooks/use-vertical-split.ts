@@ -50,10 +50,14 @@ export type VerticalSplit = {
  * the two panes, clamped so neither pane closes. Pointer capture routes the
  * drag to the divider even when the pointer leaves it, so no window listeners
  * are needed. label names the widget for assistive tech.
+ *
+ * initialRatio is the top pane's default share. It favours the top pane so the
+ * bottom pane is the minority by default; the operator can still drag or nudge
+ * the divider to any split within the bounds.
  */
 export function useVerticalSplit(
   label: string,
-  initialRatio = 0.5,
+  initialRatio = 0.65,
 ): VerticalSplit {
   const containerRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);

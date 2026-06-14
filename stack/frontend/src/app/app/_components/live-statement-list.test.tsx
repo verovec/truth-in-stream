@@ -1,6 +1,7 @@
-import { act, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
+import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { renderWithPlayback } from "@/test/playback";
 import type { SkipReason } from "@/lib/fact-check/api";
 import type { LiveStatement } from "@/lib/live/statements";
@@ -273,6 +274,54 @@ describe("LiveStatementList", () => {
     expect(
       screen.queryByText(/contradicts an earlier statement/i),
     ).not.toBeInTheDocument();
+  });
+
+  test("renders the newest statement at the top, older ones below", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("0", 0, "the oldest remark"),
+          checked("1", 10, "a middle remark"),
+          checked("2", 20, "the newest remark"),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("the newest remark");
+    expect(rows[1]).toHaveTextContent("a middle remark");
+    expect(rows[2]).toHaveTextContent("the oldest remark");
+  });
+
+  test("auto-reveals a newly arrived statement at the top without manual scroll", () => {
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    try {
+      const { rerender } = render(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+      spy.mockClear();
+      rerender(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first"), checked("1", 10, "second")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+
+      const newest = screen.getByText("second").closest("li");
+      expect(spy.mock.instances).toContain(newest);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("marks the statement at the playback position active and seeks on click", async () => {
