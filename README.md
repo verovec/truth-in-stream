@@ -101,6 +101,7 @@ managed with one-command reset and reseed targets (root `Makefile`):
 | `make seed` | Reseed every dataset; idempotent (safe to re-run) |
 | `make seed-claims` / `make seed-wiki` / `make seed-demo` | Seed one dataset for targeted testing |
 | `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
+| `make fleet-up` / `make fleet-down` | Start / stop the ingestion broker and embedding worker fleet (`EMBEDWORKER_REPLICAS`, default 2) - see [Wikipedia corpus](#wikipedia-corpus) |
 | `make wiki-populate` | Bulk-embed the full Wikipedia corpus (paid, foreground, resumable) - see [Wikipedia corpus](#wikipedia-corpus) |
 | `make wiki-update` | Incrementally update the embedded corpus via the MediaWiki API - see [Wikipedia corpus](#wikipedia-corpus) |
 | `make reingest` | Full corpus reingest: reset, bulk-embed, cluster, then verify (paid, unattended) - see [Wikipedia corpus](#wikipedia-corpus) |
@@ -163,6 +164,44 @@ re-run: each file is fetched conditionally (`If-Modified-Since`) and skipped on 
 newly published dump triggers a re-download (the log says `reusing existing dump` or
 `dump downloaded`).
 
+### Quick start: start the fleet, then fill the queue
+
+The pipeline is a long-running **consumer** (the RabbitMQ broker and a scalable worker fleet) and a
+one-shot **producer** (the corpus ingest). Bring the consumer up once, then run the producer
+against it:
+
+```bash
+make fleet-up        # broker + 2 embedding workers, long-running (override EMBEDWORKER_REPLICAS)
+make wiki-populate   # producer: ingest the corpus, enqueue one job per chunk; the running fleet drains it
+```
+
+`make fleet-up` starts exactly `EMBEDWORKER_REPLICAS` workers (default `2`); a subsequent
+`make wiki-populate` **reuses that running fleet** rather than starting its own worker, so the fleet
+size you chose is the throughput you get. Watch the queue fill and drain three ways: the RabbitMQ
+management UI at <http://localhost:15672> (user `app`, password `dev`), the producer's own drain
+logs, and the final swap line `bulk enqueue finalized; wiki_chunks now serves the embedded corpus`.
+**Wiki search only returns results after that final line** - until the whole corpus is embedded and
+swapped, the live `wiki_chunks` is untouched.
+
+Scale the fleet for a bigger corpus or a higher Voyage tier by raising the replica count, and box a
+trial run so it stops cleanly with its embedded prefix committed:
+
+```bash
+make fleet-up EMBEDWORKER_REPLICAS=4    # more workers = more throughput (paid)
+WIKI_MAX_DURATION=15m make wiki-populate # one 15m producer session, then stop (resumable)
+```
+
+Tear the consumer down when you are done; it removes just the broker and worker containers and
+leaves the rest of the `make up` stack and every named volume (Postgres data included) intact:
+
+```bash
+make fleet-down
+```
+
+The worker fleet is the paid Voyage consumer and stays **opt-in** behind the `wiki` Compose
+profile, so a plain `make up` never starts it. Tuning the embed throughput and pacing is covered
+next.
+
 The defaults are tuned gentle for a constrained Voyage tier; raise the batch and concurrency on a
 higher tier, or box the run with a budget. Every knob is read from the root `.env` or a per-run
 environment override (a shell value wins over `.env`):
@@ -186,7 +225,7 @@ defaults to `simplewiki`. Set any of them in `.env` to make the choice stick acr
 - `embedding request failed, backing off before retry` - a WARN per retry with `reason`,
   `elapsed`, and `backoff`; sustained ones mean Voyage is throttling or stalling.
 - `all pending chunks embedded; building index and swapping staging into wiki_chunks`, then
-  `bulk embed finalized; wiki_chunks now serves the embedded corpus` - the atomic swap.
+  `bulk enqueue finalized; wiki_chunks now serves the embedded corpus` - the atomic swap.
   **Wiki search only returns results after that final line.**
 
 Pipe to a file or `jq` for a readable trace: `make wiki-populate 2>&1 | tee wiki.log`. If a prior

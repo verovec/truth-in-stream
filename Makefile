@@ -7,6 +7,12 @@ COMPOSE    := docker compose
 # the one-shot migrate container the reset targets drive.
 COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable
 
+# Worker count for the ingestion fleet target (`make fleet-up`). A small default
+# keeps a first run cheap; raise it per run as a make argument or shell variable
+# (`make fleet-up EMBEDWORKER_REPLICAS=4`) to drain the queue faster on a higher
+# Voyage tier. Read by Make, not Compose, so a value in `.env` alone is ignored.
+EMBEDWORKER_REPLICAS ?= 2
+
 # Wikipedia corpus keys and embed tuning come from the root .env (gitignored)
 # and any shell override, both read by Compose itself: every WIKI_* knob and
 # EMBEDDING_API_KEY is interpolated in docker-compose.yml as ${VAR:-default},
@@ -15,7 +21,7 @@ COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disabl
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
+.PHONY: help up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -58,8 +64,21 @@ seed-videos: ## Seed only the curated sample videos (records + best-effort media
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh
 
-wiki-populate: ## Bulk-ingest the Wikipedia corpus and enqueue embedding jobs; the worker fleet embeds and the corpus swaps in once drained (resumable, reuses an on-disk dump). Brings up the broker and one worker; scale throughput first with `docker compose --profile wiki up -d --scale embedworker=N`
-	$(COMPOSE) --profile wiki run --rm wiki-populate
+fleet-up: ## Start the ingestion consumer: the broker plus a long-running embedding worker fleet (EMBEDWORKER_REPLICAS=2, overridable). Run `make wiki-populate` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile) - plain `make up` never starts it
+	$(COMPOSE) --profile wiki up -d --scale embedworker=$(EMBEDWORKER_REPLICAS) rabbitmq embedworker
+	@echo "fleet up: rabbitmq + $(EMBEDWORKER_REPLICAS) embedworker(s) running; run 'make wiki-populate' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
+
+fleet-down: ## Stop the ingestion broker and worker fleet (removes just those containers; the rest of the stack and every named volume, Postgres data included, are left intact)
+	$(COMPOSE) --profile wiki rm -sf rabbitmq embedworker
+	@echo "fleet down: broker and workers removed; named volumes (Postgres data, broker queue state) preserved"
+
+# `docker compose run` reconciles its dependencies back to their file-defined scale,
+# so a plain `run wiki-populate` would shrink a fleet that `make fleet-up` scaled up.
+# When the broker is already running (a fleet is up), connect with --no-deps and leave
+# the fleet untouched; otherwise start the broker and a single worker first.
+wiki-populate: ## Bulk-ingest the Wikipedia corpus and enqueue embedding jobs; the worker fleet embeds and the corpus swaps in once drained (resumable, reuses an on-disk dump). Reuses a fleet from `make fleet-up`, or brings up the broker and one worker if none is running; scale throughput with `make fleet-up EMBEDWORKER_REPLICAS=N` first
+	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq embedworker
+	$(COMPOSE) --profile wiki run --rm --no-deps wiki-populate
 
 wiki-update: ## Incrementally update the embedded Wikipedia corpus via the MediaWiki API (delta sync, foreground; keys/tuning from .env)
 	$(COMPOSE) --profile wiki run --rm wiki-populate go run ./cmd/wikisync -mode=delta
