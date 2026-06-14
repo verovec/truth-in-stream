@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
@@ -62,6 +63,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	consistencyCfg, err := config.LoadConsistency()
+	if err != nil {
+		return err
+	}
+	checkWorthinessCfg, err := config.LoadCheckWorthiness()
 	if err != nil {
 		return err
 	}
@@ -160,7 +165,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	prechecker, err := buildPrechecker(precheckCfg, embedder, store, store)
+	prechecker, err := buildPrechecker(precheckCfg, checkWorthinessCfg, embedder, store, store, logger)
 	if err != nil {
 		return err
 	}
@@ -283,15 +288,24 @@ func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, ev
 // buildPrechecker assembles the check-worthiness gate from config. A disabled
 // gate returns a nil prechecker, which the processor treats as "check
 // everything" - the pre-gate behavior - with no special-casing. An enabled
-// gate pairs the deterministic claim classifier with combined corpus coverage
-// over the same embedder, claim store, and wiki store the matcher uses, so a
-// segment grounded by either the curated claims or the embedded wiki corpus is
-// checked.
-func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher) (service.SegmentPrechecker, error) {
+// gate pairs the claim classifier with combined corpus coverage over the same
+// embedder, claim store, and wiki store the matcher uses, so a segment grounded
+// by either the curated claims or the embedded wiki corpus is checked.
+//
+// Stage one is the deterministic heuristic by default. When the model
+// check-worthiness classifier is active, the heuristic is wrapped in a cascade:
+// the heuristic still rejects obvious non-claims for free, and only its
+// survivors reach the model, which skips casual or personal declaratives a
+// word-list cannot. An unconfigured or keyless model leaves the heuristic alone,
+// exactly the prior behavior.
+func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	classifier := service.NewHeuristicClassifier(cfg.MinWords)
+	classifier, err := buildClaimClassifier(cfg, cw, logger)
+	if err != nil {
+		return nil, err
+	}
 	coverage, err := service.NewCombinedCoverage(embedder, claims, wiki, service.CoverageConfig{
 		ClaimsThreshold: cfg.CoverageThreshold,
 		WikiThreshold:   cfg.WikiCoverageThreshold,
@@ -301,6 +315,23 @@ func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, claims
 		return nil, err
 	}
 	return service.NewGate(classifier, coverage), nil
+}
+
+// buildClaimClassifier returns the gate's stage-one classifier: the
+// deterministic heuristic alone when the model is inactive, or the heuristic
+// wrapped in a model cascade when the check-worthiness model is configured. The
+// API key is never logged.
+func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, logger *slog.Logger) (service.ClaimClassifier, error) {
+	heuristic := service.NewHeuristicClassifier(cfg.MinWords)
+	if !cw.Active() {
+		return heuristic, nil
+	}
+	model, err := checkworthy.New(checkworthy.Config{APIKey: cw.APIKey, Model: cw.Model})
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("model check-worthiness classifier enabled", slog.String("model", cw.Model))
+	return service.NewCascadeClassifier(heuristic, model, logger), nil
 }
 
 // buildStanceClassifier wires the intra-speaker consistency stance check, or

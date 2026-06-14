@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestHeuristicClassifierCheckable(t *testing.T) {
 	t.Parallel()
@@ -49,7 +52,11 @@ func TestHeuristicClassifierCheckable(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := c.Classify(tc.text); got != tc.want {
+			got, err := c.Classify(t.Context(), tc.text)
+			if err != nil {
+				t.Fatalf("Classify(%q): %v", tc.text, err)
+			}
+			if got != tc.want {
 				t.Errorf("Classify(%q) = %v, want %v", tc.text, got, tc.want)
 			}
 		})
@@ -61,10 +68,10 @@ func TestHeuristicClassifierMinWordsConfigurable(t *testing.T) {
 	// A higher minimum rejects a sentence a lower minimum would accept, proving
 	// the threshold is honored rather than hard-coded.
 	short := "Cats are mammals."
-	if !NewHeuristicClassifier(3).Classify(short) {
+	if got, _ := NewHeuristicClassifier(3).Classify(context.Background(), short); !got {
 		t.Errorf("with minWords=3, Classify(%q) = false, want true", short)
 	}
-	if NewHeuristicClassifier(5).Classify(short) {
+	if got, _ := NewHeuristicClassifier(5).Classify(context.Background(), short); got {
 		t.Errorf("with minWords=5, Classify(%q) = true, want false", short)
 	}
 }

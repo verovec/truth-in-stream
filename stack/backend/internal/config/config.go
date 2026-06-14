@@ -315,7 +315,7 @@ type DebugSearch struct {
 // environment. DEBUG_WIKI_SEARCH gates the whole feature (default off);
 // DEBUG_WIKI_SEARCH_TOP_K and DEBUG_WIKI_SEARCH_TIMEOUT tune it when enabled.
 func LoadDebugSearch() (DebugSearch, error) {
-	enabled, err := boolEnv("DEBUG_WIKI_SEARCH", false)
+	enabled, err := boolEnv("DEBUG_WIKI_SEARCH")
 	if err != nil {
 		return DebugSearch{}, err
 	}
@@ -494,7 +494,7 @@ func LoadConsistency() (Consistency, error) {
 		SimilarityFloor: defaultConsistencyFloor,
 	}
 	var err error
-	if c.Enabled, err = boolEnv("CONSISTENCY_ENABLED", false); err != nil {
+	if c.Enabled, err = boolEnv("CONSISTENCY_ENABLED"); err != nil {
 		return Consistency{}, err
 	}
 	c.APIKey = getenv("CONSISTENCY_API_KEY", "")
@@ -511,6 +511,46 @@ func LoadConsistency() (Consistency, error) {
 	if c.SimilarityFloor < 0 {
 		return Consistency{}, fmt.Errorf("config: CONSISTENCY_SIMILARITY_FLOOR %v must be in [0, 1]", c.SimilarityFloor)
 	}
+	return c, nil
+}
+
+// Check-worthiness defaults. The model is the cheapest fast Claude model,
+// suitable for a binary check-worthy/not judgment over one short statement. This
+// is the env-layer default; the checkworthy adapter keeps a matching default for
+// direct construction and the two must stay in sync.
+const defaultCheckWorthinessModel = "claude-haiku-4-5-20251001"
+
+// CheckWorthiness holds the model stage of the check-worthiness gate. It is the
+// optional upgrade to the gate's stage one: when off (the default) or keyless,
+// the deterministic heuristic alone decides claim-worthiness, exactly as before.
+// When active, a model judges whether a heuristic-accepted declarative is a
+// check-worthy public claim rather than casual small talk. APIKey is a secret
+// and comes from the environment only - never logged. Model selects the
+// classifier model.
+type CheckWorthiness struct {
+	Enabled bool
+	APIKey  string
+	Model   string
+}
+
+// Active reports whether the model classifier should be wired: it is enabled and
+// has the API key it needs. Wiring keys off this so an enabled-but-keyless
+// configuration degrades to the heuristic-only gate rather than failing to
+// start.
+func (c CheckWorthiness) Active() bool {
+	return c.Enabled && c.APIKey != ""
+}
+
+// LoadCheckWorthiness reads the model check-worthiness configuration from the
+// environment, applying defaults. The secret is read but never logged.
+func LoadCheckWorthiness() (CheckWorthiness, error) {
+	c := CheckWorthiness{Model: defaultCheckWorthinessModel}
+	var err error
+	if c.Enabled, err = boolEnv("CHECKWORTHINESS_ENABLED"); err != nil {
+		return CheckWorthiness{}, err
+	}
+	c.APIKey = getenv("CHECKWORTHINESS_API_KEY", "")
+	c.Model = getenv("CHECKWORTHINESS_MODEL", c.Model)
 	return c, nil
 }
 
@@ -813,7 +853,7 @@ func LoadStorage() (Storage, error) {
 	if (s.AccessKey == "") != (s.SecretKey == "") {
 		return Storage{}, errors.New("config: STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY must be set together")
 	}
-	if s.UsePathStyle, err = boolEnv("STORAGE_USE_PATH_STYLE", false); err != nil {
+	if s.UsePathStyle, err = boolEnv("STORAGE_USE_PATH_STYLE"); err != nil {
 		return Storage{}, err
 	}
 	if s.PutTTL, err = boundedDurationEnv("STORAGE_PRESIGN_PUT_TTL", s.PutTTL, maxStoragePresignTTL); err != nil {
@@ -1076,11 +1116,13 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 	return w, nil
 }
 
-// boolEnv reads a boolean environment variable, applying fallback when unset.
-func boolEnv(key string, fallback bool) (bool, error) {
+// boolEnv reads an optional boolean feature flag, defaulting to false when
+// unset. Every such flag in this config is opt-in, so a false default is the
+// shared contract rather than a per-caller choice.
+func boolEnv(key string) (bool, error) {
 	raw := os.Getenv(key)
 	if raw == "" {
-		return fallback, nil
+		return false, nil
 	}
 	v, err := strconv.ParseBool(raw)
 	if err != nil {
