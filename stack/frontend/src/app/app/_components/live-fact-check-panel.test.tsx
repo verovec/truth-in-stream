@@ -73,6 +73,37 @@ describe("LiveFactCheckPanel", () => {
     ).toBeInTheDocument();
   });
 
+  test("defaults the fact-checks region to the minority of the panel height", () => {
+    renderPanel({ statements: [], caption: "", status: "idle" });
+    const separator = screen.getByRole("separator", {
+      name: /resize subtitles and fact checks/i,
+    });
+    // aria-valuenow is the subtitles share; a value above 50 means the
+    // transcript holds the majority and the fact-checks region is the minority.
+    expect(
+      Number(separator.getAttribute("aria-valuenow")),
+    ).toBeGreaterThan(50);
+  });
+
+  test("places the interim caption at the top of the subtitles region", () => {
+    renderPanel({
+      statements: [checked(0, "an already committed statement")],
+      caption: "and this is still being spoken",
+      status: "live",
+    });
+    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    const caption = within(subtitles).getByText(/still being spoken/i);
+    const transcript = within(subtitles).getByRole("list", {
+      name: /subtitle transcript/i,
+    });
+    // The live utterance is the newest speech, so it sits above the committed
+    // statements rather than at the bottom of the region.
+    expect(
+      caption.compareDocumentPosition(transcript) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   test("arrow keys repartition the two regions through the divider", async () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     const separator = screen.getByRole("separator", {
@@ -199,6 +230,23 @@ describe("LiveFactCheckPanel", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  test("streams the newest statement to the top of the subtitles region", () => {
+    renderPanel({
+      statements: [
+        checked(0, "the first thing said"),
+        checked(10, "the second thing said"),
+        checked(20, "the latest thing said"),
+      ],
+      caption: "",
+      status: "live",
+    });
+
+    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    const rows = within(subtitles).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("the latest thing said");
+    expect(rows[rows.length - 1]).toHaveTextContent("the first thing said");
   });
 
   test("surfaces a reconnecting notice without hiding existing statements", () => {
