@@ -68,16 +68,6 @@ variable "cluster_id" {
   description = "ECS cluster ID the service runs in."
 }
 
-variable "subnet_ids" {
-  type        = list(string)
-  description = "Private subnets for the tasks."
-}
-
-variable "security_group_ids" {
-  type        = list(string)
-  description = "Security groups for the tasks. The worker is outbound-only (broker, RDS, Voyage); no ingress rule is added."
-}
-
 variable "task_execution_role_arn" {
   type        = string
   description = "Task execution role ARN (pulls the image, reads secrets, writes logs)."

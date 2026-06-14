@@ -162,3 +162,29 @@ variable "metrics_poll_schedule" {
   default     = "rate(1 minute)"
   description = "EventBridge Scheduler expression for how often the metrics lambda polls the broker."
 }
+
+variable "enable_worker_lifecycle" {
+  type        = bool
+  default     = false
+  description = "Provision the worker-lifecycle lambda (queue-depth autoscaling and zero-downtime rollout for the embedding-worker fleet). Default false; enable it alongside the broker and worker. Requires `make lambda-workerlifecycle` in stack/backend to have built the bootstrap binary before apply. The fleet stays at zero until a service's scaling max is raised above zero."
+}
+
+variable "worker_lifecycle_scaling_config" {
+  type = map(object({
+    queue_base       = string
+    ratio            = number
+    min              = number
+    max              = number
+    cooldown_seconds = number
+  }))
+  default = {
+    embedworker = {
+      queue_base       = "embedding.jobs"
+      ratio            = 200
+      min              = 0
+      max              = 0
+      cooldown_seconds = 180
+    }
+  }
+  description = "Per-service queue-depth scaling policy for the worker-lifecycle lambda, keyed by ECS service name. max = 0 keeps a service disabled - the gate that holds the embedding-worker fleet at zero until it moves onto ECS. Raise embedworker's max to enable autoscaling."
+}

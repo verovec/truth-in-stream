@@ -79,10 +79,14 @@ module "rabbitmq" {
     var.enable_bastion ? [module.bastion[0].security_group_id] : [],
   )
 
-  # The metrics-poller lambda reaches the broker's management API on 443, which
-  # the application security groups are deliberately not granted. Its SG joins
-  # this separate allow-list only when the lambda is provisioned.
-  management_allowed_security_group_ids = var.enable_metrics_lambda ? [aws_security_group.metrics_lambda[0].id] : []
+  # The metrics-poller and worker-lifecycle lambdas reach the broker's management
+  # API on 443 for per-queue depth, which the application security groups are
+  # deliberately not granted. Their SGs join this separate allow-list only when the
+  # respective lambda is provisioned.
+  management_allowed_security_group_ids = concat(
+    var.enable_metrics_lambda ? [aws_security_group.metrics_lambda[0].id] : [],
+    var.enable_worker_lifecycle ? [aws_security_group.worker_lifecycle[0].id] : [],
+  )
 
   # Dev secrets purge immediately so destroy/apply cycles do not collide with
   # the recovery window.
@@ -371,8 +375,6 @@ module "embed_worker" {
   )
 
   cluster_id              = module.ecs.cluster_id
-  subnet_ids              = module.vpc.private_subnet_ids
-  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
@@ -489,6 +491,63 @@ module "monitoring" {
   worker_service_name = var.enable_embed_worker && var.enable_rds ? module.embed_worker[0].service_name : ""
 }
 
+# Worker-lifecycle lambda: queue-depth autoscaling and zero-downtime rollout for
+# the embedding-worker fleet, which runs under an EXTERNAL deployment controller.
+# Built and validated now so the move of the workers onto ECS is turnkey; the
+# fleet stays at zero (scaling max = 0) until then. Gated off by default; enable it
+# alongside the broker and the worker. The lambda binary is built by
+# `make lambda-workerlifecycle` in stack/backend before apply.
+
+# The lambda's security group lives here (not in the module) so it can join the
+# broker's management allow-list without a module dependency cycle, the same way
+# the metrics-lambda SG is shared. Egress-only: it reaches the in-VPC broker and
+# the AWS control plane (ECS, Secrets Manager, SSM) via the NAT gateway.
+resource "aws_security_group" "worker_lifecycle" {
+  count = var.enable_worker_lifecycle ? 1 : 0
+
+  name        = "${local.project}-${var.environment}-workerlifecycle"
+  description = "Worker-lifecycle lambda: egress only (RabbitMQ management API in-VPC, AWS APIs via NAT)."
+  vpc_id      = module.vpc.vpc_id
+
+  egress {
+    description = "All outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${local.project}-${var.environment}-workerlifecycle" }
+}
+
+module "worker_lifecycle" {
+  source = "../modules/worker-lifecycle"
+  count  = var.enable_worker_lifecycle ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  source_binary_path = "${path.module}/../../backend/build/workerlifecycle/bootstrap"
+
+  subnet_ids         = module.vpc.private_subnet_ids
+  security_group_ids = [aws_security_group.worker_lifecycle[0].id]
+
+  ecs_cluster_name        = module.ecs.cluster_name
+  ecs_cluster_arn         = module.ecs.cluster_id
+  task_role_arn           = module.iam.task_role_arn
+  task_execution_role_arn = module.iam.task_execution_role_arn
+
+  rabbitmq_url_secret_arn = module.rabbitmq.url_secret_arn
+
+  # The worker tasks' own network, for a first-deploy task set when no PRIMARY
+  # exists to copy it from.
+  resource_prefix         = "${local.project}-${var.environment}"
+  task_subnet_ids         = module.vpc.private_subnet_ids
+  task_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+
+  scaling_config = var.worker_lifecycle_scaling_config
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
@@ -510,8 +569,9 @@ resource "aws_ssm_parameter" "tasks_security_group_id" {
 module "apply_permissions" {
   source = "../modules/apply-permissions"
 
-  include_rds             = var.enable_rds
-  include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
-  include_bastion         = var.enable_bastion
-  include_metrics_lambda  = var.enable_metrics_lambda
+  include_rds              = var.enable_rds
+  include_scheduled_tasks  = var.enable_wiki_sync || var.enable_db_backup
+  include_bastion          = var.enable_bastion
+  include_metrics_lambda   = var.enable_metrics_lambda
+  include_worker_lifecycle = var.enable_worker_lifecycle
 }

@@ -299,9 +299,12 @@ module "db_backup" {
 }
 
 # Embedding-worker fleet. A headless ECS service that drains the broker queue and
-# embeds chunks into the staging corpus; scale embed_worker_desired_count to scale
-# throughput. Outbound-only (broker, RDS, Voyage) on the shared tasks SG. Gated
-# off by default; enable during a corpus ingest that publishes jobs.
+# embeds chunks into the staging corpus. It runs under an EXTERNAL deployment
+# controller, so a worker-lifecycle lambda must create and scale its task sets -
+# that lambda is wired in dev (enable_worker_lifecycle) but not yet in prod, so
+# enabling this fleet in prod requires adding the worker-lifecycle module here
+# first; without it the service has no task set and runs nothing. Gated off by
+# default. Outbound-only (broker, RDS, Voyage) on the shared tasks SG.
 module "embed_worker" {
   source = "../modules/worker"
   # Writes embeddings to the database, so it requires RDS as well as its own
@@ -332,8 +335,6 @@ module "embed_worker" {
   )
 
   cluster_id              = module.ecs.cluster_id
-  subnet_ids              = module.vpc.private_subnet_ids
-  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
