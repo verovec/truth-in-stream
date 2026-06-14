@@ -19,6 +19,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
+	"github.com/verovec/truth-in-stream/backend/internal/stance"
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
@@ -57,6 +58,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	liveCfg, err := config.LoadLive()
+	if err != nil {
+		return err
+	}
+	consistencyCfg, err := config.LoadConsistency()
 	if err != nil {
 		return err
 	}
@@ -165,14 +170,22 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	stanceClassifier, err := buildStanceClassifier(consistencyCfg, logger)
+	if err != nil {
+		return err
+	}
+
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
-		Stream:      liveStream(transcription, logger),
-		Matcher:     segmentMatcher,
-		Prechecker:  prechecker,
-		Logger:      logger,
-		Concurrency: liveCfg.Concurrency,
-		QueueDepth:  liveCfg.QueueDepth,
+		Stream:           liveStream(transcription, logger),
+		Matcher:          segmentMatcher,
+		Prechecker:       prechecker,
+		Logger:           logger,
+		Concurrency:      liveCfg.Concurrency,
+		QueueDepth:       liveCfg.QueueDepth,
+		Stance:           stanceClassifier,
+		ConsistencyTopK:  consistencyCfg.TopK,
+		ConsistencyFloor: consistencyCfg.SimilarityFloor,
 	})
 	if err != nil {
 		return err
@@ -288,4 +301,20 @@ func buildPrechecker(cfg config.Precheck, embedder service.QueryEmbedder, claims
 		return nil, err
 	}
 	return service.NewGate(classifier, coverage), nil
+}
+
+// buildStanceClassifier wires the intra-speaker consistency stance check, or
+// returns a nil classifier (interface, not a typed nil) when the feature is not
+// active, so the live analyzer leaves consistency off and behaves exactly as
+// before. The API key is never logged.
+func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service.StanceClassifier, error) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	client, err := stance.New(stance.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("intra-speaker consistency enabled", slog.String("model", cfg.Model))
+	return client, nil
 }

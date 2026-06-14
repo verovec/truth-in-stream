@@ -203,7 +203,7 @@ func TestMatchSegment(t *testing.T) {
 				t.Fatalf("NewMatcher: %v", err)
 			}
 
-			got, err := m.MatchSegment(t.Context(), tc.segment)
+			got, _, err := m.MatchSegment(t.Context(), tc.segment)
 			if tc.wantErrIs != nil {
 				if !errors.Is(err, tc.wantErrIs) {
 					t.Fatalf("err = %v, want errors.Is %v", err, tc.wantErrIs)
@@ -273,7 +273,7 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 		t.Fatalf("NewMatcher: %v", err)
 	}
 
-	got, err := m.MatchSegment(t.Context(), "the great wall is very old")
+	got, _, err := m.MatchSegment(t.Context(), "the great wall is very old")
 	if err != nil {
 		t.Fatalf("MatchSegment: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestMatchSegmentDisabledEvidenceSkipsSearch(t *testing.T) {
 		t.Fatalf("NewMatcher: %v", err)
 	}
 
-	got, err := m.MatchSegment(t.Context(), "anything")
+	got, _, err := m.MatchSegment(t.Context(), "anything")
 	if err != nil {
 		t.Fatalf("MatchSegment: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestMatchSegmentEvidenceErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMatcher: %v", err)
 	}
-	if _, err := m.MatchSegment(t.Context(), "anything"); err == nil {
+	if _, _, err := m.MatchSegment(t.Context(), "anything"); err == nil {
 		t.Fatal("expected evidence error, got nil")
 	}
 }
@@ -345,7 +345,7 @@ func TestMatchSegmentRejectsDimensionMismatchBeforeSearch(t *testing.T) {
 		t.Fatalf("NewMatcher: %v", err)
 	}
 
-	if _, err := m.MatchSegment(t.Context(), "segment"); err == nil {
+	if _, _, err := m.MatchSegment(t.Context(), "segment"); err == nil {
 		t.Fatal("expected dimension error, got nil")
 	}
 	if searcher.gotQuery != nil {
@@ -455,7 +455,7 @@ func TestMatcherBoundsEmbedConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, errs[i] = m.MatchSegment(t.Context(), fmt.Sprintf("segment %d", i))
+				_, _, errs[i] = m.MatchSegment(t.Context(), fmt.Sprintf("segment %d", i))
 			}()
 		}
 
@@ -490,7 +490,7 @@ func TestMatcherTimeoutCancelsSlowEmbed(t *testing.T) {
 			t.Fatalf("NewMatcher: %v", err)
 		}
 
-		_, err = m.MatchSegment(t.Context(), "slow segment")
+		_, _, err = m.MatchSegment(t.Context(), "slow segment")
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 		}
@@ -511,13 +511,13 @@ func TestMatcherSlotWaitRespectsCancellation(t *testing.T) {
 		}
 
 		go func() {
-			_, _ = m.MatchSegment(t.Context(), "slot holder")
+			_, _, _ = m.MatchSegment(t.Context(), "slot holder")
 		}()
 		<-embedder.started
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err = m.MatchSegment(ctx, "waiter")
+		_, _, err = m.MatchSegment(ctx, "waiter")
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v, want context.Canceled", err)
 		}

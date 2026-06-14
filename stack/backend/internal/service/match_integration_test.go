@@ -273,7 +273,7 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 				t.Fatalf("NewMatcher: %v", err)
 			}
 
-			got, err := m.MatchSegment(t.Context(), tc.segment)
+			got, _, err := m.MatchSegment(t.Context(), tc.segment)
 			if err != nil {
 				t.Fatalf("MatchSegment: %v", err)
 			}

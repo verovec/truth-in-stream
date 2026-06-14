@@ -373,6 +373,17 @@ services:
       # model, and note the committed seed cache is keyed under the default - a
       # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # Live intra-speaker consistency: flag when a speaker contradicts their own
+      # earlier statement. Off unless CONSISTENCY_ENABLED is true AND
+      # CONSISTENCY_API_KEY (Anthropic) is set; with no key, live analysis behaves
+      # exactly as before. Optional tuning falls back to binary defaults when
+      # empty: CONSISTENCY_MODEL (claude-haiku-4-5-20251001), CONSISTENCY_TOP_K
+      # (3), CONSISTENCY_SIMILARITY_FLOOR (0.6).
+      CONSISTENCY_ENABLED: "${CONSISTENCY_ENABLED:-}"
+      CONSISTENCY_API_KEY: "${CONSISTENCY_API_KEY:-}"
+      CONSISTENCY_MODEL: "${CONSISTENCY_MODEL:-}"
+      CONSISTENCY_TOP_K: "${CONSISTENCY_TOP_K:-}"
+      CONSISTENCY_SIMILARITY_FLOOR: "${CONSISTENCY_SIMILARITY_FLOOR:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
       # carries Origin: http://localhost:3000 while the proxy rewrites Host to the

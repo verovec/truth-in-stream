@@ -452,6 +452,68 @@ func LoadLive() (Live, error) {
 	return l, nil
 }
 
+// Intra-speaker consistency defaults. The model is the cheapest fast Claude
+// model, suitable for a binary contradiction judgment over two short
+// statements; TopK 3 caps stance calls per statement; SimilarityFloor 0.6 keeps
+// the stance check off topically-unrelated prior statements. These are the
+// env-layer defaults; the service and stance packages keep matching library
+// defaults for direct construction and must stay in sync with them.
+const (
+	defaultConsistencyModel = "claude-haiku-4-5-20251001"
+	defaultConsistencyTopK  = 3
+	defaultConsistencyFloor = 0.6
+)
+
+// Consistency holds the live intra-speaker consistency configuration. The
+// feature is off unless Enabled is true and APIKey is set: with no key, live
+// analysis behaves exactly as before, emitting no consistency flags. APIKey is
+// a secret and comes from the environment only - never logged. Model selects
+// the stance model; TopK and SimilarityFloor tune detection.
+type Consistency struct {
+	Enabled         bool
+	APIKey          string
+	Model           string
+	TopK            int
+	SimilarityFloor float64
+}
+
+// Active reports whether the consistency feature should be wired: it is enabled
+// and has the API key it needs. Wiring keys off this so an enabled-but-keyless
+// configuration degrades to off rather than failing to start.
+func (c Consistency) Active() bool {
+	return c.Enabled && c.APIKey != ""
+}
+
+// LoadConsistency reads the intra-speaker consistency configuration from the
+// environment, applying defaults and failing fast on an out-of-range top-k or
+// similarity floor. The secret is read but never logged.
+func LoadConsistency() (Consistency, error) {
+	c := Consistency{
+		Model:           defaultConsistencyModel,
+		TopK:            defaultConsistencyTopK,
+		SimilarityFloor: defaultConsistencyFloor,
+	}
+	var err error
+	if c.Enabled, err = boolEnv("CONSISTENCY_ENABLED", false); err != nil {
+		return Consistency{}, err
+	}
+	c.APIKey = getenv("CONSISTENCY_API_KEY", "")
+	c.Model = getenv("CONSISTENCY_MODEL", c.Model)
+	if c.TopK, err = intEnv("CONSISTENCY_TOP_K", c.TopK, 1, math.MaxInt32); err != nil {
+		return Consistency{}, err
+	}
+	if c.SimilarityFloor, err = thresholdEnv("CONSISTENCY_SIMILARITY_FLOOR", c.SimilarityFloor); err != nil {
+		return Consistency{}, err
+	}
+	// The floor is a lower bound on useful topical similarity, so it lives in
+	// [0, 1]: a negative cosine floor would invite stance checks on
+	// anti-correlated statements, the opposite of the topical gate's purpose.
+	if c.SimilarityFloor < 0 {
+		return Consistency{}, fmt.Errorf("config: CONSISTENCY_SIMILARITY_FLOOR %v must be in [0, 1]", c.SimilarityFloor)
+	}
+	return c, nil
+}
+
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
 // rejecting values (including NaN) outside [-1, 1].
 func thresholdEnv(key string, fallback float64) (float64, error) {

@@ -83,6 +83,20 @@ type subtitleFrame struct {
 	Speaker string  `json:"speaker,omitempty"`
 }
 
+// consistencyFrame is the wire form of a consistency event: the same speaker
+// contradicted an earlier statement. ID is the offending statement (the one the
+// flag renders on); EarlierID and EarlierText identify the prior statement it
+// conflicts with so the client can link back to it. Speaker and Rationale are
+// additive context. It is delivered after the statement's subtitle and result.
+type consistencyFrame struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	EarlierID   string `json:"earlier_id"`
+	EarlierText string `json:"earlier_text"`
+	Speaker     string `json:"speaker,omitempty"`
+	Rationale   string `json:"rationale,omitempty"`
+}
+
 // resultFrame is the wire form of a result event: the shared per-segment shape
 // (embedded segmentJSON, the single home of the verdict wire shaping) plus the
 // correlation id and an optional non-fatal analysis error.
@@ -208,6 +222,22 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 			End:     ev.Segment.End.Seconds(),
 			Text:    ev.Segment.Text,
 			Speaker: ev.Segment.Speaker,
+		})
+	}
+	if ev.Kind == service.LiveEventConsistency {
+		// The service always sets Consistency for this kind; the guard keeps a
+		// future or malformed event from panicking the writer (and from falling
+		// through to a bogus result frame) - it is simply skipped.
+		if ev.Consistency == nil {
+			return nil
+		}
+		return wsjson.Write(ctx, conn, consistencyFrame{
+			Type:        string(ev.Kind),
+			ID:          ev.ID,
+			EarlierID:   ev.Consistency.EarlierID,
+			EarlierText: ev.Consistency.EarlierText,
+			Speaker:     ev.Consistency.Speaker,
+			Rationale:   ev.Consistency.Rationale,
 		})
 	}
 	return wsjson.Write(ctx, conn, resultFrame{

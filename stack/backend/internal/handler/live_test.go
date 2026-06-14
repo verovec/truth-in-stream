@@ -79,15 +79,18 @@ func (r *recordingLive) frames() [][]byte {
 
 // wireFrame decodes either event shape; absent fields stay zero.
 type wireFrame struct {
-	Type       string                `json:"type"`
-	ID         string                `json:"id"`
-	Start      float64               `json:"start"`
-	End        float64               `json:"end"`
-	Text       string                `json:"text"`
-	Speaker    string                `json:"speaker"`
-	Matches    []domain.SegmentMatch `json:"matches"`
-	SkipReason string                `json:"skip_reason"`
-	Error      string                `json:"error"`
+	Type        string                `json:"type"`
+	ID          string                `json:"id"`
+	Start       float64               `json:"start"`
+	End         float64               `json:"end"`
+	Text        string                `json:"text"`
+	Speaker     string                `json:"speaker"`
+	Matches     []domain.SegmentMatch `json:"matches"`
+	SkipReason  string                `json:"skip_reason"`
+	Error       string                `json:"error"`
+	EarlierID   string                `json:"earlier_id"`
+	EarlierText string                `json:"earlier_text"`
+	Rationale   string                `json:"rationale"`
 }
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
@@ -187,6 +190,88 @@ func TestLiveHandlerForwardsInterimCaption(t *testing.T) {
 	}
 	if frame.ID != "" {
 		t.Errorf("interim frame should carry no id, got %q", frame.ID)
+	}
+}
+
+func TestLiveHandlerForwardsConsistencyFlag(t *testing.T) {
+	t.Parallel()
+	// A consistency event serializes to a frame that links the offending
+	// statement to the earlier one it contradicts, so the client can render the
+	// inline inconsistency flag.
+	seg := domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: "the bridge opened in 1940", Speaker: "A"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{
+			Kind:    service.LiveEventConsistency,
+			ID:      "1",
+			Segment: seg,
+			Consistency: &service.ConsistencyFlag{
+				EarlierID:   "0",
+				EarlierText: "the bridge opened in 1937",
+				Speaker:     "A",
+				Rationale:   "1937 versus 1940 for the same event",
+			},
+		},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "consistency" || frame.ID != "1" {
+		t.Errorf("consistency frame = %+v, want type consistency on statement 1", frame)
+	}
+	if frame.EarlierID != "0" || frame.EarlierText != "the bridge opened in 1937" {
+		t.Errorf("frame should link to the earlier statement, got earlier_id=%q earlier_text=%q", frame.EarlierID, frame.EarlierText)
+	}
+	if frame.Speaker != "A" || frame.Rationale == "" {
+		t.Errorf("frame speaker=%q rationale=%q", frame.Speaker, frame.Rationale)
+	}
+}
+
+func TestLiveHandlerSkipsMalformedConsistencyEvent(t *testing.T) {
+	t.Parallel()
+	// A consistency event with no flag payload must not panic or emit a bogus
+	// frame: it is skipped, and the following event still reaches the client.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventConsistency, ID: "1"}, // Consistency is nil
+		{Kind: service.LiveEventSubtitle, ID: "2", Segment: seg},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	// The malformed consistency event is dropped, so the very next frame is the
+	// subtitle - the session survived the bad event.
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "subtitle" || frame.ID != "2" {
+		t.Errorf("expected the subtitle after a skipped consistency event, got %+v", frame)
 	}
 }
 

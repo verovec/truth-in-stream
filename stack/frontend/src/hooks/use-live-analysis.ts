@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayback, usePlaybackStore } from "@/components/playback/playback-provider";
 import { createMediaElementCapture } from "@/lib/live/audio-capture";
 import {
+  type ConsistencyFrame,
   parseLiveFrame,
   type ResultFrame,
   type SubtitleFrame,
@@ -56,10 +57,10 @@ function reconnectDelayMs(attempt: number): number {
 // its correlation id by session, so ids from a reconnect cannot collide with a
 // prior session's.
 function prepareFrame(
-  frame: SubtitleFrame | ResultFrame,
+  frame: SubtitleFrame | ResultFrame | ConsistencyFrame,
   sessionSeq: number,
   baseTime: number,
-): SubtitleFrame | ResultFrame {
+): SubtitleFrame | ResultFrame | ConsistencyFrame {
   const id = `${sessionSeq}:${frame.id}`;
   if (frame.type === "subtitle") {
     return {
@@ -68,6 +69,11 @@ function prepareFrame(
       start: frame.start + baseTime,
       end: frame.end + baseTime,
     };
+  }
+  if (frame.type === "consistency") {
+    // A consistency frame carries no timestamps; both ids it references are
+    // namespaced so it resolves to this session's statements after a reconnect.
+    return { ...frame, id, earlierId: `${sessionSeq}:${frame.earlierId}` };
   }
   return {
     ...frame,

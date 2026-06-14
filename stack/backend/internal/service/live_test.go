@@ -117,6 +117,7 @@ func (f livePrechecker) Evaluate(_ context.Context, text string) (domain.Prechec
 type liveMatcher struct {
 	matches    map[string][]domain.SegmentMatch
 	confidence map[string]domain.Confidence
+	embedding  map[string][]float32
 	err        map[string]error
 }
 
@@ -124,7 +125,7 @@ func (f liveMatcher) Match(_ context.Context, text string) (MatchResult, error) 
 	if err := f.err[text]; err != nil {
 		return MatchResult{}, err
 	}
-	return MatchResult{Matches: f.matches[text], Confidence: f.confidence[text]}, nil
+	return MatchResult{Matches: f.matches[text], Confidence: f.confidence[text], QueryEmbedding: f.embedding[text]}, nil
 }
 
 // countingMatcher records the text of every Match call in order, so a test can

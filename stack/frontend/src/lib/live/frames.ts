@@ -42,7 +42,25 @@ export type ResultFrame = {
   error?: string;
 };
 
-export type LiveFrame = InterimFrame | SubtitleFrame | ResultFrame;
+// ConsistencyFrame flags a statement that contradicts an earlier statement by
+// the same speaker. id is the offending (later) statement; earlierId and
+// earlierText identify the statement it conflicts with so the UI can reference
+// it. speaker and rationale are additive context. It arrives after the
+// statement's subtitle and result, never before.
+export type ConsistencyFrame = {
+  type: "consistency";
+  id: string;
+  earlierId: string;
+  earlierText: string;
+  speaker?: string;
+  rationale?: string;
+};
+
+export type LiveFrame =
+  | InterimFrame
+  | SubtitleFrame
+  | ResultFrame
+  | ConsistencyFrame;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -117,6 +135,31 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     };
     if (typeof value.error === "string" && value.error.length > 0) {
       frame.error = value.error;
+    }
+    return frame;
+  }
+
+  if (value.type === "consistency") {
+    if (
+      typeof value.id !== "string" ||
+      typeof value.earlier_id !== "string" ||
+      value.earlier_id.length === 0 ||
+      typeof value.earlier_text !== "string" ||
+      value.earlier_text.length === 0
+    ) {
+      return null;
+    }
+    const frame: ConsistencyFrame = {
+      type: "consistency",
+      id: value.id,
+      earlierId: value.earlier_id,
+      earlierText: value.earlier_text,
+    };
+    if (typeof value.speaker === "string" && value.speaker.length > 0) {
+      frame.speaker = value.speaker;
+    }
+    if (typeof value.rationale === "string" && value.rationale.length > 0) {
+      frame.rationale = value.rationale;
     }
     return frame;
   }
