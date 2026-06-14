@@ -38,3 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/ssm-port-forward.test.sh
+  # Unit-test the ingestion deploy helper (producer repin, worker fleet roll via
+  # the lifecycle lambda, queue-version roll) with a stubbed aws CLI (no AWS
+  # account, no real ECS or lambda).
+  deploy-ingestion-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/deploy-ingestion.test.sh
