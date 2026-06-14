@@ -23,6 +23,12 @@ variable "allowed_security_group_ids" {
   description = "Security groups permitted to reach the broker on AMQPS and the management console (the ECS tasks security group)."
 }
 
+variable "management_allowed_security_group_ids" {
+  type        = list(string)
+  default     = []
+  description = "Security groups permitted to reach the RabbitMQ management API over HTTPS (port 443). Empty by default, so the management console stays closed to the application security groups; the metrics-poller lambda is the only intended grantee. Backward compatible: an empty list adds no ingress."
+}
+
 variable "engine_version" {
   type        = string
   default     = "3.13"

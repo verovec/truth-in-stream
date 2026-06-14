@@ -144,3 +144,21 @@ variable "db_backup_memory" {
   default     = 1024
   description = "Fargate memory in MiB for the backup task."
 }
+
+variable "enable_metrics_lambda" {
+  type        = bool
+  default     = false
+  description = "Provision the scheduled metrics-poller lambda and the ingestion CloudWatch dashboard. The lambda polls the broker's RabbitMQ management API for per-queue stats. Default false; enable it alongside the broker and worker. Requires `make lambda-mqmetrics` in stack/backend to have built the bootstrap binary before apply."
+}
+
+variable "metrics_namespace" {
+  type        = string
+  default     = "TruthInStream/RabbitMQ"
+  description = "Custom CloudWatch namespace the metrics lambda publishes to and the dashboard reads from."
+}
+
+variable "metrics_poll_schedule" {
+  type        = string
+  default     = "rate(1 minute)"
+  description = "EventBridge Scheduler expression for how often the metrics lambda polls the broker."
+}

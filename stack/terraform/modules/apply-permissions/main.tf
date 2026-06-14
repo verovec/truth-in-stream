@@ -234,6 +234,34 @@ locals {
     "iam:TagInstanceProfile",
   ]
 
+  # Metrics-poller lambda (modules/metrics-lambda): the function lifecycle. Only
+  # required when the env provisions the lambda. Its execution and scheduler
+  # roles/policies are covered by iam_actions, its log group by logs_actions, and
+  # its EventBridge Scheduler schedule + group by scheduled_task_actions (folded
+  # in below so the lambda does not depend on a scheduled Fargate task being
+  # enabled). VPC attachment uses the function's own role at runtime, so the
+  # apply role needs only ec2:Describe* (already in networking_actions).
+  metrics_lambda_actions = [
+    "lambda:CreateFunction",
+    "lambda:DeleteFunction",
+    "lambda:UpdateFunctionCode",
+    "lambda:UpdateFunctionConfiguration",
+    "lambda:GetFunction",
+    "lambda:GetFunctionConfiguration",
+    "lambda:ListVersionsByFunction",
+    "lambda:GetPolicy",
+    "lambda:TagResource",
+  ]
+
+  # CloudWatch dashboard (modules/monitoring). Dashboards are not taggable, so no
+  # tagging action is listed.
+  dashboard_actions = [
+    "cloudwatch:PutDashboard",
+    "cloudwatch:DeleteDashboards",
+    "cloudwatch:GetDashboard",
+    "cloudwatch:ListDashboards",
+  ]
+
   # Aggregate the enabled areas. Sorted+deduped so the output is stable and the
   # guard reports a clean, ordered list.
   _actions = concat(
@@ -252,5 +280,6 @@ locals {
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],
+    var.include_metrics_lambda ? concat(local.metrics_lambda_actions, local.dashboard_actions, local.scheduled_task_actions) : [],
   )
 }
