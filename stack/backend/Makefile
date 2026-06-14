@@ -54,6 +54,9 @@ build: ## Static build of the server
 lambda-mqmetrics: ## Build the mqmetrics lambda bootstrap (provided.al2023, arm64) for terraform to package and deploy
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/mqmetrics/bootstrap ./cmd/mqmetrics
 
+lambda-workerlifecycle: ## Build the worker-lifecycle lambda bootstrap (provided.al2023, arm64) for terraform to package and deploy
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/workerlifecycle/bootstrap ./cmd/workerlifecycle
+
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest
 

@@ -57,32 +57,31 @@ resource "aws_ecs_task_definition" "main" {
   ])
 }
 
-# On the very first apply the ECR image does not exist yet, so tasks fail to
-# pull until the deploy workflow pushes one. The provider does not wait for
-# steady state, so apply still converges; the service self-heals on first
-# deploy. See stack/terraform/README.md for the bootstrap order.
+# EXTERNAL deployment controller: the worker-lifecycle lambda owns rollout (task
+# sets) and scale (desired count), so terraform provisions only the service shell.
+# task_definition, network_configuration and the rolling-deploy percentages move
+# off the service - a task set carries the task definition and network, and the
+# lambda creates and promotes it. The aws_ecs_task_definition above stays as the
+# base family the lambda registers new image revisions from; the service does not
+# reference it directly. On the very first deploy the service has no task set
+# until the lambda bootstraps one. See stack/terraform/README.md for the bootstrap
+# order.
 resource "aws_ecs_service" "main" {
-  name            = var.name
-  cluster         = var.cluster_id
-  task_definition = aws_ecs_task_definition.main.arn
-  desired_count   = var.desired_count
+  name          = var.name
+  cluster       = var.cluster_id
+  desired_count = var.desired_count
 
-  # No launch_type: inherits the cluster default capacity provider strategy
-  # (FARGATE base, Spot above it).
-
-  network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = var.security_group_ids
-    assign_public_ip = false
+  deployment_controller {
+    type = "EXTERNAL"
   }
 
   # Allow `aws ecs execute-command` for operational debugging, matching the other
   # services. The graceful-drain window is the task definition's stopTimeout.
   enable_execute_command = true
 
-  # One replica can stop before a replacement is healthy: the broker requeues
-  # whatever an old task had not acked, so a rolling deploy loses no work and
-  # need not double the fleet.
-  deployment_maximum_percent         = 200
-  deployment_minimum_healthy_percent = 50
+  # The lambda owns desired count (scale) and the active task definition
+  # (rollout); terraform must not fight it on either after the first apply.
+  lifecycle {
+    ignore_changes = [desired_count, task_definition]
+  }
 }

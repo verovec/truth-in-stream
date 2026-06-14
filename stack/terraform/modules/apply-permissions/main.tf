@@ -281,5 +281,11 @@ locals {
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],
     var.include_metrics_lambda ? concat(local.metrics_lambda_actions, local.dashboard_actions, local.scheduled_task_actions) : [],
+    # Worker-lifecycle lambda: the three handler functions (lambda lifecycle) and
+    # their EventBridge Scheduler schedules. Its execution role/policy are covered
+    # by iam_actions, its log groups by logs_actions, and its scaling-config
+    # parameter by ssm_actions; the runtime ECS/task-set permissions ride on the
+    # function's own role, not the apply role.
+    var.include_worker_lifecycle ? concat(local.metrics_lambda_actions, local.scheduled_task_actions) : [],
   )
 }
