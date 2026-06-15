@@ -123,7 +123,7 @@ sequenceDiagram
     loop poll every WIKI_DRAIN_POLL_INTERVAL
         S->>DB: CountUnembeddedStaging()
     end
-    Note right of S: count == 0 then proceed; no progress for stall timeout then abort (resumable)
+    Note right of S: count 0 means proceed. No progress for stall timeout means abort (resumable)
     S->>DB: buildStagingIndex() PK + HNSW (m=16, ef_construction=200)
     S->>DB: swapStaging() TX: validate (non-empty, 0 NULL), rename staging to live, advance checkpoint
     Note over DB: Readers see old corpus until COMMIT, then new corpus atomically
@@ -240,13 +240,13 @@ This is the part that matters for trusting search results. Each guarantee maps t
 
 ```mermaid
 flowchart TD
-    A["chunk content"] -->|"input_type=document"| B["voyage-4-large to float32[1024]"]
-    B -->|"formatHalfVec: text '[..]'"| C["UPDATE ... ::halfvec (staging)"]
-    C --> D{drain == 0?}
+    A["chunk content"] -->|"input_type=document"| B["voyage-4-large to 1024-dim vector"]
+    B -->|"formatHalfVec: text form"| C["UPDATE ... ::halfvec (staging)"]
+    C --> D{"drain == 0?"}
     D -->|"validate: non-empty AND 0 NULL"| E["atomic swap TX"]
     E --> F[("live wiki_chunks")]
-    F -->|"SearchWikiChunks<br/>WHERE embedding IS NOT NULL<br/>ORDER BY embedding &lt;=&gt; query"| G["results"]
-    Q2["query text"] -->|"input_type=query"| H["voyage-4-large to float32[1024]"] --> G
+    F -->|"SearchWikiChunks<br/>WHERE embedding IS NOT NULL<br/>ORDER BY cosine distance"| G["results"]
+    Q2["query text"] -->|"input_type=query"| H["voyage-4-large to 1024-dim vector"] --> G
     I["wikiverify"] -.asserts.-> F
 ```
 
@@ -414,7 +414,115 @@ From the root `.env` (read by Compose). Defaults shown.
 
 ---
 
-## 10. Cross-references
+## 10. Cloud / production pipeline
+
+The local flow above runs the producer and the fleet on one machine. In production the same two
+binaries run as separate workloads against an Amazon MQ for RabbitMQ broker, and the deploy is
+human-gated (`deploy.yml`, `workflow_dispatch`-only). Same images, different entry points
+(`/wikisync` and `/embedworker`) - there is no separate producer or worker image.
+
+### Versioned queue
+
+The queue is named `<RABBITMQ_QUEUE>.v<version>` and `RABBITMQ_QUEUE_VERSIONS` is a comma-separated,
+oldest-first list (default `1`). The newest version is active: the producer publishes to it and
+stamps it on every message (an AMQP header, so the job payload is unchanged); a worker drops a
+message stamped with a version it does not know rather than mis-processing it. To roll, append a new
+version (a new active queue); workers still on the old version drain the old queue, and once it is
+empty the old version is removed from the list. Delivery stays at-least-once with publisher confirms
+and durable, priority-ordered queues.
+
+### Producer task (on demand)
+
+A deployable Fargate task fills the queue: it runs `wikisync -mode=bulk -publish-only`, which
+ingests the dump, publishes one self-contained, versioned job per chunk (each job carries its
+content, so the worker needs no database), and exits - the consumer fleet owns the drain and the
+live swap. The Terraform (`enable_producer`, off by default) creates a task definition with no
+schedule; launch a run on demand with the deploy network config the stack publishes to SSM:
+
+```bash
+cd stack/terraform/dev
+SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
+SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
+aws ecs run-task \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --task-definition truth-in-stream-dev-producer \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}"
+```
+
+The run is resumable: re-running publishes only the chunks still un-embedded (keyset cursor over the
+staging table), and publishing is at-least-once with idempotent workers. The producer needs a
+database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
+consumer database - the messages are self-contained.
+
+### Deploy the producer and worker (CI)
+
+After the backend/frontend services roll, `scripts/deploy-ingestion.sh` ships the deployed image
+(immutable `sha-<short>` tag, never `:latest`) to the two ingestion workloads:
+
+- **Producer:** registers a new producer task-definition revision pinned to that image, so the next
+  on-demand `run-task` uses the exact image that was built and Trivy-scanned.
+- **Worker fleet:** invokes the worker-lifecycle **deploy** lambda
+  (`truth-in-stream-<env>-workerlifecycle-deploy`) with the image and worker service names. The
+  lambda creates and promotes a new task set under the service's EXTERNAL deployment controller, so
+  in-flight messages drain on the old task set before it is retired. The workflow never updates the
+  worker service directly (which would drop in-flight work).
+
+A workload that is not provisioned yet (producer task def or deploy lambda absent) is skipped, not
+fatal. The script is unit-tested with a stubbed `aws` CLI (`scripts/deploy-ingestion.test.sh`).
+
+**Rolling the queue version** is an explicit, gated step in the same deploy: run `deploy.yml` with
+`queue_versions` set to the new oldest-first list (e.g. `1,2` to make `2` active while `1` drains).
+The deploy stamps `RABBITMQ_QUEUE_VERSIONS=<list>` on the producer revision and each worker family
+revision. Leave it empty to deploy the image without touching the version; roll back by re-running
+with the previous list. The version lives on the task definitions, so the roll never edits Terraform.
+
+### Drain the cloud queue locally (SSM bastion tunnel)
+
+The develop-locally model keeps data on your machine: the producer fills the cloud queue, then you
+run the worker locally against a tunnel so it drains into local Postgres. No cloud database is
+involved. The broker is private (AMQPS 5671, VPC-only), so the tunnel goes through a hardened
+SSM-only bastion (no SSH, no public IP, IMDSv2 required, SSM managed-core role).
+
+```bash
+cd stack/terraform/dev
+terraform apply -var enable_bastion=true   # deploy is human-gated; run with elevated creds
+
+aws sso login --profile verovec-dev
+./scripts/ssm-port-forward.sh dev          # prints localhost:5671; keep it open
+```
+
+The broker speaks AMQPS with a certificate for its real hostname, so point that hostname at the
+tunnel and keep the broker URL exactly as the secret holds it:
+
+```bash
+BROKER_URL=$(aws secretsmanager get-secret-value --secret-id truth-in-stream/dev/rabbitmq/url \
+  --query SecretString --output text --profile verovec-dev)
+BROKER_HOST=$(printf '%s' "$BROKER_URL" | sed -E 's#.*@([^:/]+).*#\1#')
+echo "127.0.0.1 $BROKER_HOST" | sudo tee -a /etc/hosts   # remove when done
+```
+
+In a second terminal, run the worker as a host process (not the compose `embedworker`, which is on
+the container network and cannot reach the host tunnel) against the tunnel and local database. Make
+sure local Postgres is up (`docker compose up -d postgres`) and that `RABBITMQ_QUEUE` /
+`RABBITMQ_QUEUE_VERSIONS` match the producer's run:
+
+```bash
+cd stack/backend
+RABBITMQ_URL="$BROKER_URL" \
+DATABASE_URL='postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable' \
+EMBEDDING_API_KEY="$EMBEDDING_API_KEY" \
+  go run ./cmd/embedworker
+```
+
+Prerequisites: AWS CLI v2 and the Session Manager plugin. The SSM port-forward has no TCP keepalive,
+so an idle tunnel can drop - re-run the script to reconnect. When done, drop the `/etc/hosts` line
+and tear the bastion down (`terraform apply -var enable_bastion=false`). Unit-tested with a stubbed
+`aws` CLI (`scripts/ssm-port-forward.test.sh`).
+
+---
+
+## 11. Cross-references
 
 - Data dictionary: `.claude/skills/data-map/SKILL.md`
 - Design specs: `docs/superpowers/specs/2026-06-10-wikipedia-ingestion-design.md`,
@@ -422,3 +530,5 @@ From the root `.env` (read by Compose). Defaults shown.
 - Schema: `stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`
 - Queries: `stack/backend/queries/wiki.sql`
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify}/`
+- Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy.yml`
+- Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

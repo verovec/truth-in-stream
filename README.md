@@ -8,32 +8,18 @@ Real-time fact-checking for live streams.
 |-------|------|----------|
 | Frontend | Next.js 16 (App Router, React 19, TypeScript, Tailwind v4) | `stack/frontend` |
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
-| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4-large` embeddings, AssemblyAI Universal-3 Pro streaming transcription (the single transcriber, for live streams and imported videos alike) | `stack/backend` |
+| Data | Postgres 16 + `pgvector` (vector store), Voyage AI `voyage-4-large` embeddings, AssemblyAI Universal-3 Pro streaming transcription (the single transcriber, live streams and imported videos alike) | `stack/backend` |
 | Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
 
 ## Quick start
 
-From a clean clone to the demo playing in the browser is three commands. The local dataset
-(curated claims, a Wikipedia evidence subset, and the demo-video results) seeds fully offline from
-a committed embedding cache, so **no real API keys are needed to bring the stack up and play the
-demo** (`make bootstrap` writes a placeholder for the two provider keys the backend needs to boot).
+From a clean clone to the demo playing in the browser is three commands. The local dataset (curated
+claims, a Wikipedia evidence subset, demo-video results) seeds **fully offline** from a committed
+embedding cache, so **no real API keys are needed to bring the stack up and play the demo**.
 
-### Prerequisites
-
-- **Docker Engine 24.0 or newer** with the **Compose v2** plugin (the `docker compose` subcommand,
-  not the legacy `docker-compose`). Engine 24.0+ bundles Compose v2; confirm with
-  `docker compose version`. (Baseline verified 2026-06 against the Docker documentation - the stack
-  uses Compose `profiles`, `--scale`, and `depends_on` healthcheck conditions, all supported there.)
-- **GNU make**.
-- A few GB of free disk for the Postgres (pgvector) and MinIO volumes.
-- The **Go toolchain** is used only by `make bootstrap` to generate the operator credentials; it is
-  not needed to run the stack or play the demo. Without Go, fill the three auth values by hand per
-  [Configuration](#configuration).
-
-`make doctor` checks the host has make, Docker, the Compose v2 plugin, and a running daemon, and
-prints a clear remedy for whatever is missing rather than a deep compose stack trace.
-
-### Bring it up
+**Prerequisites:** Docker Engine 24.0+ with the Compose v2 plugin (`docker compose version`), GNU
+make, and a few GB of free disk. The Go toolchain is used only by `make bootstrap` to generate
+operator credentials, not to run the stack.
 
 ```bash
 make doctor      # optional: preflight Docker, Compose v2, make, and the daemon
@@ -43,270 +29,80 @@ make up          # build and start the whole stack
 # backend  -> http://localhost:8080/healthz
 ```
 
-`make bootstrap` copies `.env.example` to `.env` (when absent) and fills the three auth secrets
-that have no safe default - `AUTH_EMAIL`, `AUTH_PASSWORD_HASH` (an argon2id hash, never the
-plaintext password), and `SESSION_SECRET`. It writes the hash single-quoted so docker-compose does
-not expand its `$` signs, prompts for the email and password (or reads them from `BOOTSTRAP_EMAIL`
-/ `BOOTSTRAP_PASSWORD`), is idempotent (re-running never clobbers a value you have already set), and
-never writes the plaintext password to disk. It also writes a self-describing placeholder for
-`TRANSCRIPTION_API_KEY` and `EMBEDDING_API_KEY`: the backend requires them present to boot, but the
-offline demo never calls either provider, so the placeholder lets a fresh clone start and play the
-demo - replace it with a real key only when you move on to live analysis. To configure `.env` by
-hand instead, see [Configuration](#configuration).
+`make bootstrap` copies `.env.example` to `.env` (when absent), fills the three auth secrets that
+have no safe default (`AUTH_EMAIL`, `AUTH_PASSWORD_HASH`, `SESSION_SECRET`), and writes
+self-describing placeholders for `TRANSCRIPTION_API_KEY` / `EMBEDDING_API_KEY` so a fresh clone boots
+and plays the offline demo. It is idempotent and never writes the plaintext password to disk. Replace
+the placeholders with real keys only when you move on to live analysis. See
+[Configuration](#configuration) to set `.env` by hand.
 
-`make up` (`docker compose up -d --build`) runs, in order: Postgres, a one-shot `migrate`, a
-one-shot `seed` that loads the claims, the Wikipedia subset, and the precomputed demo results
-into pgvector, then the backend and frontend. Open http://localhost:3000, sign in with the operator
-credentials you set in `make bootstrap`, and the bundled demo clip plays with the fact-check panel
-already populated from the seeded results - no transcription or embedding API call. See
-[Local development data](#local-development-data) to reset or reseed, [Demo](#demo) for the demo
-itself, and the [Wikipedia corpus quick start](#quick-start-start-the-fleet-then-fill-the-queue) to
-ingest the full corpus.
+`make up` runs, in order: Postgres, a one-shot `migrate`, a one-shot offline `seed`, then the backend
+and frontend. Open <http://localhost:3000>, sign in with the operator credentials, and the bundled
+demo clip plays with the fact-check panel populated from seeded results - no provider call.
 
 ## Configuration
 
-Provide secrets via a local `.env` (gitignored) - never commit them. `docker compose`
-interpolates `.env` into the service environments.
+Secrets come from a local `.env` (gitignored); `docker compose` interpolates it. Full tuning lives in
+`stack/backend/internal/config`. The essentials:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
-| `TRANSCRIPTION_API_KEY` | yes | AssemblyAI key. AssemblyAI Universal-3 Pro streaming (`u3-rt-pro`) is the single transcriber: live streams and imported videos alike stream their audio over its realtime diarizing WebSocket. Optional tuning: `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_MAX_SPEAKERS` |
-| `EMBEDDING_API_KEY` | no for seeding | Voyage AI `voyage-4-large` embeddings. Seeding is strictly offline (the committed cache is the source of truth) and never calls Voyage, so a stale value cannot break it; this is needed only to embed live query/segment text or to run `make refresh-embeddings` |
-| `AUTH_EMAIL` | yes | Operator login email (single user, no registration) |
-| `AUTH_PASSWORD_HASH` | yes | Encoded argon2id hash of the operator password |
-| `SESSION_SECRET` | yes | HMAC key for session cookies, at least 32 bytes |
-| `SESSION_TTL` | no (default `24h`) | Session lifetime (Go duration) |
-| `AUTH_INSECURE_COOKIE` | no (compose sets `true`) | Allow a non-Secure cookie, plain-HTTP local dev only |
-| `BACKEND_URL` | no (compose sets it) | Frontend-side rewrite target for the same-origin `/api` and `/demo` proxy |
+| `TRANSCRIPTION_API_KEY` | yes (live only) | AssemblyAI key. `u3-rt-pro` streaming is the single transcriber for live streams and imported videos. Not used by the offline demo |
+| `EMBEDDING_API_KEY` | no for seeding | Voyage `voyage-4-large`. Seeding is offline; needed only for live query embedding, `make refresh-embeddings`, or wiki ingestion |
+| `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Must match between ingest and query (different models = different vector spaces); pinned to 1024 dims. Changing it requires `make refresh-embeddings` |
+| `AUTH_EMAIL` / `AUTH_PASSWORD_HASH` / `SESSION_SECRET` | yes | Operator login (single user), argon2id hash, and HMAC session key (>= 32 bytes) |
+| `SESSION_TTL` | no (default `24h`) | Session lifetime |
+| `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev (session cookie is `SameSite=Strict`) |
 | `PORT` | no (default `8080`) | Backend listen port |
-| `CORS_ALLOWED_ORIGIN` | no | Browser origin allowed to call the API cross-origin. Leave unset: the session cookie is `SameSite=Strict`, so authenticated calls must be same-origin (the dev proxy / the ALB) |
-| `DEMO_MEDIA_DIR` | no (default `demo`) | Directory the backend serves the bundled demo clip from (played and streamed live in the analyser) |
-| `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Voyage embedding model; the **same value must be used for ingest and query** (different models are different vector spaces), and the committed seed cache is keyed under this value, so changing it requires `make refresh-embeddings`. The default `voyage-4-large` outputs 1024 dims (matching the pinned index) and batches normally, where base `voyage-4`'s batch endpoint is currently broken on Voyage's side (single inputs return, but any 2+ input batch hangs). Keep `WIKI_EMBED_BATCH_SIZE` low enough that a batch stays under voyage-4-large's 120k-token-per-request cap (≈64 for Wikipedia lead chunks) |
-| `EMBEDDING_DIM` | no | If set, must equal the pinned index dimension (1024); a mismatch fails fast rather than silently re-ingesting |
-| `TRANSCRIPTION_MODEL` | no (default `u3-rt-pro`) | AssemblyAI streaming speech-to-text model |
-| `TRANSCRIPTION_MAX_SPEAKERS` | no | Optional diarization hint: expected number of speakers |
-| `MATCH_TOP_K`, `MATCH_SCORE_THRESHOLD`, `MATCH_EMBED_CONCURRENCY`, `MATCH_TIMEOUT` | no | Matching tuning (see `internal/config`) |
 
-The same embedding model must be used for ingest and query, so `EMBEDDING_MODEL` (default
-`voyage-4-large`) and the pinned 1024-dim index are shared by both paths.
-
-`make bootstrap` (see [Quick start](#quick-start)) generates these three values for you and is the
-recommended path. To configure them by hand instead - only the hash and the secret are ever
-stored, never the plaintext password:
+`make bootstrap` generates the three auth values and is the recommended path. By hand:
 
 ```bash
 cd stack/backend
-printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH
+printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH (single-quote it in .env)
 openssl rand -hex 32                                  # -> SESSION_SECRET
 ```
 
-In `.env`, single-quote the hash so docker-compose does not expand its `$` signs (this is exactly
-what `make bootstrap` does automatically).
-
-Sessions are stateless HMAC tokens: logout clears the browser cookie but cannot revoke a
-stolen token. To invalidate every outstanding session immediately, rotate `SESSION_SECRET`
-and restart the backend.
-
-## Demo
-
-The bundled demo clip (`stack/backend/demo/`) narrates several well-known claims. The backend
-serves it at `/demo/<file>` (sign in first - demo media sits behind the session gate, and the
-frontend proxies the path same-origin) so the browser plays exactly the file it analyses. On
-play the clip streams its audio live through the same AssemblyAI pipeline as an uploaded or
-YouTube video: subtitles and verdicts arrive progressively, the panel shows each segment's
-nearest curated claims with a `corroborates`, `contradicts`, or `unclear` verdict and source
-links in sync with playback, and a failed provider call shows the error with a **Try again**
-button. Live analysis needs the transcription and embedding keys (the seeded claims and
-Wikipedia corpus are offline; only the live transcribe-and-query-embed step calls a provider).
+Sessions are stateless HMAC tokens: to revoke every outstanding session, rotate `SESSION_SECRET` and
+restart the backend.
 
 ## Local development data
 
-`make up` brings the stack up with a realistic, fully offline dataset. The same data is
-managed with one-command reset and reseed targets (root `Makefile`):
+`make up` seeds a realistic, fully offline dataset (curated claims, a Wikipedia evidence subset, demo
+results) from a committed embedding cache. Manage it with one-command targets:
 
 | Command | What it does |
 |---------|--------------|
-| `make up` | Bring up the whole stack; migrate and seed run as one-shot steps |
-| `make reset` | Soft reset: drop the schema, re-migrate, and reseed (seconds; container stays up) |
-| `make reset-hard` | Discard the Postgres volume and rebuild everything from scratch |
-| `make seed` | Reseed every dataset; idempotent (safe to re-run) |
-| `make seed-claims` / `make seed-wiki` / `make seed-demo` | Seed one dataset for targeted testing |
-| `make refresh-embeddings` | Regenerate the committed embedding cache from the fixtures via Voyage |
-| `make fleet-up` / `make fleet-down` | Start / stop the ingestion broker and embedding worker fleet (`EMBEDWORKER_REPLICAS`, default 2) - see [Wikipedia corpus](#wikipedia-corpus) |
-| `make wiki-populate` | Bulk-embed the full Wikipedia corpus (paid, foreground, resumable) - see [Wikipedia corpus](#wikipedia-corpus) |
-| `make wiki-update` | Incrementally update the embedded corpus via the MediaWiki API - see [Wikipedia corpus](#wikipedia-corpus) |
-| `make reingest` | Full corpus reingest: reset, bulk-embed, cluster, then verify (paid, unattended) - see [Wikipedia corpus](#wikipedia-corpus) |
-| `make wiki-verify` | Check the live corpus is fully rebuilt; exits non-zero on any defect - see [Wikipedia corpus](#wikipedia-corpus) |
+| `make reset` | Soft reset: drop the schema, re-migrate, reseed (seconds; container stays up) |
+| `make reset-hard` | Discard the Postgres volume and rebuild from scratch |
+| `make seed` | Reseed every dataset; idempotent |
+| `make seed-claims` / `make seed-wiki` / `make seed-videos` | Seed one dataset for targeted testing |
+| `make refresh-embeddings` | Regenerate the committed embedding cache from fixtures via Voyage (needs `EMBEDDING_API_KEY`) |
 
-The offline seed loads claims, the Wikipedia subset, and the demo results - but not the curated
-sample-video record, which the backend upserts on startup (`VideoService.EnsureSamples`). A soft
-`make reset` rebuilds the schema without restarting the backend, so the video gallery is empty
-until you `docker compose restart backend` (or use `make reset-hard`, which restarts the stack).
+The shipped cache holds deterministic placeholder vectors, so a full reseed is offline and
+deterministic; `make refresh-embeddings` swaps in real `voyage-4-large` vectors once you have a key.
+A soft `make reset` rebuilds the schema without restarting the backend, so the sample-video gallery
+(upserted on startup by `VideoService.EnsureSamples`) is empty until `docker compose restart backend`
+or a `make reset-hard`.
 
-The datasets and their fixtures (`stack/backend/seed/`):
+## Ingestion pipeline (Wikipedia corpus)
 
-- **Curated claims** - `claims.json`, matched against spoken segments.
-- **Wikipedia evidence subset** - `wiki_chunks.json`, a small set of chunks overlapping the
-  demo so evidence lookups return something meaningful.
-- **Sample videos** - the curated sample video records (and their best-effort media bytes),
-  upserted into the gallery so a freshly seeded environment has something to play. Played in
-  the analyser they stream live through the AssemblyAI pipeline like any imported source;
-  `SAMPLE_VIDEO_URL` overrides the default clip.
-
-**Embeddings without an API key.** Each fixture's vector lives in a committed cache
-(`embeddings.cache.jsonl`, keyed by model + input type + normalized text), so a full reseed is
-offline and deterministic. The shipped cache holds deterministic placeholder vectors generated
-without an API key; once you have a Voyage key, `make refresh-embeddings` replaces them with
-real `voyage-4-large` vectors. After editing a fixture's text, run `make refresh-embeddings` (needs
-`EMBEDDING_API_KEY`) so its cache entry is regenerated - otherwise an offline seed reports a
-cache miss for the changed text. Transcribing a *new* (non-seeded) video still needs
-`TRANSCRIPTION_API_KEY`; the demo never does.
-
-The login also needs the operator credentials in `.env`; `make bootstrap` generates them (see
-[Quick start](#quick-start)), or set them by hand (see [Configuration](#configuration)).
-
-## Wikipedia corpus
-
-Beyond the seeded claims, the verification store can be backed by a full Wikipedia corpus.
-`wikisync` downloads the corpus's multistream dump, extracts and chunks each article's lead
-section, upserts the chunks, embeds every chunk via Voyage, then swaps the freshly embedded
-corpus into place. It is an opt-in Docker Compose service behind the `wiki` profile, so `make up`
-never triggers the paid embed. Two Make targets drive it from the repo root; both run in the
-**foreground** and stream JSON logs (no `-d`), and both are resumable - Ctrl-C and re-run
-continues where it left off:
+Beyond the seeded claims, the verification store can be backed by a full Wikipedia evidence corpus,
+built and embedded by an opt-in worker fleet behind the `wiki` Compose profile (paid; a plain
+`make up` never starts it). Local quick start:
 
 ```bash
-make wiki-populate   # bulk: ingest + embed the whole corpus, then swap it live (paid, long)
-make wiki-update     # delta: catch the corpus up to recent Wikipedia changes via the MediaWiki API
-```
-
-Both call Voyage and read `EMBEDDING_API_KEY` from the root `.env` automatically - no manual
-`export` needed (Compose interpolates it). `wiki-populate` loads embedded chunks into a staging
-table in keyset order and only swaps them into the live `wiki_chunks` once the **whole** corpus
-is embedded, so partial runs accumulate progress without serving it; re-running resumes from the
-staging watermark. The downloaded dump persists in the `wiki-dump` volume and is **reused** on a
-re-run: each file is fetched conditionally (`If-Modified-Since`) and skipped on a `304`, so only a
-newly published dump triggers a re-download (the log says `reusing existing dump` or
-`dump downloaded`).
-
-### Quick start: start the fleet, then fill the queue
-
-The pipeline is a long-running **consumer** (the RabbitMQ broker and a scalable worker fleet) and a
-one-shot **producer** (the corpus ingest). Bring the consumer up once, then run the producer
-against it:
-
-```bash
-make fleet-up        # broker + 2 embedding workers, long-running (override EMBEDWORKER_REPLICAS)
-make wiki-populate   # producer: ingest the corpus, enqueue one job per chunk; the running fleet drains it
-```
-
-`make fleet-up` starts exactly `EMBEDWORKER_REPLICAS` workers (default `2`); a subsequent
-`make wiki-populate` **reuses that running fleet** rather than starting its own worker, so the fleet
-size you chose is the throughput you get. Watch the queue fill and drain three ways: the RabbitMQ
-management UI at <http://localhost:15672> (user `app`, password `dev`), the producer's own drain
-logs, and the final swap line `bulk enqueue finalized; wiki_chunks now serves the embedded corpus`.
-**Wiki search only returns results after that final line** - until the whole corpus is embedded and
-swapped, the live `wiki_chunks` is untouched.
-
-Scale the fleet for a bigger corpus or a higher Voyage tier by raising the replica count, and box a
-trial run so it stops cleanly with its embedded prefix committed:
-
-```bash
-make fleet-up EMBEDWORKER_REPLICAS=4    # more workers = more throughput (paid)
-WIKI_MAX_DURATION=15m make wiki-populate # one 15m producer session, then stop (resumable)
-```
-
-Tear the consumer down when you are done; it removes just the broker and worker containers and
-leaves the rest of the `make up` stack and every named volume (Postgres data included) intact:
-
-```bash
+make fleet-up                                          # broker + embedding workers (long-running)
+docker compose --profile wiki run --rm wiki-populate \
+  go run ./cmd/wikisync -mode=bulk -dry-run            # free cost estimate first
+make wiki-populate                                     # ingest + embed + swap live (paid, resumable)
+make wiki-verify                                       # green = corpus complete and consistent
 make fleet-down
 ```
 
-The worker fleet is the paid Voyage consumer and stays **opt-in** behind the `wiki` Compose
-profile, so a plain `make up` never starts it. Tuning the embed throughput and pacing is covered
-next.
-
-The defaults are tuned gentle for a constrained Voyage tier; raise the batch and concurrency on a
-higher tier, or box the run with a budget. Every knob is read from the root `.env` or a per-run
-environment override (a shell value wins over `.env`):
-
-```bash
-WIKI_EMBED_BATCH_SIZE=128 WIKI_EMBED_CONCURRENCY=4 make wiki-populate   # faster on a higher tier
-WIKI_MAX_DURATION=15m make wiki-populate                                # one 15m session, then stop
-```
-
-The defaults are `WIKI_EMBED_BATCH_SIZE=32`, `WIKI_EMBED_CONCURRENCY=2`,
-`WIKI_EMBED_HTTP_TIMEOUT=300s`, and `WIKI_MAX_DURATION=0` (run to completion); `WIKI_CORPUS`
-defaults to `simplewiki`. Set any of them in `.env` to make the choice stick across runs.
-
-**Reading the logs.** Each run streams structured lines:
-
-- `starting bulk embed` - `pending_chunks`, `resume_after_page`.
-- `embedded wiki chunk batch` - one per HTTP batch, with `batch_chunks`, cumulative `embedded`,
-  `pending_total`, `through_page`/`through_title`, and `embed_duration` (the request latency).
-  **When `embed_duration` nears `WIKI_EMBED_HTTP_TIMEOUT`, lower the batch/concurrency or raise
-  the timeout** - that is the throttle signal.
-- `embedding request failed, backing off before retry` - a WARN per retry with `reason`,
-  `elapsed`, and `backoff`; sustained ones mean Voyage is throttling or stalling.
-- `all pending chunks embedded; building index and swapping staging into wiki_chunks`, then
-  `bulk enqueue finalized; wiki_chunks now serves the embedded corpus` - the atomic swap.
-  **Wiki search only returns results after that final line.**
-
-Pipe to a file or `jq` for a readable trace: `make wiki-populate 2>&1 | tee wiki.log`. If a prior
-run left `wiki_chunks_staging` behind, `make wiki-update` refuses to start until a bulk run
-finishes it - just re-run `make wiki-populate` to resume to the swap.
-
-### Full reingest
-
-After the chunker or the per-chunk metadata changes, a corpus already in the local volume is
-**stale**: its chunk boundaries, metadata, and vectors no longer match the shipped pipeline. A
-plain `make wiki-populate` will not fix it - the sync checkpoint keys on the dump version, not the
-code, so it short-circuits as "already current". `make reingest` rebuilds the corpus from scratch
-under the current code in one command:
-
-```bash
-make reingest 2>&1 | tee reingest.log   # paid, long - run it unattended
-```
-
-It runs four steps in order: **reset** clears `wiki_chunks` and the sync checkpoint (and any
-leftover staging) so the next run is a full rebuild; **bulk** re-ingests from the on-disk dump and
-the worker fleet embeds the corpus, swapping it live once whole (it brings up the broker and one
-worker; scale throughput first with `docker compose --profile wiki up -d --scale embedworker=N`);
-**cluster** scores topic importance; and **verify** checks the result. Runtime is dominated by the
-embed step, so it scales with the worker count and your Voyage tier - run it overnight on
-`simplewiki` and find a ready database in the morning. It reuses the downloaded dump and is
-idempotent: re-running reproduces the same corpus.
-
-`make wiki-verify` runs the verification step on its own. It asserts the live corpus is servable -
-chunks present, every chunk carries a non-null, non-zero, 1024-dimension embedding, the per-chunk
-metadata is populated, and the HNSW index is live - logging each check and **exiting non-zero** the
-moment one fails, so a partial or stale corpus is caught loudly rather than served:
-
-```
-{"msg":"corpus check","check":"all chunks embedded","ok":true,"detail":"0 chunks with a null embedding"}
-{"msg":"corpus check","check":"HNSW index valid","ok":true,"detail":"valid=true"}
-{"msg":"corpus verification passed","chunks":214631,"embedding_type":"halfvec(1024)"}
-```
-
-With a local Go toolchain you can instead run the pipeline directly from `stack/backend`
-(`make wiki-populate` / `make wikisync`, against the Compose Postgres on `localhost:5432`);
-`go run ./cmd/wikisync -dry-run` ingests and reports the embedding-cost estimate without calling
-the API or swapping. `wikisync` needs `DATABASE_URL` and `EMBEDDING_API_KEY`, plus these optional
-knobs:
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `WIKI_CORPUS` | no (default `simplewiki`) | Wikimedia dump name (`<lang>wiki`); interpolated into the download and source URLs |
-| `WIKI_EMBED_BATCH_SIZE` | no (binary default `128`, max `1000`; Make sets `32`) | Chunks per Voyage embedding request - lower it if `embed_duration` nears the timeout |
-| `WIKI_EMBED_CONCURRENCY` | no (binary default `4`; Make sets `2`) | Concurrent embedding requests - lower it to ease throttling |
-| `WIKI_EMBED_HTTP_TIMEOUT` | no (binary default `30s`; Make sets `300s`) | Per-request HTTP timeout; a healthy batch returns in seconds, so the short default surfaces a throttling stall fast - raise it when Voyage is slow but still responding |
-| `WIKI_EMBED_MAX_RETRIES` | no (default `6`) | Retries per request when the API throttles |
-| `WIKI_EMBED_RPM` | no (default `0` = unpaced) | Caps outbound embedding requests per minute so a constrained tier is not overrun; set it to your tier's RPM. The free Voyage tier (3 RPM) cannot embed a full corpus in any reasonable time regardless - a paid tier is required |
-| `WIKI_MAX_DURATION` | no (default `0` = run to completion) | Wall-clock budget for one bulk run (maps to `-max-duration`); a positive budget stops the run cleanly and the next resumes. Running the Compose service directly (not via `make`) applies a `15m` fallback |
-| `WIKI_EMBED_MAINTENANCE_WORK_MEM` | no (default `512MB`) | Postgres `maintenance_work_mem` for the HNSW index build; raise it for `enwiki` |
-| `WIKI_EMBED_MAX_PARALLEL_WORKERS` | no (default `7`) | Parallel workers for the index build |
+**For the architecture, diagrams, every mode and knob, vector-consistency guarantees, the cloud /
+production path, and troubleshooting, see [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md).**
 
 ## Tests
 
@@ -321,255 +117,63 @@ cd stack/frontend && npm test
 ## Infrastructure
 
 Operator tooling targets AWS through one SSO profile (`truth-in-stream-dev`, region `eu-west-3`).
-State lives in the S3 bucket `truth-in-stream-tfstate` (native S3 locking). Bootstrap the bucket
-once before the first `terraform init` with the idempotent script:
+State lives in the S3 bucket `truth-in-stream-tfstate` (native S3 locking). Dev provisions no RDS by
+default (`enable_rds = false`); the database is developed locally.
 
 ```bash
-./scripts/bootstrap-tfstate.sh
+./scripts/bootstrap-tfstate.sh                          # once, before the first init
 cd stack/terraform/dev && terraform init && terraform plan
 ```
 
-Dev provisions no RDS by default (`enable_rds = false`); the database is developed locally. See
-[`stack/terraform/README.md`](stack/terraform/README.md) for the SSO profile setup and the
-`enable_rds` toggle.
+See [`stack/terraform/README.md`](stack/terraform/README.md) for the SSO setup, the CI/CD roles and
+pre-apply IAM guard, and the `enable_rds` toggle.
 
-The CI/CD roles are least-privilege and scoped per concern. A pre-apply guard checks the apply
-role holds every IAM permission the plan needs and fails before applying if not (the apply role
-cannot grant itself permissions) — see
-[CI/CD roles and the pre-apply IAM guard](stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard).
-
-### Database backups
-
-The database holds expensive-to-recompute embeddings (claim vectors and the
-`wiki_chunks` corpus), so it is dumped with `pg_dump -Fc` to a private,
-versioned, lifecycle-retained S3 bucket and restored without re-embedding.
-
-- **Manual:** `make backup` / `make restore` (set `DB_BACKUP_BUCKET`; `restore`
-  takes `FILE=path` or pulls the latest from S3). The fidelity guarantee -
-  `halfvec` embeddings round-trip byte-for-byte - is covered by the test in
-  `stack/backend/internal/dbbackup`.
-- **Scheduled (cloud):** a Fargate task runs the same dump on a cron and uploads
-  under the same `db-backups/<db>-<timestamp>.dump` key, so `make restore`
-  consumes either. It is gated by `enable_db_backup` (default `false`) and
-  requires `enable_rds` (it dumps RDS), with the cron in `db_backup_schedule`;
-  see
-  [`modules/scheduled-task`](stack/terraform/modules/scheduled-task/README.md#scheduled-database-backup).
-
-### Secrets management
-
-Terraform creates the application secret *containers* (the embedding and transcription API keys,
-the broker URL); their values are set out of band. `scripts/secrets.sh` is the operator workflow
-to list, edit, and roll those values in AWS Secrets Manager without a value ever passing through a
-shell argument, a log, or a chat:
-
-```bash
-./scripts/secrets.sh dev      # or: prod
-```
-
-It resolves the environment to its AWS SSO profile (`verovec-dev` / `verovec-prod`, region
-`eu-west-3`) and refreshes an expired session with `aws sso login` automatically. Configure the
-profile once with `aws configure sso` (SSO start URL and account from the AWS access portal). The
-tool then:
-
-1. Lists the secrets under `truth-in-stream/<env>/` and lets you pick one.
-2. Fetches the current value into a `600`-mode temp file and opens it in `$EDITOR` (falling back
-   to VS Code `code --wait`, then `vi`).
-3. Shows a diff and asks for confirmation; **prod additionally requires typing `prod`**.
-4. Pushes the new value with `put-secret-value --secret-string file://…` (so the value is never an
-   argv), making it `AWSCURRENT`.
-5. Labels the outgoing version with a timestamped stage `v-YYYYMMDD-HHMMSS` via
-   `update-secret-version-stage`, so the previous value is retained beyond the single `AWSPREVIOUS`
-   slot and stays recoverable.
-
-ECS task definitions consume these secrets by ARN, which always resolves `AWSCURRENT`, so a roll
-needs no task-definition re-pin. An unchanged edit, or declining the confirmation, pushes nothing.
-
-### Embedding queue (versioned)
-
-The embedding producer (`wikisync`) and the worker fleet (`embedworker`) exchange jobs over an
-Amazon MQ for RabbitMQ broker (a single `mq.t3.micro` in dev; locally the compose `rabbitmq`
-service). Connection comes from `RABBITMQ_URL` (the broker URL secret in AWS); the broker is
-provisioned by the `rabbitmq` terraform module and its apply permissions live in the
-`apply-permissions` manifest.
-
-Queues carry an explicit version so a message-schema change can roll without losing work: the
-queue is named `<RABBITMQ_QUEUE>.v<version>` and `RABBITMQ_QUEUE_VERSIONS` is a comma-separated,
-oldest-first list (default `1`). The newest version is active - the producer publishes to it and
-stamps it on every message (an AMQP header, so the job payload is unchanged), and the worker drops
-a message stamped with a version it does not know rather than mis-processing it. To roll, append a
-new version (new active queue); workers still on the old version drain the old queue, and once it
-is empty the old version is removed from the list. Delivery stays at-least-once with publisher
-confirms and durable, priority-ordered queues.
-
-#### Producer task (on demand)
-
-A deployable Fargate task fills the queue from the corpus: it runs `wikisync -mode=bulk
--publish-only`, which ingests the dump, publishes one self-contained, versioned job per chunk
-(each job carries its content, so the worker needs no database), and exits - the consumer fleet
-owns the drain and the live swap. The terraform (`enable_producer`, off by default) creates a
-task definition with no schedule; launch a run on demand with the deploy network config the
-stack publishes to SSM:
-
-```bash
-cd stack/terraform/dev
-SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
-SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
-aws ecs run-task \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --task-definition truth-in-stream-dev-producer \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}"
-```
-
-The run is resumable: re-running publishes only the chunks still un-embedded (keyset cursor over
-the staging table), and publishing is at-least-once with idempotent workers. The producer needs a
-database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
-consumer database - the messages are self-contained.
-
-#### Deploy the producer and worker (CI)
-
-The `deploy.yml` workflow (`workflow_dispatch`-only, human-gated) ships the ingestion pipeline. The
-producer and the worker fleet both run the single backend image with different entry points
-(`/wikisync` and `/embedworker`), so the image the workflow already builds, scans (Trivy, fail on
-HIGH/CRITICAL), and pushes to ECR is the one they run - there is no separate producer or worker
-image. After the backend/frontend services roll, `scripts/deploy-ingestion.sh` ships that image to
-the two ingestion workloads:
-
-- **Producer:** registers a new producer task-definition revision pinned to the deployed image's
-  immutable `sha-<short>` tag (never `:latest`), so the next on-demand `run-task` uses the exact
-  image that was built and scanned.
-- **Worker fleet:** invokes the worker-lifecycle **deploy** lambda
-  (`truth-in-stream-<env>-workerlifecycle-deploy`) with the image and the worker service names. The
-  lambda creates and promotes a new task set under the service's EXTERNAL deployment controller, so
-  in-flight messages drain on the old task set before it is retired. The workflow never updates the
-  worker service directly, which would bypass the lambda and drop in-flight work.
-
-A workload that is not provisioned yet (the producer task definition or the deploy lambda is absent)
-is skipped, not fatal, so the deploy succeeds while the pipeline is being stood up. The script is
-unit-tested with a stubbed `aws` CLI (`scripts/deploy-ingestion.test.sh`, run in CI).
-
-##### Rolling the queue message version
-
-Advancing the active queue version (see [Embedding queue](#embedding-queue-versioned)) is an
-explicit, gated step in the same deploy, not an automatic one. Run `deploy.yml` with the
-`queue_versions` input set to the new comma-separated, oldest-first list - e.g. `1,2` to make `2`
-active while `1` drains. The deploy stamps `RABBITMQ_QUEUE_VERSIONS=<list>` on the producer revision
-and each worker family revision (the lambda copies the rolled version when it registers its image
-revision), so the producer publishes to the new versioned queue while workers still consume the old
-one until it empties. Leave `queue_versions` empty to deploy the image without touching the version.
-Roll back by re-running with the previous list. Because the version lives on the task definitions the
-deploy registers, the roll never edits Terraform and stays reversible.
-
-#### Drain the cloud queue locally (SSM bastion tunnel)
-
-The develop-locally model keeps the data on your machine: the producer fills the cloud broker
-queue, then you run the embedding worker locally against a tunnel so it drains that queue into the
-local Postgres. No cloud database is involved. The broker is private (AMQPS 5671, reachable only
-inside the VPC), so the tunnel goes through a hardened SSM-only bastion - no SSH, no public IP, no
-inbound rules, IMDSv2 required, and an instance role limited to the SSM managed-core policy.
-
-Bring the bastion up for the duration of an ingest (it is a running instance with a cost, so it is
-gated off by default), then take it back down:
-
-```bash
-cd stack/terraform/dev
-terraform apply -var enable_bastion=true   # deploy is human-gated; run with elevated creds
-```
-
-Open the tunnel in one terminal (resolves the bastion by tag, reads the broker host from its
-Secrets Manager URL, and forwards AMQPS 5671 to localhost). It keys off the dev SSO profile, so log
-in first:
-
-```bash
-aws sso login --profile verovec-dev
-./scripts/ssm-port-forward.sh dev          # prints localhost:5671; keep it open
-```
-
-The broker speaks AMQPS, so its TLS certificate is issued for its real hostname, not `localhost`;
-the worker (`amqp.Dial`) verifies it. Point that hostname at the tunnel so verification passes,
-keeping the broker URL exactly as the secret holds it:
-
-```bash
-BROKER_URL=$(aws secretsmanager get-secret-value --secret-id truth-in-stream/dev/rabbitmq/url \
-  --query SecretString --output text --profile verovec-dev)
-BROKER_HOST=$(printf '%s' "$BROKER_URL" | sed -E 's#.*@([^:/]+).*#\1#')
-echo "127.0.0.1 $BROKER_HOST" | sudo tee -a /etc/hosts   # remove this line when done
-```
-
-In a second terminal, run the worker as a host process (not the compose `embedworker`, which is on
-the container network and cannot reach the host-side tunnel) against the tunnel and the local
-database; it drains the cloud queue and writes embeddings locally. Make sure the local Postgres is
-up (`docker compose up -d postgres`) and that `RABBITMQ_QUEUE` / `RABBITMQ_QUEUE_VERSIONS` match the
-producer's run (defaults if unset):
-
-```bash
-cd stack/backend
-RABBITMQ_URL="$BROKER_URL" \
-DATABASE_URL='postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable' \
-EMBEDDING_API_KEY="$EMBEDDING_API_KEY" \
-  go run ./cmd/embedworker
-```
-
-Prerequisites: the AWS CLI v2 and the [Session Manager
-plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
-The SSM port-forward document has no TCP keepalive, so an idle tunnel can drop - re-run the script
-to reconnect. When the ingest is done, drop the `/etc/hosts` line and tear the bastion down
-(`terraform apply -var enable_bastion=false`). The script is unit-tested with a stubbed `aws` CLI
-(`scripts/ssm-port-forward.test.sh`, run in CI).
+- **Database backups** - the DB holds expensive-to-recompute embeddings, so it is dumped with
+  `pg_dump -Fc` and restored without re-embedding (`halfvec` round-trips byte-for-byte). Manual:
+  `make backup` / `make restore` (set `DB_BACKUP_BUCKET`). Scheduled: a Fargate cron task gated by
+  `enable_db_backup`. See [`modules/scheduled-task`](stack/terraform/modules/scheduled-task/README.md).
+- **Secrets** - Terraform creates the secret containers; values are set out of band with
+  `./scripts/secrets.sh dev` (no value ever passes through an argv, log, or chat). ECS consumes
+  secrets by ARN, so a roll needs no task-definition re-pin.
+- **Cloud ingestion** (producer Fargate task, worker fleet, versioned queue, SSM bastion drain) is
+  documented in [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md#10-cloud--production-pipeline).
 
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.
-- `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on
-  merge to `main` (requires the `AWS_ROLE_ARN` repo secret, GitHub OIDC).
-- `deploy.yml` - `workflow_dispatch`-only (human-gated; paused while AWS is being set up). Lints and
-  tests, then builds the backend, frontend, migrate, and backup images, scans them with Trivy (fails
-  on HIGH/CRITICAL OS or library vulns), and pushes them to ECR via GitHub OIDC with SBOM +
-  provenance attestations. The deploy job runs migrations, rolls the backend/frontend ECS services,
-  and ships the ingestion pipeline - repins the producer task to the deployed image and rolls the
-  worker fleet via the worker-lifecycle deploy lambda
-  ([deploy the producer and worker](#deploy-the-producer-and-worker-ci)). The optional
-  `queue_versions` input rolls the embedding queue message version in the same run. No long-lived
-  AWS credentials; a production deploy is always a deliberate manual dispatch.
+- `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on merge to
+  `main` (GitHub OIDC, `AWS_ROLE_ARN`).
+- `deploy.yml` - `workflow_dispatch`-only (human-gated). Builds, Trivy-scans, and pushes images to
+  ECR, runs migrations, rolls the backend/frontend services, and ships the ingestion pipeline. No
+  long-lived AWS credentials; a production deploy is always a deliberate manual dispatch.
 
-## Claude Workflow
+## Documentation and references
 
-`.claude/` is the source of truth. `CLAUDE.md` holds always-on rules; per-stack knowledge
-loads on demand via the `nextjs`, `go`, and `terraform` skills.
+| Topic | Where |
+|-------|-------|
+| Always-on rules and engineering standards | [`CLAUDE.md`](CLAUDE.md) |
+| Ingestion pipeline (local + cloud, diagrams, consistency) | [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md) |
+| Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |
+| Infrastructure (Terraform, AWS, CI/CD roles) | [`stack/terraform/README.md`](stack/terraform/README.md) |
+| Design specs | `docs/superpowers/specs/` |
+| Per-stack conventions | the `go`, `nextjs`, `terraform`, `testing` skills |
 
-These workspace-specific slash commands drive day-to-day work:
+## Claude workflow
+
+`.claude/` is the source of truth: `CLAUDE.md` holds always-on rules, and per-stack knowledge loads
+on demand via skills. Cards are delivered from Linear, one per session, several at once. Day-to-day
+slash commands:
 
 | Command | Purpose |
 |---------|---------|
 | `/mayday` | Menu and router for this workspace's commands |
 | `/roadmap` | Sync the roadmap state file from Linear and compute the ready queue |
 | `/pick` | Claim the next ready card (parallel-safe) and deliver it in an isolated worktree |
-| `/reconcile` | Rebase one or more card branches onto latest `main`, resolving conflicts per branch |
-| `/card` | Create or update a Linear card following the workspace card rules |
+| `/reconcile` | Rebase one or more card branches onto latest `main` |
+| `/card` | Create or update a Linear card |
 | `/research` | Verify current best practice and latest version before integrating a pattern |
 | `/version` | Compare the local `VERSION` file with the Linear version card |
-| `/undersatnd` | Refresh the understand anything index for this repo and report status |
-| `/setup` | Bootstrap a new project from this template (detach, scaffold, link a new repo) |
-
-The repo is indexed by **GitNexus** for graph-aware code navigation:
-
-- A SessionStart hook (`.claude/hooks/nexus-sync.sh`) refreshes the index in the background
-  every session - non-blocking, index-only (never edits tracked files).
-- Run **`/nexus`** for an on-demand refresh, or **`/nexus force`** for a full re-index.
-
-### Parallel card delivery
-
-Cards are delivered from Linear, one card per session, and several sessions can run at once:
-
-1. **`/roadmap`** syncs Linear into the state file and computes a **ready queue** - the cards
-   whose dependencies (`depends_on`) are all `Done`, ordered by priority then critical-path
-   impact. This is the feature tracker that tells a session which card to pick next.
-2. **`/pick`** (run it in each session) claims the top ready card. Claiming flips the card to
-   `In Progress` and posts a `CLAIM <nonce>` comment; the earliest comment (by Linear's server
-   timestamp) wins, so two sessions never take the same card. The winner gets an isolated
-   worktree under `.claude/worktrees/<branch>` and delivers it (TDD -> `/code-review` ->
-   PR -> In Review) without touching the others.
-3. **`/reconcile`** rebases the per-card worktree branches onto latest `main` when they drift.
-4. **`/pick --steal VER-x`** reclaims a card left `In Progress` by a session that died.
+| `/nexus` | Refresh the GitNexus code-intelligence index (`/nexus force` for a full re-index) |
+| `/setup` | Bootstrap a new project from this template |
 
 Rules live in the `roadmap-linear` and `delivering-linear-cards` skills.
