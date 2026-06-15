@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -19,14 +21,19 @@ const defaultBaseURL = "https://dumps.wikimedia.org"
 const userAgent = "truth-in-stream-wikisync/1.0 (https://github.com/verovec/truth-in-stream; bot) Go-http-client"
 
 // versionSuffix names the sidecar written next to each downloaded file. It
-// records the file's Last-Modified so a later run can issue a conditional
-// request and reuse the bytes when the mirror has not published a newer dump.
-const versionSuffix = ".last-modified"
+// records the dump generation (a YYYYMMDD date) the local bytes came from, so a
+// later run can reuse them when the mirror's newest generation is unchanged.
+const versionSuffix = ".version"
+
+// generationPattern matches the dated generation directories (e.g. 20260601/)
+// in a corpus's autoindex listing.
+var generationPattern = regexp.MustCompile(`href="(\d{8})/"`)
 
 // DumpFiles locates a downloaded dump and its companion index on disk.
-// Version is the dump's Last-Modified header value, recorded in sync state so
-// a later run can tell which dump the corpus came from. Reused is true when
-// both files were already present and current, so no bytes were re-downloaded.
+// Version is the dump generation (a YYYYMMDD date) the files came from, recorded
+// in sync state so a later run can tell which generation the corpus came from.
+// Reused is true when both files were already present for that generation, so no
+// bytes were re-downloaded.
 type DumpFiles struct {
 	DumpPath  string
 	IndexPath string
@@ -41,97 +48,209 @@ type Downloader struct {
 	BaseURL string
 }
 
-// Fetch downloads the corpus's multistream dump and index into destDir and
-// returns their paths. When a complete copy with a recorded version is already
-// on disk, each file is fetched conditionally (If-Modified-Since) and reused on
-// a 304, so a re-run skips re-downloading hundreds of megabytes. The /latest/
-// aliases are mutable, so the pair is rejected when the two files report
-// different Last-Modified values - an index from one dump generation describes
-// byte offsets in another. Downloads are written via a temp file and renamed,
-// so a failed download never leaves a partial file behind under the final name.
+// Fetch resolves the newest complete dump generation and downloads that
+// generation's multistream dump and index into destDir. The dump and index are
+// fetched from the dated, immutable generation directory rather than the mutable
+// /latest/ alias, so the two files are guaranteed to come from the same
+// generation by construction - a dump and an index whose byte offsets disagree
+// can never be paired. When a copy from the same generation is already on disk it
+// is reused, so a re-run skips re-downloading hundreds of megabytes. Downloads
+// are written via a temp file and renamed, so a failed download never leaves a
+// partial file behind under the final name.
 func (d *Downloader) Fetch(ctx context.Context, corpus, destDir string) (DumpFiles, error) {
-	dumpName := corpus + "-latest-pages-articles-multistream.xml.bz2"
-	indexName := corpus + "-latest-pages-articles-multistream-index.txt.bz2"
+	date, err := d.resolveGeneration(ctx, corpus)
+	if err != nil {
+		return DumpFiles{}, err
+	}
 
-	dumpPath := filepath.Join(destDir, dumpName)
-	dumpVersion, dumpReused, err := d.download(ctx, corpus, dumpName, dumpPath)
+	dumpPath := filepath.Join(destDir, localDumpName(corpus))
+	dumpReused, err := d.download(ctx, d.fileURL(corpus, date, dumpFileName(corpus, date)), dumpPath, date)
 	if err != nil {
 		return DumpFiles{}, err
 	}
-	indexPath := filepath.Join(destDir, indexName)
-	indexVersion, indexReused, err := d.download(ctx, corpus, indexName, indexPath)
+	indexPath := filepath.Join(destDir, localIndexName(corpus))
+	indexReused, err := d.download(ctx, d.fileURL(corpus, date, indexFileName(corpus, date)), indexPath, date)
 	if err != nil {
 		return DumpFiles{}, err
-	}
-	// The dump and index must come from the same generation. They match when
-	// both carry the same Last-Modified, or when the mirror reports none for
-	// either (nothing to compare, both freshly fetched together). A version on
-	// one but not the other - e.g. a 304-reused dump paired with a freshly
-	// downloaded index that carried no Last-Modified - cannot be confirmed as a
-	// pair and is rejected.
-	if dumpVersion != indexVersion {
-		return DumpFiles{}, fmt.Errorf("wiki: dump (%q) and index (%q) are not a confirmed dump generation pair; retry", dumpVersion, indexVersion)
 	}
 	return DumpFiles{
 		DumpPath:  dumpPath,
 		IndexPath: indexPath,
-		Version:   dumpVersion,
+		Version:   date,
 		Reused:    dumpReused && indexReused,
 	}, nil
 }
 
-// download fetches one dump file into dest and returns its Last-Modified value.
-// When a complete local copy with a recorded version exists, the request is
-// made conditional with If-Modified-Since; a 304 reuses the local file (reused
-// is true) and a 200 overwrites it atomically and records the new version.
-func (d *Downloader) download(ctx context.Context, corpus, name, dest string) (version string, reused bool, err error) {
-	base := d.BaseURL
-	if base == "" {
-		base = defaultBaseURL
-	}
-	url := fmt.Sprintf("%s/%s/latest/%s", base, corpus, name)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// resolveGeneration finds the newest dump generation whose multistream dump and
+// index are both published. The /<corpus>/ autoindex lists every generation as a
+// dated directory, but the newest one can still be mid-run with its multistream
+// files absent, so each candidate is confirmed with a HEAD on both files and the
+// search falls back to the previous generation until a complete pair is found.
+func (d *Downloader) resolveGeneration(ctx context.Context, corpus string) (string, error) {
+	listURL := fmt.Sprintf("%s/%s/", d.baseURL(), corpus)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("wiki: build request for %s: %w", url, err)
+		return "", fmt.Errorf("wiki: build request for %s: %w", listURL, err)
 	}
 	req.Header.Set("User-Agent", userAgent)
-	// The stored value is the server's own Last-Modified, already a valid
-	// HTTP-date, so it is replayed verbatim.
-	prior := localVersion(dest)
-	conditional := prior != ""
-	if conditional {
-		req.Header.Set("If-Modified-Since", prior)
-	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", false, fmt.Errorf("wiki: download %s: %w", url, err)
+		return "", fmt.Errorf("wiki: list generations %s: %w", listURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	// A 304 carries no body and may omit Last-Modified, so the reused version is
-	// the one already recorded on disk. Only trust it when we actually sent the
-	// conditional header; an unsolicited 304 is a protocol violation and falls
-	// through to the status check below.
-	if resp.StatusCode == http.StatusNotModified && conditional {
-		return prior, true, nil
-	}
 	if resp.StatusCode != http.StatusOK {
-		return "", false, fmt.Errorf("wiki: download %s: unexpected status %s", url, resp.Status)
+		return "", fmt.Errorf("wiki: list generations %s: unexpected status %s", listURL, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("wiki: read generation listing %s: %w", listURL, err)
+	}
+
+	dates := parseGenerations(body)
+	if len(dates) == 0 {
+		return "", fmt.Errorf("wiki: no dump generations listed for %s", corpus)
+	}
+	for _, date := range dates {
+		ready, err := d.generationReady(ctx, corpus, date)
+		if err != nil {
+			return "", err
+		}
+		if ready {
+			return date, nil
+		}
+	}
+	return "", fmt.Errorf("wiki: no complete dump generation for %s among %d candidates", corpus, len(dates))
+}
+
+// parseGenerations extracts the dated generation directories from a corpus
+// autoindex page, newest first. Duplicates are collapsed so a date appearing in
+// both the href and the link text is counted once. Eight-digit YYYYMMDD strings
+// sort chronologically as plain text, so a reverse sort yields newest-first.
+func parseGenerations(listing []byte) []string {
+	matches := generationPattern.FindAllSubmatch(listing, -1)
+	seen := make(map[string]struct{}, len(matches))
+	dates := make([]string, 0, len(matches))
+	for _, m := range matches {
+		date := string(m[1])
+		if _, ok := seen[date]; ok {
+			continue
+		}
+		seen[date] = struct{}{}
+		dates = append(dates, date)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+	return dates
+}
+
+// generationReady reports whether both the multistream dump and its index are
+// published for the given generation, so the pair can be downloaded together.
+func (d *Downloader) generationReady(ctx context.Context, corpus, date string) (bool, error) {
+	for _, name := range []string{dumpFileName(corpus, date), indexFileName(corpus, date)} {
+		ok, err := d.exists(ctx, d.fileURL(corpus, date, name))
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// exists issues a HEAD and reports whether the URL serves a file (200). A 404 is
+// the expected "not published yet" answer for an in-progress generation; any
+// other status is an error the caller should not paper over.
+func (d *Downloader) exists(ctx context.Context, url string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("wiki: build request for %s: %w", url, err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("wiki: head %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("wiki: head %s: unexpected status %s", url, resp.Status)
+	}
+}
+
+// download fetches one dump file into dest unless a copy from the same
+// generation is already present. The dated source files are immutable, so a
+// recorded generation matching the one being fetched proves the local bytes are
+// current and the download is skipped. Otherwise the file is overwritten
+// atomically and the generation recorded for the next run.
+func (d *Downloader) download(ctx context.Context, url, dest, generation string) (reused bool, err error) {
+	if localVersion(dest) == generation {
+		return true, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("wiki: build request for %s: %w", url, err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("wiki: download %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("wiki: download %s: unexpected status %s", url, resp.Status)
 	}
 
 	if err := writeAtomic(dest, resp.Body); err != nil {
-		return "", false, fmt.Errorf("wiki: download %s: %w", url, err)
+		return false, fmt.Errorf("wiki: download %s: %w", url, err)
 	}
-	version = resp.Header.Get("Last-Modified")
-	if err := recordVersion(dest, version); err != nil {
-		return "", false, fmt.Errorf("wiki: download %s: %w", url, err)
+	if err := recordVersion(dest, generation); err != nil {
+		return false, fmt.Errorf("wiki: download %s: %w", url, err)
 	}
-	return version, false, nil
+	return false, nil
 }
 
-// localVersion returns the recorded Last-Modified for a previously downloaded
+func (d *Downloader) baseURL() string {
+	if d.BaseURL != "" {
+		return d.BaseURL
+	}
+	return defaultBaseURL
+}
+
+// fileURL builds the URL of a file inside a generation's dated directory.
+func (d *Downloader) fileURL(corpus, date, name string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", d.baseURL(), corpus, date, name)
+}
+
+// dumpFileName and indexFileName name the multistream dump and its index inside
+// a generation's dated directory; the date is part of the published filename.
+func dumpFileName(corpus, date string) string {
+	return fmt.Sprintf("%s-%s-pages-articles-multistream.xml.bz2", corpus, date)
+}
+
+func indexFileName(corpus, date string) string {
+	return fmt.Sprintf("%s-%s-pages-articles-multistream-index.txt.bz2", corpus, date)
+}
+
+// localDumpName and localIndexName are the stable on-disk cache names. The
+// generation lives in the sidecar, not the filename, so a new generation
+// overwrites the previous one in place rather than accumulating copies.
+func localDumpName(corpus string) string {
+	return corpus + "-pages-articles-multistream.xml.bz2"
+}
+
+func localIndexName(corpus string) string {
+	return corpus + "-pages-articles-multistream-index.txt.bz2"
+}
+
+// localVersion returns the recorded generation for a previously downloaded
 // file, or "" when the file is missing, empty, or has no recorded version - any
 // of which forces a fresh download rather than reusing an incomplete copy.
 func localVersion(dest string) string {
@@ -146,22 +265,12 @@ func localVersion(dest string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// recordVersion writes the freshly downloaded file's Last-Modified to its
-// sidecar so a later run can reuse the bytes. When the mirror sent no
-// Last-Modified, the new bytes cannot be validated later, so any sidecar left
-// from an earlier download is removed - otherwise it would describe a different
-// generation than the bytes now on disk and the next run would reuse them under
-// a stale version. With no sidecar, the next run re-downloads instead.
-func recordVersion(dest, version string) error {
-	sidecar := dest + versionSuffix
-	if version == "" {
-		if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("clear stale version for %s: %w", dest, err)
-		}
-		return nil
-	}
-	if err := writeAtomic(sidecar, strings.NewReader(version)); err != nil {
-		return fmt.Errorf("record version for %s: %w", dest, err)
+// recordVersion writes the freshly downloaded file's generation to its sidecar
+// so a later run can reuse the bytes. The sidecar is written after the file is
+// renamed into place, so its presence proves the bytes on disk are complete.
+func recordVersion(dest, generation string) error {
+	if err := writeAtomic(dest+versionSuffix, strings.NewReader(generation)); err != nil {
+		return fmt.Errorf("record generation for %s: %w", dest, err)
 	}
 	return nil
 }
