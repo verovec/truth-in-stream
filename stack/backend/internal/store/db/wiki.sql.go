@@ -195,7 +195,7 @@ func (q *Queries) GetWikiSyncState(ctx context.Context, corpus string) (WikiSync
 }
 
 const searchWikiChunks = `-- name: SearchWikiChunks :many
-SELECT title, url, content, section, kind, (embedding <=> $1)::float8 AS distance
+SELECT page_id, chunk_index, title, url, content, section, kind, (embedding <=> $1)::float8 AS distance
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> $1
@@ -208,12 +208,14 @@ type SearchWikiChunksParams struct {
 }
 
 type SearchWikiChunksRow struct {
-	Title    string
-	Url      string
-	Content  string
-	Section  string
-	Kind     string
-	Distance float64
+	PageID     int64
+	ChunkIndex int32
+	Title      string
+	Url        string
+	Content    string
+	Section    string
+	Kind       string
+	Distance   float64
 }
 
 // Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
@@ -232,6 +234,8 @@ func (q *Queries) SearchWikiChunks(ctx context.Context, arg SearchWikiChunksPara
 	for rows.Next() {
 		var i SearchWikiChunksRow
 		if err := rows.Scan(
+			&i.PageID,
+			&i.ChunkIndex,
 			&i.Title,
 			&i.Url,
 			&i.Content,

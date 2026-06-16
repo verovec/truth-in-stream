@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,15 +44,22 @@ var ErrEmptySegment = errors.New("service: segment text is empty")
 // article excerpt. WikiKind is the chunk classification of an evidence hit (lead
 // or body), empty for a claim; confidence scoring weights evidence by it. Score
 // is cosine similarity in [-1, 1]; higher is more similar.
+//
+// EvidenceID is the passage's stable source coordinate (domain.ComposeEvidenceID
+// over kind + source id + chunk index): a curated claim's own id at chunk 0, a
+// Wikipedia chunk's page id and chunk index. It lets a downstream verifier cite
+// a passage by id and have that citation round-trip back to the exact source row
+// via domain.ParseEvidenceID.
 type Match struct {
-	Kind     domain.MatchKind
-	ClaimID  string
-	Text     string
-	Verdict  domain.Verdict
-	Sources  []domain.Source
-	Article  domain.Article
-	WikiKind domain.WikiChunkKind
-	Score    float64
+	Kind       domain.MatchKind
+	ClaimID    string
+	Text       string
+	Verdict    domain.Verdict
+	Sources    []domain.Source
+	Article    domain.Article
+	WikiKind   domain.WikiChunkKind
+	EvidenceID string
+	Score      float64
 }
 
 // MatcherConfig bounds a Matcher. TopK and ScoreThreshold govern the curated
@@ -219,12 +227,13 @@ func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, e
 			break
 		}
 		matches = append(matches, Match{
-			Kind:    domain.MatchKindClaim,
-			ClaimID: h.ID,
-			Text:    h.Text,
-			Verdict: h.Verdict,
-			Sources: h.Sources,
-			Score:   score,
+			Kind:       domain.MatchKindClaim,
+			ClaimID:    h.ID,
+			Text:       h.Text,
+			Verdict:    h.Verdict,
+			Sources:    h.Sources,
+			EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, h.ID, 0),
+			Score:      score,
 		})
 	}
 	return matches, nil
@@ -248,11 +257,12 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 			break
 		}
 		matches = append(matches, Match{
-			Kind:     domain.MatchKindEvidence,
-			Text:     h.Content,
-			Article:  domain.Article{Title: h.Title, URL: h.URL},
-			WikiKind: h.Kind,
-			Score:    score,
+			Kind:       domain.MatchKindEvidence,
+			Text:       h.Content,
+			Article:    domain.Article{Title: h.Title, URL: h.URL},
+			WikiKind:   h.Kind,
+			EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, strconv.FormatInt(h.PageID, 10), h.ChunkIndex),
+			Score:      score,
 		})
 	}
 	return matches, nil

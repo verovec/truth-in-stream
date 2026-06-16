@@ -196,7 +196,7 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 
 	seedMatch := func(id string, score float64) Match {
 		s := seedByID(t, seeds, id)
-		return Match{Kind: domain.MatchKindClaim, ClaimID: s.ID, Text: s.Text, Verdict: s.Verdict, Sources: s.Sources, Score: score}
+		return Match{Kind: domain.MatchKindClaim, ClaimID: s.ID, Text: s.Text, Verdict: s.Verdict, Sources: s.Sources, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, s.ID, 0), Score: score}
 	}
 
 	tests := []struct {
@@ -291,6 +291,16 @@ func TestMatcherAgainstSeededStore(t *testing.T) {
 			// constructed similarities.
 			if diff := cmp.Diff(tc.want, got, cmpopts.EquateApprox(0, 5e-3)); diff != "" {
 				t.Errorf("matches mismatch (-want +got):\n%s", diff)
+			}
+			for _, mt := range got {
+				kind, source, chunk, err := domain.ParseEvidenceID(mt.EvidenceID)
+				if err != nil {
+					t.Errorf("ParseEvidenceID(%q): %v", mt.EvidenceID, err)
+					continue
+				}
+				if kind != domain.MatchKindClaim || source != mt.ClaimID || chunk != 0 {
+					t.Errorf("evidence id %q decoded to (%q, %q, %d), want (claim, %q, 0)", mt.EvidenceID, kind, source, chunk, mt.ClaimID)
+				}
 			}
 		})
 	}
