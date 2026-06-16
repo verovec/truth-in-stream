@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -278,7 +279,8 @@ func TestRunBulkEnqueuePrioritizesLeadOverBody(t *testing.T) {
 			t.Fatalf("published %d messages, want 2", len(msgs))
 		}
 		// Match priority to the chunk by content, since publishes within a page race.
-		// MaxPriority 10: lead maps to the top band, body to half.
+		// With no clustering score, the static heuristic puts a lead in the upper
+		// band and a body in the lower, so the lead embeds first.
 		prio := map[string]uint8{}
 		for _, m := range msgs {
 			var j embedjob.Job
@@ -287,11 +289,8 @@ func TestRunBulkEnqueuePrioritizesLeadOverBody(t *testing.T) {
 			}
 			prio[j.Content] = m.priority
 		}
-		if prio["lead text"] != 10 {
-			t.Errorf("lead chunk priority = %d, want 10", prio["lead text"])
-		}
-		if prio["body text"] != 5 {
-			t.Errorf("body chunk priority = %d, want 5", prio["body text"])
+		if prio["lead text"] <= prio["body text"] {
+			t.Errorf("lead priority %d not above body priority %d", prio["lead text"], prio["body text"])
 		}
 	})
 }
@@ -441,27 +440,30 @@ func TestRunBulkEnqueueStopsOnCanceledContext(t *testing.T) {
 	})
 }
 
-func TestPriorityForKind(t *testing.T) {
+func TestStaticImportance(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name        string
-		kind        domain.WikiChunkKind
-		maxPriority uint8
-		want        uint8
-	}{
-		{"lead at default ceiling", domain.WikiChunkKindLead, 10, 10},
-		{"body at default ceiling", domain.WikiChunkKindBody, 10, 5},
-		{"lead at low ceiling", domain.WikiChunkKindLead, 1, 1},
-		{"body at low ceiling", domain.WikiChunkKindBody, 1, 0},
-		{"unknown kind floors", domain.WikiChunkKind("mystery"), 10, 0},
+	long := strings.Repeat("x", 10000)
+	short := "x"
+	// A lead always outranks a body; within a kind, longer content outranks
+	// shorter; an unknown kind floors to zero.
+	leadLong := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindLead, Content: long})
+	leadShort := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindLead, Content: short})
+	bodyLong := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: long})
+	unknown := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKind("mystery"), Content: long})
+
+	if !(leadLong > leadShort) {
+		t.Errorf("longer lead %.3f should outrank shorter lead %.3f", leadLong, leadShort)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := priorityForKind(tc.kind, tc.maxPriority); got != tc.want {
-				t.Errorf("priorityForKind(%q, %d) = %d, want %d", tc.kind, tc.maxPriority, got, tc.want)
-			}
-		})
+	if !(leadShort > bodyLong) {
+		t.Errorf("any lead %.3f should outrank any body %.3f", leadShort, bodyLong)
+	}
+	if unknown != 0 {
+		t.Errorf("unknown kind importance = %.3f, want 0", unknown)
+	}
+	for _, v := range []float64{leadLong, leadShort, bodyLong} {
+		if v < 0 || v >= 1 {
+			t.Errorf("importance %.3f out of [0,1)", v)
+		}
 	}
 }
 
@@ -490,19 +492,21 @@ func TestPriorityFromImportance(t *testing.T) {
 	}
 }
 
-func TestPriorityForPrefersImportanceOverKind(t *testing.T) {
+func TestPriorityForPrefersImportanceOverStatic(t *testing.T) {
 	t.Parallel()
 	imp := 0.9
-	// A body chunk (kind heuristic would give half) that carries a high importance
-	// score must be prioritized by the score, not the kind.
-	scored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Importance: &imp}
+	// A body chunk (the static heuristic would put it low) that carries a high
+	// clustering score must be prioritized by the score, not the static fallback.
+	scored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: "x", Importance: &imp}
 	if got := priorityFor(scored, 10); got != 9 {
 		t.Errorf("scored body chunk priority = %d, want 9 (importance drives it)", got)
 	}
-	// With no score, the same chunk falls back to the kind heuristic.
-	unscored := domain.WikiChunk{Kind: domain.WikiChunkKindBody}
-	if got := priorityFor(unscored, 10); got != 5 {
-		t.Errorf("unscored body chunk priority = %d, want 5 (kind fallback)", got)
+	// With no score, the same chunk falls back to the static heuristic, which keeps
+	// a short body well below the importance-driven band.
+	unscored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: "x"}
+	want := priorityFromImportance(staticImportance(unscored), 10)
+	if got := priorityFor(unscored, 10); got != want {
+		t.Errorf("unscored body chunk priority = %d, want %d (static fallback)", got, want)
 	}
 }
 
@@ -534,6 +538,97 @@ func TestRunBulkEnqueueUsesImportanceForPriority(t *testing.T) {
 		}
 		if prio["minor"] != 2 {
 			t.Errorf("low-importance chunk priority = %d, want 2", prio["minor"])
+		}
+	})
+}
+
+// fakeLiveProducerStore models the live corpus the bulk-into-live producer pages
+// for un-embedded chunks; it has no finalize step because there is no swap.
+type fakeLiveProducerStore struct {
+	mu         sync.Mutex
+	live       []domain.WikiChunk
+	countErr   error
+	unembedErr error
+}
+
+func (f *fakeLiveProducerStore) CountUnembeddedLive(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return int64(len(f.live)), nil
+}
+
+func (f *fakeLiveProducerStore) UnembeddedLive(_ context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.unembedErr != nil {
+		return nil, f.unembedErr
+	}
+	out := []domain.WikiChunk{}
+	for _, c := range f.live {
+		if c.PageID > after.PageID || (c.PageID == after.PageID && int32(c.ChunkIndex) > after.ChunkIndex) {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PageID != out[j].PageID {
+			return out[i].PageID < out[j].PageID
+		}
+		return out[i].ChunkIndex < out[j].ChunkIndex
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func TestRunBulkLivePublishPublishesLiveJobs(t *testing.T) {
+	t.Parallel()
+	store := &fakeLiveProducerStore{live: producerChunks(3)}
+	pub := &fakePublisher{}
+
+	stats, err := RunBulkLivePublish(t.Context(), discardLogger(), store, pub, producerConfig())
+	if err != nil {
+		t.Fatalf("RunBulkLivePublish: %v", err)
+	}
+	msgs := pub.published()
+	if stats.Published != 6 || len(msgs) != 6 {
+		t.Fatalf("published %d (stats %d), want 6", len(msgs), stats.Published)
+	}
+	// Every live job targets the live corpus, never staging, so the fleet writes
+	// the vector straight into wiki_chunks.
+	for _, j := range decodeJobs(t, msgs) {
+		if j.Staging {
+			t.Errorf("live job for page %d chunk %d set Staging; want live", j.PageID, j.ChunkIndex)
+		}
+	}
+}
+
+func TestRunBulkLivePublishValidatesConfig(t *testing.T) {
+	t.Parallel()
+	cfg := producerConfig()
+	cfg.MaxPriority = 0
+	if _, err := RunBulkLivePublish(t.Context(), discardLogger(), &fakeLiveProducerStore{}, &fakePublisher{}, cfg); err == nil {
+		t.Fatal("RunBulkLivePublish with zero max priority: want error, got nil")
+	}
+}
+
+func TestRunBulkEnqueueStampsStagingJobs(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeProducerStore{staging: producerChunks(2), remaining: []int64{4, 0}}
+		pub := &fakePublisher{}
+		if _, err := RunBulkEnqueue(t.Context(), discardLogger(), store, pub, producerConfig()); err != nil {
+			t.Fatalf("RunBulkEnqueue: %v", err)
+		}
+		// Atomic-rebuild jobs target staging, so the fleet fills the staging table
+		// for the later swap rather than the live corpus.
+		for _, j := range decodeJobs(t, pub.published()) {
+			if !j.Staging {
+				t.Errorf("atomic job for page %d chunk %d did not set Staging", j.PageID, j.ChunkIndex)
+			}
 		}
 	})
 }

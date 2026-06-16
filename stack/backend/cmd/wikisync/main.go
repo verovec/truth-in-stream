@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
@@ -50,11 +51,12 @@ func main() {
 	mode := flag.String("mode", "bulk", "sync mode: bulk (full dump ingest), delta (incremental catch-up), or reset (clear the corpus and checkpoint for a from-scratch reingest)")
 	dir := flag.String("dir", os.TempDir(), "directory for downloaded dump files")
 	dryRun := flag.Bool("dry-run", false, "ingest and report the embedding cost estimate without embedding or swapping")
-	publishOnly := flag.Bool("publish-only", false, "bulk mode only: publish embedding jobs and exit without waiting for the fleet to drain or swapping staging live; the consumer owns the drain and swap (the cloud producer path)")
+	publishOnly := flag.Bool("publish-only", false, "bulk mode only: publish embedding jobs and exit (the cloud producer path). The default bulk-into-live ingest already publishes and exits, so this only changes an -atomic run, where it skips the drain and swap so the consumer owns them")
+	atomic := flag.Bool("atomic", false, "bulk mode only: build the corpus in a staging table and swap it in atomically once fully embedded, instead of the default bulk-into-live ingest that makes chunks searchable as they embed; use it for a wholesale re-chunk cutover")
 	maxDuration := flag.Duration("max-duration", 0, "stop the run after this much wall-clock time, leaving progress for the next run to resume (0 = run to completion)")
 	flag.Parse()
 
-	err := run(logger, *mode, *dir, *dryRun, *publishOnly, *maxDuration)
+	err := run(logger, *mode, *dir, *dryRun, *publishOnly, *atomic, *maxDuration)
 	switch {
 	case err == nil:
 		return
@@ -101,7 +103,7 @@ func classifyStop(workErr, ctxErr error) error {
 	return workErr
 }
 
-func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly bool, maxDuration time.Duration) error {
+func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly, atomic bool, maxDuration time.Duration) error {
 	if mode != "bulk" && mode != "delta" && mode != "reset" {
 		return fmt.Errorf("wikisync: unsupported mode %q (want bulk, delta, or reset)", mode)
 	}
@@ -110,6 +112,9 @@ func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly bool, maxDur
 	}
 	if publishOnly && dryRun {
 		return errors.New("wikisync: -publish-only and -dry-run are mutually exclusive")
+	}
+	if atomic && mode != "bulk" {
+		return fmt.Errorf("wikisync: -atomic is only supported for bulk mode, got %q", mode)
 	}
 
 	cfg, err := config.Load()
@@ -145,7 +150,7 @@ func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly bool, maxDur
 	case "delta":
 		workErr = runDelta(ctx, logger, store, wikiCfg, dryRun)
 	default:
-		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun, publishOnly)
+		workErr = runBulk(ctx, logger, store, wikiCfg, dir, dryRun, publishOnly, atomic)
 	}
 	return classifyStop(workErr, ctx.Err())
 }
@@ -166,34 +171,13 @@ func runReset(ctx context.Context, logger *slog.Logger, store *postgres.Store) e
 	return nil
 }
 
-// runBulk downloads the dump, ingests it, then either reports the embedding cost
-// (dry-run), publishes one embedding job per chunk and exits without draining
-// (publish-only, the cloud producer), or publishes and swaps once the worker
-// fleet has drained the queue (the default co-located run).
-func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun, publishOnly bool) error {
-	// LoadWikiEmbed supplies the post-drain HNSW index-build settings the finalize
-	// step forwards to the store.
-	embedCfg, err := config.LoadWikiEmbed()
-	if err != nil {
-		return err
-	}
-	// A real run fans embedding out to the worker fleet over the broker, so load
-	// and validate the broker and producer settings up front - a misconfiguration
-	// fails before the ingest, not after it. A dry-run only estimates locally and
-	// needs neither.
-	var (
-		queueCfg    config.Queue
-		producerCfg config.WikiProducer
-	)
-	if !dryRun {
-		if queueCfg, err = config.LoadQueue(); err != nil {
-			return err
-		}
-		if producerCfg, err = config.LoadWikiProducer(); err != nil {
-			return err
-		}
-	}
-
+// runBulk downloads the dump and ingests it. By default it ingests straight into
+// the live table and publishes one embedding job per chunk, so the corpus is
+// queryable and grows as the fleet embeds (bulk-into-live). With -atomic it
+// builds the corpus in a staging table and swaps it in once fully embedded, the
+// wholesale-cutover path. A dry-run reports the embedding cost without writing or
+// publishing.
+func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dir string, dryRun, publishOnly, atomic bool) error {
 	logger.InfoContext(ctx, "resolving dump",
 		slog.String("corpus", wikiCfg.Corpus), slog.String("dir", dir))
 	var dl wiki.Downloader
@@ -217,6 +201,111 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 			slog.String("corpus", wikiCfg.Corpus), slog.String("version", files.Version))
 		return nil
 	}
+
+	if atomic {
+		return runBulkAtomic(ctx, logger, store, wikiCfg, files, plan, dryRun, publishOnly)
+	}
+	return runBulkLive(ctx, logger, store, wikiCfg, files, dryRun)
+}
+
+// runBulkLive ingests the dump straight into the live corpus and publishes the
+// un-embedded chunks for the fleet, which fills them in place on the live HNSW
+// index - no staging, no swap. The corpus is queryable throughout; the published
+// jobs grow it monotonically as they embed. A dry-run reports the cost of the
+// chunks still pending in the live corpus without ingesting or publishing.
+func runBulkLive(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, files wiki.DumpFiles, dryRun bool) error {
+	if dryRun {
+		// Dry-run never writes, so it reports the cost of what is already pending in
+		// the live corpus rather than a fresh parse; use -atomic -dry-run for a
+		// full pre-build estimate of an unbuilt corpus.
+		rem, err := store.LiveRemaining(ctx)
+		if err != nil {
+			return err
+		}
+		logEstimate(ctx, logger, wikiCfg.Corpus, wiki.EstimateFromRemaining(rem))
+		return nil
+	}
+
+	queueCfg, err := config.LoadQueue()
+	if err != nil {
+		return err
+	}
+	producerCfg, err := config.LoadWikiProducer()
+	if err != nil {
+		return err
+	}
+
+	ingestStats, err := wiki.RunBulkLive(ctx, store, files, wikiCfg.Corpus)
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "bulk-into-live ingest complete",
+		slog.String("corpus", wikiCfg.Corpus),
+		slog.Int("pages_seen", ingestStats.PagesSeen),
+		slog.Int("pages_skipped", ingestStats.PagesSkipped),
+		slog.Int("pages_stored", ingestStats.PagesStored),
+		slog.Int("chunks", ingestStats.Chunks))
+
+	// Record the dump version now serving so a re-run can tell the corpus is
+	// current (liveCurrentAt also requires zero un-embedded chunks, so this never
+	// reports current while the fleet is still filling in vectors).
+	lastChange, _ := http.ParseTime(files.Version)
+	if err := store.SetSyncState(ctx, domain.WikiSyncState{Corpus: wikiCfg.Corpus, DumpVersion: files.Version, LastChangeTS: lastChange}); err != nil {
+		return err
+	}
+
+	client, err := queue.New(queue.Config{
+		URL:         queueCfg.URL,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
+		MaxPriority: queueCfg.MaxPriority,
+		Prefetch:    queueCfg.Prefetch,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	stats, err := wiki.RunBulkLivePublish(ctx, logger, store, qPublisher{client: client}, wiki.ProducerConfig{
+		Corpus:           wikiCfg.Corpus,
+		DumpVersion:      files.Version,
+		MaxPriority:      queueCfg.MaxPriority,
+		EnqueueBatchSize: producerCfg.EnqueueBatchSize,
+	})
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "bulk-into-live enqueue complete; the fleet fills the live corpus incrementally",
+		slog.String("corpus", wikiCfg.Corpus),
+		slog.Int("published_chunks", stats.Published))
+	return nil
+}
+
+// runBulkAtomic builds the next corpus in a staging table and swaps it into place
+// once the fleet has fully embedded it, the wholesale-cutover path. It is the
+// pre-existing behavior, kept for a breaking re-chunk where serving a mix of old
+// and new chunks is unacceptable. With publish-only it fills the queue and exits,
+// leaving the drain and swap to the consumer (the cloud producer path).
+func runBulkAtomic(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, files wiki.DumpFiles, plan wiki.BulkPlan, dryRun, publishOnly bool) error {
+	// LoadWikiEmbed supplies the post-drain HNSW index-build settings the finalize
+	// step forwards to the store.
+	embedCfg, err := config.LoadWikiEmbed()
+	if err != nil {
+		return err
+	}
+	var (
+		queueCfg    config.Queue
+		producerCfg config.WikiProducer
+	)
+	if !dryRun {
+		if queueCfg, err = config.LoadQueue(); err != nil {
+			return err
+		}
+		if producerCfg, err = config.LoadWikiProducer(); err != nil {
+			return err
+		}
+	}
+
 	if plan == wiki.PlanBuild {
 		ingestStats, err := wiki.RunBulk(ctx, store, files, wikiCfg.Corpus)
 		if err != nil {
@@ -239,12 +328,7 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		if err != nil {
 			return err
 		}
-		logger.InfoContext(ctx, "embedding cost estimate (dry run)",
-			slog.String("corpus", wikiCfg.Corpus),
-			slog.Int64("pages", est.Pages),
-			slog.Int64("chunks", est.Chunks),
-			slog.Int64("estimated_tokens", est.Tokens),
-			slog.Float64("estimated_cost_usd", est.CostUSD))
+		logEstimate(ctx, logger, wikiCfg.Corpus, est)
 		return nil
 	}
 
@@ -296,6 +380,16 @@ func runBulk(ctx context.Context, logger *slog.Logger, store *postgres.Store, wi
 		slog.String("corpus", wikiCfg.Corpus),
 		slog.Int("published_chunks", stats.Published))
 	return nil
+}
+
+// logEstimate reports a dry-run embedding cost projection.
+func logEstimate(ctx context.Context, logger *slog.Logger, corpus string, est wiki.Estimate) {
+	logger.InfoContext(ctx, "embedding cost estimate (dry run)",
+		slog.String("corpus", corpus),
+		slog.Int64("pages", est.Pages),
+		slog.Int64("chunks", est.Chunks),
+		slog.Int64("estimated_tokens", est.Tokens),
+		slog.Float64("estimated_cost_usd", est.CostUSD))
 }
 
 // runDelta catches the corpus up to the live wiki incrementally via the

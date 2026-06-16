@@ -266,3 +266,97 @@ func TestPageURL(t *testing.T) {
 		}
 	}
 }
+
+// fakeLiveStore models the live wiki_chunks table the bulk-into-live ingest
+// upserts into and trims, recording chunks by identity and the trims requested.
+type fakeLiveStore struct {
+	mu        sync.Mutex
+	corpus    string
+	chunks    map[[2]int64]domain.WikiChunk
+	trims     map[int64]int
+	upsertErr error
+}
+
+func newFakeLiveStore() *fakeLiveStore {
+	return &fakeLiveStore{chunks: make(map[[2]int64]domain.WikiChunk), trims: make(map[int64]int)}
+}
+
+func (f *fakeLiveStore) EnsureCorpus(_ context.Context, corpus string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.corpus != "" && f.corpus != corpus {
+		return fmt.Errorf("store already holds corpus %q", f.corpus)
+	}
+	f.corpus = corpus
+	return nil
+}
+
+func (f *fakeLiveStore) UpsertChunks(_ context.Context, chunks []domain.WikiChunk) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
+	for _, c := range chunks {
+		f.chunks[[2]int64{c.PageID, int64(c.ChunkIndex)}] = c
+	}
+	return nil
+}
+
+func (f *fakeLiveStore) TrimPages(_ context.Context, trims []domain.WikiTrim) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, tr := range trims {
+		f.trims[tr.PageID] = tr.FromIndex
+	}
+	return nil
+}
+
+func TestRunBulkLive(t *testing.T) {
+	t.Parallel()
+	store := newFakeLiveStore()
+	stats, err := RunBulkLive(t.Context(), store, fixtureFiles(), "simplewiki")
+	if err != nil {
+		t.Fatalf("RunBulkLive: %v", err)
+	}
+
+	// Fixture: only Paris (page 1) is an ingestable article; the rest are skipped.
+	if stats.PagesStored != 1 || stats.PagesSkipped != 3 {
+		t.Errorf("stats = %+v, want 1 stored, 3 skipped", stats)
+	}
+	if len(store.chunks) == 0 {
+		t.Fatal("no chunks upserted into the live corpus")
+	}
+	for key, c := range store.chunks {
+		if key[0] != 1 {
+			t.Errorf("upserted chunk for page %d (%q); only Paris (1) should be ingested", key[0], c.Title)
+		}
+	}
+	first, ok := store.chunks[[2]int64{1, 0}]
+	if !ok || first.Title != "Paris" || first.Corpus != "simplewiki" {
+		t.Fatalf("missing or wrong chunk (1,0): %+v", first)
+	}
+	// The page's stale tail is trimmed from its new chunk count, so a shrunk lead
+	// cannot leave orphaned higher-index chunks in the live table.
+	if got := store.trims[1]; got != stats.Chunks {
+		t.Errorf("trim from-index for Paris = %d, want its chunk count %d", got, stats.Chunks)
+	}
+}
+
+func TestRunBulkLivePropagatesUpsertError(t *testing.T) {
+	t.Parallel()
+	store := newFakeLiveStore()
+	store.upsertErr = errors.New("db down")
+	if _, err := RunBulkLive(t.Context(), store, fixtureFiles(), "simplewiki"); !errors.Is(err, store.upsertErr) {
+		t.Fatalf("RunBulkLive error = %v, want wrapped %v", err, store.upsertErr)
+	}
+}
+
+func TestRunBulkLiveRefusesForeignCorpus(t *testing.T) {
+	t.Parallel()
+	store := newFakeLiveStore()
+	store.corpus = "simplewiki"
+	if _, err := RunBulkLive(t.Context(), store, fixtureFiles(), "enwiki"); err == nil {
+		t.Fatal("RunBulkLive ingested a second corpus into a single-corpus store, want error")
+	}
+}

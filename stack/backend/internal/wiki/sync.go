@@ -47,15 +47,28 @@ type Stats struct {
 	Carried      int64
 }
 
-// RunBulk ingests a downloaded multistream dump into the staging table: streams
-// decompress in parallel, each page's lead section is extracted, stripped, and
-// chunked, and the chunks are inserted into a freshly reset staging table.
-// Redirects, non-article namespaces, disambiguation pages, and pages with empty
-// leads are skipped; because staging is built solely from the current dump,
-// pages that left the corpus simply never enter it - no orphans accrue. Once
-// every page is staged, unchanged chunks carry their embeddings forward from
-// live (so only changed and new chunks are re-embedded) and staging is stamped
-// ready for the embed run. Live wiki_chunks is untouched until the swap.
+// LiveStore is the slice of the wiki store the bulk-into-live ingest needs. It
+// upserts chunks straight into the live wiki_chunks table (clearing the embedding
+// only where content changed, so unchanged chunks keep their vector) and trims a
+// page's stale chunk tail, so the corpus stays queryable throughout the ingest
+// rather than waiting for a swap.
+type LiveStore interface {
+	EnsureCorpus(ctx context.Context, corpus string) error
+	UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) error
+	TrimPages(ctx context.Context, trims []domain.WikiTrim) error
+}
+
+// RunBulk ingests a downloaded multistream dump into the staging table for an
+// atomic rebuild: streams decompress in parallel, each page's lead section is
+// extracted, stripped, and chunked, and the chunks are inserted into a freshly
+// reset staging table. Redirects, non-article namespaces, disambiguation pages,
+// and pages with empty leads are skipped; because staging is built solely from
+// the current dump, pages that left the corpus simply never enter it - no orphans
+// accrue. Once every page is staged, unchanged chunks carry their embeddings
+// forward from live (so only changed and new chunks are re-embedded) and staging
+// is stamped ready for the embed run. Live wiki_chunks is untouched until the
+// swap. This is the opt-in wholesale-cutover path; the default ingest is
+// RunBulkLive.
 func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (Stats, error) {
 	if err := store.EnsureCorpus(ctx, corpus); err != nil {
 		return Stats{}, fmt.Errorf("wiki: claim corpus %q: %w", corpus, err)
@@ -64,6 +77,49 @@ func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (
 		return Stats{}, fmt.Errorf("wiki: reset staging: %w", err)
 	}
 
+	stats, err := streamDump(ctx, files, func(ctx context.Context, pages []Page) (Stats, error) {
+		return storePages(ctx, store, pages, corpus)
+	})
+	if err != nil {
+		return Stats{}, err
+	}
+
+	carried, err := store.CarryForwardEmbeddings(ctx)
+	if err != nil {
+		return Stats{}, fmt.Errorf("wiki: carry forward embeddings: %w", err)
+	}
+	stats.Carried = carried
+	if err := store.MarkStagingReady(ctx, files.Version); err != nil {
+		return Stats{}, fmt.Errorf("wiki: mark staging ready: %w", err)
+	}
+	return stats, nil
+}
+
+// RunBulkLive ingests a downloaded multistream dump straight into the live
+// wiki_chunks table, the default path that makes the corpus queryable mid-ingest.
+// It streams and chunks pages exactly as RunBulk does, but upserts each page's
+// chunks into the live table (the upsert keeps an unchanged chunk's existing
+// embedding and clears it only where content changed) and trims each page's stale
+// tail, so the live HNSW index absorbs new and changed chunks as the fleet embeds
+// them - no staging table, no swap. A page whose lead emptied out keeps its old
+// chunks until a delta sync or an atomic rebuild removes it; fully orphaned pages
+// (gone from the dump entirely) are not pruned here, which the atomic RunBulk path
+// exists to do for a clean wholesale cutover.
+func RunBulkLive(ctx context.Context, store LiveStore, files DumpFiles, corpus string) (Stats, error) {
+	if err := store.EnsureCorpus(ctx, corpus); err != nil {
+		return Stats{}, fmt.Errorf("wiki: claim corpus %q: %w", corpus, err)
+	}
+	return streamDump(ctx, files, func(ctx context.Context, pages []Page) (Stats, error) {
+		return storePagesLive(ctx, store, pages, corpus)
+	})
+}
+
+// streamDump decompresses the multistream dump in parallel and hands each
+// stream's parsed pages to store, aggregating the per-stream stats. It is the
+// shared core of the atomic-staging and bulk-into-live ingests; only the
+// per-stream store callback differs. It refuses a dump that yields no pages so a
+// broken download cannot quietly empty the corpus.
+func streamDump(ctx context.Context, files DumpFiles, store func(ctx context.Context, pages []Page) (Stats, error)) (Stats, error) {
 	ranges, err := loadIndex(files.IndexPath)
 	if err != nil {
 		return Stats{}, err
@@ -91,7 +147,7 @@ func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (
 			if err != nil {
 				return fmt.Errorf("wiki: stream at %d: %w", sr.Start, err)
 			}
-			st, err := storePages(gctx, store, pages, corpus)
+			st, err := store(gctx, pages)
 			if err != nil {
 				return err
 			}
@@ -108,18 +164,36 @@ func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (
 		return Stats{}, err
 	}
 	if stats.PagesSeen == 0 {
-		return Stats{}, fmt.Errorf("wiki: dump for %q yielded no pages; refusing to stage", corpus)
-	}
-
-	carried, err := store.CarryForwardEmbeddings(ctx)
-	if err != nil {
-		return Stats{}, fmt.Errorf("wiki: carry forward embeddings: %w", err)
-	}
-	stats.Carried = carried
-	if err := store.MarkStagingReady(ctx, files.Version); err != nil {
-		return Stats{}, fmt.Errorf("wiki: mark staging ready: %w", err)
+		return Stats{}, fmt.Errorf("wiki: dump yielded no pages; refusing to ingest")
 	}
 	return stats, nil
+}
+
+// chunkPage turns one page into its lead chunks, or nil when the page is skipped
+// (not an article, or an empty lead). It is the shared chunking the staging and
+// live ingests both use, so they produce byte-identical chunks.
+func chunkPage(p Page, corpus string) []domain.WikiChunk {
+	if !keepPage(p) {
+		return nil
+	}
+	pieces := Chunk(p.Title, ExtractLead(p.Text))
+	if len(pieces) == 0 {
+		return nil
+	}
+	chunks := make([]domain.WikiChunk, len(pieces))
+	for i, content := range pieces {
+		chunks[i] = domain.WikiChunk{
+			PageID:     p.ID,
+			ChunkIndex: i,
+			Title:      p.Title,
+			URL:        pageURL(corpus, p.Title),
+			RevisionID: p.RevisionID,
+			Corpus:     corpus,
+			Content:    content,
+			Kind:       domain.WikiChunkKindLead,
+		}
+	}
+	return chunks
 }
 
 // storePages chunks one stream's worth of pages and inserts the new chunks into
@@ -132,33 +206,52 @@ func storePages(ctx context.Context, store Store, pages []Page, corpus string) (
 	)
 	for _, p := range pages {
 		stats.PagesSeen++
-		lead := ""
-		if keepPage(p) {
-			lead = ExtractLead(p.Text)
-		}
-		pieces := Chunk(p.Title, lead)
+		pieces := chunkPage(p, corpus)
 		if len(pieces) == 0 {
 			stats.PagesSkipped++
 			continue
 		}
 		stats.PagesStored++
-		for i, content := range pieces {
-			chunks = append(chunks, domain.WikiChunk{
-				PageID:     p.ID,
-				ChunkIndex: i,
-				Title:      p.Title,
-				URL:        pageURL(corpus, p.Title),
-				RevisionID: p.RevisionID,
-				Corpus:     corpus,
-				Content:    content,
-				Kind:       domain.WikiChunkKindLead,
-			})
-		}
+		chunks = append(chunks, pieces...)
 	}
 	stats.Chunks = len(chunks)
 	if len(chunks) > 0 {
 		if err := store.UpsertStagingChunks(ctx, chunks); err != nil {
 			return Stats{}, fmt.Errorf("wiki: stage chunks: %w", err)
+		}
+	}
+	return stats, nil
+}
+
+// storePagesLive chunks one stream's worth of pages and upserts them straight
+// into the live table, then trims each page's stale chunk tail. Unlike the
+// staging path it must trim, because the live table is updated in place: a page
+// whose lead shrank to fewer chunks would otherwise keep its old higher-index
+// chunks. A trim from the page's new chunk count removes exactly that tail.
+func storePagesLive(ctx context.Context, store LiveStore, pages []Page, corpus string) (Stats, error) {
+	var (
+		stats  Stats
+		chunks []domain.WikiChunk
+		trims  []domain.WikiTrim
+	)
+	for _, p := range pages {
+		stats.PagesSeen++
+		pieces := chunkPage(p, corpus)
+		if len(pieces) == 0 {
+			stats.PagesSkipped++
+			continue
+		}
+		stats.PagesStored++
+		chunks = append(chunks, pieces...)
+		trims = append(trims, domain.WikiTrim{PageID: p.ID, FromIndex: len(pieces)})
+	}
+	stats.Chunks = len(chunks)
+	if len(chunks) > 0 {
+		if err := store.UpsertChunks(ctx, chunks); err != nil {
+			return Stats{}, fmt.Errorf("wiki: upsert live chunks: %w", err)
+		}
+		if err := store.TrimPages(ctx, trims); err != nil {
+			return Stats{}, fmt.Errorf("wiki: trim live chunks: %w", err)
 		}
 	}
 	return stats, nil

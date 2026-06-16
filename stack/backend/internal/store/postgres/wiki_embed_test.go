@@ -8,6 +8,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/store/db"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
 
@@ -534,4 +535,177 @@ func scalarInt(t *testing.T, store *Store, query string) int {
 		t.Fatalf("query %q: %v", query, err)
 	}
 	return n
+}
+
+// liveEmbeddingNull reports whether live chunk (pageID, 0) has no embedding yet,
+// the state a bulk-into-live ingest leaves until the fleet fills it.
+func liveEmbeddingNull(t *testing.T, store *Store, pageID int64) bool {
+	t.Helper()
+	row, err := store.queries.GetWikiChunk(t.Context(), db.GetWikiChunkParams{PageID: pageID, ChunkIndex: 0})
+	if err != nil {
+		t.Fatalf("GetWikiChunk(%d,0): %v", pageID, err)
+	}
+	return row.EmbeddingIsNull
+}
+
+func TestSetLiveChunkEmbeddingsWritesBatchInPlace(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunks := []domain.WikiChunk{
+		wikiChunk(1, 0, "alpha"),
+		wikiChunk(2, 0, "bravo"),
+		wikiChunk(3, 0, "charlie"),
+	}
+	seedChunks(t, store, chunks) // all NULL embeddings
+
+	matched, err := store.SetLiveChunkEmbeddings(ctx, []domain.WikiChunk{
+		withEmbedding(wikiChunk(1, 0, "alpha"), unitVec(0)),
+		withEmbedding(wikiChunk(2, 0, "bravo"), unitVec(1)),
+	})
+	if err != nil {
+		t.Fatalf("SetLiveChunkEmbeddings: %v", err)
+	}
+	if matched != 2 {
+		t.Fatalf("matched = %d, want 2", matched)
+	}
+	if liveEmbeddingNull(t, store, 1) || liveEmbeddingNull(t, store, 2) {
+		t.Error("embedded chunks should no longer be null")
+	}
+	if !liveEmbeddingNull(t, store, 3) {
+		t.Error("un-embedded chunk 3 should remain null")
+	}
+	// The freshly embedded chunk is now searchable in place, no swap needed.
+	got, err := store.SearchWiki(ctx, unitVec(0), 1)
+	if err != nil {
+		t.Fatalf("SearchWiki: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "alpha" {
+		t.Errorf("search = %+v, want the in-place embedded chunk 'alpha'", got)
+	}
+}
+
+func TestSetLiveChunkEmbeddingsContentGuardSkipsChangedChunks(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	seedChunks(t, store, []domain.WikiChunk{wikiChunk(1, 0, "new text")})
+
+	// A job carrying the old text must not attach its vector to a row whose
+	// content has since changed.
+	matched, err := store.SetLiveChunkEmbeddings(ctx, []domain.WikiChunk{
+		withEmbedding(wikiChunk(1, 0, "old text"), unitVec(0)),
+	})
+	if err != nil {
+		t.Fatalf("SetLiveChunkEmbeddings: %v", err)
+	}
+	if matched != 0 {
+		t.Errorf("matched = %d, want 0 (content guard)", matched)
+	}
+	if !liveEmbeddingNull(t, store, 1) {
+		t.Error("chunk with changed content must stay null until its fresh vector lands")
+	}
+}
+
+func TestSetLiveChunkEmbeddingsRejectsWrongDimension(t *testing.T) {
+	store := setupStore(t)
+	if _, err := store.SetLiveChunkEmbeddings(t.Context(), []domain.WikiChunk{
+		{PageID: 1, ChunkIndex: 0, Content: "x", Embedding: []float32{1, 2, 3}},
+	}); err == nil {
+		t.Fatal("want dimension error, got nil")
+	}
+}
+
+func TestSetLiveChunkEmbeddingsEmptyIsNoop(t *testing.T) {
+	store := setupStore(t)
+	matched, err := store.SetLiveChunkEmbeddings(t.Context(), nil)
+	if err != nil || matched != 0 {
+		t.Fatalf("empty batch: matched=%d err=%v, want 0,nil", matched, err)
+	}
+}
+
+func TestSetStagingChunkEmbeddingsWritesBatch(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	stageChunks(t, store, testDumpVersion, []domain.WikiChunk{
+		wikiChunk(1, 0, "alpha"),
+		wikiChunk(2, 0, "bravo"),
+	})
+
+	matched, err := store.SetStagingChunkEmbeddings(ctx, []domain.WikiChunk{
+		withEmbedding(wikiChunk(1, 0, "alpha"), unitVec(0)),
+		withEmbedding(wikiChunk(2, 0, "bravo"), unitVec(1)),
+	})
+	if err != nil {
+		t.Fatalf("SetStagingChunkEmbeddings: %v", err)
+	}
+	if matched != 2 {
+		t.Fatalf("matched = %d, want 2", matched)
+	}
+	if remaining, err := store.CountUnembeddedStaging(ctx); err != nil || remaining != 0 {
+		t.Fatalf("CountUnembeddedStaging = %d, %v; want 0", remaining, err)
+	}
+}
+
+func TestSetStagingChunkEmbeddingsMissingTableIsObsolete(t *testing.T) {
+	store := setupStore(t)
+	// No staging table exists (corpus already swapped live): a late job must be
+	// reported obsolete (matched 0, no error), not an error to retry.
+	matched, err := store.SetStagingChunkEmbeddings(t.Context(), []domain.WikiChunk{
+		withEmbedding(wikiChunk(1, 0, "alpha"), unitVec(0)),
+	})
+	if err != nil {
+		t.Fatalf("SetStagingChunkEmbeddings: %v", err)
+	}
+	if matched != 0 {
+		t.Errorf("matched = %d, want 0 (missing staging table is obsolete)", matched)
+	}
+}
+
+func TestUnembeddedLiveReadsPendingWithMetadata(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+	// Page 1 embedded, pages 2 and 3 pending.
+	seedChunks(t, store, []domain.WikiChunk{
+		withEmbedding(wikiChunk(1, 0, "embedded"), unitVec(0)),
+		wikiChunk(2, 0, "pending-a"),
+		wikiChunk(3, 0, "pending-b"),
+	})
+
+	count, err := store.CountUnembeddedLive(ctx)
+	if err != nil || count != 2 {
+		t.Fatalf("CountUnembeddedLive = %d, %v; want 2", count, err)
+	}
+
+	rem, err := store.LiveRemaining(ctx)
+	if err != nil {
+		t.Fatalf("LiveRemaining: %v", err)
+	}
+	if rem.Chunks != 2 || rem.Pages != 2 || rem.Chars == 0 {
+		t.Fatalf("LiveRemaining = %+v, want 2 chunks/2 pages and some chars", rem)
+	}
+
+	// Keyset paging from the start returns only the un-embedded chunks, in order,
+	// carrying the kind the producer maps to a priority.
+	got, err := store.UnembeddedLive(ctx, domain.WikiCursor{}, 10)
+	if err != nil {
+		t.Fatalf("UnembeddedLive: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("UnembeddedLive returned %d chunks, want 2", len(got))
+	}
+	if got[0].PageID != 2 || got[1].PageID != 3 {
+		t.Errorf("UnembeddedLive order = [%d,%d], want [2,3]", got[0].PageID, got[1].PageID)
+	}
+	if got[0].Kind != domain.WikiChunkKindLead {
+		t.Errorf("UnembeddedLive kind = %q, want lead", got[0].Kind)
+	}
+
+	// The cursor pages past the first pending chunk.
+	page2, err := store.UnembeddedLive(ctx, domain.WikiCursor{PageID: 2, ChunkIndex: 0}, 10)
+	if err != nil {
+		t.Fatalf("UnembeddedLive page 2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].PageID != 3 {
+		t.Fatalf("UnembeddedLive after cursor = %+v, want only page 3", page2)
+	}
 }

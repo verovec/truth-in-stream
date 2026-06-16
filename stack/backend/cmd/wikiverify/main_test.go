@@ -34,7 +34,6 @@ func TestEvaluateFailsOnEachDefect(t *testing.T) {
 		mutate func(*domain.WikiCorpusHealth)
 	}{
 		{"empty corpus", func(h *domain.WikiCorpusHealth) { h.Chunks = 0 }},
-		{"unembedded chunks", func(h *domain.WikiCorpusHealth) { h.NullEmbeddings = 3 }},
 		{"zero-vector embeddings", func(h *domain.WikiCorpusHealth) { h.ZeroVectors = 1 }},
 		{"wrong embedding dimension", func(h *domain.WikiCorpusHealth) { h.EmbeddingType = "halfvec(512)" }},
 		{"missing metadata", func(h *domain.WikiCorpusHealth) { h.MissingMetadata = 2 }},
@@ -53,15 +52,34 @@ func TestEvaluateFailsOnEachDefect(t *testing.T) {
 	}
 }
 
+// TestEvaluatePartiallyEmbeddedPasses is the bulk-into-live property: a corpus
+// still filling in (some chunks not yet embedded) is consistent and usable, so
+// verification passes - coverage is reported, not gated.
+func TestEvaluatePartiallyEmbeddedPasses(t *testing.T) {
+	t.Parallel()
+	h := healthyCorpus()
+	h.NullEmbeddings = 400 // 600/1000 embedded, the fleet is mid-drain
+	if !passed(evaluate(h)) {
+		t.Fatal("a partially embedded but consistent corpus must pass; 100% is not a gate")
+	}
+}
+
 func TestReportReturnsErrorOnFailure(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.DiscardHandler)
 	if err := report(t.Context(), logger, healthyCorpus()); err != nil {
 		t.Errorf("healthy corpus report = %v, want nil", err)
 	}
+	// A partially embedded corpus is not a failure.
+	partial := healthyCorpus()
+	partial.NullEmbeddings = 5
+	if err := report(t.Context(), logger, partial); err != nil {
+		t.Errorf("partially embedded corpus report = %v, want nil (coverage is progress)", err)
+	}
+	// A real consistency defect still fails.
 	bad := healthyCorpus()
-	bad.NullEmbeddings = 5
+	bad.ZeroVectors = 1
 	if err := report(t.Context(), logger, bad); err == nil {
-		t.Error("a corpus with unembedded chunks must make report return an error (non-zero exit)")
+		t.Error("a corpus with a zero-vector embedding must make report return an error (non-zero exit)")
 	}
 }

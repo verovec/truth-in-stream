@@ -97,7 +97,7 @@ func (r *RetryClient) EmbedDocuments(ctx context.Context, texts []string) ([][]f
 		if attempt == r.cfg.MaxAttempts {
 			break
 		}
-		delay := r.backoff(attempt)
+		delay := r.delayFor(attempt, err)
 		r.logger.WarnContext(ctx, "embedding request failed, backing off before retry",
 			slog.Int("attempt", attempt),
 			slog.Int("max_attempts", r.cfg.MaxAttempts),
@@ -125,6 +125,32 @@ func retryReason(err error) string {
 	default:
 		return "unknown"
 	}
+}
+
+// delayFor chooses the wait before the next attempt. When the provider returned
+// a 429 carrying a Retry-After, that server-requested back-off is honored
+// (capped at MaxDelay so a hostile or stuck header cannot stall the run past its
+// ceiling), making the pacing adaptive to the provider rather than a fixed
+// guess. Absent a usable Retry-After, it falls back to the jittered exponential
+// backoff.
+func (r *RetryClient) delayFor(attempt int, err error) time.Duration {
+	if ra := retryAfter(err); ra > 0 {
+		if ra > r.cfg.MaxDelay {
+			return r.cfg.MaxDelay
+		}
+		return ra
+	}
+	return r.backoff(attempt)
+}
+
+// retryAfter extracts the provider's requested back-off from a rate-limit error,
+// or zero when err is not a 429 or carries no Retry-After.
+func retryAfter(err error) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
+		return apiErr.RetryAfter
+	}
+	return 0
 }
 
 // backoff returns the jittered delay before the attempt+1 try. The base delay

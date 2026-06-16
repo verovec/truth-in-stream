@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -73,14 +75,41 @@ func New(cfg Config) *Client {
 }
 
 // APIError is a non-2xx response from the Voyage API. Callers can match it with
-// errors.As to distinguish provider failures from store failures.
+// errors.As to distinguish provider failures from store failures. RetryAfter
+// carries the server's requested back-off when a 429 response sets the
+// Retry-After header, so the retry decorator can honor the provider's own
+// pacing instead of guessing; it is zero when the header is absent or
+// unparseable.
 type APIError struct {
 	StatusCode int
 	Body       string
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("voyage: api status %d: %s", e.StatusCode, e.Body)
+}
+
+// parseRetryAfter reads an HTTP Retry-After header in either of its standard
+// forms - a delay in whole seconds or an HTTP-date - returning the delay until
+// the client may retry. now is passed in so the date form is testable. An empty,
+// malformed, or past value yields zero, meaning "no server-provided back-off".
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 type embedRequest struct {
@@ -144,7 +173,11 @@ func (c *Client) embed(ctx context.Context, texts []string, it inputType) ([][]f
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 
 	var decoded embedResponse

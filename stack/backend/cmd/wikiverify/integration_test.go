@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,21 +122,36 @@ func TestVerifierPassesHealthyAndFailsCorruptedCorpus(t *testing.T) {
 		t.Fatalf("verifier failed a healthy reingested corpus: %v", err)
 	}
 
-	// Corrupt one chunk the way an interrupted embed would (a null vector); the
-	// verifier must now exit non-zero.
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("verify pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
+
+	// An un-embedded chunk is no longer a failure: a bulk-into-live corpus fills in
+	// over time, so coverage is reported, not gated. The verifier still passes.
 	if _, err := pool.Exec(ctx, "UPDATE wiki_chunks SET embedding = NULL WHERE page_id = 2"); err != nil {
-		t.Fatalf("corrupt embedding: %v", err)
+		t.Fatalf("null one embedding: %v", err)
+	}
+	partial, err := store.WikiCorpusHealth(ctx)
+	if err != nil {
+		t.Fatalf("WikiCorpusHealth (partial): %v", err)
+	}
+	if err := report(ctx, logger, partial); err != nil {
+		t.Fatalf("verifier failed a partially embedded corpus; coverage is progress, not a gate: %v", err)
+	}
+
+	// A real consistency defect among the embedded rows (a zero-norm vector) must
+	// still exit non-zero.
+	zero := "[" + strings.TrimSuffix(strings.Repeat("0,", 1024), ",") + "]"
+	if _, err := pool.Exec(ctx, "UPDATE wiki_chunks SET embedding = $1::halfvec WHERE page_id = 1", zero); err != nil {
+		t.Fatalf("write zero vector: %v", err)
 	}
 	corrupt, err := store.WikiCorpusHealth(ctx)
 	if err != nil {
 		t.Fatalf("WikiCorpusHealth (corrupt): %v", err)
 	}
 	if err := report(ctx, logger, corrupt); err == nil {
-		t.Fatal("verifier passed a corpus with an unembedded chunk; it must exit non-zero")
+		t.Fatal("verifier passed a corpus with a zero-vector embedding; it must exit non-zero")
 	}
 }

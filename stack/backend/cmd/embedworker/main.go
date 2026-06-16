@@ -68,14 +68,20 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	// Prefetch tracks the worker's concurrency so the broker keeps each replica's
-	// slots filled without handing it a backlog it cannot work in parallel.
+	// Prefetch sizes the broker's in-flight window to a full batch per concurrent
+	// slot, so each replica can fill every batch it embeds in parallel without
+	// handing it a backlog it cannot work. The product is bounded so an
+	// extreme batch size cannot overflow an int32 prefetch.
+	prefetch := workerCfg.Concurrency * workerCfg.BatchSize
+	if prefetch < 1 {
+		prefetch = 1
+	}
 	client, err := queue.New(queue.Config{
 		URL:         queueCfg.URL,
 		QueueName:   queueCfg.VersionedName(),
 		Version:     queueCfg.Version,
 		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    workerCfg.Concurrency,
+		Prefetch:    prefetch,
 	})
 	if err != nil {
 		return err
@@ -88,12 +94,20 @@ func run(logger *slog.Logger) error {
 		qStream{client: client},
 		qEnqueuer{client: client},
 		logger,
-		embedjob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
+		embedjob.Config{
+			Concurrency:   workerCfg.Concurrency,
+			BatchSize:     workerCfg.BatchSize,
+			BatchWait:     workerCfg.BatchWait,
+			MaxAttempts:   workerCfg.MaxAttempts,
+			KnownVersions: queueCfg.KnownVersions,
+		},
 	)
 
 	logger.InfoContext(ctx, "embedding worker started",
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
+		slog.Int("batch_size", workerCfg.BatchSize),
+		slog.Duration("batch_wait", workerCfg.BatchWait),
 		slog.Int("max_attempts", workerCfg.MaxAttempts))
 	if err := worker.Run(ctx); err != nil {
 		return err

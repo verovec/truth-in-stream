@@ -80,13 +80,20 @@ func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
 	if err != nil {
 		return Estimate{}, fmt.Errorf("wiki: staging remaining: %w", err)
 	}
+	return EstimateFromRemaining(rem), nil
+}
+
+// EstimateFromRemaining projects the embedding cost of a pending chunk set
+// without calling the API. The bulk-into-live dry-run uses it directly over the
+// live remaining count, since that path has no staging table to estimate from.
+func EstimateFromRemaining(rem domain.WikiRemaining) Estimate {
 	tokens := rem.Chars / charsPerToken
 	return Estimate{
 		Pages:   rem.Pages,
 		Chunks:  rem.Chunks,
 		Tokens:  tokens,
 		CostUSD: float64(tokens) / 1e6 * pricePerMTokenUSD,
-	}, nil
+	}
 }
 
 // embedChunks embeds a super-batch by splitting it into BatchSize requests run

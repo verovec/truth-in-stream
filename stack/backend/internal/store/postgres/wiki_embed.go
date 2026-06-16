@@ -280,6 +280,82 @@ func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, li
 	return out, nil
 }
 
+// CountUnembeddedLive counts the live chunks still lacking an embedding. The
+// bulk-into-live producer reports it as the pending total before publishing; the
+// corpus is already queryable, so this is progress, not a usability gate.
+func (s *Store) CountUnembeddedLive(ctx context.Context) (int64, error) {
+	var n int64
+	if err := s.pool.QueryRow(
+		ctx, "SELECT count(*)::bigint FROM wiki_chunks WHERE embedding IS NULL",
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres: count un-embedded live: %w", err)
+	}
+	return n, nil
+}
+
+// LiveRemaining counts the live chunks still to embed and their content
+// characters, feeding the bulk-into-live dry-run cost estimate. It mirrors
+// StagingRemaining for the live corpus.
+func (s *Store) LiveRemaining(ctx context.Context) (domain.WikiRemaining, error) {
+	var r domain.WikiRemaining
+	if err := s.pool.QueryRow(
+		ctx, `
+		SELECT count(*)::bigint, count(DISTINCT page_id)::bigint,
+		       COALESCE(sum(length(content)), 0)::bigint
+		FROM wiki_chunks WHERE embedding IS NULL`,
+	).Scan(&r.Chunks, &r.Pages, &r.Chars); err != nil {
+		return domain.WikiRemaining{}, fmt.Errorf("postgres: live remaining: %w", err)
+	}
+	return r, nil
+}
+
+// UnembeddedLive returns up to limit live chunks still lacking an embedding,
+// ordered after cur in keyset order and carrying the metadata (section, kind,
+// importance) the bulk-into-live producer maps to a job priority. It reads
+// importance straight off the live row - the clustering job writes it after a
+// corpus is embedded - so a re-ingest prioritizes by the last run's clustering
+// and a first build falls back to the producer's static heuristic. The
+// embedding IS NULL filter is the resume cursor: a re-run pages from the start
+// and the fleet has already filled the embedded prefix, so only the still-pending
+// chunks come back. It is distinct from UnembeddedChunks, which the delta sync
+// uses without the publish metadata.
+func (s *Store) UnembeddedLive(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+	if limit < 1 || limit > math.MaxInt32 {
+		return nil, fmt.Errorf("postgres: unembedded live: limit %d out of range", limit)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, importance
+		FROM wiki_chunks
+		WHERE embedding IS NULL
+		  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
+		ORDER BY page_id, chunk_index
+		LIMIT $3`, cur.PageID, cur.ChunkIndex, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: unembedded live: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.WikiChunk{}
+	for rows.Next() {
+		var (
+			c          domain.WikiChunk
+			idx        int32
+			kind       string
+			importance *float64
+		)
+		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind, &importance); err != nil {
+			return nil, fmt.Errorf("postgres: scan live chunk: %w", err)
+		}
+		c.ChunkIndex = int(idx)
+		c.Kind = domain.WikiChunkKind(kind)
+		c.Importance = importance
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: read live chunks: %w", err)
+	}
+	return out, nil
+}
+
 // UnembeddedChunks returns up to limit live chunks ordered after cur. The delta
 // sync embeds changed chunks in the live table, reading the ones it just
 // upserted back through this keyset scan.
@@ -344,6 +420,73 @@ func (s *Store) SetStagingChunkEmbedding(ctx context.Context, pageID int64, chun
 		return false, fmt.Errorf("postgres: set staging embedding page %d chunk %d: %w", pageID, chunkIndex, err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// SetLiveChunkEmbeddings writes a batch of embeddings straight into the live
+// wiki_chunks table in one statement, so each NULL->vector write makes its chunk
+// searchable immediately and the corpus grows monotonically while the fleet
+// embeds. It is the bulk-into-live worker's write path. matched is how many rows
+// the batch updated; the rest reference a chunk that left the corpus or whose
+// content changed under a re-ingest (the content guard refuses to attach a vector
+// to text it was not computed from), which the worker treats as obsolete and
+// drops. The write is idempotent: a redelivered batch rewrites the same vectors.
+func (s *Store) SetLiveChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (int, error) {
+	return s.setChunkEmbeddingsInto(ctx, "wiki_chunks", chunks)
+}
+
+// SetStagingChunkEmbeddings writes a batch of embeddings into the staging table
+// in one statement, the atomic-rebuild worker's write path. matched is zero with
+// no error when the staging table is gone because the corpus was already swapped
+// live, so the worker drops a late job instead of retrying it forever.
+func (s *Store) SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (int, error) {
+	return s.setChunkEmbeddingsInto(ctx, wikiStagingTable, chunks)
+}
+
+// setChunkEmbeddingsInto writes the batch's embeddings into table in a single
+// text-form UPDATE ... FROM unnest, the only halfvec-safe bulk write: the
+// vectors travel as a text[] of pgvector literals and are cast to halfvec
+// server-side, since pgx's binary halfvec path corrupts the column. The join
+// matches on content as well as identity so a chunk whose text changed since the
+// job was published is not given a vector computed from the old text - it simply
+// does not match and is left for the fresh job. table is a trusted constant,
+// never user input. A missing table (staging dropped by a completed swap) yields
+// matched zero with no error.
+func (s *Store) setChunkEmbeddingsInto(ctx context.Context, table string, chunks []domain.WikiChunk) (int, error) {
+	if len(chunks) == 0 {
+		return 0, nil
+	}
+	pageIDs := make([]int64, len(chunks))
+	indexes := make([]int32, len(chunks))
+	contents := make([]string, len(chunks))
+	vectors := make([]string, len(chunks))
+	for i, c := range chunks {
+		if len(c.Embedding) != domain.EmbeddingDim {
+			return 0, fmt.Errorf("postgres: set embedding page %d chunk %d: embedding has %d dims, want %d", c.PageID, c.ChunkIndex, len(c.Embedding), domain.EmbeddingDim)
+		}
+		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
+			return 0, fmt.Errorf("postgres: set embedding page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+		}
+		pageIDs[i] = c.PageID
+		indexes[i] = int32(c.ChunkIndex)
+		contents[i] = c.Content
+		vectors[i] = formatHalfVec(c.Embedding)
+	}
+	tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s AS w
+		SET embedding = v.embedding::halfvec, synced_at = now()
+		FROM unnest($1::bigint[], $2::integer[], $3::text[], $4::text[]) AS v(page_id, chunk_index, content, embedding)
+		WHERE w.page_id = v.page_id
+		  AND w.chunk_index = v.chunk_index
+		  AND w.content = v.content`, table),
+		pageIDs, indexes, contents, vectors)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == undefinedTableCode {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("postgres: set chunk embeddings into %s: %w", table, err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // formatHalfVec renders an embedding as pgvector's text form, "[1,2,3]", for a

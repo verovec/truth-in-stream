@@ -1064,6 +1064,8 @@ func isQueueVersion(v string) bool {
 // transient Voyage 429 or timeout six times within each of those attempts.
 const (
 	defaultEmbedWorkerConcurrency       = 4
+	defaultEmbedWorkerBatchSize         = 128
+	defaultEmbedWorkerBatchWait         = 200 * time.Millisecond
 	defaultEmbedWorkerMaxAttempts       = 5
 	defaultEmbedWorkerHTTPTimeout       = 30 * time.Second
 	defaultEmbedWorkerRequestsPerMinute = 0
@@ -1071,13 +1073,18 @@ const (
 )
 
 // EmbedWorker holds the embedding-worker configuration. Concurrency bounds the
-// jobs one replica embeds in parallel; MaxAttempts is the per-job delivery budget
-// before a persistent failure is dropped with a log; HTTPTimeout bounds each
-// Voyage request; RequestsPerMinute optionally paces outbound requests onto a
-// tier's budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry
-// count for a transient Voyage 429 or network timeout.
+// batches one replica embeds in parallel; BatchSize is the most chunks embedded
+// in one Voyage call (capped at Voyage's per-request input limit) and BatchWait
+// bounds how long a partial batch waits for more before it is sent anyway, so a
+// quiet queue still drains; MaxAttempts is the per-job delivery budget before a
+// persistent failure is dropped with a log; HTTPTimeout bounds each Voyage
+// request; RequestsPerMinute optionally paces outbound requests onto a tier's
+// budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry count
+// for a transient Voyage 429 or network timeout.
 type EmbedWorker struct {
 	Concurrency       int
+	BatchSize         int
+	BatchWait         time.Duration
 	MaxAttempts       int
 	HTTPTimeout       time.Duration
 	RequestsPerMinute int
@@ -1090,6 +1097,8 @@ type EmbedWorker struct {
 func LoadEmbedWorker() (EmbedWorker, error) {
 	w := EmbedWorker{
 		Concurrency:       defaultEmbedWorkerConcurrency,
+		BatchSize:         defaultEmbedWorkerBatchSize,
+		BatchWait:         defaultEmbedWorkerBatchWait,
 		MaxAttempts:       defaultEmbedWorkerMaxAttempts,
 		HTTPTimeout:       defaultEmbedWorkerHTTPTimeout,
 		RequestsPerMinute: defaultEmbedWorkerRequestsPerMinute,
@@ -1097,6 +1106,14 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 	}
 	var err error
 	if w.Concurrency, err = intEnv("EMBED_WORKER_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
+		return EmbedWorker{}, err
+	}
+	// Capped at Voyage's per-request input limit so a batch never exceeds what the
+	// provider accepts in one call.
+	if w.BatchSize, err = intEnv("EMBED_WORKER_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
+		return EmbedWorker{}, err
+	}
+	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
 		return EmbedWorker{}, err
 	}
 	if w.MaxAttempts, err = intEnv("EMBED_WORKER_MAX_ATTEMPTS", w.MaxAttempts, 1, math.MaxInt32); err != nil {
