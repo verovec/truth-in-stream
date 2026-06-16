@@ -422,7 +422,7 @@ plain `make up` never starts them.
 make up                              # postgres + migrate + offline seed (no fleet)
 make fleet-up EMBEDWORKER_REPLICAS=4 # broker + N competing workers (more = faster drain, same $)
 
-docker compose --profile wiki run --rm wiki-populate \
+docker compose --profile tools run --rm wiki-populate \
   go run ./cmd/wikisync -mode=bulk -dry-run    # free cost estimate first
 
 make wiki-populate                   # paid: ingest into live + publish; the fleet embeds in place
@@ -441,8 +441,9 @@ CRAWL_CATEGORIES="Category:Climate change,Category:Vaccines"
 CRAWL_MAX_PAGES=2000
 CRAWL_CHECKWORTHY=true                # gate on: embed only fact-checkable content
 
-# Option A - auto-prime: bringing up the paid profile crawls + fills the broker, workers drain it
-docker compose --profile wiki up -d
+# Option A - auto-prime: bringing up the paid profile starts the broker + worker fleet
+# and runs a one-shot crawl (wiki-prime) that fills the broker; the fleet drains it.
+make prime                                       # == docker compose --profile wiki up -d
 
 # Option B - explicit producer run (different categories / re-prime):
 make crawl-workers CRAWLWORKER_REPLICAS=6        # start N crawl consumers
@@ -452,7 +453,14 @@ make wiki-verify                                 # combined corpus complete & co
 make fleet-down
 ```
 
-A plain `make up` starts nothing paid - no broker, no workers, no auto-prime.
+A plain `make up` starts nothing paid - no worker fleet, no auto-prime (the broker
+container is profileless and idle; it makes no API calls). The one-shot ops tools
+(`wiki-populate`, `wiki-reset`, `wiki-cluster`, `wiki-verify`, `wikicrawl`) live in the
+`tools` profile and only run when invoked (`make <target>` or
+`docker compose --profile tools run --rm <tool>`); they never auto-start on
+`docker compose --profile wiki up`. That is what makes the bare `--profile wiki up`
+auto-prime safe: it brings up only the broker, the worker fleet, and the one-shot
+`wiki-prime` crawl.
 
 ### Ingesting more dump content
 
@@ -460,7 +468,7 @@ The volume lever is `WIKI_CORPUS`; point it at a bigger dump and force a rebuild
 
 ```bash
 # in .env: WIKI_CORPUS=enwiki   (full English; was simplewiki ~250k)
-docker compose --profile wiki run --rm wiki-populate \
+docker compose --profile tools run --rm wiki-populate \
   go run ./cmd/wikisync -mode=bulk -dry-run      # check the larger bill first
 make reingest                                    # long, paid, unattended; green verify = ready
 ```
@@ -487,6 +495,7 @@ make wiki-update     # delta sync: only articles changed since the checkpoint (i
 | `make reingest` | reset, populate, cluster, verify. |
 | `make crawl` *(target - VER-74)* | Run the `wikicrawl` producer once against `CRAWL_CATEGORIES`. |
 | `make crawl-workers [CRAWLWORKER_REPLICAS=N]` *(target - VER-74)* | Start N `crawlworker` consumers. |
+| `make prime` *(target - VER-74)* | Bring up broker + worker fleet + a one-shot `wiki-prime` crawl that fills the broker from `CRAWL_CATEGORIES` (`== docker compose --profile wiki up -d`). |
 
 ---
 
@@ -787,14 +796,30 @@ The embedding key/model reuse `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`; the broke
 
 ### How to run
 
-Behind the paid `wiki` Compose profile (a plain `make up` never starts it):
+Behind the paid `wiki` Compose profile (a plain `make up` starts no worker fleet and
+no auto-prime; the profileless broker idles, making no API calls):
 
 ```bash
+# Auto-prime: bring up the broker + worker fleet + a one-shot crawl that fills the
+# broker from CRAWL_CATEGORIES (set it and the gate key in .env first). The fleet
+# drains it as it fills.
+make prime                                            # == docker compose --profile wiki up -d
+
+# Or run the producer explicitly (re-prime / different categories):
 make crawl-workers CRAWLWORKER_REPLICAS=4              # start N crawl consumers
 make crawl CRAWL_CATEGORIES="Category:Climate change" CRAWL_MAX_PAGES=2000
-                                                       # crawl + publish, then exit
+                                                       # crawl + gate + publish, then exit
 make wiki-verify                                       # corpus (dump + crawl) complete & consistent
 ```
+
+`wiki-prime` (the auto-prime service) and the worker fleet (`embedworker`,
+`crawlworker`) live in the `wiki` profile, so `docker compose --profile wiki up -d`
+brings up exactly broker + fleet + a one-shot prime crawl. The one-shot ops tools
+(`wikicrawl` on-demand, `wiki-populate`, `wiki-reset`, `wiki-cluster`, `wiki-verify`)
+live in the separate `tools` profile and only run when invoked, never on `up` -
+that is what keeps the bare `--profile wiki up` auto-prime safe. `wiki-prime` requires
+`CRAWL_CATEGORIES` (it fails fast without it) and, with the gate on by default, a
+`CHECKWORTHY_API_KEY` (or `CRAWL_CHECKWORTHY=false`).
 
 ### Known limitations (v1)
 

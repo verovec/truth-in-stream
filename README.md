@@ -94,7 +94,7 @@ built and embedded by an opt-in worker fleet behind the `wiki` Compose profile (
 
 ```bash
 make fleet-up                                          # broker + embedding workers (long-running)
-docker compose --profile wiki run --rm wiki-populate \
+docker compose --profile tools run --rm wiki-populate \
   go run ./cmd/wikisync -mode=bulk -dry-run            # free cost estimate first
 make wiki-populate                                     # ingest + embed + swap live (paid, resumable)
 make wiki-verify                                       # green = corpus complete and consistent
