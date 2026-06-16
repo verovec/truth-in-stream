@@ -269,6 +269,76 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # crawlworker drains self-contained category-crawl chunk jobs into live
+  # wiki_chunks, additive to whatever the dump pipeline wrote. It mirrors
+  # embedworker but writes whole chunks (content + vector). Scale it like the
+  # embed fleet:
+  #   docker compose --profile wiki up -d --scale crawlworker=4 rabbitmq crawlworker
+  crawlworker:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/crawlworker"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Required for a real embed run; the worker fails fast if unset.
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      # Must match the ingest/query model everywhere or similarity is meaningless;
+      # empty falls back to the binary default (voyage-4-large, 1024 dims).
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # Per-replica tuning. Concurrency bounds the parallel embeds one replica
+      # runs (the fleet scales by replica count); MAX_ATTEMPTS is the per-job
+      # delivery budget before a persistent failure is dropped with a log; RPM
+      # caps outbound Voyage requests per minute (0 = unpaced) for a constrained
+      # tier. A shell or .env value overrides each default.
+      CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-4}"
+      CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-5}"
+      CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # wikicrawl walks the configured categories over the MediaWiki Action API and
+  # fills the crawl queue with self-contained chunk jobs, then exits. It needs no
+  # database. Run on demand (CRAWL_CATEGORIES is required):
+  #   docker compose --profile wiki run --rm wikicrawl
+  wikicrawl:
+    profiles: ["wiki"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/wikicrawl"]
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Required: comma-separated category titles, e.g. "Category:Climate change".
+      CRAWL_CATEGORIES: "${CRAWL_CATEGORIES:-}"
+      # Wiki project queried and used to build article URLs; empty falls back to
+      # WIKI_CORPUS. CRAWL_CORPUS is the provenance tag (empty = <project>-crawl).
+      CRAWL_PROJECT: "${CRAWL_PROJECT:-}"
+      WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+      CRAWL_CORPUS: "${CRAWL_CORPUS:-}"
+      # Crawl shape (empty uses the binary defaults: depth 1, 5000 pages, body on).
+      CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
+      CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
+      CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in

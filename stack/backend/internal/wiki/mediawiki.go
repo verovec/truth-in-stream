@@ -130,10 +130,22 @@ func (c *APIClient) RecentChanges(ctx context.Context, since time.Time) ([]Chang
 // title, in batches of at most the extracts limit. A title with no live page
 // comes back flagged Missing.
 func (c *APIClient) Extracts(ctx context.Context, titles []string) ([]Extract, error) {
+	return c.extractsAll(ctx, titles, true)
+}
+
+// FullExtracts fetches the full plain-text article and current revision id of
+// each title (no exintro), in batches of at most the extracts limit. It is the
+// body-text source for crawl ingestion; the lead is stripped from the front
+// downstream so a chunk is not embedded twice.
+func (c *APIClient) FullExtracts(ctx context.Context, titles []string) ([]Extract, error) {
+	return c.extractsAll(ctx, titles, false)
+}
+
+func (c *APIClient) extractsAll(ctx context.Context, titles []string, intro bool) ([]Extract, error) {
 	out := make([]Extract, 0, len(titles))
 	for start := 0; start < len(titles); start += extractsBatchMax {
 		end := min(start+extractsBatchMax, len(titles))
-		batch, err := c.extractsBatch(ctx, titles[start:end])
+		batch, err := c.extractsBatch(ctx, titles[start:end], intro)
 		if err != nil {
 			return nil, err
 		}
@@ -142,11 +154,13 @@ func (c *APIClient) Extracts(ctx context.Context, titles []string) ([]Extract, e
 	return out, nil
 }
 
-func (c *APIClient) extractsBatch(ctx context.Context, titles []string) ([]Extract, error) {
+func (c *APIClient) extractsBatch(ctx context.Context, titles []string, intro bool) ([]Extract, error) {
 	params := url.Values{}
 	params.Set("action", "query")
 	params.Set("prop", "extracts|revisions")
-	params.Set("exintro", "1")
+	if intro {
+		params.Set("exintro", "1")
+	}
 	params.Set("explaintext", "1")
 	params.Set("exlimit", strconv.Itoa(extractsBatchMax))
 	params.Set("rvprop", "ids")

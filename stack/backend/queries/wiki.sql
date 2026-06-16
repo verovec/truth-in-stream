@@ -18,6 +18,24 @@ ON CONFLICT (page_id, chunk_index) DO UPDATE
         END,
         synced_at = now();
 
+-- name: UpsertEmbeddedChunk :exec
+-- Crawl ingestion writes content and embedding together: the worker embeds the
+-- self-contained message, then upserts the whole row in one statement so a chunk
+-- is never visible to search without its matching vector. The embedding is always
+-- the freshly computed one, so a re-crawl rewrites the same vector idempotently.
+INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, embedding, synced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (page_id, chunk_index) DO UPDATE
+    SET title = EXCLUDED.title,
+        url = EXCLUDED.url,
+        revision_id = EXCLUDED.revision_id,
+        corpus = EXCLUDED.corpus,
+        content = EXCLUDED.content,
+        section = EXCLUDED.section,
+        kind = EXCLUDED.kind,
+        embedding = EXCLUDED.embedding,
+        synced_at = now();
+
 -- name: DeleteWikiPagesByTitle :exec
 -- Delta sync removes a hard-deleted page by title: RecentChanges reports a
 -- deletion with page id 0, so the stored page can only be found by its title.

@@ -17,6 +17,11 @@ GO         ?= go
 # Voyage tier. Read by Make, not Compose, so a value in `.env` alone is ignored.
 EMBEDWORKER_REPLICAS ?= 2
 
+# Worker count for the category-crawl consumer fleet (`make crawl-workers`).
+# Same shape as EMBEDWORKER_REPLICAS: read by Make, raise per run, e.g.
+# `make crawl-workers CRAWLWORKER_REPLICAS=4`.
+CRAWLWORKER_REPLICAS ?= 2
+
 # Wikipedia corpus keys and embed tuning come from the root .env (gitignored)
 # and any shell override, both read by Compose itself: every WIKI_* knob and
 # EMBEDDING_API_KEY is interpolated in docker-compose.yml as ${VAR:-default},
@@ -25,7 +30,7 @@ EMBEDWORKER_REPLICAS ?= 2
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest migrate logs ps
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -123,6 +128,17 @@ reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC
 	$(COMPOSE) --profile wiki run --rm wiki-cluster
 	$(COMPOSE) --profile wiki run --rm wiki-verify
 	@echo "reingest complete: corpus rebuilt (atomic), clustered, and verified"
+
+crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
+	$(COMPOSE) --profile wiki up -d --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
+	@echo "crawl fleet up: rabbitmq + $(CRAWLWORKER_REPLICAS) crawlworker(s) running; run 'make crawl CRAWL_CATEGORIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
+
+# Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
+# the producer does not reconcile (shrink) it; otherwise bring up the broker and
+# a single worker first so a bare `make crawl` still drains.
+crawl: ## Run the category-crawl producer once: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker
+	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq crawlworker
+	$(COMPOSE) --profile wiki run --rm --no-deps wikicrawl
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up

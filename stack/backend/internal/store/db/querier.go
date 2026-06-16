@@ -81,6 +81,11 @@ type Querier interface {
 	// scan to the unembedded chunks a delta run produced.
 	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
+	// Crawl ingestion writes content and embedding together: the worker embeds the
+	// self-contained message, then upserts the whole row in one statement so a chunk
+	// is never visible to search without its matching vector. The embedding is always
+	// the freshly computed one, so a re-crawl rewrites the same vector idempotently.
+	UpsertEmbeddedChunk(ctx context.Context, arg UpsertEmbeddedChunkParams) error
 	// size_bytes keeps a known size against a zero reseed: an offline reseed with no
 	// cached media seeds the record with size 0, which must not clobber the real
 	// size recorded when the media was last uploaded (the object still exists).

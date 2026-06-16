@@ -603,14 +603,113 @@ similarity, or a match beyond the cluster cap). The per-match contributions sum 
 supporting/contradicting breakdown beneath it. See the data dictionary for the field-level
 reference.
 
-## 12. Cross-references
+---
+
+## 12. Category-crawl ingestion (additive)
+
+A second, **additive** path fills `wiki_chunks` from a focused category slice over
+HTTP - no multi-gigabyte dump download. It never touches the dump pipeline
+(`wikisync`/`embedworker`) or its staging table; it upserts straight into live
+`wiki_chunks` alongside whatever the dump pipeline already wrote.
+
+```mermaid
+flowchart LR
+    CAT["Wikipedia<br/>Action API"]
+    subgraph PROD["cmd/wikicrawl (producer, DB-free)"]
+      M["list=categorymembers<br/>BFS subcats to depth, page cap"]
+      X["prop=extracts<br/>lead (exintro) + full (explaintext)"]
+      C["Chunk() lead -> kind=lead<br/>body  -> kind=body"]
+      P["publish 1 self-contained<br/>CrawlJob per chunk"]
+    end
+    Q[["RabbitMQ<br/>crawl.chunks.v&lt;n&gt;<br/>durable, priority"]]
+    subgraph FLEET["cmd/crawlworker x N (competing consumers)"]
+      W1["worker 1"]
+      WN["worker N"]
+    end
+    V["Voyage voyage-4-large<br/>input_type=document"]
+    LIVE[("wiki_chunks (live)<br/>+ HNSW index")]
+
+    CAT --> M --> X --> C --> P --> Q
+    Q --> W1 & WN
+    W1 & WN --> V
+    W1 & WN -->|"UpsertEmbeddedChunk<br/>(content + vector, atomic)"| LIVE
+```
+
+| Piece | Location | Responsibility |
+|---|---|---|
+| Category crawler | `internal/wiki/crawl.go` | `CategoryMembers` BFS over the Action API: subcategories to `MaxDepth`, dedupe page ids, stop at `MaxPages`, follow continuation. |
+| Body extracts | `internal/wiki/mediawiki.go` | `FullExtracts` (`explaintext`, no `exintro`) for the article body; the lead source `Extracts` is unchanged. |
+| Producer logic | `internal/wiki/crawlproduce.go` | `RunCrawl`: crawl, fetch lead + body, chunk, publish one `CrawlJob` per chunk (lead chunks then body, contiguous `chunk_index`). Transport-free, DB-free. |
+| Job + consumer | `internal/crawljob/crawljob.go` | The self-contained `CrawlJob` message and the `Worker` that embeds each chunk then upserts it live; mirrors `internal/embedjob` semantics. |
+| Producer binary | `cmd/wikicrawl/` | Wire config + API client + broker; run `RunCrawl`; exit. No DB connection. |
+| Consumer binary | `cmd/crawlworker/` | Wire config + Voyage embedder + store + broker; run the worker until SIGTERM. |
+| Store write | `queries/wiki.sql` (`UpsertEmbeddedChunk`), `internal/store/postgres/wiki.go` | Insert-or-replace content **and** embedding in one statement (text-form `::halfvec`, never binary COPY), so a row is never searchable without its vector. |
+
+**Self-contained messages.** Every field a live `wiki_chunks` row needs travels in
+the `CrawlJob` body, so the worker reads nothing from the database before writing
+and the broker can hold a primed corpus indefinitely before any worker is started -
+the convenience the path exists for.
+
+**Provenance and PK.** Crawl rows carry `corpus = CRAWL_CORPUS` (default
+`<project>-crawl`), distinct from the dump corpus, so a dump-corpus delta never
+touches crawl rows and vice versa. The `(page_id, chunk_index)` primary key is
+**global**, so a page present in both collapses to one row (last writer wins on
+content + provenance) - intended dedup.
+
+**Error handling.** The worker mirrors `embedjob`: malformed / invalid / unknown
+queue-version messages are ack-dropped; a bad provider shape (not 1x1024) is
+dropped; a transient embed/upsert failure is re-enqueued with the attempt
+incremented and dropped after `CRAWL_WORKER_MAX_ATTEMPTS`; a shutdown mid-work
+nacks for requeue. Vector consistency is identical to the dump pipeline (one
+model, 1024 dims, `halfvec`, `input_type=document`), so `make wiki-verify` asserts
+the combined corpus.
+
+### Configuration
+
+| Env var | Default | Controls |
+|---|---|---|
+| `CRAWL_CATEGORIES` | (required for producer) | Comma-separated category titles, e.g. `Category:Climate change,Category:Physics`. |
+| `CRAWL_PROJECT` | `WIKI_CORPUS` value | Wiki project queried and used to build article URLs (e.g. `simplewiki`). |
+| `CRAWL_CORPUS` | `<project>-crawl` | Provenance tag stored in `wiki_chunks.corpus`. |
+| `CRAWL_MAX_DEPTH` | `1` | Subcategory recursion depth (0 = direct pages only). |
+| `CRAWL_MAX_PAGES` | `5000` | Hard cap on distinct pages collected. |
+| `CRAWL_INCLUDE_BODY` | `true` | When false, ingest lead only (`kind='lead'`). |
+| `RABBITMQ_CRAWL_QUEUE` | `crawl.chunks` | Base queue name; versioned via `RABBITMQ_QUEUE_VERSIONS`. |
+| `CRAWL_WORKER_CONCURRENCY` | `4` | In-flight embeds per worker replica; also the prefetch. |
+| `CRAWL_WORKER_MAX_ATTEMPTS` | `5` | Delivery budget before a job is dropped. |
+| `CRAWLWORKER_REPLICAS` | `2` | Competing worker replicas (`make crawl-workers`). |
+
+The embedding key/model reuse `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`; the broker URL reuses `RABBITMQ_URL`.
+
+### How to run
+
+Behind the paid `wiki` Compose profile (a plain `make up` never starts it):
+
+```bash
+make crawl-workers CRAWLWORKER_REPLICAS=4              # start N crawl consumers
+make crawl CRAWL_CATEGORIES="Category:Climate change" CRAWL_MAX_PAGES=2000
+                                                       # crawl + publish, then exit
+make wiki-verify                                       # corpus (dump + crawl) complete & consistent
+```
+
+### Known limitations (v1)
+
+Body chunks store `section=''` (extracts strip heading markup); the producer keeps
+no checkpoint, so a crash means re-run (safe via idempotent upserts); a re-crawl
+re-embeds unchanged articles. See the design for the rationale and follow-ups:
+`docs/superpowers/specs/2026-06-15-wikipedia-category-crawl-ingestion-design.md` SS11.
+
+---
+
+## 13. Cross-references
 
 - Data dictionary: `.claude/skills/data-map/SKILL.md`
 - Design specs: `docs/superpowers/specs/2026-06-10-wikipedia-ingestion-design.md`,
-  `docs/superpowers/specs/2026-06-11-wiki-ingest-staging-redesign-design.md`
+  `docs/superpowers/specs/2026-06-11-wiki-ingest-staging-redesign-design.md`,
+  `docs/superpowers/specs/2026-06-15-wikipedia-category-crawl-ingestion-design.md`
 - Schema: `stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`
 - Queries: `stack/backend/queries/wiki.sql`
 - Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
-- Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify}/`
+- Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
 - Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy.yml`
 - Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

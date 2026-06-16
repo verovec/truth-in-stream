@@ -433,3 +433,96 @@ func TestEnsureCorpusConcurrentClaims(t *testing.T) {
 		t.Errorf("%d of 2 concurrent foreign-corpus claims failed, want exactly 1", failures)
 	}
 }
+
+// fullEmbedding returns a constant full-dimension vector for upsert round-trip
+// tests; its exact values are irrelevant, only that it is the right shape.
+func fullEmbedding() []float32 {
+	v := make([]float32, domain.EmbeddingDim)
+	for i := range v {
+		v[i] = 0.01
+	}
+	return v
+}
+
+func TestUpsertEmbeddedChunkRoundTrip(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunk := domain.WikiChunk{
+		PageID: 7, ChunkIndex: 0, Title: "Atom", URL: "https://simple.wikipedia.org/wiki/Atom",
+		RevisionID: 11, Corpus: "simplewiki-crawl", Content: "Atom\n\nAn atom is matter.",
+		Section: "", Kind: domain.WikiChunkKindBody, Embedding: fullEmbedding(),
+	}
+	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
+		t.Fatalf("UpsertEmbeddedChunk: %v", err)
+	}
+
+	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 7, ChunkIndex: 0})
+	if err != nil {
+		t.Fatalf("GetWikiChunk: %v", err)
+	}
+	if got.Content != chunk.Content {
+		t.Errorf("content = %q, want %q", got.Content, chunk.Content)
+	}
+	if got.Kind != "body" {
+		t.Errorf("kind = %q, want body", got.Kind)
+	}
+	if got.Corpus != "simplewiki-crawl" {
+		t.Errorf("corpus = %q, want simplewiki-crawl", got.Corpus)
+	}
+	if got.RevisionID != 11 {
+		t.Errorf("revision = %d, want 11", got.RevisionID)
+	}
+	if got.EmbeddingIsNull {
+		t.Error("embedding is null, want a stored vector")
+	}
+}
+
+func TestUpsertEmbeddedChunkIsIdempotent(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunk := domain.WikiChunk{
+		PageID: 9, ChunkIndex: 0, Title: "Ion", URL: "u", RevisionID: 1,
+		Corpus: "simplewiki-crawl", Content: "Ion\n\ntext", Kind: domain.WikiChunkKindLead,
+		Embedding: fullEmbedding(),
+	}
+	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	// Re-apply with new content; the row is replaced in place, not duplicated.
+	chunk.Content = "Ion\n\nrevised"
+	chunk.RevisionID = 2
+	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 9, ChunkIndex: 0})
+	if err != nil {
+		t.Fatalf("GetWikiChunk: %v", err)
+	}
+	if got.Content != "Ion\n\nrevised" || got.RevisionID != 2 || got.EmbeddingIsNull {
+		t.Errorf("re-apply mismatch: content=%q rev=%d nullVec=%v", got.Content, got.RevisionID, got.EmbeddingIsNull)
+	}
+}
+
+func TestUpsertEmbeddedChunkRejectsWrongDim(t *testing.T) {
+	store := setupStore(t)
+	chunk := domain.WikiChunk{
+		PageID: 1, ChunkIndex: 0, Corpus: "c", Content: "x",
+		Kind: domain.WikiChunkKindLead, Embedding: make([]float32, 3),
+	}
+	if err := store.UpsertEmbeddedChunk(t.Context(), chunk); err == nil {
+		t.Fatal("UpsertEmbeddedChunk with 3 dims = nil error, want error")
+	}
+}
+
+func TestUpsertEmbeddedChunkRejectsInvalidKind(t *testing.T) {
+	store := setupStore(t)
+	chunk := domain.WikiChunk{
+		PageID: 1, ChunkIndex: 0, Corpus: "c", Content: "x",
+		Kind: domain.WikiChunkKind("sidebar"), Embedding: fullEmbedding(),
+	}
+	if err := store.UpsertEmbeddedChunk(t.Context(), chunk); err == nil {
+		t.Fatal("UpsertEmbeddedChunk with invalid kind = nil error, want error")
+	}
+}

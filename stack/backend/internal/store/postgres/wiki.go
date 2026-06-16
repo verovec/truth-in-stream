@@ -214,6 +214,40 @@ func (s *Store) SetChunkEmbeddings(ctx context.Context, chunks []domain.WikiChun
 	return nil
 }
 
+// UpsertEmbeddedChunk inserts or replaces one wiki chunk together with its
+// embedding in a single statement, so the row is never visible to search without
+// a matching vector. The crawl worker calls it after embedding a self-contained
+// message; the embedding is written as text-form ::halfvec by the generated
+// query (a parametrized INSERT, never binary COPY). The embedding must be
+// full-dimension and the kind valid.
+func (s *Store) UpsertEmbeddedChunk(ctx context.Context, c domain.WikiChunk) error {
+	if !c.Kind.Valid() {
+		return fmt.Errorf("postgres: upsert embedded chunk page %d: invalid kind %q", c.PageID, c.Kind)
+	}
+	if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
+		return fmt.Errorf("postgres: upsert embedded chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+	}
+	if len(c.Embedding) != domain.EmbeddingDim {
+		return fmt.Errorf("postgres: upsert embedded chunk page %d chunk %d: embedding has %d dims, want %d", c.PageID, c.ChunkIndex, len(c.Embedding), domain.EmbeddingDim)
+	}
+	hv := pgvector.NewHalfVector(c.Embedding)
+	if err := s.queries.UpsertEmbeddedChunk(ctx, db.UpsertEmbeddedChunkParams{
+		PageID:     c.PageID,
+		ChunkIndex: int32(c.ChunkIndex),
+		Title:      c.Title,
+		Url:        c.URL,
+		RevisionID: c.RevisionID,
+		Corpus:     c.Corpus,
+		Content:    c.Content,
+		Section:    c.Section,
+		Kind:       string(c.Kind),
+		Embedding:  &hv,
+	}); err != nil {
+		return fmt.Errorf("postgres: upsert embedded chunk page %d chunk %d: %w", c.PageID, c.ChunkIndex, err)
+	}
+	return nil
+}
+
 // SetSyncState upserts the per-corpus ingestion checkpoint. A zero
 // LastChangeTS stores NULL - no checkpoint to resume from yet.
 func (s *Store) SetSyncState(ctx context.Context, st domain.WikiSyncState) error {
