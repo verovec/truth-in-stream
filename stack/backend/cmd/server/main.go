@@ -15,6 +15,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
+	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
@@ -24,6 +25,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
+	"github.com/verovec/truth-in-stream/backend/internal/verify"
 	"github.com/verovec/truth-in-stream/backend/internal/ytdlp"
 )
 
@@ -67,6 +69,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	checkWorthinessCfg, err := config.LoadCheckWorthiness()
+	if err != nil {
+		return err
+	}
+	verifyPathCfg, err := config.LoadVerifyPath()
 	if err != nil {
 		return err
 	}
@@ -165,7 +171,16 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	prechecker, err := buildPrechecker(precheckCfg, checkWorthinessCfg, embedder, store, store, logger)
+	// The retrieve-then-verify path replaces the coverage gate with a check-worthy
+	// claim gate (coverage is discovered by retrieval, not pre-judged), so when it
+	// is active the prechecker is the coverage-free ClaimGate. When it is off the
+	// legacy two-stage gate (claim + coverage) is used, unchanged.
+	var prechecker service.SegmentPrechecker
+	if verifyPathCfg.Active() {
+		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, logger)
+	} else {
+		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, embedder, store, store, logger)
+	}
 	if err != nil {
 		return err
 	}
@@ -181,6 +196,10 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, segmentMatcher, logger)
+	if err != nil {
+		return err
+	}
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
 		Stream:           liveStream(transcription, logger),
 		Matcher:          segmentMatcher,
@@ -191,6 +210,7 @@ func run(logger *slog.Logger) error {
 		Stance:           stanceClassifier,
 		ConsistencyTopK:  consistencyCfg.TopK,
 		ConsistencyFloor: consistencyCfg.SimilarityFloor,
+		Verify:           verifyPath,
 	})
 	if err != nil {
 		return err
@@ -348,4 +368,93 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 	}
 	logger.Info("intra-speaker consistency enabled", slog.String("model", cfg.Model))
 	return client, nil
+}
+
+// buildClaimGate assembles the retrieve-then-verify path's coverage-free gate:
+// the same stage-one claim classifier the legacy gate uses (heuristic, or the
+// heuristic-plus-model cascade), with no coverage stage. Whether evidence exists
+// is discovered by the verify path's retrieval, not pre-judged here, so a novel
+// but checkable claim is no longer dropped as not_covered.
+func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, logger *slog.Logger) (service.SegmentPrechecker, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	classifier, err := buildClaimClassifier(cfg, cw, logger)
+	if err != nil {
+		return nil, err
+	}
+	return service.NewClaimGate(classifier), nil
+}
+
+// buildVerifyPath wires the retrieve-then-verify orchestration, or returns nil
+// (so the analyzer runs the legacy path) when the feature is not active. The
+// decomposer and verifier are Anthropic-backed adapters over the shared llm
+// transport; both share the configured model. The API key is never logged.
+func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, logger *slog.Logger) (*service.VerifyPath, error) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	decomposer, err := claimdecomp.New(claimdecomp.Config{APIKey: cfg.APIKey, Model: cfg.Model, MaxClaimsPerUnit: cfg.MaxClaimsPerUnit})
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := verify.New(verify.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	path, err := service.NewVerifyPath(service.VerifyPathConfig{
+		Decomposer:        decomposerAdapter{decomposer},
+		Matcher:           matcher,
+		Verifier:          verifierAdapter{verifier},
+		FastTau:           cfg.FastTau,
+		VerifyConcurrency: cfg.Concurrency,
+		VerifyQueueDepth:  cfg.QueueDepth,
+		FastDeadline:      cfg.FastDeadline,
+		VerifyDeadline:    cfg.VerifyDeadline,
+		CacheTTL:          cfg.CacheTTL,
+		Logger:            logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
+	return path, nil
+}
+
+// decomposerAdapter adapts the claimdecomp client to the service ClaimDecomposer
+// port: it maps the port's positional arguments onto the client's Input struct.
+type decomposerAdapter struct {
+	client *claimdecomp.Client
+}
+
+func (d decomposerAdapter) Decompose(ctx context.Context, text, speaker, recentContext string) []string {
+	return d.client.Decompose(ctx, claimdecomp.Input{Text: text, Speaker: speaker, Context: recentContext})
+}
+
+// verifierAdapter adapts the verify client to the service ClaimVerifier port: it
+// maps the service's evidence passages onto the verifier's, and the verifier's
+// grounded result (already citation-guarded) back onto the service verdict.
+type verifierAdapter struct {
+	client *verify.Client
+}
+
+func (v verifierAdapter) Verify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
+	in := make([]verify.Passage, len(passages))
+	for i, p := range passages {
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+	}
+	res, err := v.client.Verify(ctx, claim, in)
+	if err != nil {
+		return service.ClaimVerdict{}, err
+	}
+	citations := make([]service.EvidenceCitation, len(res.Citations))
+	for i, c := range res.Citations {
+		citations[i] = service.EvidenceCitation{EvidenceID: c.EvidenceID, QuotedSpan: c.QuotedSpan}
+	}
+	return service.ClaimVerdict{
+		Verdict:    res.Verdict,
+		Confidence: res.Confidence,
+		Citations:  citations,
+		Rationale:  res.Rationale,
+	}, nil
 }

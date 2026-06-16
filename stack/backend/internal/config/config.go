@@ -514,6 +514,105 @@ func LoadConsistency() (Consistency, error) {
 	return c, nil
 }
 
+// Retrieve-then-verify defaults. The path is off by default (the old
+// gate-and-match path stays the default until the golden eval clears the
+// baseline). Decomposition and verification both run on the cheapest fast Claude
+// model. MaxClaimsPerUnit caps a unit's fan-out at 4 atomic claims. FastTau 0.85
+// is the curated near-match similarity at or above which the fast path borrows a
+// verdict with no LLM call - a high bar, since a borrowed verdict bypasses
+// reasoning. The verify pool is 2 workers with a 4-deep queue, smaller than the
+// fast pool because each verify call is an LLM round-trip; FastDeadline 800ms
+// bounds decompose-plus-retrieve and VerifyDeadline 4s bounds one verify call,
+// matching the spec's tiers. CacheTTL 30s collapses a recurring talking point
+// repeated within the window. These are the env-layer defaults; the service
+// package validates the same bounds for direct construction.
+const (
+	defaultVerifyModel            = "claude-haiku-4-5-20251001"
+	defaultVerifyMaxClaimsPerUnit = 4
+	defaultVerifyFastTau          = 0.85
+	defaultVerifyConcurrency      = 2
+	defaultVerifyQueueDepth       = 4
+	defaultVerifyFastDeadline     = 800 * time.Millisecond
+	defaultVerifyDeadline         = 4 * time.Second
+	defaultVerifyCacheTTL         = 30 * time.Second
+)
+
+// VerifyPath holds the retrieve-then-verify configuration. The path is wired only
+// when Enabled and APIKey is set (Active): with no key it degrades to the legacy
+// gate-and-match path rather than failing to start. APIKey is a secret and comes
+// from the environment only - never logged. Model selects both the decomposer and
+// verifier model; MaxClaimsPerUnit caps fan-out; FastTau is the fast-path borrow
+// threshold; Concurrency/QueueDepth size the verify pool; FastDeadline and
+// VerifyDeadline bound the two tiers; CacheTTL is the repeated-claim cache window
+// (0 disables it).
+type VerifyPath struct {
+	Enabled          bool
+	APIKey           string
+	Model            string
+	MaxClaimsPerUnit int
+	FastTau          float64
+	Concurrency      int
+	QueueDepth       int
+	FastDeadline     time.Duration
+	VerifyDeadline   time.Duration
+	CacheTTL         time.Duration
+}
+
+// Active reports whether the retrieve-then-verify path should be wired: it is
+// enabled and has the API key its decomposer and verifier need. Wiring keys off
+// this so an enabled-but-keyless configuration degrades to the legacy path
+// rather than failing to start.
+func (v VerifyPath) Active() bool {
+	return v.Enabled && v.APIKey != ""
+}
+
+// LoadVerifyPath reads the retrieve-then-verify configuration from the
+// environment, applying defaults and failing fast on out-of-range bounds (a
+// non-positive pool or deadline, a fast tau outside cosine similarity's [-1, 1]
+// range, a negative queue depth or cache ttl). FACTCHECK_VERIFY_PATH gates the
+// whole feature (default off). The secret is read but never logged.
+func LoadVerifyPath() (VerifyPath, error) {
+	v := VerifyPath{
+		Model:            defaultVerifyModel,
+		MaxClaimsPerUnit: defaultVerifyMaxClaimsPerUnit,
+		FastTau:          defaultVerifyFastTau,
+		Concurrency:      defaultVerifyConcurrency,
+		QueueDepth:       defaultVerifyQueueDepth,
+		FastDeadline:     defaultVerifyFastDeadline,
+		VerifyDeadline:   defaultVerifyDeadline,
+		CacheTTL:         defaultVerifyCacheTTL,
+	}
+	var err error
+	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
+		return VerifyPath{}, err
+	}
+	v.APIKey = getenv("FACTCHECK_VERIFY_API_KEY", "")
+	v.Model = getenv("FACTCHECK_VERIFY_MODEL", v.Model)
+	if v.MaxClaimsPerUnit, err = intEnv("FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT", v.MaxClaimsPerUnit, 1, math.MaxInt32); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.FastTau, err = thresholdEnv("FACTCHECK_VERIFY_FAST_TAU", v.FastTau); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.Concurrency, err = intEnv("FACTCHECK_VERIFY_CONCURRENCY", v.Concurrency, 1, math.MaxInt32); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.QueueDepth, err = intEnv("FACTCHECK_VERIFY_QUEUE_DEPTH", v.QueueDepth, 0, math.MaxInt32); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.FastDeadline, err = positiveDurationEnv("FACTCHECK_VERIFY_FAST_DEADLINE", v.FastDeadline); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.VerifyDeadline, err = positiveDurationEnv("FACTCHECK_VERIFY_DEADLINE", v.VerifyDeadline); err != nil {
+		return VerifyPath{}, err
+	}
+	// 0 disables the repeated-claim cache; a positive value is the collapse window.
+	if v.CacheTTL, err = durationEnvAllowZero("FACTCHECK_VERIFY_CACHE_TTL", v.CacheTTL); err != nil {
+		return VerifyPath{}, err
+	}
+	return v, nil
+}
+
 // Check-worthiness defaults. The model is the cheapest fast Claude model,
 // suitable for a binary check-worthy/not judgment over one short statement. This
 // is the env-layer default; the checkworthy adapter keeps a matching default for
@@ -1466,6 +1565,24 @@ func positiveDurationEnv(key string, fallback time.Duration) (time.Duration, err
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("config: %s must be positive, got %s", key, d)
+	}
+	return d, nil
+}
+
+// durationEnvAllowZero reads key as a Go duration, falling back when unset and
+// rejecting only negative values, so a feature that uses 0 as "disabled" (the
+// repeated-claim cache) can be turned off explicitly.
+func durationEnvAllowZero(key string, fallback time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("config: %s must not be negative, got %s", key, d)
 	}
 	return d, nil
 }

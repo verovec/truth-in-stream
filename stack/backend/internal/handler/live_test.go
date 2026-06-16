@@ -91,6 +91,16 @@ type wireFrame struct {
 	EarlierID   string                `json:"earlier_id"`
 	EarlierText string                `json:"earlier_text"`
 	Rationale   string                `json:"rationale"`
+	Claims      []struct {
+		ClaimID string `json:"claim_id"`
+		Text    string `json:"text"`
+		Status  string `json:"status"`
+	} `json:"claims"`
+	ClaimID    string   `json:"claim_id"`
+	Status     string   `json:"status"`
+	Source     string   `json:"source"`
+	Verdict    string   `json:"verdict"`
+	Confidence *float64 `json:"confidence"`
 }
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
@@ -238,6 +248,60 @@ func TestLiveHandlerForwardsConsistencyFlag(t *testing.T) {
 	}
 	if frame.Speaker != "A" || frame.Rationale == "" {
 		t.Errorf("frame speaker=%q rationale=%q", frame.Speaker, frame.Rationale)
+	}
+}
+
+func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
+	t.Parallel()
+	// The retrieve-then-verify events serialize to a claims frame (atomic claims,
+	// each pending) followed by per-claim result frames keyed on claim_id so the
+	// client replaces a claim's row in place as it goes checking -> verified.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
+	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
+		{Kind: service.LiveEventResult, ID: "0-0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
+		{Kind: service.LiveEventResult, ID: "0-0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{Verdict: "refutes", Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"}},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	claims := readFrame(ctx, t, conn)
+	if claims.Type != "claims" || claims.ID != "0" || len(claims.Claims) != 1 {
+		t.Fatalf("claims frame = %+v, want one pending claim", claims)
+	}
+	if claims.Claims[0].ClaimID != "0-0" || claims.Claims[0].Status != "pending" {
+		t.Errorf("claim = %+v, want claim_id 0-0 pending", claims.Claims[0])
+	}
+
+	checking := readFrame(ctx, t, conn)
+	if checking.Type != "claim_result" || checking.ClaimID != "0-0" || checking.Status != "checking" {
+		t.Fatalf("checking frame = %+v, want claim_result claim_id 0-0 checking", checking)
+	}
+
+	verified := readFrame(ctx, t, conn)
+	if verified.Type != "claim_result" || verified.ClaimID != "0-0" || verified.Status != "verified" || verified.Source != "verified" {
+		t.Fatalf("verified frame = %+v, want claim_result 0-0 verified/verified", verified)
+	}
+	if verified.Verdict != "refutes" || verified.Confidence == nil || *verified.Confidence != 0.9 {
+		t.Errorf("verdict=%q confidence=%v, want refutes/0.9", verified.Verdict, verified.Confidence)
+	}
+	if len(verified.Matches) != 1 || verified.Matches[0].EvidenceID != "evidence:42:0" {
+		t.Errorf("citations did not round-trip: %+v", verified.Matches)
 	}
 }
 

@@ -107,6 +107,52 @@ type resultFrame struct {
 	Error string `json:"error,omitempty"`
 }
 
+// atomicClaimJSON is one atomic claim on a claims frame: the stable id the
+// client keys per-claim results on, its coreference-resolved text, and its
+// initial pending status.
+type atomicClaimJSON struct {
+	ClaimID string `json:"claim_id"`
+	Text    string `json:"text"`
+	Status  string `json:"status"`
+}
+
+// claimsFrame is the wire form of a claims event (retrieve-then-verify path): a
+// unit's atomic claims, each pending a verdict. It shares the unit's correlation
+// id so the client groups the claims under the statement they decomposed from.
+type claimsFrame struct {
+	Type   string            `json:"type"`
+	ID     string            `json:"id"`
+	Claims []atomicClaimJSON `json:"claims"`
+}
+
+// claimResultType is the wire discriminator for a per-claim result on the
+// retrieve-then-verify path. It is deliberately distinct from the legacy
+// "result" type so a client dispatches per-claim verdicts cleanly and a client
+// that does not yet understand them drops the frame rather than mis-decoding it
+// as a legacy segment result (whose start/end/text/matches it lacks).
+const claimResultType = "claim_result"
+
+// claimResultFrame is the wire form of a per-claim result on the
+// retrieve-then-verify path: keyed on claim_id so the client replaces a claim's
+// row in place as it goes checking -> verified (or unchecked). Status is the
+// lifecycle state; Source tags a verified verdict's origin (curated|verified);
+// Verdict, Confidence, Citations, and Rationale are present once verified. The
+// embedded matches carry the cited evidence (with evidence_id) so the grounding
+// round-trips to the UI.
+type claimResultFrame struct {
+	Type       string                `json:"type"`
+	ID         string                `json:"id"`
+	ClaimID    string                `json:"claim_id"`
+	Status     string                `json:"status"`
+	Source     string                `json:"source,omitempty"`
+	Verdict    string                `json:"verdict,omitempty"`
+	Confidence *float64              `json:"confidence,omitempty"`
+	Rationale  string                `json:"rationale,omitempty"`
+	Matches    []domain.SegmentMatch `json:"matches,omitempty"`
+	SkipReason string                `json:"skip_reason,omitempty"`
+	Error      string                `json:"error,omitempty"`
+}
+
 // liveHandler upgrades the request to a WebSocket and bridges it to the live
 // analyzer: a reader pumps inbound audio frames to the analyzer while the main
 // goroutine writes the analyzer's events back. allowedOrigins are the browser
@@ -224,6 +270,23 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 			Speaker: ev.Segment.Speaker,
 		})
 	}
+	if ev.Kind == service.LiveEventClaims {
+		claims := make([]atomicClaimJSON, len(ev.Claims))
+		for i, c := range ev.Claims {
+			claims[i] = atomicClaimJSON{ClaimID: c.ClaimID, Text: c.Text, Status: string(service.ClaimStatusPending)}
+		}
+		return wsjson.Write(ctx, conn, claimsFrame{
+			Type:   string(ev.Kind),
+			ID:     ev.ID,
+			Claims: claims,
+		})
+	}
+	// A result event carrying a claim id is a per-claim verdict on the
+	// retrieve-then-verify path; it shapes differently from the legacy per-segment
+	// result, keyed on claim_id so the client replaces the claim's row in place.
+	if ev.Kind == service.LiveEventResult && ev.ClaimID != "" {
+		return wsjson.Write(ctx, conn, toClaimResultFrame(ev))
+	}
 	if ev.Kind == service.LiveEventConsistency {
 		// The service always sets Consistency for this kind; the guard keeps a
 		// future or malformed event from panicking the writer (and from falling
@@ -246,4 +309,28 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 		segmentJSON: toSegmentJSON(domain.SegmentResult{Segment: ev.Segment, Matches: ev.Matches, SkipReason: ev.SkipReason, Confidence: ev.Confidence}),
 		Error:       ev.Err,
 	})
+}
+
+// toClaimResultFrame shapes one per-claim result event into its wire frame. The
+// verdict fields are present only once verified; a checking or unchecked result
+// carries just its status (and, for unchecked, the capacity skip reason). The
+// cited evidence travels as the embedded matches so the grounding round-trips.
+func toClaimResultFrame(ev service.LiveEvent) claimResultFrame {
+	f := claimResultFrame{
+		Type:       claimResultType,
+		ID:         ev.ID,
+		ClaimID:    ev.ClaimID,
+		Status:     string(ev.ClaimStatus),
+		Source:     string(ev.Source),
+		SkipReason: string(ev.SkipReason),
+		Error:      ev.Err,
+	}
+	if ev.Verdict != nil {
+		f.Verdict = ev.Verdict.Verdict
+		confidence := ev.Verdict.Confidence
+		f.Confidence = &confidence
+		f.Rationale = ev.Verdict.Rationale
+		f.Matches = ev.Verdict.Citations
+	}
+	return f
 }

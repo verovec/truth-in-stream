@@ -75,6 +75,12 @@ type Article struct {
 // non-positive similarity, or a match ranked beyond the scored cluster cap. Kind
 // and Verdict say which side it fell on; Contribution is the magnitude, so the
 // score is explainable down to the individual match that produced it.
+//
+// EvidenceID is the passage's stable source coordinate (ComposeEvidenceID over
+// kind + source id + chunk index). It lets the retrieve-then-verify path's
+// verifier cite a passage by id and have that citation round-trip back to the
+// match the UI renders. It is additive and omitted when empty, so the old path
+// (which does not set it) and a client that does not read it are unaffected.
 type SegmentMatch struct {
 	Kind         MatchKind `json:"kind"`
 	Claim        string    `json:"claim"`
@@ -83,6 +89,7 @@ type SegmentMatch struct {
 	Similarity   float64   `json:"similarity"`
 	Article      *Article  `json:"article,omitempty"`
 	Contribution float64   `json:"contribution"`
+	EvidenceID   string    `json:"evidence_id,omitempty"`
 }
 
 // UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim so a
