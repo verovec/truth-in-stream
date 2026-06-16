@@ -155,7 +155,7 @@ crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action
 	else \
 		pids=""; i=0; \
 		while [ $$i -lt $(CRAWL_SHARDS) ]; do \
-			$(COMPOSE) --profile tools run --rm --no-deps -e CRAWL_SHARDS=$(CRAWL_SHARDS) -e CRAWL_SHARD_INDEX=$$i wikicrawl & \
+			$(COMPOSE) --profile tools run --rm --no-deps -T -e CRAWL_SHARDS=$(CRAWL_SHARDS) -e CRAWL_SHARD_INDEX=$$i wikicrawl & \
 			pids="$$pids $$!"; i=$$((i + 1)); \
 		done; \
 		echo "crawl: launched $(CRAWL_SHARDS) parallel shards over CRAWL_CATEGORIES; watch the drain at http://localhost:15672 (app/dev)"; \

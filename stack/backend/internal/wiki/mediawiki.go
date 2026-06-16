@@ -154,6 +154,18 @@ func (c *APIClient) extractsAll(ctx context.Context, titles []string, intro bool
 	return out, nil
 }
 
+// continueValue renders one raw continuation value as the string the Action API
+// expects as a query parameter. A JSON string ("||revisions") is used verbatim
+// without its quotes; any other JSON scalar (excontinue arrives as a number) is
+// passed through as its literal text.
+func continueValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
 func (c *APIClient) extractsBatch(ctx context.Context, titles []string, intro bool) ([]Extract, error) {
 	params := url.Values{}
 	params.Set("action", "query")
@@ -166,24 +178,55 @@ func (c *APIClient) extractsBatch(ctx context.Context, titles []string, intro bo
 	params.Set("rvprop", "ids")
 	params.Set("titles", strings.Join(titles, "|"))
 
-	var resp exResponse
-	if err := c.getJSON(ctx, params, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("wiki: extracts api error %s: %s", resp.Error.Code, resp.Error.Info)
-	}
-	out := make([]Extract, 0, len(resp.Query.Pages))
-	for _, p := range resp.Query.Pages {
-		if p.Missing != nil {
-			out = append(out, Extract{Title: p.Title, Missing: true})
-			continue
+	// TextExtracts fills the extract for only a subset of a multi-title batch per
+	// response and returns an excontinue token for the rest - a 20-title body
+	// batch (no exintro) comes back with one page's text and a continuation. Follow
+	// it, merging each page by id and keeping whichever response carried the
+	// extract, so no page silently loses its text. Pages are deduped by id across
+	// continuation rounds; first-seen order is preserved.
+	byID := make(map[int64]*Extract, len(titles))
+	order := make([]int64, 0, len(titles))
+	missing := make(map[string]struct{})
+	for {
+		var resp exResponse
+		if err := c.getJSON(ctx, params, &resp); err != nil {
+			return nil, err
 		}
-		ex := Extract{PageID: p.PageID, Title: p.Title, Text: p.Extract}
-		if len(p.Revisions) > 0 {
-			ex.RevisionID = p.Revisions[0].RevID
+		if resp.Error != nil {
+			return nil, fmt.Errorf("wiki: extracts api error %s: %s", resp.Error.Code, resp.Error.Info)
 		}
-		out = append(out, ex)
+		for _, p := range resp.Query.Pages {
+			if p.Missing != nil {
+				missing[p.Title] = struct{}{}
+				continue
+			}
+			ex, ok := byID[p.PageID]
+			if !ok {
+				ex = &Extract{PageID: p.PageID, Title: p.Title}
+				byID[p.PageID] = ex
+				order = append(order, p.PageID)
+			}
+			if p.Extract != "" {
+				ex.Text = p.Extract
+			}
+			if ex.RevisionID == 0 && len(p.Revisions) > 0 {
+				ex.RevisionID = p.Revisions[0].RevID
+			}
+		}
+		if len(resp.Continue) == 0 {
+			break
+		}
+		for k, raw := range resp.Continue {
+			params.Set(k, continueValue(raw))
+		}
+	}
+
+	out := make([]Extract, 0, len(byID)+len(missing))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	for title := range missing {
+		out = append(out, Extract{Title: title, Missing: true})
 	}
 	return out, nil
 }
@@ -335,9 +378,13 @@ func (e rcEntry) toChange() (Change, bool) {
 }
 
 // exResponse mirrors the extracts+revisions Action API response. Pages is keyed
-// by stringified page id (negative for missing pages).
+// by stringified page id (negative for missing pages). Continue is the mixed-type
+// continuation envelope: the generic "continue" arrives as a string while
+// "excontinue" arrives as a number, so each value is kept raw and coerced to its
+// query-parameter form when the next page is requested.
 type exResponse struct {
-	Query struct {
+	Continue map[string]json.RawMessage `json:"continue"`
+	Query    struct {
 		Pages map[string]exPage `json:"pages"`
 	} `json:"query"`
 	Error *apiErr `json:"error"`
