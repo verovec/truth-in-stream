@@ -63,7 +63,7 @@ up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), back
 	$(COMPOSE) up --build
 
 down: ## Stop the stack, keeping the Postgres volume
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 
 reset: ## Soft reset: drop the schema, re-migrate, and reseed (container stays up)
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" drop -f
@@ -72,7 +72,7 @@ reset: ## Soft reset: drop the schema, re-migrate, and reseed (container stays u
 	@echo "reset complete: schema rebuilt and dataset reseeded"
 
 reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch
-	$(COMPOSE) down -v
+	$(COMPOSE) down -v --remove-orphans
 	$(COMPOSE) up --build
 	@echo "hard reset complete: fresh volume, migrated and seeded"
 
