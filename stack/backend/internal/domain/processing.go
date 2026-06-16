@@ -66,13 +66,23 @@ type Article struct {
 // reference text in both cases: the claim statement for claims, the article
 // excerpt for evidence. The json tags are the live result frame's wire shape,
 // served verbatim to the client.
+//
+// Contribution is the stance-bearing weight this match added to the statement's
+// Confidence aggregate: its Similarity for a curated claim (counted into
+// Supporting unless its Verdict contradicts, when it counts into Contradicting),
+// its Similarity scaled by the chunk-kind weight for evidence (always
+// Supporting), and 0 when the match carried no stance - an unclear claim, a
+// non-positive similarity, or a match ranked beyond the scored cluster cap. Kind
+// and Verdict say which side it fell on; Contribution is the magnitude, so the
+// score is explainable down to the individual match that produced it.
 type SegmentMatch struct {
-	Kind       MatchKind `json:"kind"`
-	Claim      string    `json:"claim"`
-	Verdict    Verdict   `json:"verdict,omitempty"`
-	Sources    []Source  `json:"sources"`
-	Similarity float64   `json:"similarity"`
-	Article    *Article  `json:"article,omitempty"`
+	Kind         MatchKind `json:"kind"`
+	Claim        string    `json:"claim"`
+	Verdict      Verdict   `json:"verdict,omitempty"`
+	Sources      []Source  `json:"sources"`
+	Similarity   float64   `json:"similarity"`
+	Article      *Article  `json:"article,omitempty"`
+	Contribution float64   `json:"contribution"`
 }
 
 // UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim so a

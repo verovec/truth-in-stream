@@ -117,6 +117,107 @@ func TestComputeConfidence(t *testing.T) {
 	}
 }
 
+func TestMatchContributions(t *testing.T) {
+	t.Parallel()
+
+	params := confidenceParams{clusterSize: 5, leadWeight: 1, bodyWeight: 0.5}
+
+	tests := []struct {
+		name    string
+		matches []Match
+		params  confidenceParams
+		want    []float64
+	}{
+		{
+			name:    "empty cluster contributes nothing",
+			matches: nil,
+			params:  params,
+			want:    []float64{},
+		},
+		{
+			name:    "corroborating claim contributes its similarity",
+			matches: []Match{claimMatch(domain.VerdictCorroborates, 0.8)},
+			params:  params,
+			want:    []float64{0.8},
+		},
+		{
+			name:    "contradicting claim contributes its similarity (the magnitude, not the bucket)",
+			matches: []Match{claimMatch(domain.VerdictContradicts, 0.8)},
+			params:  params,
+			want:    []float64{0.8},
+		},
+		{
+			name:    "unclear claim contributes nothing",
+			matches: []Match{claimMatch(domain.VerdictUnclear, 0.9)},
+			params:  params,
+			want:    []float64{0},
+		},
+		{
+			name:    "lead evidence contributes full weight, body half",
+			matches: []Match{evidenceMatch(domain.WikiChunkKindLead, 0.7), evidenceMatch(domain.WikiChunkKindBody, 0.6)},
+			params:  params,
+			want:    []float64{0.7, 0.3},
+		},
+		{
+			name:    "a non-positive similarity contributes nothing",
+			matches: []Match{claimMatch(domain.VerdictCorroborates, 0)},
+			params:  params,
+			want:    []float64{0},
+		},
+		{
+			name: "matches beyond the cluster cap contribute nothing",
+			matches: []Match{
+				claimMatch(domain.VerdictCorroborates, 0.9),
+				claimMatch(domain.VerdictContradicts, 0.8),
+				claimMatch(domain.VerdictCorroborates, 0.7),
+			},
+			params: confidenceParams{clusterSize: 2, leadWeight: 1, bodyWeight: 0.5},
+			want:   []float64{0.9, 0.8, 0},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchContributions(tc.matches, tc.params)
+			if len(got) != len(tc.matches) {
+				t.Fatalf("got %d contributions, want one per match (%d)", len(got), len(tc.matches))
+			}
+			for i := range tc.want {
+				if math.Abs(got[i]-tc.want[i]) >= 1e-9 {
+					t.Errorf("contribution[%d] = %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestMatchContributionsSumMatchesScore pins the explainability invariant: the
+// per-match contributions are exactly the weights computeConfidence aggregates,
+// so they always sum to Supporting + Contradicting. If this drifts, the surfaced
+// breakdown would no longer explain the score it sits next to.
+func TestMatchContributionsSumMatchesScore(t *testing.T) {
+	t.Parallel()
+
+	params := confidenceParams{clusterSize: 5, leadWeight: 1, bodyWeight: 0.5}
+	matches := []Match{
+		claimMatch(domain.VerdictCorroborates, 0.9),
+		claimMatch(domain.VerdictContradicts, 0.4),
+		evidenceMatch(domain.WikiChunkKindBody, 0.6),
+		claimMatch(domain.VerdictUnclear, 0.5),
+	}
+
+	conf := computeConfidence(matches, params)
+	contribs := matchContributions(matches, params)
+
+	var sum float64
+	for _, c := range contribs {
+		sum += c
+	}
+	if math.Abs(sum-(conf.Supporting+conf.Contradicting)) >= 1e-9 {
+		t.Errorf("contributions sum to %v, want Supporting+Contradicting = %v", sum, conf.Supporting+conf.Contradicting)
+	}
+}
+
 // confidenceApproxEqual compares two Confidence values within a float tolerance,
 // so a clean expected fraction need not be transcribed to full precision.
 func confidenceApproxEqual(a, b domain.Confidence) bool {

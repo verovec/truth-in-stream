@@ -11,12 +11,14 @@ import (
 )
 
 type stubSegmentMatcher struct {
-	matches    []Match
-	embedding  []float32
-	confidence domain.Confidence
-	err        error
-	gotText    string
-	gotScored  []Match
+	matches       []Match
+	embedding     []float32
+	confidence    domain.Confidence
+	contributions []float64
+	err           error
+	gotText       string
+	gotScored     []Match
+	gotContribFor []Match
 }
 
 func (s *stubSegmentMatcher) MatchSegment(_ context.Context, segment string) ([]Match, []float32, error) {
@@ -29,6 +31,17 @@ func (s *stubSegmentMatcher) MatchSegment(_ context.Context, segment string) ([]
 func (s *stubSegmentMatcher) Confidence(matches []Match) domain.Confidence {
 	s.gotScored = matches
 	return s.confidence
+}
+
+// Contributions records the rich matches it was handed and returns a fixed
+// per-match weight slice; absent an explicit one it returns zeros, one per match,
+// so a test that does not care about contributions still gets a valid result.
+func (s *stubSegmentMatcher) Contributions(matches []Match) []float64 {
+	s.gotContribFor = matches
+	if s.contributions != nil {
+		return s.contributions
+	}
+	return make([]float64, len(matches))
 }
 
 func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
@@ -59,7 +72,10 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 		},
 	}
 	wantConfidence := domain.Confidence{Score: 0.6, Supporting: 1.2, Contradicting: 0.8, EvidenceItems: 3}
-	stub := &stubSegmentMatcher{matches: matches, confidence: wantConfidence}
+	// One contribution per match, in order: the contradicting claim's weight, the
+	// evidence weight, then the corroborating claim's weight.
+	contributions := []float64{0.91, 0.8, 0.74}
+	stub := &stubSegmentMatcher{matches: matches, confidence: wantConfidence, contributions: contributions}
 	adapter := NewSegmentMatchAdapter(stub)
 
 	got, err := adapter.Match(context.Background(), "you can see the great wall from orbit")
@@ -69,27 +85,30 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 
 	want := []domain.SegmentMatch{
 		{
-			Kind:       domain.MatchKindClaim,
-			Claim:      "The Great Wall of China is visible from space with the naked eye.",
-			Verdict:    domain.VerdictContradicts,
-			Sources:    []domain.Source{{Title: "NASA", URL: "https://nasa.gov"}},
-			Similarity: 0.91,
+			Kind:         domain.MatchKindClaim,
+			Claim:        "The Great Wall of China is visible from space with the naked eye.",
+			Verdict:      domain.VerdictContradicts,
+			Sources:      []domain.Source{{Title: "NASA", URL: "https://nasa.gov"}},
+			Similarity:   0.91,
+			Contribution: 0.91,
 		},
 		{
-			Kind:       domain.MatchKindEvidence,
-			Claim:      "The Great Wall of China is a series of fortifications.",
-			Sources:    []domain.Source{},
-			Similarity: 0.8,
-			Article:    &domain.Article{Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China"},
+			Kind:         domain.MatchKindEvidence,
+			Claim:        "The Great Wall of China is a series of fortifications.",
+			Sources:      []domain.Source{},
+			Similarity:   0.8,
+			Article:      &domain.Article{Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China"},
+			Contribution: 0.8,
 		},
 		{
 			// Evidence has no verdict; a claim with no sources normalizes to an
 			// empty slice so the wire never carries a null sources array.
-			Kind:       domain.MatchKindClaim,
-			Claim:      "Mount Everest is the highest mountain above sea level on Earth.",
-			Verdict:    domain.VerdictCorroborates,
-			Sources:    []domain.Source{},
-			Similarity: 0.74,
+			Kind:         domain.MatchKindClaim,
+			Claim:        "Mount Everest is the highest mountain above sea level on Earth.",
+			Verdict:      domain.VerdictCorroborates,
+			Sources:      []domain.Source{},
+			Similarity:   0.74,
+			Contribution: 0.74,
 		},
 	}
 	if diff := cmp.Diff(want, got.Matches); diff != "" {
@@ -102,6 +121,11 @@ func TestSegmentMatchAdapterConvertsMatches(t *testing.T) {
 	// chunk kind the wire shape drops), not the converted SegmentMatch values.
 	if diff := cmp.Diff(matches, stub.gotScored); diff != "" {
 		t.Errorf("confidence scored the wrong cluster (-want +got):\n%s", diff)
+	}
+	// Contributions must run on the same rich pre-conversion cluster, so each
+	// weight lines up with the match it is attached to.
+	if diff := cmp.Diff(matches, stub.gotContribFor); diff != "" {
+		t.Errorf("contributions scored the wrong cluster (-want +got):\n%s", diff)
 	}
 	if stub.gotText != "you can see the great wall from orbit" {
 		t.Errorf("segment text not forwarded, got %q", stub.gotText)
