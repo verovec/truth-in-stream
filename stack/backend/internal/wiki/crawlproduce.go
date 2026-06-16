@@ -24,6 +24,27 @@ const crawlExtractBatch = extractsBatchMax
 // per-second rate the limiter expects.
 const secondsPerMinute = 60.0
 
+// ShardCategories selects one shard's slice of categories by round-robin
+// position: category i belongs to shard (i mod shards). With shards <= 1 the
+// whole list is returned (sharding off). The union of shards 0..shards-1 is
+// exactly the input with no overlap, so N producers each given a distinct index
+// crawl disjoint categories and never duplicate API work or gate spend. index is
+// expected in [0, shards); the config loader validates that, and an out-of-range
+// index simply yields an empty slice here. A shard with more shards than
+// categories may legitimately be empty.
+func ShardCategories(categories []string, shards, index int) []string {
+	if shards <= 1 {
+		return categories
+	}
+	out := make([]string, 0, len(categories)/shards+1)
+	for i, c := range categories {
+		if i%shards == index {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // CrawlSource is the MediaWiki surface the crawl producer reads: the category
 // walk plus lead and (optionally) full-body extracts. *APIClient satisfies it.
 type CrawlSource interface {

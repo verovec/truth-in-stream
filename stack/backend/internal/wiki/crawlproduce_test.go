@@ -13,6 +13,67 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
 )
 
+func TestShardCategories(t *testing.T) {
+	t.Parallel()
+	cats := []string{"A", "B", "C", "D", "E"}
+
+	tests := []struct {
+		name   string
+		shards int
+		index  int
+		want   []string
+	}{
+		{"off zero", 0, 0, cats},
+		{"off one", 1, 0, cats},
+		{"three shard 0", 3, 0, []string{"A", "D"}},
+		{"three shard 1", 3, 1, []string{"B", "E"}},
+		{"three shard 2", 3, 2, []string{"C"}},
+		{"more shards than cats", 8, 6, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := ShardCategories(cats, tc.shards, tc.index)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ShardCategories(%d,%d) = %v, want %v", tc.shards, tc.index, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("ShardCategories(%d,%d) = %v, want %v", tc.shards, tc.index, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestShardCategoriesPartitionsExactly proves the shards are disjoint and their
+// union is the whole input, so N parallel producers never duplicate or drop a
+// category.
+func TestShardCategoriesPartitionsExactly(t *testing.T) {
+	t.Parallel()
+	cats := make([]string, 23)
+	for i := range cats {
+		cats[i] = string(rune('a' + i))
+	}
+	const shards = 4
+	seen := map[string]int{}
+	total := 0
+	for idx := 0; idx < shards; idx++ {
+		for _, c := range ShardCategories(cats, shards, idx) {
+			seen[c]++
+			total++
+		}
+	}
+	if total != len(cats) {
+		t.Fatalf("shards covered %d categories, want %d (no drops)", total, len(cats))
+	}
+	for _, c := range cats {
+		if seen[c] != 1 {
+			t.Errorf("category %q appeared in %d shards, want exactly 1", c, seen[c])
+		}
+	}
+}
+
 // gateFunc adapts a plain function to the Gate interface so a test can fake a
 // fact-checkability judgment without an LLM.
 type gateFunc func(ctx context.Context, passage string) (bool, error)

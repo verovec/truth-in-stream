@@ -1,6 +1,9 @@
 package wiki
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +17,85 @@ func newTestClient(t *testing.T, h http.HandlerFunc) *APIClient {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return &APIClient{Corpus: "simplewiki", BaseURL: srv.URL, retryBase: time.Millisecond}
+}
+
+// rtFunc adapts a function to http.RoundTripper so a test can drive transport
+// behavior (transient errors, cancellation) that an httptest.Server cannot.
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func newTransportClient(rt http.RoundTripper) *APIClient {
+	return &APIClient{
+		Corpus:     "simplewiki",
+		BaseURL:    "http://wiki.invalid/w/api.php",
+		HTTPClient: &http.Client{Transport: rt},
+		retryBase:  time.Millisecond,
+	}
+}
+
+func okExtractsBody() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"query":{"pages":{}}}`)),
+		Header:     http.Header{},
+	}
+}
+
+func TestExtractsRetriesTransientTransportError(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	c := newTransportClient(rtFunc(func(*http.Request) (*http.Response, error) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			// A header timeout / connection reset: the server gave no answer.
+			return nil, errors.New("dial tcp: connection reset by peer")
+		}
+		return okExtractsBody(), nil
+	}))
+
+	if _, err := c.Extracts(t.Context(), []string{"Atom"}); err != nil {
+		t.Fatalf("Extracts after transient transport errors: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("made %d calls, want 3 (two transient failures then success)", got)
+	}
+}
+
+func TestExtractsGivesUpOnPersistentTransportError(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	c := newTransportClient(rtFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("i/o timeout")
+	}))
+
+	if _, err := c.Extracts(t.Context(), []string{"Atom"}); err == nil {
+		t.Fatal("Extracts under a sustained transport error succeeded, want error")
+	}
+	if got := atomic.LoadInt32(&calls); got != apiMaxRetries+1 {
+		t.Errorf("made %d attempts, want %d (initial + retries)", got, apiMaxRetries+1)
+	}
+}
+
+func TestExtractsDoesNotRetryOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls int32
+	c := newTransportClient(rtFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		cancel() // operator SIGINT mid-flight
+		return nil, errors.New("request canceled")
+	}))
+
+	if _, err := c.Extracts(ctx, []string{"Atom"}); err == nil {
+		t.Fatal("Extracts after context cancel succeeded, want error")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("made %d calls, want 1 (cancellation is terminal, not retried)", got)
+	}
 }
 
 func TestRecentChangesParsesAndFiltersAndPaginates(t *testing.T) {
