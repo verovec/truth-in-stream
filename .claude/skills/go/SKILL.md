@@ -142,7 +142,16 @@ that embeddings cannot give (opposite assertions sit CLOSE in embedding space). 
 satisfied by `internal/stance`, the Anthropic-backed adapter - the same "external API for the
 hard ML step" pattern as Voyage/AssemblyAI. The official Go SDK
 `github.com/anthropics/anthropic-sdk-go` IS used here (unlike AssemblyAI, which has none);
-verified latest stable **v1.50.1** via Context7 on 2026-06-13.
+verified latest stable **v1.50.2** via Context7 on 2026-06-16 (v1.50.x only retires dead model
+constants - no change to the tool/`ToolChoice`/`ToolUseBlock` surface).
+
+The Anthropic forced-tool transport is shared, not copied per adapter. `internal/llm`
+(`llm.NewClient(apiKey, model, opts...)` + `llm.Classify[T](ctx, client, llm.Request{...})`)
+owns client construction, the single forced tool call at temperature zero, tool-use extraction,
+and structured decode into a caller-supplied `T`. `internal/stance`, `internal/checkworthy`, and
+any future single-tool classifier are thin callers that supply only their prompt, tool schema,
+and verdict type - `internal/llm` never knows what a verdict means. Add a classifier as a new
+caller here; never triplicate the SDK client.
 
 - Model `claude-haiku-4-5-20251001` (`config.defaultConsistencyModel`) - the cheapest, fastest
   model, right for a binary classification over two short statements. Do NOT reach for a larger
