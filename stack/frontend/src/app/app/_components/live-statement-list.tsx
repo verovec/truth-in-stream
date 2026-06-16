@@ -232,6 +232,49 @@ function formatConfidence(score: number): string {
   return `${Math.round(score * 100)}%`;
 }
 
+// formatEvidenceCount names how many matches carried stance-bearing weight into
+// the score, pluralised so a lone match reads "1 match".
+function formatEvidenceCount(items: number): string {
+  return `${items} ${items === 1 ? "match" : "matches"}`;
+}
+
+// formatWeight renders an aggregated corroboration weight to two decimals: the
+// raw supporting/contradicting magnitudes the percentage is derived from, shown
+// so the score is explainable rather than opaque.
+function formatWeight(weight: number): string {
+  return weight.toFixed(2);
+}
+
+// ConfidenceBreakdown is the compact, explainable companion to the percentage:
+// how many matches contributed and the supporting-versus-contradicting weights
+// the score divides. It makes "how close are we to the corpus" legible instead
+// of leaving the percentage opaque.
+function ConfidenceBreakdown({
+  supporting,
+  contradicting,
+  evidenceItems,
+}: {
+  supporting: number;
+  contradicting: number;
+  evidenceItems: number;
+}) {
+  return (
+    <p className="pb-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+      <span className="tabular-nums">
+        {formatEvidenceCount(evidenceItems)}
+      </span>
+      {" · "}
+      <span className="tabular-nums text-emerald-700 dark:text-emerald-400">
+        {formatWeight(supporting)} supporting
+      </span>
+      {" · "}
+      <span className="tabular-nums text-rose-700 dark:text-rose-400">
+        {formatWeight(contradicting)} contradicting
+      </span>
+    </p>
+  );
+}
+
 // SubtitleStatus is the light per-row marker. It never shows a verdict (those
 // live in the fact-check list); it signals progress, why a statement produced no
 // fact-check, or - for a checked statement with evidence - how strongly the
@@ -277,16 +320,26 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
     );
   }
 
-  // A scored statement with evidence shows its corroboration percentage: how
-  // strongly the matched cluster supports the statement, not a per-source verdict.
+  // A scored statement with evidence shows its corroboration percentage and the
+  // supporting/contradicting breakdown that produced it: how strongly the matched
+  // cluster supports the statement, not a per-source verdict.
   if (isScored(statement) && statement.confidence) {
+    const { score, supporting, contradicting, evidenceItems } =
+      statement.confidence;
     return (
-      <p className="pb-1 text-xs text-zinc-500 dark:text-zinc-400">
-        <span className="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">
-          {formatConfidence(statement.confidence.score)}
-        </span>{" "}
-        corroborated by the reference corpus
-      </p>
+      <>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          <span className="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">
+            {formatConfidence(score)}
+          </span>{" "}
+          corroborated by the reference corpus
+        </p>
+        <ConfidenceBreakdown
+          supporting={supporting}
+          contradicting={contradicting}
+          evidenceItems={evidenceItems}
+        />
+      </>
     );
   }
 

@@ -574,13 +574,43 @@ and tear the bastion down (`terraform apply -var enable_bastion=false`). Unit-te
 
 ---
 
-## 11. Cross-references
+## 11. Confidence by closeness (query-time scoring)
+
+The pipeline above builds the evidence corpus; this section is what a *query* does with it. It is
+**query-time, not ingest-time**: nothing here writes to `wiki_chunks` or `claims`, and the score
+is streamed on the live result frame, never stored.
+
+When a spoken statement is matched, its retrieved cluster is aggregated into a single
+**confidence score** - how strongly the corpus corroborates the statement, by the closeness of
+its matches. The formula lives in exactly one place, `internal/service/confidence.go`
+(`computeConfidence`), and is bounded by the matcher config (`ConfidenceClusterSize`,
+`ConfidenceLeadWeight`, `ConfidenceBodyWeight`).
+
+- Each **curated claim** match contributes its cosine similarity as signed evidence: a
+  corroborating claim adds to **Supporting**, a contradicting claim adds to **Contradicting**, an
+  unclear claim is ignored.
+- Each **Wikipedia evidence** match contributes its similarity scaled by a chunk-kind weight (a
+  `lead` summary outweighs buried `body` prose) to **Supporting**.
+- Only the strongest `ConfidenceClusterSize` matches feed the score.
+- **Score** = `Supporting / (Supporting + Contradicting)`, bounded `[0, 1]`; `0` when nothing
+  stance-bearing corroborates the statement.
+
+The live result frame surfaces the score *and* its breakdown so it is explainable: `confidence`
+carries `{ score, supporting, contradicting, evidence_items }`, and every match carries its own
+`contribution` (the stance-bearing weight it added; `0` for an unclear claim, a non-positive
+similarity, or a match beyond the cluster cap). The per-match contributions sum to
+`supporting + contradicting`. The frontend renders the percentage with a compact
+supporting/contradicting breakdown beneath it. See the data dictionary for the field-level
+reference.
+
+## 12. Cross-references
 
 - Data dictionary: `.claude/skills/data-map/SKILL.md`
 - Design specs: `docs/superpowers/specs/2026-06-10-wikipedia-ingestion-design.md`,
   `docs/superpowers/specs/2026-06-11-wiki-ingest-staging-redesign-design.md`
 - Schema: `stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`
 - Queries: `stack/backend/queries/wiki.sql`
+- Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify}/`
 - Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy.yml`
 - Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

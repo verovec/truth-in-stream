@@ -188,6 +188,83 @@ describe("LiveStatementList", () => {
     ).toBeInTheDocument();
   });
 
+  test("breaks the score down into its supporting and contradicting evidence weights", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("0", 0, "the earth is round", {
+            matches: [
+              {
+                kind: "claim",
+                claim: "Earth is an oblate spheroid",
+                verdict: "corroborates",
+                sources: [],
+                similarity: 0.92,
+              },
+            ],
+            confidence: {
+              score: 0.75,
+              supporting: 0.9,
+              contradicting: 0.3,
+              evidenceItems: 2,
+            },
+          }),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(screen.getByText(/2 matches/i)).toBeInTheDocument();
+    expect(screen.getByText(/0\.90 supporting/i)).toBeInTheDocument();
+    expect(screen.getByText(/0\.30 contradicting/i)).toBeInTheDocument();
+  });
+
+  test("reads the breakdown's evidence count in the singular for a lone match", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("0", 0, "the earth is round", {
+            matches: [
+              {
+                kind: "claim",
+                claim: "Earth is an oblate spheroid",
+                verdict: "corroborates",
+                sources: [],
+                similarity: 0.92,
+              },
+            ],
+            confidence: {
+              score: 1,
+              supporting: 0.92,
+              contradicting: 0,
+              evidenceItems: 1,
+            },
+          }),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(screen.getByText(/1 match\b/i)).toBeInTheDocument();
+  });
+
+  test("shows no breakdown for a skipped statement", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          checked("0", 0, "small talk", {
+            skipReason: "not_a_claim",
+            confidence: undefined,
+          }),
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    expect(screen.queryByText(/supporting/i)).toBeNull();
+    expect(screen.queryByText(/contradicting/i)).toBeNull();
+  });
+
   test("shows no percentage for a skipped statement", () => {
     renderWithPlayback(
       <LiveStatementList

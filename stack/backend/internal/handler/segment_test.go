@@ -41,6 +41,32 @@ func TestToSegmentJSONConfidence(t *testing.T) {
 		}
 	})
 
+	t.Run("checked segment exposes the confidence breakdown and per-match contribution", func(t *testing.T) {
+		t.Parallel()
+		r := base
+		r.Matches = []domain.SegmentMatch{{
+			Kind:         domain.MatchKindClaim,
+			Claim:        "claim",
+			Verdict:      domain.VerdictCorroborates,
+			Sources:      []domain.Source{},
+			Similarity:   0.9,
+			Contribution: 0.9,
+		}}
+		r.Confidence = &domain.Confidence{Score: 0.75, Supporting: 0.9, Contradicting: 0.3, EvidenceItems: 2}
+
+		encoded, err := json.Marshal(toSegmentJSON(r))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// The score's supporting/contradicting breakdown and item count are all on
+		// the wire, so the surfaced score is explainable rather than opaque.
+		for _, want := range []string{`"supporting":0.9`, `"contradicting":0.3`, `"evidence_items":2`, `"contribution":0.9`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("encoded frame missing %s: %s", want, encoded)
+			}
+		}
+	})
+
 	t.Run("skipped segment omits confidence", func(t *testing.T) {
 		t.Parallel()
 		r := base

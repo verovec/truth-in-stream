@@ -119,6 +119,50 @@ Do not look for these; they were dropped and have no reader or writer.
   videos now stream live exactly like a live stream: the live path emits verdicts over the
   WebSocket and persists nothing. There is no stored per-segment verdict to query.
 
+## Derived, not stored: confidence by closeness
+
+A checked statement carries a **confidence score** aggregated over its retrieved match
+cluster. It is computed at query time and streamed on the live result frame; nothing about it
+is persisted (live results are ephemeral, see below). The score lives in exactly one place:
+`stack/backend/internal/service/confidence.go` (`computeConfidence`), parameterised by the
+matcher config (`ConfidenceClusterSize`, `ConfidenceLeadWeight`, `ConfidenceBodyWeight`).
+
+**Inputs (all closeness-derived):**
+
+- **Cosine similarity** of each match (`1 - distance`), the closeness of the spoken statement to
+  the matched `claims` row or `wiki_chunks` row.
+- **Curated-claim verdict** (`corroborates` / `contradicts` / `unclear`) - the signed stance of a
+  `claims` match.
+- **Chunk-kind weight** - a `wiki_chunks` evidence hit is scaled by its `kind`: `lead` at
+  `ConfidenceLeadWeight`, `body` at `ConfidenceBodyWeight` (both in `[0, 1]`; an unknown kind
+  defaults to the lead weight). A curated claim always weighs at its full similarity.
+
+**Formula:** only the strongest `ConfidenceClusterSize` matches feed the score. Each match's
+**weight** is its similarity (evidence scaled by chunk-kind weight); a corroborating claim and
+every evidence hit add to **Supporting**, a contradicting claim adds to **Contradicting**, an
+unclear claim (or a non-positive similarity) carries no stance and is ignored. Then:
+
+```
+score = Supporting / (Supporting + Contradicting)   bounded to [0, 1]
+```
+
+`score` is `0` when nothing stance-bearing corroborates the statement (the honest "no
+corroboration" reading), distinct from an unchecked statement, which carries no score at all.
+
+**Wire shape** (live result frame, snake_case; `internal/handler` `segmentJSON`):
+
+- `confidence` (omitted on a skipped segment): `{ score, supporting, contradicting,
+  evidence_items }` - the score plus the raw weights and contributing-match count it is derived
+  from, so the number is explainable rather than opaque.
+- each match's `contribution` - the stance-bearing weight that match added to the aggregate
+  (`0` for an unclear claim, a non-positive similarity, or a match beyond the cluster cap). `kind`
+  and `verdict` say which side it fell on; `contribution` is the magnitude. The per-match
+  contributions of a checked segment sum to `supporting + contradicting`.
+
+Coverage / checkability is still decided by `claims` alone (below); confidence only scores a
+statement that was already deemed checkable. Documented for ingestion/scoring context in
+`docs/ingestion-pipeline.md`.
+
 ## Cross-cutting facts (known landmines)
 
 - Bulk vector loads MUST use text-format CSV `COPY`, never binary `CopyFrom`/binary `COPY`: pgx

@@ -191,6 +191,20 @@ func (m *Matcher) Confidence(matches []Match) domain.Confidence {
 	})
 }
 
+// Contributions returns, in match order, the stance-bearing weight each match
+// added to the cluster's Confidence, under the same cluster cap and chunk-kind
+// weights the score uses. It is the per-match companion to Confidence: a caller
+// can attach each weight to its match so the corroboration score is explainable
+// down to the evidence that produced it. The result has one entry per input
+// match.
+func (m *Matcher) Contributions(matches []Match) []float64 {
+	return matchContributions(matches, confidenceParams{
+		clusterSize: m.cfg.ConfidenceClusterSize,
+		leadWeight:  m.cfg.ConfidenceLeadWeight,
+		bodyWeight:  m.cfg.ConfidenceBodyWeight,
+	})
+}
+
 // claimMatches retrieves and threshold-filters curated claim hits.
 func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, error) {
 	hits, err := m.claims.Search(ctx, query, m.cfg.TopK)

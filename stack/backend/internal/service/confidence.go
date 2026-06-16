@@ -62,6 +62,26 @@ func computeConfidence(matches []Match, p confidenceParams) domain.Confidence {
 	}
 }
 
+// matchContributions returns, in match order, the stance-bearing weight each
+// match added to the confidence aggregate: matchWeight for a match inside the
+// scored cluster cap, and 0 for one beyond the cap (it never fed the score). It
+// is the per-match companion to computeConfidence and shares its cluster-cap and
+// matchWeight logic, so a surfaced contribution always equals what the score
+// actually counted - the two never drift. The returned slice has one entry per
+// input match.
+func matchContributions(matches []Match, p confidenceParams) []float64 {
+	limit := len(matches)
+	if p.clusterSize > 0 && p.clusterSize < limit {
+		limit = p.clusterSize
+	}
+
+	contributions := make([]float64, len(matches))
+	for i := 0; i < limit; i++ {
+		contributions[i] = matchWeight(matches[i], p)
+	}
+	return contributions
+}
+
 // matchWeight is the stance-bearing weight one match contributes to the score: a
 // claim weighs at its similarity unless its verdict is unclear (no stance, zero
 // weight), and an evidence hit weighs at its similarity scaled by its chunk-kind

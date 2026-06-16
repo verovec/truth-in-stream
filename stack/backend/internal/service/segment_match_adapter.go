@@ -8,12 +8,15 @@ import (
 )
 
 // segmentMatcher is the slice of *Matcher the adapter consumes: ranked matches
-// for one segment's text and the confidence aggregated over them. Confidence
-// runs on the rich Match values (which carry the chunk kind the wire-shaped
-// domain.SegmentMatch drops), so it is computed here, before conversion.
+// for one segment's text, the confidence aggregated over them, and each match's
+// contribution to that confidence. All three run on the rich Match values (which
+// carry the chunk kind the wire-shaped domain.SegmentMatch drops), so they are
+// computed here, before conversion. Contributions returns one weight per match,
+// in match order, so the adapter can attach each to its converted match.
 type segmentMatcher interface {
 	MatchSegment(ctx context.Context, segment string) ([]Match, []float32, error)
 	Confidence(matches []Match) domain.Confidence
+	Contributions(matches []Match) []float64
 }
 
 // SegmentMatchAdapter adapts a *Matcher to the processing pipeline's
@@ -44,13 +47,22 @@ func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResu
 		}
 		return MatchResult{}, err
 	}
+	// Contributions is parallel to hits (one weight per match, in order), so the
+	// weight that fed the score travels with its converted match. Guarded by index
+	// against a contract violation so a short slice can never panic the live path.
+	contributions := a.matcher.Contributions(hits)
 	matches := make([]domain.SegmentMatch, 0, len(hits))
-	for _, h := range hits {
+	for i, h := range hits {
+		var contribution float64
+		if i < len(contributions) {
+			contribution = contributions[i]
+		}
 		sm := domain.SegmentMatch{
-			Kind:       h.Kind,
-			Claim:      h.Text,
-			Sources:    []domain.Source{},
-			Similarity: h.Score,
+			Kind:         h.Kind,
+			Claim:        h.Text,
+			Sources:      []domain.Source{},
+			Similarity:   h.Score,
+			Contribution: contribution,
 		}
 		if h.Kind == domain.MatchKindEvidence {
 			article := h.Article
