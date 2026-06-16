@@ -948,6 +948,10 @@ const (
 	// defaultQueueVersion is the single active version when none is configured,
 	// so a fresh local dev runs against embedding.jobs.v1.
 	defaultQueueVersion = "1"
+	// defaultCrawlQueueName is the base queue the category crawler publishes to,
+	// kept separate from the embedding-jobs queue so the crawl worker and the
+	// dump-pipeline fleet never consume each other's messages.
+	defaultCrawlQueueName = "crawl.chunks"
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -987,6 +991,21 @@ func (q Queue) VersionedName() string {
 // version. Bad values fail fast at startup rather than surfacing as a broker
 // error later.
 func LoadQueue() (Queue, error) {
+	return loadQueue("RABBITMQ_QUEUE", defaultQueueName)
+}
+
+// LoadCrawlQueue reads the category-crawl broker configuration. It shares the
+// broker URL, priority, prefetch, and version machinery with LoadQueue but binds
+// to its own base queue name (RABBITMQ_CRAWL_QUEUE, default crawl.chunks), so the
+// crawl producer and worker never share a queue with the dump-pipeline fleet.
+func LoadCrawlQueue() (Queue, error) {
+	return loadQueue("RABBITMQ_CRAWL_QUEUE", defaultCrawlQueueName)
+}
+
+// loadQueue reads the broker configuration, taking the base queue name from
+// nameEnv (defaulting to nameDefault) so the embedding and crawl queues share one
+// loader yet bind to distinct queues.
+func loadQueue(nameEnv, nameDefault string) (Queue, error) {
 	url, err := requireEnv("RABBITMQ_URL")
 	if err != nil {
 		return Queue{}, err
@@ -1009,7 +1028,7 @@ func LoadQueue() (Queue, error) {
 	}
 	return Queue{
 		URL:           url,
-		Name:          getenv("RABBITMQ_QUEUE", defaultQueueName),
+		Name:          getenv(nameEnv, nameDefault),
 		MaxPriority:   uint8(maxPriority),
 		Prefetch:      prefetch,
 		Version:       versions[len(versions)-1],
@@ -1095,7 +1114,33 @@ type EmbedWorker struct {
 // applying defaults and failing fast on out-of-range values. It carries no
 // secret: the broker URL and embedding key load from LoadQueue and LoadEmbedding.
 func LoadEmbedWorker() (EmbedWorker, error) {
-	w := EmbedWorker{
+	w, err := loadWorkerCommon("EMBED_WORKER", defaultWorker())
+	if err != nil {
+		return EmbedWorker{}, err
+	}
+	// Capped at Voyage's per-request input limit so a batch never exceeds what the
+	// provider accepts in one call. BatchSize/BatchWait are the embedding worker's
+	// alone - the crawl worker embeds one chunk per job and ignores them.
+	if w.BatchSize, err = intEnv("EMBED_WORKER_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
+		return EmbedWorker{}, err
+	}
+	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
+		return EmbedWorker{}, err
+	}
+	return w, nil
+}
+
+// LoadCrawlWorker reads the crawl-worker configuration (CRAWL_WORKER_*). It
+// reuses the EmbedWorker shape and shared defaults; the crawl worker embeds one
+// chunk per job, so it never reads BatchSize/BatchWait, which keep their
+// defaults. Only the env prefix differs from LoadEmbedWorker.
+func LoadCrawlWorker() (EmbedWorker, error) {
+	return loadWorkerCommon("CRAWL_WORKER", defaultWorker())
+}
+
+// defaultWorker is the worker configuration before any environment override.
+func defaultWorker() EmbedWorker {
+	return EmbedWorker{
 		Concurrency:       defaultEmbedWorkerConcurrency,
 		BatchSize:         defaultEmbedWorkerBatchSize,
 		BatchWait:         defaultEmbedWorkerBatchWait,
@@ -1104,30 +1149,29 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 		RequestsPerMinute: defaultEmbedWorkerRequestsPerMinute,
 		EmbedMaxRetries:   defaultEmbedWorkerEmbedMaxRetries,
 	}
+}
+
+// loadWorkerCommon reads the worker fields shared by the embedding and crawl
+// workers (concurrency, attempts, HTTP timeout, RPM pacing, embedder retries)
+// under the given env prefix, applying the defaults in w and failing fast on an
+// out-of-range value.
+func loadWorkerCommon(prefix string, w EmbedWorker) (EmbedWorker, error) {
 	var err error
-	if w.Concurrency, err = intEnv("EMBED_WORKER_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
+	if w.Concurrency, err = intEnv(prefix+"_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
 		return EmbedWorker{}, err
 	}
-	// Capped at Voyage's per-request input limit so a batch never exceeds what the
-	// provider accepts in one call.
-	if w.BatchSize, err = intEnv("EMBED_WORKER_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
+	if w.MaxAttempts, err = intEnv(prefix+"_MAX_ATTEMPTS", w.MaxAttempts, 1, math.MaxInt32); err != nil {
 		return EmbedWorker{}, err
 	}
-	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
-		return EmbedWorker{}, err
-	}
-	if w.MaxAttempts, err = intEnv("EMBED_WORKER_MAX_ATTEMPTS", w.MaxAttempts, 1, math.MaxInt32); err != nil {
-		return EmbedWorker{}, err
-	}
-	if w.HTTPTimeout, err = positiveDurationEnv("EMBED_WORKER_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
+	if w.HTTPTimeout, err = positiveDurationEnv(prefix+"_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
 		return EmbedWorker{}, err
 	}
 	// 0 disables pacing; a positive value caps outbound requests per minute so a
 	// constrained tier is not overrun.
-	if w.RequestsPerMinute, err = intEnv("EMBED_WORKER_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
+	if w.RequestsPerMinute, err = intEnv(prefix+"_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
 		return EmbedWorker{}, err
 	}
-	if w.EmbedMaxRetries, err = intEnv("EMBED_WORKER_EMBED_MAX_RETRIES", w.EmbedMaxRetries, 1, math.MaxInt32); err != nil {
+	if w.EmbedMaxRetries, err = intEnv(prefix+"_EMBED_MAX_RETRIES", w.EmbedMaxRetries, 1, math.MaxInt32); err != nil {
 		return EmbedWorker{}, err
 	}
 	return w, nil
@@ -1195,6 +1239,79 @@ func LoadWikiDelta() (WikiDelta, error) {
 		return WikiDelta{}, err
 	}
 	return w, nil
+}
+
+// Crawl-ingestion defaults: crawl one subcategory level deep, cap at a few
+// thousand pages so an unattended run is bounded, and ingest body prose by
+// default since lead-only is the explicit opt-out.
+const (
+	defaultCrawlMaxDepth = 1
+	defaultCrawlMaxPages = 5000
+)
+
+// Crawl configures the category crawler. Categories are the seed category titles
+// (e.g. "Category:Physics"); Project is the wiki project whose Action API is
+// queried and whose host builds article URLs (defaults to WIKI_CORPUS); Corpus is
+// the provenance tag written to wiki_chunks.corpus (defaults to "<project>-crawl"
+// so crawl rows are isolated from the dump corpus's delta checkpoint); MaxDepth
+// bounds subcategory recursion (0 = direct pages only); MaxPages caps distinct
+// pages collected; IncludeBody adds kind='body' chunks alongside the lead.
+type Crawl struct {
+	Categories  []string
+	Project     string
+	Corpus      string
+	MaxDepth    int
+	MaxPages    int
+	IncludeBody bool
+}
+
+// LoadCrawl reads the category-crawl configuration. CRAWL_CATEGORIES is required
+// (a comma-separated list of category titles); the rest default. Bad values fail
+// fast at startup.
+func LoadCrawl() (Crawl, error) {
+	raw, err := requireEnv("CRAWL_CATEGORIES")
+	if err != nil {
+		return Crawl{}, err
+	}
+	categories := make([]string, 0)
+	for _, p := range strings.Split(raw, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			categories = append(categories, v)
+		}
+	}
+	if len(categories) == 0 {
+		return Crawl{}, fmt.Errorf("config: CRAWL_CATEGORIES %q has no category", raw)
+	}
+
+	project := getenv("CRAWL_PROJECT", getenv("WIKI_CORPUS", defaultWikiCorpus))
+	corpus := getenv("CRAWL_CORPUS", project+"-crawl")
+
+	maxDepth, err := intEnv("CRAWL_MAX_DEPTH", defaultCrawlMaxDepth, 0, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+	maxPages, err := intEnv("CRAWL_MAX_PAGES", defaultCrawlMaxPages, 1, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+
+	includeBody := true
+	if v := os.Getenv("CRAWL_INCLUDE_BODY"); v != "" {
+		b, perr := strconv.ParseBool(v)
+		if perr != nil {
+			return Crawl{}, fmt.Errorf("config: CRAWL_INCLUDE_BODY %q: %w", v, perr)
+		}
+		includeBody = b
+	}
+
+	return Crawl{
+		Categories:  categories,
+		Project:     project,
+		Corpus:      corpus,
+		MaxDepth:    maxDepth,
+		MaxPages:    maxPages,
+		IncludeBody: includeBody,
+	}, nil
 }
 
 // intEnv reads an integer environment variable, applying fallback when unset

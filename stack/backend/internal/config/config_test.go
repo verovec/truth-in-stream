@@ -1202,3 +1202,118 @@ func TestCheckWorthinessActive(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCrawl(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics, Category:Chemistry")
+	t.Setenv("CRAWL_PROJECT", "simplewiki")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if got, want := len(c.Categories), 2; got != want {
+		t.Fatalf("categories = %d, want %d", got, want)
+	}
+	if c.Categories[0] != "Category:Physics" || c.Categories[1] != "Category:Chemistry" {
+		t.Errorf("categories = %v, want trimmed pair", c.Categories)
+	}
+	if c.Corpus != "simplewiki-crawl" {
+		t.Errorf("corpus = %q, want simplewiki-crawl", c.Corpus)
+	}
+	if c.Project != "simplewiki" {
+		t.Errorf("project = %q, want simplewiki", c.Project)
+	}
+	if c.MaxDepth != 1 || c.MaxPages != 5000 || !c.IncludeBody {
+		t.Errorf("defaults wrong: depth=%d pages=%d body=%v", c.MaxDepth, c.MaxPages, c.IncludeBody)
+	}
+}
+
+func TestLoadCrawlRequiresCategories(t *testing.T) {
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl with no CRAWL_CATEGORIES = nil error, want error")
+	}
+}
+
+func TestLoadCrawlBlankCategories(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", " , ,")
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl with only blank categories = nil error, want error")
+	}
+}
+
+func TestLoadCrawlCorpusOverride(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_PROJECT", "simplewiki")
+	t.Setenv("CRAWL_CORPUS", "custom-corpus")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.Corpus != "custom-corpus" {
+		t.Errorf("corpus = %q, want custom-corpus", c.Corpus)
+	}
+}
+
+func TestLoadCrawlIncludeBodyFalse(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_INCLUDE_BODY", "false")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.IncludeBody {
+		t.Error("IncludeBody = true, want false")
+	}
+}
+
+func TestLoadCrawlInvalidIncludeBody(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_INCLUDE_BODY", "notabool")
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl with bad CRAWL_INCLUDE_BODY = nil error, want error")
+	}
+}
+
+func TestLoadCrawlQueueDefaultName(t *testing.T) {
+	t.Setenv("RABBITMQ_URL", "amqp://localhost")
+	q, err := LoadCrawlQueue()
+	if err != nil {
+		t.Fatalf("LoadCrawlQueue: %v", err)
+	}
+	if q.VersionedName() != "crawl.chunks.v1" {
+		t.Errorf("VersionedName = %q, want crawl.chunks.v1", q.VersionedName())
+	}
+}
+
+func TestLoadCrawlQueueOverrideName(t *testing.T) {
+	t.Setenv("RABBITMQ_URL", "amqp://localhost")
+	t.Setenv("RABBITMQ_CRAWL_QUEUE", "my.crawl")
+	q, err := LoadCrawlQueue()
+	if err != nil {
+		t.Fatalf("LoadCrawlQueue: %v", err)
+	}
+	if q.VersionedName() != "my.crawl.v1" {
+		t.Errorf("VersionedName = %q, want my.crawl.v1", q.VersionedName())
+	}
+}
+
+func TestLoadCrawlWorkerDefaults(t *testing.T) {
+	w, err := LoadCrawlWorker()
+	if err != nil {
+		t.Fatalf("LoadCrawlWorker: %v", err)
+	}
+	if w.Concurrency != 4 || w.MaxAttempts != 5 {
+		t.Errorf("defaults wrong: concurrency=%d attempts=%d", w.Concurrency, w.MaxAttempts)
+	}
+}
+
+func TestLoadCrawlWorkerOverrides(t *testing.T) {
+	t.Setenv("CRAWL_WORKER_CONCURRENCY", "8")
+	t.Setenv("CRAWL_WORKER_MAX_ATTEMPTS", "9")
+	w, err := LoadCrawlWorker()
+	if err != nil {
+		t.Fatalf("LoadCrawlWorker: %v", err)
+	}
+	if w.Concurrency != 8 || w.MaxAttempts != 9 {
+		t.Errorf("overrides wrong: concurrency=%d attempts=%d", w.Concurrency, w.MaxAttempts)
+	}
+}
