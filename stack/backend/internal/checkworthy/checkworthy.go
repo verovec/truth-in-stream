@@ -9,19 +9,20 @@
 // The judgment is a classification, not generation, so it runs on the smallest
 // fast model (Haiku) at temperature zero and forces a single structured tool
 // call rather than parsing free text - a one-word reply is fragile under load, a
-// forced tool call guarantees the schema. Any adapter error is the caller's to
-// absorb: the cascade that wraps this adapter degrades to its heuristic decision
-// on error, so this package never decides the gate's outcome on its own.
+// forced tool call guarantees the schema. The shared transport lives in
+// internal/llm; this package supplies only the prompt, tool schema, and verdict
+// type. Any adapter error is the caller's to absorb: the cascade that wraps this
+// adapter degrades to its heuristic decision on error, so this package never
+// decides the gate's outcome on its own.
 package checkworthy
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
 // defaultModel is the cheapest, fastest current Claude model, suitable for a
@@ -59,27 +60,23 @@ type Config struct {
 
 // Client is the Anthropic-backed CheckWorthinessClassifier adapter.
 type Client struct {
-	llm   anthropic.Client
-	model anthropic.Model
+	llm *llm.Client
 }
 
 // New builds a Client, failing when no API key is supplied (the feature is gated
 // off upstream when unconfigured, so reaching here without a key is a wiring
-// error). Extra request options (e.g. a test base URL) are appended after the
-// key, so a caller can point the client at a fake server.
+// error). Extra request options (e.g. a test base URL) are forwarded to the
+// shared transport, so a caller can point the client at a fake server.
 func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
-	if cfg.APIKey == "" {
-		return nil, errors.New("checkworthy: api key is required")
-	}
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
 	}
-	clientOpts := append([]option.RequestOption{option.WithAPIKey(cfg.APIKey)}, opts...)
-	return &Client{
-		llm:   anthropic.NewClient(clientOpts...),
-		model: anthropic.Model(model),
-	}, nil
+	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("checkworthy: %w", err)
+	}
+	return &Client{llm: client}, nil
 }
 
 // verdict is the forced tool's structured input.
@@ -94,10 +91,13 @@ type verdict struct {
 // malformed input) is returned as an error for the caller to degrade to its
 // heuristic decision - this method never panics or blocks the live path.
 func (c *Client) CheckWorthy(ctx context.Context, text string) (bool, error) {
-	tool := anthropic.ToolParam{
-		Name:        toolName,
-		Description: anthropic.String("Record whether the statement is a check-worthy public factual claim."),
-		InputSchema: anthropic.ToolInputSchemaParam{
+	v, err := llm.Classify[verdict](ctx, c.llm, llm.Request{
+		System:    systemPrompt,
+		User:      "Statement: " + text,
+		MaxTokens: maxTokens,
+		Tool: llm.Tool{
+			Name:        toolName,
+			Description: "Record whether the statement is a check-worthy public factual claim.",
 			Properties: map[string]any{
 				"check_worthy": map[string]any{
 					"type":        "boolean",
@@ -110,33 +110,9 @@ func (c *Client) CheckWorthy(ctx context.Context, text string) (bool, error) {
 			},
 			Required: []string{"check_worthy", "reason"},
 		},
-	}
-
-	msg, err := c.llm.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:       c.model,
-		MaxTokens:   maxTokens,
-		Temperature: anthropic.Float(0),
-		System:      []anthropic.TextBlockParam{{Text: systemPrompt}},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock("Statement: " + text)),
-		},
-		Tools:      []anthropic.ToolUnionParam{{OfTool: &tool}},
-		ToolChoice: anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{Name: toolName}},
 	})
 	if err != nil {
-		return false, fmt.Errorf("checkworthy: classify: %w", err)
+		return false, fmt.Errorf("checkworthy: %w", err)
 	}
-
-	for _, block := range msg.Content {
-		tu, ok := block.AsAny().(anthropic.ToolUseBlock)
-		if !ok || tu.Name != toolName {
-			continue
-		}
-		var v verdict
-		if err := json.Unmarshal(tu.Input, &v); err != nil {
-			return false, fmt.Errorf("checkworthy: decode verdict: %w", err)
-		}
-		return v.CheckWorthy, nil
-	}
-	return false, errors.New("checkworthy: response carried no record_check_worthiness tool call")
+	return v.CheckWorthy, nil
 }

@@ -8,18 +8,19 @@
 // The judgment is a classification, not generation, so it runs on the smallest
 // fast model (Haiku) and forces a single structured tool call rather than
 // parsing free text - a one-word reply is fragile under load, a forced tool
-// call guarantees the schema. Any adapter error is the caller's to absorb as
-// "no flag"; this package never decides the live session's fate.
+// call guarantees the schema. The shared transport lives in internal/llm; this
+// package supplies only the prompt, tool schema, and verdict type. Any adapter
+// error is the caller's to absorb as "no flag"; this package never decides the
+// live session's fate.
 package stance
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
 // defaultModel is the cheapest, fastest current Claude model, suitable for a
@@ -54,27 +55,23 @@ type Config struct {
 
 // Client is the Anthropic-backed StanceClassifier adapter.
 type Client struct {
-	llm   anthropic.Client
-	model anthropic.Model
+	llm *llm.Client
 }
 
 // New builds a Client, failing when no API key is supplied (the feature is
 // gated off upstream when unconfigured, so reaching here without a key is a
-// wiring error). Extra request options (e.g. a test base URL) are appended
-// after the key, so a caller can point the client at a fake server.
+// wiring error). Extra request options (e.g. a test base URL) are forwarded to
+// the shared transport, so a caller can point the client at a fake server.
 func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
-	if cfg.APIKey == "" {
-		return nil, errors.New("stance: api key is required")
-	}
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
 	}
-	clientOpts := append([]option.RequestOption{option.WithAPIKey(cfg.APIKey)}, opts...)
-	return &Client{
-		llm:   anthropic.NewClient(clientOpts...),
-		model: anthropic.Model(model),
-	}, nil
+	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("stance: %w", err)
+	}
+	return &Client{llm: client}, nil
 }
 
 // verdict is the forced tool's structured input.
@@ -89,10 +86,13 @@ type verdict struct {
 // missing tool block, malformed input) is returned as an error for the caller
 // to degrade to "no flag" - this method never panics or blocks the live path.
 func (c *Client) Contradicts(ctx context.Context, earlier, later string) (bool, string, error) {
-	tool := anthropic.ToolParam{
-		Name:        toolName,
-		Description: anthropic.String("Record whether statement two contradicts statement one."),
-		InputSchema: anthropic.ToolInputSchemaParam{
+	v, err := llm.Classify[verdict](ctx, c.llm, llm.Request{
+		System:    systemPrompt,
+		User:      fmt.Sprintf("Statement one (earlier): %s\n\nStatement two (later): %s", earlier, later),
+		MaxTokens: maxTokens,
+		Tool: llm.Tool{
+			Name:        toolName,
+			Description: "Record whether statement two contradicts statement one.",
 			Properties: map[string]any{
 				"contradicts": map[string]any{
 					"type":        "boolean",
@@ -105,37 +105,12 @@ func (c *Client) Contradicts(ctx context.Context, earlier, later string) (bool, 
 			},
 			Required: []string{"contradicts", "rationale"},
 		},
-	}
-
-	msg, err := c.llm.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     c.model,
-		MaxTokens: maxTokens,
-		System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(
-				fmt.Sprintf("Statement one (earlier): %s\n\nStatement two (later): %s", earlier, later),
-			)),
-		},
-		Tools:      []anthropic.ToolUnionParam{{OfTool: &tool}},
-		ToolChoice: anthropic.ToolChoiceUnionParam{OfTool: &anthropic.ToolChoiceToolParam{Name: toolName}},
 	})
 	if err != nil {
-		return false, "", fmt.Errorf("stance: classify: %w", err)
+		return false, "", fmt.Errorf("stance: %w", err)
 	}
-
-	for _, block := range msg.Content {
-		tu, ok := block.AsAny().(anthropic.ToolUseBlock)
-		if !ok || tu.Name != toolName {
-			continue
-		}
-		var v verdict
-		if err := json.Unmarshal(tu.Input, &v); err != nil {
-			return false, "", fmt.Errorf("stance: decode verdict: %w", err)
-		}
-		if !v.Contradicts {
-			return false, "", nil
-		}
-		return true, v.Rationale, nil
+	if !v.Contradicts {
+		return false, "", nil
 	}
-	return false, "", errors.New("stance: response carried no record_contradiction tool call")
+	return true, v.Rationale, nil
 }
