@@ -21,10 +21,11 @@ import (
 // succeeds (echoing a one-dim marker). The failing calls return failErr when
 // set, otherwise an APIError of the given status.
 type fakeDoc struct {
-	calls     int
-	failTimes int
-	status    int
-	failErr   error
+	calls      int
+	failTimes  int
+	status     int
+	failErr    error
+	retryAfter time.Duration
 }
 
 func (f *fakeDoc) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
@@ -33,7 +34,7 @@ func (f *fakeDoc) EmbedDocuments(_ context.Context, texts []string) ([][]float32
 		if f.failErr != nil {
 			return nil, f.failErr
 		}
-		return nil, &APIError{StatusCode: f.status}
+		return nil, &APIError{StatusCode: f.status, RetryAfter: f.retryAfter}
 	}
 	out := make([][]float32, len(texts))
 	for i := range texts {
@@ -99,6 +100,47 @@ func TestRetryExhaustsAttemptsOnPersistentRateLimit(t *testing.T) {
 		}
 		if f.calls != 5 {
 			t.Errorf("calls = %d, want 5 (MaxAttempts)", f.calls)
+		}
+	})
+}
+
+func TestRetryHonoursRetryAfter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// The provider returns a 429 with a Retry-After far longer than the
+		// exponential base delay would pick. The decorator must wait at least the
+		// server-requested back-off (not its own smaller guess), plus up to one
+		// BaseDelay of jitter to de-sync a throttled fleet.
+		const retryAfter = 25 * time.Second
+		const baseDelay = time.Second
+		f := &fakeDoc{failTimes: 1, status: http.StatusTooManyRequests, retryAfter: retryAfter}
+		rc := WithRetry(f, RetryConfig{MaxAttempts: 5, BaseDelay: baseDelay, MaxDelay: time.Minute})
+
+		start := time.Now()
+		if _, err := rc.EmbedDocuments(t.Context(), []string{"x"}); err != nil {
+			t.Fatalf("EmbedDocuments: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < retryAfter || elapsed > retryAfter+baseDelay {
+			t.Errorf("waited %s, want within [%s, %s] (Retry-After floor + jitter)", elapsed, retryAfter, retryAfter+baseDelay)
+		}
+		if f.calls != 2 {
+			t.Errorf("calls = %d, want 2 (one 429 then success)", f.calls)
+		}
+	})
+}
+
+func TestRetryCapsRetryAfterAtMaxDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// A Retry-After beyond MaxDelay is clamped to MaxDelay so a hostile or
+		// stuck header cannot stall the run past its ceiling.
+		f := &fakeDoc{failTimes: 1, status: http.StatusTooManyRequests, retryAfter: time.Hour}
+		rc := WithRetry(f, RetryConfig{MaxAttempts: 5, BaseDelay: time.Second, MaxDelay: 30 * time.Second})
+
+		start := time.Now()
+		if _, err := rc.EmbedDocuments(t.Context(), []string{"x"}); err != nil {
+			t.Fatalf("EmbedDocuments: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed != 30*time.Second {
+			t.Errorf("waited %s, want MaxDelay 30s", elapsed)
 		}
 	})
 }

@@ -68,14 +68,26 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	// Prefetch tracks the worker's concurrency so the broker keeps each replica's
-	// slots filled without handing it a backlog it cannot work in parallel.
+	// Prefetch sizes the broker's in-flight window to a full batch per concurrent
+	// slot, so each replica can fill every batch it embeds in parallel without
+	// handing it a backlog it cannot work. The product is computed in int64 and
+	// clamped to AMQP's 16-bit prefetch_count ceiling, so an extreme
+	// concurrency x batch_size cannot overflow or exceed what the wire allows.
+	const maxPrefetch = 65535
+	prefetch64 := int64(workerCfg.Concurrency) * int64(workerCfg.BatchSize)
+	if prefetch64 < 1 {
+		prefetch64 = 1
+	}
+	if prefetch64 > maxPrefetch {
+		prefetch64 = maxPrefetch
+	}
+	prefetch := int(prefetch64)
 	client, err := queue.New(queue.Config{
 		URL:         queueCfg.URL,
 		QueueName:   queueCfg.VersionedName(),
 		Version:     queueCfg.Version,
 		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    workerCfg.Concurrency,
+		Prefetch:    prefetch,
 	})
 	if err != nil {
 		return err
@@ -88,12 +100,20 @@ func run(logger *slog.Logger) error {
 		qStream{client: client},
 		qEnqueuer{client: client},
 		logger,
-		embedjob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
+		embedjob.Config{
+			Concurrency:   workerCfg.Concurrency,
+			BatchSize:     workerCfg.BatchSize,
+			BatchWait:     workerCfg.BatchWait,
+			MaxAttempts:   workerCfg.MaxAttempts,
+			KnownVersions: queueCfg.KnownVersions,
+		},
 	)
 
 	logger.InfoContext(ctx, "embedding worker started",
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
+		slog.Int("batch_size", workerCfg.BatchSize),
+		slog.Duration("batch_wait", workerCfg.BatchWait),
 		slog.Int("max_attempts", workerCfg.MaxAttempts))
 	if err := worker.Run(ctx); err != nil {
 		return err

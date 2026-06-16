@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -54,9 +56,13 @@ type writeRec struct {
 	pageID     int64
 	chunkIndex int
 	embedding  []float32
+	staging    bool
 }
 
-// fakeStore records every write and returns a fixed (updated, err).
+// fakeStore records every write. updated controls whether the batch reports its
+// rows matched (the normal case) or zero (an obsolete job); err forces a write
+// failure. Both batch methods funnel through record so a test can assert which
+// corpus a job was routed to via the staging flag on each writeRec.
 type fakeStore struct {
 	mu      sync.Mutex
 	writes  []writeRec
@@ -64,11 +70,27 @@ type fakeStore struct {
 	err     error
 }
 
-func (f *fakeStore) SetStagingChunkEmbedding(_ context.Context, pageID int64, chunkIndex int, embedding []float32) (bool, error) {
+func (f *fakeStore) SetLiveChunkEmbeddings(_ context.Context, chunks []domain.WikiChunk) (int, error) {
+	return f.record(chunks, false)
+}
+
+func (f *fakeStore) SetStagingChunkEmbeddings(_ context.Context, chunks []domain.WikiChunk) (int, error) {
+	return f.record(chunks, true)
+}
+
+func (f *fakeStore) record(chunks []domain.WikiChunk, staging bool) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.writes = append(f.writes, writeRec{pageID, chunkIndex, embedding})
-	return f.updated, f.err
+	for _, c := range chunks {
+		f.writes = append(f.writes, writeRec{c.PageID, c.ChunkIndex, c.Embedding, staging})
+	}
+	if f.err != nil {
+		return 0, f.err
+	}
+	if !f.updated {
+		return 0, nil
+	}
+	return len(chunks), nil
 }
 
 func (f *fakeStore) recorded() []writeRec {
@@ -496,7 +518,9 @@ func TestRunBoundsConcurrency(t *testing.T) {
 	for i := range deliveries {
 		deliveries[i] = &recDelivery{body: mustJob(t, Job{PageID: int64(i + 1), ChunkIndex: 0, Content: "x"}), priority: 5}
 	}
-	w := NewWorker(emb, st, &sliceStream{deliveries}, &recEnqueuer{}, slog.New(slog.DiscardHandler), Config{Concurrency: limit, MaxAttempts: 3})
+	// BatchSize 1 makes each delivery its own batch, so the test observes the
+	// loop's concurrency over batches directly.
+	w := NewWorker(emb, st, &sliceStream{deliveries}, &recEnqueuer{}, slog.New(slog.DiscardHandler), Config{Concurrency: limit, BatchSize: 1, MaxAttempts: 3})
 
 	done := make(chan error, 1)
 	go func() { done <- w.Run(t.Context()) }()
@@ -550,5 +574,250 @@ func (b *blockingEmbedder) EmbedDocuments(_ context.Context, texts []string) ([]
 	for i := range texts {
 		out[i] = b.vec
 	}
+	return out, nil
+}
+
+// --- Batching ---
+
+func recDeliveries(t *testing.T, n int, staging bool) []Delivery {
+	t.Helper()
+	out := make([]Delivery, n)
+	for i := range out {
+		out[i] = &recDelivery{body: mustJob(t, Job{PageID: int64(i + 1), ChunkIndex: 0, Content: "c", Staging: staging}), priority: 5}
+	}
+	return out
+}
+
+func assertAllAcked(t *testing.T, deliveries []Delivery) {
+	t.Helper()
+	for i, d := range deliveries {
+		acked, nacked, _ := d.(*recDelivery).state()
+		if !acked || nacked {
+			t.Fatalf("delivery %d acked=%v nacked=%v, want acked", i, acked, nacked)
+		}
+	}
+}
+
+// TestRunEmbedsWholeBatchInOneCall is the throughput property: a batch of N
+// chunks costs one provider round-trip, not N.
+func TestRunEmbedsWholeBatchInOneCall(t *testing.T) {
+	t.Parallel()
+	const n = 5
+	deliveries := recDeliveries(t, n, false)
+	emb := &fakeEmbedder{vec: testVec(1)}
+	st := &fakeStore{updated: true}
+	// A long BatchWait makes the stream close, not the timer, trigger the flush,
+	// so the assertion on a single call is deterministic.
+	w := NewWorker(emb, st, &sliceStream{deliveries}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 2, BatchSize: 16, BatchWait: time.Minute, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := emb.calls.Load(); got != 1 {
+		t.Fatalf("embed calls = %d, want 1 (the whole batch embeds in one call)", got)
+	}
+	if got := len(st.recorded()); got != n {
+		t.Fatalf("writes = %d, want %d", got, n)
+	}
+	assertAllAcked(t, deliveries)
+}
+
+// TestRunRoutesStagingFlagToCorpus proves the worker writes a default job into
+// the live corpus and a Staging job into staging, so the fleet serves both the
+// bulk-into-live default and an atomic rebuild.
+func TestRunRoutesStagingFlagToCorpus(t *testing.T) {
+	t.Parallel()
+	live := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "live"}), priority: 5}
+	staged := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "stage", Staging: true}), priority: 5}
+	emb := &fakeEmbedder{vec: testVec(1)}
+	st := &fakeStore{updated: true}
+	w := NewWorker(emb, st, &sliceStream{[]Delivery{live, staged}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, BatchSize: 16, BatchWait: time.Minute, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	writes := st.recorded()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want 2", len(writes))
+	}
+	for _, wr := range writes {
+		switch wr.pageID {
+		case 1:
+			if wr.staging {
+				t.Errorf("page 1 routed to staging, want live")
+			}
+		case 2:
+			if !wr.staging {
+				t.Errorf("page 2 routed to live, want staging")
+			}
+		}
+	}
+}
+
+// batchFailEmbedder fails any multi-input call (mimicking a hung batch endpoint)
+// but succeeds on single inputs, so a test can prove the per-chunk fallback.
+type batchFailEmbedder struct {
+	vec        []float32
+	batchCalls atomic.Int32
+}
+
+func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
+	if len(texts) > 1 {
+		e.batchCalls.Add(1)
+		return nil, errors.New("batch endpoint hung")
+	}
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = e.vec
+	}
+	return out, nil
+}
+
+// TestRunBatchEmbedErrorFallsBackToPerChunk proves a batch-level embed failure
+// degrades to embedding each delivery alone rather than failing the whole batch.
+func TestRunBatchEmbedErrorFallsBackToPerChunk(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	deliveries := recDeliveries(t, n, false)
+	emb := &batchFailEmbedder{vec: testVec(1)}
+	st := &fakeStore{updated: true}
+	enq := &recEnqueuer{}
+	w := NewWorker(emb, st, &sliceStream{deliveries}, enq, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, BatchSize: 16, BatchWait: time.Minute, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := emb.batchCalls.Load(); got != 1 {
+		t.Fatalf("batch calls = %d, want 1 (one failed whole-batch attempt)", got)
+	}
+	if got := len(st.recorded()); got != n {
+		t.Fatalf("writes = %d, want %d (each embedded per-chunk on fallback)", got, n)
+	}
+	if enq.count() != 0 {
+		t.Fatalf("enqueue count = %d, want 0 (fallback succeeded, no retries)", enq.count())
+	}
+	assertAllAcked(t, deliveries)
+}
+
+// shapeEmbedder returns a wrong-dimension vector for one input and a good one
+// for the rest, so a test can prove one poison shape is dropped without sinking
+// its batch-mates.
+type shapeEmbedder struct {
+	vec        []float32
+	badContent string
+}
+
+func (e *shapeEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, txt := range texts {
+		if txt == e.badContent {
+			out[i] = []float32{1, 2, 3}
+			continue
+		}
+		out[i] = e.vec
+	}
+	return out, nil
+}
+
+func TestRunBatchDropsBadShapeKeepsRest(t *testing.T) {
+	t.Parallel()
+	good1 := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "g1"}), priority: 5}
+	bad := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "bad"}), priority: 5}
+	good2 := &recDelivery{body: mustJob(t, Job{PageID: 3, ChunkIndex: 0, Content: "g2"}), priority: 5}
+	emb := &shapeEmbedder{vec: testVec(1), badContent: "bad"}
+	st := &fakeStore{updated: true}
+	w := NewWorker(emb, st, &sliceStream{[]Delivery{good1, bad, good2}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, BatchSize: 16, BatchWait: time.Minute, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	writes := st.recorded()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want 2 (the bad-shape chunk is never written)", len(writes))
+	}
+	for _, wr := range writes {
+		if wr.pageID == 2 {
+			t.Errorf("bad-shape chunk page 2 was written")
+		}
+	}
+	// All three deliveries are acked: the two good written, the bad dropped.
+	assertAllAcked(t, []Delivery{good1, bad, good2})
+}
+
+func TestRunBatchWriteFailureRepublishesJobs(t *testing.T) {
+	t.Parallel()
+	const n = 3
+	deliveries := recDeliveries(t, n, false)
+	emb := &fakeEmbedder{vec: testVec(1)}
+	st := &fakeStore{err: errors.New("db down")}
+	enq := &recEnqueuer{}
+	w := NewWorker(emb, st, &sliceStream{deliveries}, enq, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, BatchSize: 16, BatchWait: time.Minute, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if enq.count() != n {
+		t.Fatalf("enqueue count = %d, want %d (a write failure re-enqueues each job)", enq.count(), n)
+	}
+	assertAllAcked(t, deliveries)
+}
+
+// TestRunBatchWaitFlushesPartialBatch proves the max-wait window: a batch that
+// never fills is embedded once the window elapses, so a quiet queue still drains.
+func TestRunBatchWaitFlushesPartialBatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d1 := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "a"}), priority: 5}
+		d2 := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "b"}), priority: 5}
+		emb := &fakeEmbedder{vec: testVec(1)}
+		st := &fakeStore{updated: true}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		w := NewWorker(emb, st, &openStream{[]Delivery{d1, d2}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
+			Config{Concurrency: 1, BatchSize: 16, BatchWait: 200 * time.Millisecond, MaxAttempts: 3})
+
+		done := make(chan error, 1)
+		go func() { done <- w.Run(ctx) }()
+
+		// Both deliveries are collected but the batch is not full; advancing the
+		// fake clock past the wait window fires the timer, and Wait then lets the
+		// flush and embed complete before the assertion.
+		time.Sleep(250 * time.Millisecond)
+		synctest.Wait()
+		if got := emb.calls.Load(); got != 1 {
+			t.Fatalf("embed calls = %d, want 1 (partial batch flushed on the wait window)", got)
+		}
+		assertAllAcked(t, []Delivery{d1, d2})
+
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	})
+}
+
+// openStream emits its deliveries then stays open until ctx is canceled, so a
+// test can exercise the wait-window flush on a stream that has not closed.
+type openStream struct {
+	deliveries []Delivery
+}
+
+func (s *openStream) Consume(ctx context.Context) (<-chan Delivery, error) {
+	out := make(chan Delivery)
+	go func() {
+		defer close(out)
+		for _, d := range s.deliveries {
+			select {
+			case out <- d:
+			case <-ctx.Done():
+				return
+			}
+		}
+		<-ctx.Done()
+	}()
 	return out, nil
 }

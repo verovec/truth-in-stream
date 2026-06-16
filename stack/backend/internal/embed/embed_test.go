@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -161,5 +162,55 @@ func TestEmbedRejectsCountMismatch(t *testing.T) {
 
 	if _, err := client.EmbedDocuments(t.Context(), []string{"a", "b"}); err == nil {
 		t.Fatal("want count-mismatch error, got nil")
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"seconds", "30", 30 * time.Second},
+		{"seconds with spaces", "  5 ", 5 * time.Second},
+		{"zero seconds", "0", 0},
+		{"negative seconds", "-3", 0},
+		{"garbage", "soon", 0},
+		{"future http date", now.Add(45 * time.Second).UTC().Format(http.TimeFormat), 45 * time.Second},
+		{"past http date", now.Add(-time.Minute).UTC().Format(http.TimeFormat), 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseRetryAfter(tc.header, now); got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.header, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmbedDocumentsPopulatesRetryAfterOn429(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := newTestClient(t, srv)
+
+	_, err := client.EmbedDocuments(t.Context(), []string{"x"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", apiErr.StatusCode)
+	}
+	if apiErr.RetryAfter != 12*time.Second {
+		t.Errorf("RetryAfter = %s, want 12s", apiErr.RetryAfter)
 	}
 }

@@ -136,12 +136,12 @@ services:
       # `make refresh-embeddings` to rebuild the committed seed cache.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
-      # Producer (bulk) tuning (optional; empty uses the binary defaults).
-      # WIKI_ENQUEUE_BATCH_SIZE is the staging page size while publishing.
-      # WIKI_DRAIN_POLL_INTERVAL/WIKI_DRAIN_STALL_TIMEOUT bound the wait for the
-      # fleet to finish: the run aborts if the remaining count stalls for the
-      # timeout, so a dead or absent fleet cannot hang the producer. Raise the
-      # stall timeout for a slow or rate-limited Voyage tier.
+      # Producer tuning (optional; empty uses the binary defaults).
+      # WIKI_ENQUEUE_BATCH_SIZE is the page size while publishing. The default
+      # bulk-into-live ingest publishes and exits (the fleet fills the live corpus
+      # in place, no swap). WIKI_DRAIN_POLL_INTERVAL/WIKI_DRAIN_STALL_TIMEOUT bound
+      # the fleet-drain wait only on an -atomic build, which aborts if the remaining
+      # count stalls for the timeout so a dead fleet cannot hang the swap.
       WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
       WIKI_DRAIN_POLL_INTERVAL: "${WIKI_DRAIN_POLL_INTERVAL:-}"
       WIKI_DRAIN_STALL_TIMEOUT: "${WIKI_DRAIN_STALL_TIMEOUT:-}"
@@ -227,8 +227,9 @@ services:
       retries: 10
 
   # Embedding worker fleet. Drains prioritized embedding jobs from the broker,
-  # embeds each chunk through Voyage, and writes the vector into the staging
-  # corpus; higher-priority chunks are embedded first. It is the local mirror of
+  # embeds a batch of chunks per Voyage call, and writes the vectors back in
+  # place - into the live corpus by default (bulk-into-live), or the staging table
+  # for an -atomic build; higher-priority chunks are embedded first. Local mirror of
   # the production worker service and scales horizontally - run several replicas
   # with `docker compose --profile wiki up --scale embedworker=4`. It lives under
   # the "wiki" profile because the corpus ingest is what publishes its jobs, so a

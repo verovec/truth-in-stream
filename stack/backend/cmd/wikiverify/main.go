@@ -1,10 +1,13 @@
-// Command wikiverify checks that the live wiki corpus is fully and correctly
-// rebuilt: it has chunks, every chunk carries a non-null, non-zero,
-// 1024-dimension embedding, the per-chunk metadata is populated, and the HNSW
-// index is present and valid. It is the verification step of the full reingest:
-// it logs each check with concrete counts and exits non-zero the moment any
-// check fails, so an incomplete or stale rebuild is caught loudly rather than
-// served. The database comes from DATABASE_URL.
+// Command wikiverify checks that the live wiki corpus is correct and reports how
+// far its embedding has progressed. It gates on consistency over the embedded
+// rows - it has chunks, no embedded chunk is a zero vector, the embedding column
+// is exactly halfvec(1024), the per-chunk metadata is populated, and the HNSW
+// index is present and valid - and reports embedded coverage as progress rather
+// than failing on it. With bulk-into-live ingestion the corpus is usable and
+// correct while it fills in, so "100% embedded" is no longer a usability gate; a
+// real defect (a zero vector, a wrong dimension, a missing index) still exits
+// non-zero so a broken corpus is caught loudly rather than served. The database
+// comes from DATABASE_URL.
 package main
 
 import (
@@ -65,9 +68,21 @@ type check struct {
 // verifier reports. It is pure so the pass/fail decision is unit-tested without a
 // database.
 func evaluate(h domain.WikiCorpusHealth) []check {
+	embedded := h.Chunks - h.NullEmbeddings
+	coverage := 0.0
+	if h.Chunks > 0 {
+		coverage = 100 * float64(embedded) / float64(h.Chunks)
+	}
 	return []check{
 		{"chunks present", h.Chunks > 0, fmt.Sprintf("%d chunks", h.Chunks)},
-		{"all chunks embedded", h.NullEmbeddings == 0, fmt.Sprintf("%d chunks with a null embedding", h.NullEmbeddings)},
+		// Embedded coverage is progress, never a gate: a bulk-into-live corpus is
+		// usable and correct while the fleet fills it in, so verification reports how
+		// far along it is rather than requiring 100% embedded. ok is always true.
+		{"embedded coverage", true, fmt.Sprintf("%d/%d chunks embedded (%.1f%%)", embedded, h.Chunks, coverage)},
+		// The consistency gates below scope to the embedded rows (the zero-vector
+		// check filters out NULLs; the dimension is the column type that binds every
+		// row), so a partially embedded corpus passes as long as what is embedded is
+		// sound.
 		{"no zero-vector embeddings", h.ZeroVectors == 0, fmt.Sprintf("%d zero-vector embeddings", h.ZeroVectors)},
 		{"embedding dimension 1024", h.EmbeddingType == "halfvec(1024)", fmt.Sprintf("embedding column is %q", h.EmbeddingType)},
 		{"per-chunk metadata populated", h.MissingMetadata == 0, fmt.Sprintf("%d chunks with an invalid kind", h.MissingMetadata)},

@@ -17,15 +17,19 @@ How the Wikipedia evidence corpus is built, embedded, and kept consistent in Pos
 
 | Component | Code | Role |
 |-----------|------|------|
-| **Producer** | `cmd/wikisync` + `internal/wiki` | Download dump, chunk lead sections, upsert to staging, publish embed jobs, wait for drain, swap live. |
+| **Producer** | `cmd/wikisync` + `internal/wiki` | Download dump, chunk lead sections, upsert **straight into the live table** (embedding NULL), publish one embed job per chunk. The opt-in `-atomic` mode builds a staging table and swaps it in instead. |
 | **Broker** | RabbitMQ (`internal/queue`) | One durable, version-suffixed, priority work queue. |
-| **Consumer fleet** | `cmd/embedworker` + `internal/embedjob` + `internal/embed` | Competing consumers; embed each chunk via Voyage and write the vector to staging. |
-| **Store** | `internal/store/postgres` + pgvector | `wiki_chunks` live table, `wiki_chunks_staging` build table, `wiki_sync_state` checkpoint. |
+| **Consumer fleet** | `cmd/embedworker` + `internal/embedjob` + `internal/embed` | Competing consumers; **buffer a batch of chunks, embed them in one Voyage call**, and write the vectors back in place - into the live table by default, or staging for an atomic build. |
+| **Store** | `internal/store/postgres` + pgvector | `wiki_chunks` live table, `wiki_chunks_staging` build table (atomic mode only), `wiki_sync_state` checkpoint. |
 | **Clusterer** | `cmd/wikicluster` + `internal/cluster` | Spherical k-means over the embedded vectors; writes `cluster_id` + `importance` (priority hints for the next ingest). |
-| **Verifier** | `cmd/wikiverify` + `internal/store/postgres/wiki_verify.go` | Asserts the live corpus is complete and consistent; exits non-zero otherwise. |
-| **Embedding model** | Voyage `voyage-4-large` | 1024-dim, `halfvec(1024)`, HNSW cosine. `input_type=document` on ingest, `input_type=query` on search. |
+| **Verifier** | `cmd/wikiverify` + `internal/store/postgres/wiki_verify.go` | Gates consistency over the embedded rows and **reports embedded coverage as progress** (no longer requires 100% embedded); exits non-zero on a real defect. |
+| **Embedding model** | Voyage `voyage-4-large` | 1024-dim, `halfvec(1024)`, HNSW cosine. `input_type=document` on ingest, `input_type=query` on search. Up to 1000 inputs per request; the fleet batches well under that. |
 
 ### Topology
+
+Default (bulk-into-live): chunks land in the live table immediately and each becomes searchable
+the moment the fleet writes its vector, so the corpus grows monotonically and is queryable
+mid-ingest - no swap.
 
 ```mermaid
 flowchart LR
@@ -33,50 +37,73 @@ flowchart LR
     subgraph PROD["cmd/wikisync (producer)"]
       D["download + verify<br/>(Last-Modified)"]
       C["extract lead, chunk<br/>(256-512 tok)"]
-      U["upsert to wiki_chunks_staging<br/>(embedding NULL)"]
-      CF["carry-forward unchanged<br/>vectors from live"]
+      U["upsert to wiki_chunks (live)<br/>(embedding NULL; unchanged<br/>chunks keep their vector)"]
       P["publish 1 job/chunk<br/>(priority by importance)"]
     end
     Q[["RabbitMQ<br/>embedding.jobs.v&lt;n&gt;<br/>(priority queue)"]]
     subgraph FLEET["cmd/embedworker x N (competing consumers)"]
-      W1["worker 1"]
+      W1["worker 1<br/>(batched embed)"]
       W2["worker 2"]
       WN["worker N"]
     end
-    V["Voyage voyage-4-large<br/>input_type=document"]
-    ST[("wiki_chunks_staging<br/>halfvec(1024)")]
-    SWAP{{"drain == 0 ?<br/>build HNSW + atomic swap"}}
-    LIVE[("wiki_chunks (live)<br/>+ HNSW index")]
+    V["Voyage voyage-4-large<br/>input_type=document<br/>(batch per call)"]
+    LIVE[("wiki_chunks (live)<br/>halfvec(1024) + HNSW<br/>NULL rows invisible to search")]
 
-    DUMP --> D --> C --> U --> CF --> P --> Q
+    DUMP --> D --> C --> U --> P --> Q
     Q --> W1 & W2 & WN
-    W1 & W2 & WN --> V --> ST
-    ST -. poll COUNT(embedding IS NULL) .-> SWAP
-    SWAP -- yes --> LIVE
-    LIVE -. carry-forward .-> CF
+    W1 & W2 & WN --> V
+    V -- "UPDATE ... FROM unnest (in place)" --> LIVE
+    LIVE -. "search filters embedding IS NOT NULL" .-> LIVE
 ```
+
+The opt-in `-atomic` mode keeps the wholesale-cutover shape: ingest builds `wiki_chunks_staging`,
+carries forward unchanged vectors, the fleet drains it, then a single transaction builds the HNSW
+index and renames staging over live - readers see the old corpus until the swap commits. Use it
+for a breaking re-chunk where serving a mix of old and new chunks is unacceptable.
 
 ---
 
 ## 2. Modes
 
-`cmd/wikisync -mode=<bulk|delta|reset>` plus the `-dry-run` / `-publish-only` flags.
+`cmd/wikisync -mode=<bulk|delta|reset>` plus the `-dry-run` / `-publish-only` / `-atomic` flags.
 
 | Mode / flag | What it does | Touches broker? | Embeds where? |
 |-------------|--------------|-----------------|---------------|
-| **bulk** (default) | Full dump ingest into staging, publish jobs, wait for fleet to drain, build index, atomic swap live. | Yes | Fleet to staging |
-| **bulk `-dry-run`** | Ingest into staging, report token/cost estimate, **stop**. No publish, no embed, no swap. | No | - |
-| **bulk `-publish-only`** | Ingest + publish jobs, then **exit**. The consumer owns the drain + swap (cloud producer path). | Yes (publish only) | Fleet to staging |
+| **bulk** (default) | Bulk-into-live: ingest the dump straight into `wiki_chunks` (embedding NULL), record the checkpoint, publish one job per chunk, then **exit**. The fleet fills the vectors in place; the corpus is queryable throughout and grows monotonically. No staging, no swap. | Yes | Fleet to live, in place |
+| **bulk `-atomic`** | Build the corpus in `wiki_chunks_staging`, wait for the fleet to drain it, build the HNSW index, then atomically swap it over live. The wholesale-cutover path for a breaking re-chunk. | Yes | Fleet to staging |
+| **bulk `-dry-run`** | Report the token/cost estimate of the pending chunks and **stop** (no publish, no embed). With `-atomic` it stages first and estimates the full build; without it, it estimates what is still pending in the live corpus. | No | - |
+| **bulk `-atomic -publish-only`** | Atomic ingest + publish jobs, then **exit**. The consumer owns the drain + swap (cloud producer path). | Yes (publish only) | Fleet to staging |
 | **delta** | Ask MediaWiki RecentChanges what changed since the checkpoint; refetch + re-embed only those pages **inline**, delete removed pages, advance checkpoint. | No | Inline to live |
 | **reset** | Clear the live corpus and its checkpoint so the next bulk run rebuilds from scratch. | No | - |
 
-Mutually exclusive: `-publish-only` requires `-mode=bulk`; `-publish-only` and `-dry-run` cannot combine.
+Mutually exclusive / constraints: `-publish-only` and `-atomic` require `-mode=bulk`; `-publish-only`
+and `-dry-run` cannot combine. The default bulk-into-live ingest already publishes and exits, so
+`-publish-only` only changes an `-atomic` run (where it skips the drain and swap).
 
 `-max-duration=<dur>` caps wall-clock; the run stops cleanly and the committed prefix resumes on the next run.
 
 ---
 
 ## 3. End-to-end bulk flow
+
+### Default: bulk-into-live
+
+1. **Plan.** `StagingPlan()` reads the checkpoint; if the live version matches and 0 chunks are
+   un-embedded it is a no-op. Otherwise proceed.
+2. **Ingest in place.** Stream the dump and `UpsertChunks()` straight into `wiki_chunks` - new and
+   changed chunks land with `embedding` NULL, unchanged chunks keep their existing vector (the upsert
+   clears the vector only where content changed), and each page's stale chunk tail is trimmed. The live
+   HNSW index already exists; NULL rows are simply not in it, so search ignores them.
+3. **Checkpoint.** Record the dump version now serving. `liveCurrentAt` also requires 0 un-embedded
+   chunks, so a re-run resumes publishing the remainder until the fleet finishes.
+4. **Publish + exit.** `RunBulkLivePublish` pages the un-embedded live chunks and publishes one job per
+   chunk (stamped for the live corpus), then exits. The fleet embeds them in place; every vector written
+   makes its chunk searchable at once, so the corpus grows monotonically and is usable within minutes.
+
+There is no drain-wait and no swap: the corpus is already live. Use `make wiki-verify` to watch embedded
+coverage climb.
+
+### Opt-in: `-atomic` (stage-and-swap)
 
 ```mermaid
 sequenceDiagram
@@ -176,28 +203,41 @@ flowchart LR
   `VersionedName()`, e.g. `embedding.jobs.v1`. Every message carries an `x-queue-version` header.
 - **Not** one queue per worker. Every `embedworker` replica is a **competing consumer** on the same
   queue. Throughput scales with replica count.
-- **Prefetch / QoS** is set to the worker's concurrency (default 4), so each replica holds at most that
-  many unacked jobs - fair dispatch, no single slow worker hoarding a backlog.
+- **Prefetch / QoS** is sized to `concurrency x batch_size`, so each replica can fill every batch it
+  embeds in parallel - fair dispatch, no single slow worker hoarding more than its in-flight batches.
 - The only reason multiple queue names exist is the **versioned-queue convention**
   (`RABBITMQ_QUEUE_VERSIONS`, oldest-first): during a rolling deploy a new consumer can drain `v1` and
   `v2` while producers publish to the newest. These are versions of one logical queue, not per-worker
   queues.
 
-### Per-message lifecycle (`internal/embedjob`)
+### Per-batch lifecycle (`internal/embedjob`)
 
-1. Receive `Job{page_id, chunk_index, content, attempt}`.
-2. `EmbedDocuments([content])` yields one `float32[1024]` (`input_type=document`).
-3. `UPDATE wiki_chunks_staging SET embedding = $1::halfvec WHERE (page_id, chunk_index) = ...`.
-4. **Ack.**
-5. On a transient failure (embed or write): republish at the same priority with `attempt+1`, then ack the
-   original. After `EMBED_WORKER_MAX_ATTEMPTS` (default 5) the job is **logged and dropped** (no
-   dead-letter). On shutdown mid-work the delivery is `Nack`'d with requeue (attempt not incremented).
-6. If the `UPDATE` matches **no row** (staging already swapped away / chunk gone), the job is dropped as
-   obsolete - not retried.
+Each job is `Job{page_id, chunk_index, content, attempt, staging}`. The worker buffers deliveries up to
+`EMBED_WORKER_BATCH_SIZE` (default 128) or `EMBED_WORKER_BATCH_WAIT` (default 200ms), whichever comes
+first, then handles the batch:
 
-Below the job-retry layer, the embed client itself retries the Voyage call up to 6 times on HTTP 429 /
-network timeout with 1s-to-60s exponential backoff + jitter, paced by an optional per-replica rate limiter
-(`EMBED_WORKER_RPM`, default 0 = unpaced).
+1. Drop any message that can never succeed individually (unknown queue version, malformed, invalid) -
+   acked, so one poison message never sinks the batch.
+2. `EmbedDocuments([...])` embeds the **whole batch in one Voyage call**, paying the round-trip once per
+   batch instead of once per chunk. A wrong-shape vector for any chunk is dropped individually.
+3. Write the batch in **one** `UPDATE wiki_chunks ... FROM unnest($ids, $idxs, $contents, $vectors)` -
+   text-form `halfvec` (binary `COPY` corrupts the column). The join matches on **content** as well as
+   identity, so a vector is never attached to text it was not computed from (a chunk whose content
+   changed under a re-ingest simply does not match and waits for its fresh job). A job with `staging`
+   set writes to `wiki_chunks_staging` instead - that is how an `-atomic` build fills staging.
+4. **Ack** the whole batch.
+5. On a batch-level **embed** failure, fall back to embedding each chunk on its own, so a single bad
+   input fails alone while the rest succeed. On a **write** failure, re-enqueue each job at the same
+   priority with `attempt+1`. After `EMBED_WORKER_MAX_ATTEMPTS` (default 5) a job is **logged and
+   dropped** (no dead-letter). On shutdown mid-batch the deliveries are `Nack`'d with requeue (attempt
+   not incremented).
+6. If the `UPDATE` matches **no row** (chunk gone, content changed, or staging already swapped away),
+   that chunk is simply not updated and its job is dropped as obsolete - not retried.
+
+Below the batch layer, the embed client retries the Voyage call up to 6 times on HTTP 429 / network
+timeout. It honours a `Retry-After` header on a 429 (capped at the max backoff) so pacing follows the
+provider rather than a fixed guess, and otherwise uses 1s-to-60s exponential backoff + jitter; an
+optional per-replica rate limiter (`EMBED_WORKER_RPM`, default 0 = unpaced) is an extra hard cap.
 
 ---
 
@@ -241,13 +281,11 @@ This is the part that matters for trusting search results. Each guarantee maps t
 ```mermaid
 flowchart TD
     A["chunk content"] -->|"input_type=document"| B["voyage-4-large to 1024-dim vector"]
-    B -->|"formatHalfVec: text form"| C["UPDATE ... ::halfvec (staging)"]
-    C --> D{"drain == 0?"}
-    D -->|"validate: non-empty AND 0 NULL"| E["atomic swap TX"]
-    E --> F[("live wiki_chunks")]
+    B -->|"formatHalfVec: text form"| C["UPDATE wiki_chunks ... ::halfvec<br/>FROM unnest, match on content"]
+    C --> F[("live wiki_chunks<br/>NULL rows invisible")]
     F -->|"SearchWikiChunks<br/>WHERE embedding IS NOT NULL<br/>ORDER BY cosine distance"| G["results"]
     Q2["query text"] -->|"input_type=query"| H["voyage-4-large to 1024-dim vector"] --> G
-    I["wikiverify"] -.asserts.-> F
+    I["wikiverify"] -.checks embedded rows.-> F
 ```
 
 1. **One model, one dimension, one type.** Every vector is `voyage-4-large`, 1024-dim, `halfvec(1024)`.
@@ -259,34 +297,40 @@ flowchart TD
    query with `input_type=query`. Same model, the input type Voyage expects for each side - this is
    correct usage, not an inconsistency.
 
-3. **Never serve a stale or half-embedded vector.**
-   - **Delta path:** `UpsertWikiChunk` keeps the existing embedding only if `content` is byte-identical;
-     any content change resets `embedding` to **NULL**. `SearchWikiChunks` filters `WHERE embedding IS
-     NOT NULL`, so a changed-but-not-yet-re-embedded chunk simply drops out of results until its fresh
-     vector lands. You never get a vector that does not match its text.
-   - **Bulk path:** new content produces new staging rows with NULL embedding; the swap won't proceed
-     until every staging row is embedded (below).
+3. **Never serve a stale or half-embedded vector.** This holds the same way on every write path because
+   `SearchWikiChunks` filters `WHERE embedding IS NOT NULL` and the HNSW index does not contain NULL
+   rows - an un-embedded or just-invalidated chunk is simply invisible until its vector lands.
+   - **Bulk-into-live & delta:** `UpsertWikiChunk` keeps the existing embedding only if `content` is
+     byte-identical; any content change resets `embedding` to **NULL**, so a changed chunk drops out of
+     results until re-embedded. The fleet's batched write additionally **matches on content**, so it can
+     never attach a vector to text that changed since the job was published.
+   - **Atomic:** new content produces new staging rows with NULL embedding; the swap won't proceed until
+     every staging row is embedded (below).
 
-4. **Atomic corpus swap.** `swapStaging` runs in a single transaction that (a) **validates** staging is
-   non-empty and has **zero** NULL embeddings, then (b) renames staging into `wiki_chunks` and advances
-   the checkpoint. Readers see the old corpus until commit, then the new corpus - never a mixture, never
-   a half-embedded corpus. A persistently failing chunk keeps the NULL count above zero, so the drain
-   never completes and the **old corpus keeps serving** rather than a partial one swapping in.
+4. **In-place growth is monotonic; the atomic swap is wholesale.** In the default bulk-into-live path the
+   corpus grows one searchable chunk at a time and is never half-served, because NULL rows are invisible.
+   The accepted trade-off on a re-ingest over an existing corpus is that search briefly sees a mix of old
+   (still-embedded) and new chunks; the in-place upsert bounds that mix to what actually changed, and a
+   first build has no old corpus to mix with. The opt-in `-atomic` path avoids any mix: `swapStaging`
+   runs one transaction that **validates** staging is non-empty with **zero** NULL embeddings, then
+   renames it into `wiki_chunks` - readers see the old corpus until commit, then the new one, never a
+   mixture. Use it for a breaking re-chunk.
 
 5. **Idempotent, at-least-once writes.** A redelivered job rewrites the *same* vector (same content yields
-   the same embedding write). A job whose row no longer exists (corpus already swapped) is dropped, not
-   retried. Duplicates from the keyset-paged publisher are therefore harmless.
+   the same embedding write). A job whose row no longer matches (gone, content changed, or staging already
+   swapped) is dropped, not retried. Duplicates from the keyset-paged publisher are therefore harmless.
 
 6. **No binary-COPY corruption.** Vectors are written as pgvector **text** form `[a,b,c]` cast
    `::halfvec` (`formatHalfVec`), never via binary `CopyFrom`/binary `COPY` - pgx binary copy corrupts
-   `halfvec` columns (phantom rows). This is structural in the code: every embedding write is a
-   single text-form `UPDATE`.
+   `halfvec` columns (phantom rows). This is structural: every embedding write is a single text-form
+   `UPDATE ... FROM unnest(...)` over a `text[]` of vector literals.
 
-7. **Verifier as the consistency gate** (`cmd/wikiverify`, run by `make wiki-verify`). Seven checks, all
-   must pass or it exits non-zero:
+7. **Verifier reports coverage, gates consistency** (`cmd/wikiverify`, run by `make wiki-verify`). It no
+   longer requires 100% embedded - a bulk-into-live corpus is usable while it fills in - so it **reports
+   embedded coverage as progress** and fails only on a real defect over the embedded rows:
    1. chunks present (`count > 0`),
-   2. **all chunks embedded** (`count WHERE embedding IS NULL = 0`),
-   3. **no zero-vector embeddings** (`embedding <#> embedding = 0` would mean a zero norm),
+   2. embedded coverage *(reported, never a gate)*,
+   3. **no zero-vector embeddings** among embedded rows (`embedding <#> embedding = 0` would mean a zero norm),
    4. **dimension is exactly `halfvec(1024)`** (read from `pg_attribute`),
    5. metadata valid (`kind IN ('lead','body')`),
    6. HNSW index **present**,
@@ -298,12 +342,15 @@ flowchart TD
 
 **Honest caveats:**
 - The dry-run cost estimate uses a chars/token heuristic and a fixed per-1M-token price - it is an
-  estimate, not a billed figure.
+  estimate, not a billed figure. Without `-atomic` it estimates only what is already pending in live.
 - Only **lead** sections are ingested today (`kind='lead'`); `'body'` is reserved. "More data" means more
   *articles* (a bigger `WIKI_CORPUS`), not more depth per article.
-- A chunk that fails every retry is dropped and leaves staging un-drainable, which (correctly) **blocks
-  the swap** - the symptom is an `ErrDrainStalled` after 30m. That is a safety stop, but it needs operator
-  attention (see Troubleshooting).
+- Bulk-into-live does **not** prune fully orphaned pages (gone from the dump entirely); they linger as
+  stale evidence until a delta sync deletes them or an `-atomic` rebuild cuts a fresh corpus over. A
+  per-page tail trim does remove a shrunk page's stale higher-index chunks.
+- A chunk that fails every retry is dropped. In bulk-into-live it just stays un-embedded (coverage never
+  reaches 100%); in `-atomic` it leaves staging un-drainable and (correctly) **blocks the swap** - the
+  symptom is an `ErrDrainStalled` after 30m, a safety stop that needs operator attention.
 
 ---
 
@@ -323,9 +370,10 @@ make fleet-up EMBEDWORKER_REPLICAS=4 # broker + N competing workers (more = fast
 docker compose --profile wiki run --rm wiki-populate \
   go run ./cmd/wikisync -mode=bulk -dry-run
 
-make wiki-populate                   # paid: ingest, embed, swap live (resumable, reuses the dump)
+make wiki-populate                   # paid: ingest into live + publish; the fleet embeds in place
+                                     # (resumable, reuses the dump). Searchable as it fills in.
 make wiki-cluster                    # optional: cluster + importance (run after embedding)
-make wiki-verify                     # green = corpus complete and consistent
+make wiki-verify                     # reports embedded coverage; green = consistent (not necessarily 100%)
 make fleet-down                      # stop the paid workers + broker
 ```
 
@@ -368,7 +416,7 @@ make reingest        # reset, populate, cluster, verify
 |--------|---------|
 | `make fleet-up [EMBEDWORKER_REPLICAS=N]` | Start broker + N workers. |
 | `make fleet-down` | Stop broker + workers (DB and other services untouched). |
-| `make wiki-populate` | Bulk ingest + enqueue; fleet drains and swaps live. Resumable. |
+| `make wiki-populate` | Bulk-into-live ingest + enqueue; the fleet embeds in place (no swap). Resumable. Add `-atomic` for a stage-and-swap rebuild. |
 | `make wiki-update` | Incremental delta sync via MediaWiki RecentChanges. |
 | `make wiki-cluster` | Cluster + importance-score the embedded corpus. |
 | `make wiki-verify` | Assert the live corpus is complete/consistent (exits non-zero on failure). |
@@ -386,11 +434,13 @@ From the root `.env` (read by Compose). Defaults shown.
 | `EMBEDDING_API_KEY` | - | Voyage key (required for any embed). |
 | `EMBEDDING_MODEL` | `voyage-4-large` | Embedding model. Pinned to 1024-dim; don't change without a reindex. |
 | `EMBEDWORKER_REPLICAS` | 2 (`make fleet-up`) | Number of competing workers. Linear throughput. |
-| `EMBED_WORKER_CONCURRENCY` | 4 | In-flight embeds per replica; also the prefetch. |
-| `RABBITMQ_PREFETCH` | (= concurrency) | Unacked jobs the broker holds per replica. |
+| `EMBED_WORKER_CONCURRENCY` | 4 | In-flight batches per replica. |
+| `EMBED_WORKER_BATCH_SIZE` | 128 | Chunks embedded per Voyage call by a worker (<=1000, Voyage limit). The main throughput lever. |
+| `EMBED_WORKER_BATCH_WAIT` | 200ms | How long a partial batch waits for more before it is sent, so a quiet queue still drains. |
+| `RABBITMQ_PREFETCH` | (= concurrency x batch size) | Unacked jobs the broker holds per replica, sized to fill every concurrent batch. |
 | `EMBED_WORKER_MAX_ATTEMPTS` | 5 | Job delivery budget before a chunk is dropped. |
-| `EMBED_WORKER_RPM` | 0 (unpaced) | Per-replica Voyage rate cap. |
-| `WIKI_EMBED_BATCH_SIZE` | 128 | Bulk producer embed batch (<=1000, Voyage limit). |
+| `EMBED_WORKER_RPM` | 0 (unpaced) | Per-replica Voyage rate cap (extra hard cap; the client also honours 429 `Retry-After`). |
+| `WIKI_EMBED_BATCH_SIZE` | 128 | Inline (delta / atomic finalize) embed batch (<=1000, Voyage limit). |
 | `WIKI_EMBED_CONCURRENCY` | - | Bulk pipeline concurrency. |
 | `WIKI_ENQUEUE_BATCH_SIZE` | - | Staging page size while publishing. |
 | `WIKI_DRAIN_POLL_INTERVAL` | 5s | How often the producer polls the drain. |
@@ -405,8 +455,8 @@ From the root `.env` (read by Compose). Defaults shown.
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `make wiki-populate` does nothing, logs "already current" | Live corpus matches the dump version and is fully embedded. | Expected. To get more, raise `WIKI_CORPUS`; to rebuild same dump, `make reingest` (clears the checkpoint). |
-| Drain never finishes, then `ErrDrainStalled` after 30m | One or more chunks failed every retry and got dropped, leaving NULL embeddings; or the fleet died. | Check worker logs / the RabbitMQ dashboard. Confirm `EMBEDDING_API_KEY`, key quota, and provider health, then re-run `make wiki-populate` (resumes). The old corpus keeps serving meanwhile. |
-| `wiki-verify` fails "N chunks with a null embedding" | Swap hasn't happened / a delta left chunks pending. | Re-run `make wiki-populate` (bulk) or let `make wiki-update` finish; re-verify. |
+| `ErrDrainStalled` after 30m (atomic builds only) | One or more chunks failed every retry, so the staging drain never reaches 0; or the fleet died. | Check worker logs / the RabbitMQ dashboard. Confirm `EMBEDDING_API_KEY`, key quota, and provider health, then re-run with `-atomic` (resumes). The old corpus keeps serving meanwhile. |
+| `wiki-verify` shows coverage below 100% | The fleet is still embedding (bulk-into-live fills in over time), or a few chunks were dropped after exhausting retries. | Expected mid-ingest; the corpus is already usable. Leave the fleet running, or re-run `make wiki-populate` to re-publish the remainder. Verify still passes as long as the embedded rows are consistent. |
 | `wiki-verify` fails on HNSW index | Index missing or invalid after a manual change. | `make reingest` rebuilds the index as part of the swap. |
 | Workers idle while jobs sit in the queue | Fleet not up, or wrong queue version. | `make fleet-up`; confirm `RABBITMQ_QUEUE_VERSIONS` matches between producer and workers. |
 | Delta refuses to run | No baseline, checkpoint older than the retention window, or a bulk build is in progress (staging table exists). | Run a bulk build first / finish the in-flight bulk; then delta. |
@@ -433,11 +483,13 @@ and durable, priority-ordered queues.
 
 ### Producer task (on demand)
 
-A deployable Fargate task fills the queue: it runs `wikisync -mode=bulk -publish-only`, which
-ingests the dump, publishes one self-contained, versioned job per chunk (each job carries its
-content, so the worker needs no database), and exits - the consumer fleet owns the drain and the
-live swap. The Terraform (`enable_producer`, off by default) creates a task definition with no
-schedule; launch a run on demand with the deploy network config the stack publishes to SSM:
+A deployable Fargate task fills the queue: it runs `wikisync -mode=bulk` (bulk-into-live), which
+ingests the dump into the live table, publishes one self-contained, versioned job per chunk (each
+job carries its content), and exits - the consumer fleet embeds the vectors in place, so the corpus
+grows as it drains with no swap. For a wholesale re-chunk cutover, run it with `-atomic -publish-only`
+instead, and the consumer owns the drain and swap. The Terraform (`enable_producer`, off by default)
+creates a task definition with no schedule; launch a run on demand with the deploy network config the
+stack publishes to SSM:
 
 ```bash
 cd stack/terraform/dev
@@ -451,9 +503,9 @@ aws ecs run-task \
 ```
 
 The run is resumable: re-running publishes only the chunks still un-embedded (keyset cursor over the
-staging table), and publishing is at-least-once with idempotent workers. The producer needs a
-database to stage and read chunks (`enable_rds`, or a tunnelled local database), but writes to no
-consumer database - the messages are self-contained.
+live table, or staging under `-atomic`), and publishing is at-least-once with idempotent workers. The
+producer needs a database to ingest and read chunks (`enable_rds`, or a tunnelled local database); the
+fleet writes the vectors back to that same database.
 
 ### Deploy the producer and worker (CI)
 
