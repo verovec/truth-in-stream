@@ -1,0 +1,119 @@
+// Command crawlworker drains self-contained chunk jobs from the crawl queue,
+// embeds each chunk's text through the Voyage API, and upserts the chunk
+// (content + vector) straight into the live wiki corpus. It is a long-running
+// consumer with no HTTP surface: running several replicas scales throughput, the
+// broker delivers higher-priority chunks first, and a graceful SIGTERM lets
+// in-flight work finish or be requeued. The broker comes from RABBITMQ_URL, the
+// database from DATABASE_URL, embeddings from the Voyage API (EMBEDDING_API_KEY);
+// CRAWL_WORKER_* tunes concurrency and retries.
+package main
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
+	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
+)
+
+// Embedding-retry backoff bounds, shared with the bulk pipeline: a rate-limited
+// request waits at least a second and at most a minute between attempts.
+const (
+	embedRetryBaseDelay = 1 * time.Second
+	embedRetryMaxDelay  = 60 * time.Second
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+	if err := run(logger); err != nil {
+		logger.Error("crawl worker exited with error", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	queueCfg, err := config.LoadCrawlQueue()
+	if err != nil {
+		return err
+	}
+	embedding, err := config.LoadEmbedding()
+	if err != nil {
+		return err
+	}
+	workerCfg, err := config.LoadCrawlWorker()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	client, err := queue.New(queue.Config{
+		URL:         queueCfg.URL,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
+		MaxPriority: queueCfg.MaxPriority,
+		Prefetch:    workerCfg.Concurrency,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	worker := crawljob.NewWorker(
+		newEmbedder(logger, embedding, workerCfg),
+		store,
+		qStream{client: client},
+		qEnqueuer{client: client},
+		logger,
+		crawljob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
+	)
+
+	logger.InfoContext(ctx, "crawl worker started",
+		slog.String("queue", queueCfg.VersionedName()),
+		slog.Int("concurrency", workerCfg.Concurrency),
+		slog.Int("max_attempts", workerCfg.MaxAttempts))
+	if err := worker.Run(ctx); err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "crawl worker stopped")
+	return nil
+}
+
+// newEmbedder builds the Voyage embedding client wrapped in the shared retry and
+// rate-limit decorators, identical to the embedworker so transient-fault handling
+// is reused rather than reimplemented. The rate limiter sits beneath the retry
+// decorator so every attempt is paced.
+func newEmbedder(logger *slog.Logger, p config.Embedding, w config.EmbedWorker) *embed.RetryClient {
+	return embed.WithRetry(
+		embed.WithRateLimit(
+			embed.New(embed.Config{
+				APIKey:     p.APIKey,
+				Model:      p.Model,
+				Dim:        p.Dim,
+				HTTPClient: &http.Client{Timeout: w.HTTPTimeout},
+			}),
+			w.RequestsPerMinute,
+		),
+		embed.RetryConfig{MaxAttempts: w.EmbedMaxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay, Logger: logger},
+	)
+}
