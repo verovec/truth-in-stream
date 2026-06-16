@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -105,15 +108,22 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 			}
 		}
 
+		var jobs []crawlMessage
 		for _, lead := range leads {
 			if lead.Missing {
 				continue
 			}
-			published, err := publishPageChunks(ctx, pub, cfg, lead, full[lead.Title])
+			pageJobs, err := pageChunkJobs(cfg, lead, full[lead.Title])
 			if err != nil {
 				return stats, err
 			}
-			stats.Published += published
+			jobs = append(jobs, pageJobs...)
+		}
+
+		published, err := publishMessages(ctx, pub, jobs)
+		stats.Published += published
+		if err != nil {
+			return stats, err
 		}
 		logger.InfoContext(ctx, "crawl published page batch",
 			slog.String("corpus", cfg.Corpus), slog.Int("published", stats.Published))
@@ -121,50 +131,79 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 	return stats, nil
 }
 
-// publishPageChunks chunks one page's lead and body and publishes a CrawlJob per
-// chunk, assigning contiguous chunk indices (lead first). The revision id comes
-// from the lead extract, falling back to the body extract.
-func publishPageChunks(ctx context.Context, pub Publisher, cfg CrawlConfig, lead, full Extract) (int, error) {
+// crawlMessage is one ready-to-publish chunk job: its marshaled body and the
+// queue priority for its kind.
+type crawlMessage struct {
+	body     []byte
+	priority uint8
+}
+
+// pageChunkJobs chunks one page's lead and body into ready-to-publish CrawlJobs,
+// assigning contiguous chunk indices (lead first, then body) so the
+// (page_id, chunk_index) primary key is stable. The revision id comes from the
+// lead extract, falling back to the body extract.
+func pageChunkJobs(cfg CrawlConfig, lead, full Extract) ([]crawlMessage, error) {
 	revID := lead.RevisionID
 	if revID == 0 {
 		revID = full.RevisionID
 	}
 	articleURL := pageURL(cfg.Project, lead.Title)
 
-	var (
-		idx       int
-		published int
-	)
-	emit := func(content string, kind domain.WikiChunkKind) error {
+	contents := make([]chunkContent, 0)
+	for _, c := range Chunk(lead.Title, lead.Text) {
+		contents = append(contents, chunkContent{text: c, kind: domain.WikiChunkKindLead})
+	}
+	if cfg.IncludeBody {
+		for _, c := range Chunk(lead.Title, bodyText(full.Text, lead.Text)) {
+			contents = append(contents, chunkContent{text: c, kind: domain.WikiChunkKindBody})
+		}
+	}
+
+	jobs := make([]crawlMessage, 0, len(contents))
+	for idx, c := range contents {
 		job := crawljob.CrawlJob{
 			PageID: lead.PageID, ChunkIndex: idx, Title: lead.Title, URL: articleURL,
-			RevisionID: revID, Corpus: cfg.Corpus, Content: content, Section: "", Kind: string(kind),
+			RevisionID: revID, Corpus: cfg.Corpus, Content: c.text, Section: "", Kind: string(c.kind),
 		}
 		body, err := json.Marshal(job)
 		if err != nil {
-			return fmt.Errorf("wiki: encode crawl job page %d chunk %d: %w", lead.PageID, idx, err)
+			return nil, fmt.Errorf("wiki: encode crawl job page %d chunk %d: %w", lead.PageID, idx, err)
 		}
-		if err := pub.Publish(ctx, body, priorityForKind(kind, cfg.MaxPriority)); err != nil {
-			return fmt.Errorf("wiki: publish crawl job page %d chunk %d: %w", lead.PageID, idx, err)
-		}
-		idx++
-		published++
-		return nil
+		jobs = append(jobs, crawlMessage{body: body, priority: priorityForKind(c.kind, cfg.MaxPriority)})
 	}
+	return jobs, nil
+}
 
-	for _, content := range Chunk(lead.Title, lead.Text) {
-		if err := emit(content, domain.WikiChunkKindLead); err != nil {
-			return published, err
-		}
+// chunkContent pairs one chunk's text with its kind before it is turned into a
+// job, so lead and body chunks share one contiguous index space.
+type chunkContent struct {
+	text string
+	kind domain.WikiChunkKind
+}
+
+// publishMessages publishes a batch of chunk jobs with up to publishConcurrency
+// confirms in flight, mirroring the dump producer's windowed enqueue so a
+// high-latency broker is paid the round-trip in parallel rather than once per
+// chunk. It returns how many were confirmed; a failed publish cancels the rest
+// and fails the run (a re-run re-publishes the remainder, idempotently).
+func publishMessages(ctx context.Context, pub Publisher, jobs []crawlMessage) (int, error) {
+	if len(jobs) == 0 {
+		return 0, nil
 	}
-	if cfg.IncludeBody {
-		for _, content := range Chunk(lead.Title, bodyText(full.Text, lead.Text)) {
-			if err := emit(content, domain.WikiChunkKindBody); err != nil {
-				return published, err
+	var published atomic.Int64
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(publishConcurrency)
+	for _, j := range jobs {
+		g.Go(func() error {
+			if err := pub.Publish(gctx, j.body, j.priority); err != nil {
+				return fmt.Errorf("wiki: publish crawl job: %w", err)
 			}
-		}
+			published.Add(1)
+			return nil
+		})
 	}
-	return published, nil
+	err := g.Wait()
+	return int(published.Load()), err
 }
 
 // bodyText returns the article body with the lead stripped from the front so the

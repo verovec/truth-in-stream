@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -44,6 +45,8 @@ func (j CrawlJob) validate() error {
 		return fmt.Errorf("page id %d must be positive", j.PageID)
 	case j.ChunkIndex < 0:
 		return fmt.Errorf("chunk index %d must not be negative", j.ChunkIndex)
+	case j.ChunkIndex > math.MaxInt32:
+		return fmt.Errorf("chunk index %d exceeds the column width", j.ChunkIndex)
 	case j.Content == "":
 		return fmt.Errorf("page %d chunk %d has empty content", j.PageID, j.ChunkIndex)
 	case j.Corpus == "":

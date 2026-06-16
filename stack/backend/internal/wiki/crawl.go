@@ -127,10 +127,9 @@ type cmResponse struct {
 }
 
 // cmEntry is one categorymembers row. NS distinguishes an article (0) from a
-// subcategory (14).
+// subcategory (14); the API's redundant "type" field is not decoded.
 type cmEntry struct {
 	PageID int64  `json:"pageid"`
 	NS     int    `json:"ns"`
 	Title  string `json:"title"`
-	Type   string `json:"type"`
 }

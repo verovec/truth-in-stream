@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -139,6 +140,7 @@ func TestValidate(t *testing.T) {
 		{"valid", func(*CrawlJob) {}, true},
 		{"page id zero", func(j *CrawlJob) { j.PageID = 0 }, false},
 		{"negative index", func(j *CrawlJob) { j.ChunkIndex = -1 }, false},
+		{"index too large", func(j *CrawlJob) { j.ChunkIndex = math.MaxInt32 + 1 }, false},
 		{"empty content", func(j *CrawlJob) { j.Content = "" }, false},
 		{"empty corpus", func(j *CrawlJob) { j.Corpus = "" }, false},
 		{"bad kind", func(j *CrawlJob) { j.Kind = "sidebar" }, false},
