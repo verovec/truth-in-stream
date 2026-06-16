@@ -35,7 +35,7 @@ func integrationEnv(t *testing.T) (broker, dsn string) {
 }
 
 // fixedEmbedder returns a constant orthogonal unit vector for every input, so a
-// nearest-neighbour query against it is exact and the test needs no Voyage key.
+// nearest-neighbor query against it is exact and the test needs no Voyage key.
 type fixedEmbedder struct{}
 
 func (fixedEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {

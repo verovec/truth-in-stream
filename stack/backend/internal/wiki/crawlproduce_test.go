@@ -83,7 +83,7 @@ func TestRunCrawlPublishesLeadAndBody(t *testing.T) {
 	if stats.Published != len(pub.jobs) || stats.Published == 0 {
 		t.Fatalf("published = %d, jobs = %d", stats.Published, len(pub.jobs))
 	}
-	var kinds []string
+	kinds := make([]string, 0, len(pub.jobs))
 	for _, j := range pub.jobs {
 		if j.PageID != 10 || j.Corpus != "simplewiki-crawl" || j.RevisionID != 99 {
 			t.Errorf("job metadata wrong: %+v", j)
