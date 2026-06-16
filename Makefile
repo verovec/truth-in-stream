@@ -30,7 +30,7 @@ CRAWLWORKER_REPLICAS ?= 2
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers migrate logs ps
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers prime migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -111,22 +111,23 @@ fleet-down: ## Stop the ingestion broker and worker fleet (removes just those co
 # the fleet untouched; otherwise start the broker and a single worker first.
 wiki-populate: ## Bulk-into-live ingest: write the Wikipedia corpus straight into the live table and enqueue embedding jobs; the running worker fleet fills the vectors in place, so the corpus is searchable as it embeds (no swap). Publishes and exits - watch coverage with `make wiki-verify`. Resumable, reuses an on-disk dump. Reuses a fleet from `make fleet-up`, or brings up the broker and one worker; scale throughput with `make fleet-up EMBEDWORKER_REPLICAS=N` first
 	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq embedworker
-	$(COMPOSE) --profile wiki run --rm --no-deps wiki-populate
+	$(COMPOSE) --profile tools run --rm --no-deps wiki-populate
 
 wiki-update: ## Incrementally update the embedded Wikipedia corpus via the MediaWiki API (delta sync, foreground; keys/tuning from .env)
-	$(COMPOSE) --profile wiki run --rm wiki-populate go run ./cmd/wikisync -mode=delta
+	$(COMPOSE) --profile tools run --rm wiki-populate go run ./cmd/wikisync -mode=delta
 
 wiki-cluster: ## Cluster the embedded corpus into topics and score importance so the next ingest embeds the most important content first (idempotent; run after embedding; WIKI_CLUSTER_* tuning from .env)
-	$(COMPOSE) --profile wiki run --rm wiki-cluster
+	$(COMPOSE) --profile tools run --rm wiki-cluster
 
 wiki-verify: ## Report the live corpus's embedded coverage and verify consistency over the embedded rows (chunks present, no zero vectors, 1024-dim, metadata populated, HNSW index live); exits non-zero on a real defect. It no longer requires 100% embedded - a bulk-into-live corpus fills in over time, so coverage is reported, not gated.
-	$(COMPOSE) --profile wiki run --rm wiki-verify
+	$(COMPOSE) --profile tools run --rm wiki-verify
 
 reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC bulk rebuild (build in staging, the fleet drains it, swap live) so the corpus is complete before clustering, then cluster and verify. Brings up the broker and one worker; resumable, reuses the on-disk dump; needs EMBEDDING_API_KEY and WIKI_* tuning from .env. Long (paid embed) - run it unattended; a green verify means the corpus is built and consistent.
-	$(COMPOSE) --profile wiki run --rm wiki-reset
-	$(COMPOSE) --profile wiki run --rm wiki-populate go run ./cmd/wikisync -mode=bulk -atomic -dir=/wiki-dump
-	$(COMPOSE) --profile wiki run --rm wiki-cluster
-	$(COMPOSE) --profile wiki run --rm wiki-verify
+	$(COMPOSE) --profile wiki up -d rabbitmq embedworker
+	$(COMPOSE) --profile tools run --rm wiki-reset
+	$(COMPOSE) --profile tools run --rm --no-deps wiki-populate go run ./cmd/wikisync -mode=bulk -atomic -dir=/wiki-dump
+	$(COMPOSE) --profile tools run --rm wiki-cluster
+	$(COMPOSE) --profile tools run --rm wiki-verify
 	@echo "reingest complete: corpus rebuilt (atomic), clustered, and verified"
 
 crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
@@ -138,7 +139,11 @@ crawl-workers: ## Start N category-crawl consumers that drain the crawl queue in
 # a single worker first so a bare `make crawl` still drains.
 crawl: ## Run the category-crawl producer once: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker
 	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq crawlworker
-	$(COMPOSE) --profile wiki run --rm --no-deps wikicrawl
+	$(COMPOSE) --profile tools run --rm --no-deps wikicrawl
+
+prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the broker + worker fleet + a one-shot crawl that fills the queue from CRAWL_CATEGORIES (gate on by default - set CHECKWORTHY_API_KEY, or CRAWL_CHECKWORTHY=false, in .env), then the fleet drains it. Plain `make up` stays free (this is the wiki profile). Equivalent to `docker compose --profile wiki up -d` (builds the image if missing).
+	$(COMPOSE) --profile wiki up -d
+	@echo "wiki stack up: broker + worker fleet + a one-shot prime crawl (CRAWL_CATEGORIES). Watch the queue fill and drain at http://localhost:15672 (app/dev); 'make crawl-workers CRAWLWORKER_REPLICAS=N' scales the drain."
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up

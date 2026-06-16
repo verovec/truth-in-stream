@@ -90,7 +90,7 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # Opt-in (profile "wiki"), not part of `docker compose up`: bulk-ingests the
+  # Opt-in (profile "tools"), not part of `docker compose up`: bulk-ingests the
   # full Wikipedia corpus into pgvector and publishes one prioritized embedding
   # job per chunk to the broker. The worker fleet (embedworker) drains the queue
   # and calls the paid Voyage API; the corpus only goes live (atomic swap) once
@@ -98,7 +98,7 @@ services:
   # so it needs the broker and at least one worker running - start them, then run
   # the producer:
   #   docker compose --profile wiki up -d --scale embedworker=4 rabbitmq embedworker
-  #   docker compose --profile wiki run --rm wiki-populate
+  #   docker compose --profile tools run --rm wiki-populate
   # Embedding throughput scales with the worker replica count, not with this
   # process - that is what makes a large corpus (e.g. enwiki) feasible: raise
   # --scale embedworker, do not tune a single embed loop. Each run goes to
@@ -108,7 +108,7 @@ services:
   # named volume and is reused across runs. Override WIKI_MAX_DURATION and
   # WIKI_CORPUS (default simplewiki) via .env or the shell.
   wiki-populate:
-    profiles: ["wiki"]
+    profiles: ["tools"]
     build:
       context: ./stack/backend
       target: dev
@@ -165,10 +165,11 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
-      # Bring up at least one worker so a bare `make wiki-populate` drains; scale
-      # the fleet with `up --scale embedworker=N` beforehand for more throughput.
-      embedworker:
-        condition: service_started
+      # No depends_on the worker fleet: the producer publishes to the durable broker
+      # and is decoupled from the consumers (the queue holds the jobs until a worker
+      # drains them), and the embedworker fleet lives in the "wiki" profile while
+      # this one-shot is in "tools". `make wiki-populate` brings up a worker
+      # explicitly before publishing; scale it with `make fleet-up EMBEDWORKER_REPLICAS=N`.
 
   # Object storage for uploaded video. Local mirror of the production S3 bucket;
   # the backend talks to both through one storage abstraction selected by config
@@ -310,10 +311,13 @@ services:
 
   # wikicrawl walks the configured categories over the MediaWiki Action API and
   # fills the crawl queue with self-contained chunk jobs, then exits. It needs no
-  # database. Run on demand (CRAWL_CATEGORIES is required):
-  #   docker compose --profile wiki run --rm wikicrawl
-  wikicrawl:
-    profiles: ["wiki"]
+  # database. This is the on-demand producer (re-crawl a different slice); it lives
+  # in the "tools" profile and is run explicitly, never auto-started:
+  #   docker compose --profile tools run --rm wikicrawl   (or: make crawl)
+  # The wiki-prime service below reuses this exact config (YAML merge) to auto-prime
+  # the broker on `docker compose --profile wiki up`.
+  wikicrawl: &wikicrawl
+    profiles: ["tools"]
     build:
       context: ./stack/backend
       target: dev
@@ -349,17 +353,30 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # wiki-prime auto-primes the broker on `docker compose --profile wiki up`: it runs
+  # the crawler once against CRAWL_CATEGORIES, then exits (restart: "no"), so an
+  # operator who brings up the paid "wiki" profile gets a queue already filling with
+  # fact-checkable chunk jobs - the crawlworker fleet (also in "wiki") drains it. It
+  # reuses the wikicrawl config above verbatim (same command, env, broker dep); only
+  # the profile and restart policy differ. A plain `make up` (no profile) never
+  # starts it, preserving the cost-safety rule. CRAWL_CATEGORIES must be set (in
+  # .env) or the run fails fast, exactly like the on-demand producer.
+  wiki-prime:
+    <<: *wikicrawl
+    profiles: ["wiki"]
+    restart: "no"
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in
-  # (profile "wiki"), one-shot, no API key: it reads existing embeddings and
+  # (profile "tools"), one-shot, no API key: it reads existing embeddings and
   # writes scores. Run it after a corpus is embedded; re-running it over an
   # unchanged corpus is idempotent (the clustering is deterministically seeded):
-  #   docker compose --profile wiki run --rm wiki-cluster
+  #   docker compose --profile tools run --rm wiki-cluster
   # WIKI_CLUSTER_* tunes the cluster count (raise WIKI_CLUSTER_K for a larger
   # corpus), iterations, seed, and batch sizes.
   wiki-cluster:
-    profiles: ["wiki"]
+    profiles: ["tools"]
     build:
       context: ./stack/backend
       target: dev
@@ -383,11 +400,11 @@ services:
   # Clears the live corpus and its sync checkpoint so the next bulk run rebuilds
   # from scratch under the current code - the first step of `make reingest`. The
   # checkpoint keys on the dump version, not the code, so this is what forces a
-  # rebuild after the chunker or metadata changed. Opt-in (profile "wiki"),
+  # rebuild after the chunker or metadata changed. Opt-in (profile "tools"),
   # one-shot, no broker or API key: it only touches the database, so it depends on
   # postgres + migrate alone (not the broker or object storage).
   wiki-reset:
-    profiles: ["wiki"]
+    profiles: ["tools"]
     build:
       context: ./stack/backend
       target: dev
@@ -409,10 +426,10 @@ services:
   # chunk embedded with a non-null, non-zero, 1024-dim vector, metadata populated,
   # and the HNSW index live. The last step of `make reingest`; it exits non-zero
   # and logs the failing checks if the corpus is incomplete or stale, so a partial
-  # rebuild is caught rather than served. Opt-in (profile "wiki"), one-shot, no API
+  # rebuild is caught rather than served. Opt-in (profile "tools"), one-shot, no API
   # key.
   wiki-verify:
-    profiles: ["wiki"]
+    profiles: ["tools"]
     build:
       context: ./stack/backend
       target: dev
