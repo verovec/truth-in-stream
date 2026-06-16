@@ -340,6 +340,54 @@ func (q *Queries) UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiCh
 	return items, nil
 }
 
+const upsertEmbeddedChunk = `-- name: UpsertEmbeddedChunk :exec
+INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, embedding, synced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (page_id, chunk_index) DO UPDATE
+    SET title = EXCLUDED.title,
+        url = EXCLUDED.url,
+        revision_id = EXCLUDED.revision_id,
+        corpus = EXCLUDED.corpus,
+        content = EXCLUDED.content,
+        section = EXCLUDED.section,
+        kind = EXCLUDED.kind,
+        embedding = EXCLUDED.embedding,
+        synced_at = now()
+`
+
+type UpsertEmbeddedChunkParams struct {
+	PageID     int64
+	ChunkIndex int32
+	Title      string
+	Url        string
+	RevisionID int64
+	Corpus     string
+	Content    string
+	Section    string
+	Kind       string
+	Embedding  *pgvector.HalfVector
+}
+
+// Crawl ingestion writes content and embedding together: the worker embeds the
+// self-contained message, then upserts the whole row in one statement so a chunk
+// is never visible to search without its matching vector. The embedding is always
+// the freshly computed one, so a re-crawl rewrites the same vector idempotently.
+func (q *Queries) UpsertEmbeddedChunk(ctx context.Context, arg UpsertEmbeddedChunkParams) error {
+	_, err := q.db.Exec(ctx, upsertEmbeddedChunk,
+		arg.PageID,
+		arg.ChunkIndex,
+		arg.Title,
+		arg.Url,
+		arg.RevisionID,
+		arg.Corpus,
+		arg.Content,
+		arg.Section,
+		arg.Kind,
+		arg.Embedding,
+	)
+	return err
+}
+
 const upsertWikiSyncState = `-- name: UpsertWikiSyncState :exec
 INSERT INTO wiki_sync_state (corpus, last_change_ts, dump_version)
 VALUES ($1, $2, $3)
