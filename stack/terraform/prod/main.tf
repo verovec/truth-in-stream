@@ -340,6 +340,45 @@ module "embed_worker" {
   log_group_name          = module.ecs.log_group_name
 }
 
+# Crawl-worker fleet, the category-crawl counterpart to embed_worker. It drains
+# the crawl queue and upserts embedded chunks into the live corpus. Like
+# embed_worker it runs under an EXTERNAL deployment controller, so it needs a
+# worker-lifecycle lambda to create and scale its task sets - not yet provisioned
+# in prod - so enabling it here is foundation-only until that lambda is added.
+# Writes to the database, so it requires RDS. Gated off by default.
+module "crawl_worker" {
+  source = "../modules/worker"
+  count  = var.enable_crawl_worker && var.enable_rds ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "crawlworker"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/crawlworker"]
+
+  cpu           = var.crawl_worker_cpu
+  memory        = var.crawl_worker_memory
+  desired_count = var.crawl_worker_desired_count
+
+  environment_variables = {
+    CRAWL_WORKER_CONCURRENCY  = tostring(var.crawl_worker_concurrency)
+    CRAWL_WORKER_MAX_ATTEMPTS = tostring(var.crawl_worker_max_attempts)
+  }
+  secrets = merge(
+    {
+      EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+      RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+    },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
+
+  cluster_id              = module.ecs.cluster_id
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"

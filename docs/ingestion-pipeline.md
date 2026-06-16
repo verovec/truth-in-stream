@@ -597,14 +597,40 @@ aws ecs run-task \
 The run is resumable (keyset cursor; at-least-once with idempotent workers). The producer needs a
 database (`enable_rds`, or a tunnelled local database); the fleet writes vectors back to that database.
 
-### Crawl producer task + worker service *(target - VER-74)*
+### Crawl producer task + worker service
 
-Mirrors the dump producer/fleet exactly. A Fargate `wikicrawl` task (behind `enable_crawl_producer`, off
-by default) fills the cloud crawl queue on demand - it reads the embedding key **and** the Anthropic gate
-key from Secrets Manager. A `crawlworker` service runs under the worker-lifecycle EXTERNAL deployment
-controller (scaled/deployed via the lambda, never a direct service update that drops in-flight work). The
-on-demand launch is the same `aws ecs run-task` shape against the `truth-in-stream-<env>-wikicrawl` task
-definition.
+Mirrors the dump producer/fleet. A Fargate `wikicrawl` task (behind `enable_crawl_producer`, off by
+default) fills the cloud crawl queue on demand; it reads the Anthropic gate key (`CHECKWORTHY_API_KEY`)
+from Secrets Manager and does not embed, so it carries no embedding key. Unlike the dump producer it is
+database-free - it crawls the MediaWiki Action API, runs the fact-checkability gate, and publishes
+self-contained chunk jobs - so it is **not** bound to `enable_rds`. The `crawlworker` fleet (which embeds
+and writes to the corpus) holds the embedding key. A `crawlworker` service runs under the worker-lifecycle EXTERNAL deployment
+controller (scaled/deployed via the lambda, never a direct service update that drops in-flight work); its
+queue-depth policy is the `crawlworker` entry in `worker_lifecycle_scaling_config` (`crawl.chunks` base,
+`max = 0` until raised). The crawl queue uses the same `RABBITMQ_QUEUE_VERSIONS` machinery as the dump
+queue, on its own base name `crawl.chunks` (`RABBITMQ_CRAWL_QUEUE`).
+
+Before the first launch, populate the gate-key secret out of band (the gate is on by default), the same
+way the app keys are set: `aws secretsmanager put-secret-value --secret-id truth-in-stream/dev/app/checkworthy-api-key --secret-string <anthropic-key>`
+(or set `CRAWL_CHECKWORTHY=false` in the run override to skip the gate). The task definition carries a
+default `CRAWL_CATEGORIES`; override it per run to crawl a different slice. The launch is the same
+`aws ecs run-task` shape against `truth-in-stream-<env>-wikicrawl`:
+
+```bash
+cd stack/terraform/dev
+SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
+SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
+aws ecs run-task \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --task-definition truth-in-stream-dev-wikicrawl \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+  --overrides '{"containerOverrides":[{"name":"wikicrawl","environment":[
+      {"name":"CRAWL_CATEGORIES","value":"Category:Physics,Category:Vaccines"},
+      {"name":"CRAWL_MAX_PAGES","value":"2000"}]}]}'
+```
+
+The producer keeps no checkpoint; a crash just re-runs (idempotent upserts make a re-crawl harmless).
 
 ### Deploy the producer and worker (CI)
 
@@ -618,8 +644,11 @@ After the backend/frontend services roll, `scripts/deploy-ingestion.sh` ships th
   messages drain on the old task set before it is retired. The workflow never updates a worker service
   directly.
 
-A workload not provisioned yet is skipped, not fatal. The crawl workloads
-*(target - VER-74)* extend the same script and its `scripts/deploy-ingestion.test.sh` cases.
+A workload not provisioned yet is skipped, not fatal. By default the script ships to both producers
+(`producer`, `wikicrawl`) and both worker fleets (`embedworker`, `crawlworker`); each crawl workload is
+skipped individually when absent, so the deploy is safe before the crawl path is stood up.
+`scripts/deploy-ingestion.test.sh` covers the crawl producer/worker skip paths. Override `PRODUCER_SERVICES`
+/ `WORKER_SERVICES` to target a subset.
 
 **Rolling the queue version** is an explicit, gated step in the same deploy: run `deploy.yml` with
 `queue_versions` set to the new oldest-first list. The version lives on the task definitions, so the roll
@@ -657,8 +686,12 @@ cd stack/backend
 RABBITMQ_URL="$BROKER_URL" \
 DATABASE_URL='postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable' \
 EMBEDDING_API_KEY="$EMBEDDING_API_KEY" \
-  go run ./cmd/embedworker        # or ./cmd/crawlworker for the crawl queue (target - VER-74)
+  go run ./cmd/embedworker        # or ./cmd/crawlworker to drain the crawl queue (crawl.chunks)
 ```
+
+`./cmd/crawlworker` reads the same three env vars (it shares the broker URL, embedding key, and local
+database); it binds to `crawl.chunks` instead of `embedding.jobs`, so the crawl producer's cloud queue
+drains straight into local Postgres exactly as the dump worker does.
 
 Prerequisites: AWS CLI v2 and the Session Manager plugin. The SSM port-forward has no TCP keepalive, so
 an idle tunnel can drop - re-run the script to reconnect. When done, drop the `/etc/hosts` line and tear

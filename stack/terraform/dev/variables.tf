@@ -127,6 +127,66 @@ variable "producer_memory" {
   description = "Fargate memory in MiB for the producer task; sized for the dump ingest before publishing."
 }
 
+variable "enable_crawl_producer" {
+  type        = bool
+  default     = false
+  description = "Create the on-demand category-crawl producer task (wikicrawl). Unlike the dump producer it is database-free - it crawls the MediaWiki API, runs the fact-checkability gate, and publishes self-contained chunk jobs to the crawl queue - so it does not require enable_rds. Launch it with `aws ecs run-task`, overriding CRAWL_CATEGORIES per run; keep false until a crawl run is wanted."
+}
+
+variable "crawl_producer_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units for the crawl producer task (1024 = 1 vCPU)."
+}
+
+variable "crawl_producer_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB for the crawl producer task; it streams the API and gates chunks without staging a dump, so it is lighter than the dump producer."
+}
+
+variable "crawl_categories" {
+  type        = string
+  default     = "Category:Climate change"
+  description = "Default CRAWL_CATEGORIES the crawl producer task definition carries; override per run with `aws ecs run-task --overrides` to crawl a different slice. Note: the fact-checkability gate is on by default (CRAWL_CHECKWORTHY=true), so the producer also needs the checkworthy-api-key secret populated out of band before a run, or CRAWL_CHECKWORTHY=false to disable the gate."
+}
+
+variable "enable_crawl_worker" {
+  type        = bool
+  default     = false
+  description = "Create the crawl-worker service (crawlworker). Drains the crawl queue and upserts embedded chunks into the live corpus, so it requires enable_rds. Like embedworker it runs under the worker-lifecycle EXTERNAL controller and stays at zero until its scaling max is raised. Default false; enable it alongside a crawl run."
+}
+
+variable "crawl_worker_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units per crawl-worker replica (1024 = 1 vCPU)."
+}
+
+variable "crawl_worker_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB per crawl-worker replica."
+}
+
+variable "crawl_worker_desired_count" {
+  type        = number
+  default     = 2
+  description = "Number of crawl-worker replicas. Scale this to scale crawl embedding throughput."
+}
+
+variable "crawl_worker_concurrency" {
+  type        = number
+  default     = 4
+  description = "Jobs one crawl-worker replica embeds in parallel (CRAWL_WORKER_CONCURRENCY)."
+}
+
+variable "crawl_worker_max_attempts" {
+  type        = number
+  default     = 5
+  description = "Per-job delivery budget before a persistent failure is dropped with a log (CRAWL_WORKER_MAX_ATTEMPTS)."
+}
+
 variable "db_backup_schedule" {
   type        = string
   default     = "cron(0 4 * * ? *)"
@@ -185,6 +245,13 @@ variable "worker_lifecycle_scaling_config" {
       max              = 0
       cooldown_seconds = 180
     }
+    crawlworker = {
+      queue_base       = "crawl.chunks"
+      ratio            = 200
+      min              = 0
+      max              = 0
+      cooldown_seconds = 180
+    }
   }
-  description = "Per-service queue-depth scaling policy for the worker-lifecycle lambda, keyed by ECS service name. max = 0 keeps a service disabled - the gate that holds the embedding-worker fleet at zero until it moves onto ECS. Raise embedworker's max to enable autoscaling."
+  description = "Per-service queue-depth scaling policy for the worker-lifecycle lambda, keyed by ECS service name. max = 0 keeps a service disabled - the gate that holds both worker fleets at zero until they move onto ECS. Raise a service's max to enable its autoscaling (embedworker drains embedding.jobs, crawlworker drains crawl.chunks)."
 }

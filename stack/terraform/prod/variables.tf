@@ -91,6 +91,42 @@ variable "embed_worker_max_attempts" {
   description = "Per-job delivery budget before a persistent failure is dropped with a log (EMBED_WORKER_MAX_ATTEMPTS)."
 }
 
+variable "enable_crawl_worker" {
+  type        = bool
+  default     = false
+  description = "Create the crawl-worker service (crawlworker), mirroring embedworker for the category-crawl ingestion path. Drains the crawl queue and upserts embedded chunks, so it requires enable_rds, and like embedworker it runs under an EXTERNAL deployment controller that prod does not yet provision (no worker-lifecycle module here), so it stays foundation-only until that is added. Default false."
+}
+
+variable "crawl_worker_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units per crawl-worker replica (1024 = 1 vCPU)."
+}
+
+variable "crawl_worker_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB per crawl-worker replica."
+}
+
+variable "crawl_worker_desired_count" {
+  type        = number
+  default     = 2
+  description = "Number of crawl-worker replicas. Scale this to scale crawl embedding throughput."
+}
+
+variable "crawl_worker_concurrency" {
+  type        = number
+  default     = 4
+  description = "Jobs one crawl-worker replica embeds in parallel (CRAWL_WORKER_CONCURRENCY)."
+}
+
+variable "crawl_worker_max_attempts" {
+  type        = number
+  default     = 5
+  description = "Per-job delivery budget before a persistent failure is dropped with a log (CRAWL_WORKER_MAX_ATTEMPTS)."
+}
+
 variable "enable_db_backup" {
   type        = bool
   default     = false

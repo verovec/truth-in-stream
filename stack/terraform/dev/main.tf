@@ -124,6 +124,16 @@ resource "aws_secretsmanager_secret" "transcription_api_key" {
   recovery_window_in_days = 0
 }
 
+# Anthropic API key for the crawl producer's fact-checkability gate
+# (CHECKWORTHY_API_KEY). Created empty; the value is set out of band. Consumed by
+# the wikicrawl producer to judge whether each crawled chunk is citable evidence
+# before it is published.
+resource "aws_secretsmanager_secret" "checkworthy_api_key" {
+  name                    = "${local.project}/${var.environment}/app/checkworthy-api-key"
+  description             = "Anthropic API key for the crawl fact-checkability gate. Value set manually, never in Terraform."
+  recovery_window_in_days = 0
+}
+
 module "media_storage" {
   source = "../modules/s3"
 
@@ -160,6 +170,7 @@ module "iam" {
     [
       aws_secretsmanager_secret.embedding_api_key.arn,
       aws_secretsmanager_secret.transcription_api_key.arn,
+      aws_secretsmanager_secret.checkworthy_api_key.arn,
       module.rabbitmq.url_secret_arn,
     ],
   )
@@ -419,6 +430,94 @@ module "producer" {
   cluster_arn             = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
   security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Category-crawl producer. An on-demand Fargate task (no schedule) that runs the
+# wikicrawl binary: it walks the configured Wikipedia categories over the
+# MediaWiki Action API, runs the fact-checkability gate, and publishes self-
+# contained chunk jobs to the crawl queue, then exits. Unlike the dump producer it
+# never touches the database (every field a chunk needs travels in the message),
+# so it is NOT gated on enable_rds - only on enable_crawl_producer. Launch it with
+# `aws ecs run-task`, overriding CRAWL_CATEGORIES per run.
+module "crawl_producer" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_crawl_producer ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "wikicrawl"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/wikicrawl"]
+  # wikicrawl reads its whole configuration from the environment, so it takes no
+  # command override; the image's own (empty) command stands.
+  command = []
+
+  # No schedule: the producer runs on demand. An empty expression yields a task
+  # definition only, launched with `aws ecs run-task`.
+  schedule_expression = ""
+  cpu                 = var.crawl_producer_cpu
+  memory              = var.crawl_producer_memory
+
+  environment_variables = {
+    CRAWL_CATEGORIES = var.crawl_categories
+    # CRAWL_PROJECT drives both the MediaWiki API host the crawl hits and the
+    # corpus tag (which defaults to <project>-crawl), so the two never diverge.
+    CRAWL_PROJECT = var.wiki_corpus
+  }
+  # wikicrawl publishes to the broker and runs the Anthropic-backed gate; it does
+  # not embed (the crawlworker fleet does), so it needs only the broker URL and
+  # the gate key - least privilege, no embedding key.
+  secrets = {
+    RABBITMQ_URL        = module.rabbitmq.url_secret_arn
+    CHECKWORTHY_API_KEY = aws_secretsmanager_secret.checkworthy_api_key.arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Crawl-worker fleet. A headless ECS service that drains the crawl queue and
+# upserts embedded chunks straight into the live corpus. It mirrors the embedding
+# worker: same EXTERNAL deployment controller (the worker-lifecycle lambda owns
+# its task sets and scale via the crawlworker entry in worker_lifecycle_scaling_config),
+# outbound-only on the shared tasks SG. Writes to the database, so it requires RDS
+# as well as its own enable flag; gated off by default.
+module "crawl_worker" {
+  source = "../modules/worker"
+  count  = var.enable_crawl_worker && var.enable_rds ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "crawlworker"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/crawlworker"]
+
+  cpu           = var.crawl_worker_cpu
+  memory        = var.crawl_worker_memory
+  desired_count = var.crawl_worker_desired_count
+
+  environment_variables = {
+    CRAWL_WORKER_CONCURRENCY  = tostring(var.crawl_worker_concurrency)
+    CRAWL_WORKER_MAX_ATTEMPTS = tostring(var.crawl_worker_max_attempts)
+  }
+  secrets = merge(
+    {
+      EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+      RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+    },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
+
+  cluster_id              = module.ecs.cluster_id
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
