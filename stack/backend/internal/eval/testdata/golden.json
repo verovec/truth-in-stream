@@ -1,0 +1,394 @@
+{
+  "_about": "Golden eval set for the retrieve-then-verify fact-check path (VER-88). Each case is one atomic claim, the evidence passages retrieval would surface for it, the verdict the evidence actually warrants (expected), a provenance note justifying that label, and a recorded model verdict (the verifier tool-call the real verify.Client would produce). The recorded model verdict makes the verify path deterministic and runnable in CI with no external API and no DB. Cases tagged adversarial are the same-topic-opposite-truth pairs that expose the legacy 'similarity is not entailment' bug: the top retrieved passage is highly similar to the claim yet refutes it or does not bear on it, so a similarity-only path scores them wrong while the grounded verifier reads the passage and labels them correctly. Each passage carries a similarity (cosine, as the matcher would report) and a kind (claim|evidence) so the legacy baseline path can be modeled on the identical inputs.",
+  "cases": [
+    {
+      "id": "round-earth",
+      "statement": "The Earth is approximately spherical.",
+      "expected": "supports",
+      "provenance": "Settled science; the lead passage directly affirms the claim.",
+      "passages": [
+        {"id": "evidence:1:0", "text": "The Earth is an oblate spheroid, very nearly spherical, with an equatorial bulge of about 0.3 percent.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.97, "citations": [{"evidence_id": "evidence:1:0", "quoted_span": "The Earth is an oblate spheroid, very nearly spherical"}], "rationale": "The passage states the Earth is very nearly spherical."}
+    },
+    {
+      "id": "water-boils-100c",
+      "statement": "Water boils at 100 degrees Celsius at sea level.",
+      "expected": "supports",
+      "provenance": "Standard physics; lead passage states the boiling point at one atmosphere.",
+      "passages": [
+        {"id": "evidence:2:0", "text": "At standard atmospheric pressure (one atmosphere), water boils at 100 degrees Celsius.", "similarity": 0.93, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.96, "citations": [{"evidence_id": "evidence:2:0", "quoted_span": "water boils at 100 degrees Celsius"}], "rationale": "The passage gives the boiling point at one atmosphere."}
+    },
+    {
+      "id": "speed-of-light",
+      "statement": "The speed of light in a vacuum is about 300,000 kilometres per second.",
+      "expected": "supports",
+      "provenance": "Physical constant; passage states the value.",
+      "passages": [
+        {"id": "evidence:3:0", "text": "The speed of light in a vacuum is exactly 299,792,458 metres per second, roughly 300,000 kilometres per second.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.95, "citations": [{"evidence_id": "evidence:3:0", "quoted_span": "roughly 300,000 kilometres per second"}], "rationale": "The passage gives the speed of light as roughly 300,000 km/s."}
+    },
+    {
+      "id": "great-wall-space",
+      "statement": "The Great Wall of China is visible to the naked eye from the Moon.",
+      "expected": "refutes",
+      "provenance": "Common myth; the passage explicitly denies it.",
+      "passages": [
+        {"id": "evidence:4:0", "text": "Contrary to popular belief, the Great Wall of China is not visible to the naked eye from the Moon, nor from low Earth orbit without aid.", "similarity": 0.89, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.94, "citations": [{"evidence_id": "evidence:4:0", "quoted_span": "the Great Wall of China is not visible to the naked eye from the Moon"}], "rationale": "The passage states the wall is not visible from the Moon."}
+    },
+    {
+      "id": "vaccines-autism",
+      "statement": "Vaccines cause autism.",
+      "expected": "refutes",
+      "provenance": "Adversarial: the retrieved passage is on the exact same topic (vaccines and autism) but states the opposite; a similarity-only path scores it as support.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:5:0", "text": "Large-scale studies have found no link between vaccines and autism; the original study claiming such a link was retracted as fraudulent.", "similarity": 0.95, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.96, "citations": [{"evidence_id": "evidence:5:0", "quoted_span": "found no link between vaccines and autism"}], "rationale": "The passage states studies found no link between vaccines and autism."}
+    },
+    {
+      "id": "earth-flat",
+      "statement": "The Earth is flat.",
+      "expected": "refutes",
+      "provenance": "Adversarial: the top passage is about the Earth's shape (very high similarity) but refutes the flatness claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:6:0", "text": "The Earth is an oblate spheroid; the flat-Earth model is contradicted by satellite imagery, circumnavigation, and the curvature of the horizon.", "similarity": 0.94, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.95, "citations": [{"evidence_id": "evidence:6:0", "quoted_span": "the flat-Earth model is contradicted by satellite imagery"}], "rationale": "The passage states the flat-Earth model is contradicted by evidence."}
+    },
+    {
+      "id": "climate-change-natural-only",
+      "statement": "Recent global warming is caused entirely by natural cycles, not human activity.",
+      "expected": "refutes",
+      "provenance": "Adversarial: passage is squarely on climate change (high similarity) but attributes warming to human activity.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:7:0", "text": "The scientific consensus is that recent global warming is primarily caused by human emissions of greenhouse gases, not natural cycles.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.93, "citations": [{"evidence_id": "evidence:7:0", "quoted_span": "primarily caused by human emissions of greenhouse gases, not natural cycles"}], "rationale": "The passage attributes warming to human emissions, contradicting the natural-only claim."}
+    },
+    {
+      "id": "five-percent-brain",
+      "statement": "Humans only use 10 percent of their brains.",
+      "expected": "refutes",
+      "provenance": "Adversarial: brain-usage passage (high similarity) refutes the myth.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:8:0", "text": "The claim that humans use only 10 percent of their brains is a myth; neuroimaging shows that virtually all of the brain is active over the course of a day.", "similarity": 0.93, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.94, "citations": [{"evidence_id": "evidence:8:0", "quoted_span": "is a myth; neuroimaging shows that virtually all of the brain is active"}], "rationale": "The passage states the 10 percent claim is a myth."}
+    },
+    {
+      "id": "goldfish-memory",
+      "statement": "Goldfish have a memory span of only three seconds.",
+      "expected": "refutes",
+      "provenance": "Adversarial: goldfish-memory passage (high similarity) refutes the three-second myth.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:9:0", "text": "Studies show goldfish can remember things for months, not seconds; the three-second memory claim is a myth.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.93, "citations": [{"evidence_id": "evidence:9:0", "quoted_span": "goldfish can remember things for months, not seconds"}], "rationale": "The passage states goldfish remember for months, refuting the claim."}
+    },
+    {
+      "id": "napoleon-short",
+      "statement": "Napoleon Bonaparte was unusually short.",
+      "expected": "refutes",
+      "provenance": "Adversarial: Napoleon-height passage (high similarity) refutes the shortness myth.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:10:0", "text": "Napoleon was about 1.69 metres tall, average for a Frenchman of his era; the myth of his shortness arose from a confusion between French and English units.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.9, "citations": [{"evidence_id": "evidence:10:0", "quoted_span": "average for a Frenchman of his era"}], "rationale": "The passage states Napoleon was of average height."}
+    },
+    {
+      "id": "lightning-twice",
+      "statement": "Lightning never strikes the same place twice.",
+      "expected": "refutes",
+      "provenance": "Adversarial: lightning passage (high similarity) refutes the saying.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:11:0", "text": "Lightning frequently strikes the same place more than once; tall structures such as the Empire State Building are struck dozens of times a year.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.92, "citations": [{"evidence_id": "evidence:11:0", "quoted_span": "Lightning frequently strikes the same place more than once"}], "rationale": "The passage states lightning strikes the same place repeatedly."}
+    },
+    {
+      "id": "moon-cheese",
+      "statement": "The Moon is made of cheese.",
+      "expected": "refutes",
+      "provenance": "Adversarial: Moon-composition passage (high similarity) refutes the claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:12:0", "text": "The Moon is composed primarily of silicate rock and metal; samples returned by the Apollo missions confirm it is not made of cheese.", "similarity": 0.88, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.95, "citations": [{"evidence_id": "evidence:12:0", "quoted_span": "composed primarily of silicate rock and metal"}], "rationale": "The passage states the Moon is composed of rock and metal."}
+    },
+    {
+      "id": "everest-tallest",
+      "statement": "Mount Everest is the tallest mountain on Earth measured from sea level.",
+      "expected": "supports",
+      "provenance": "Geography; passage affirms Everest's height above sea level.",
+      "passages": [
+        {"id": "evidence:13:0", "text": "Mount Everest, at 8,849 metres above sea level, is the highest mountain on Earth measured from sea level.", "similarity": 0.93, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.95, "citations": [{"evidence_id": "evidence:13:0", "quoted_span": "is the highest mountain on Earth measured from sea level"}], "rationale": "The passage affirms Everest is the highest above sea level."}
+    },
+    {
+      "id": "great-barrier-reef",
+      "statement": "The Great Barrier Reef is the world's largest coral reef system.",
+      "expected": "supports",
+      "provenance": "Geography; passage affirms the claim.",
+      "passages": [
+        {"id": "evidence:14:0", "text": "The Great Barrier Reef off Australia is the world's largest coral reef system, stretching over 2,300 kilometres.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.94, "citations": [{"evidence_id": "evidence:14:0", "quoted_span": "is the world's largest coral reef system"}], "rationale": "The passage affirms it is the largest coral reef system."}
+    },
+    {
+      "id": "penicillin-fleming",
+      "statement": "Alexander Fleming discovered penicillin.",
+      "expected": "supports",
+      "provenance": "History of science; passage affirms the discoverer.",
+      "passages": [
+        {"id": "evidence:15:0", "text": "Alexander Fleming discovered penicillin in 1928 when he noticed mould inhibiting bacterial growth on a culture plate.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.95, "citations": [{"evidence_id": "evidence:15:0", "quoted_span": "Alexander Fleming discovered penicillin in 1928"}], "rationale": "The passage affirms Fleming discovered penicillin."}
+    },
+    {
+      "id": "berlin-wall-1989",
+      "statement": "The Berlin Wall fell in 1989.",
+      "expected": "supports",
+      "provenance": "History; passage affirms the year.",
+      "passages": [
+        {"id": "evidence:16:0", "text": "The Berlin Wall fell on 9 November 1989, an event that symbolised the end of the Cold War.", "similarity": 0.93, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.96, "citations": [{"evidence_id": "evidence:16:0", "quoted_span": "The Berlin Wall fell on 9 November 1989"}], "rationale": "The passage affirms the wall fell in 1989."}
+    },
+    {
+      "id": "shakespeare-hamlet",
+      "statement": "William Shakespeare wrote Hamlet.",
+      "expected": "supports",
+      "provenance": "Literary history; passage affirms authorship.",
+      "passages": [
+        {"id": "evidence:17:0", "text": "Hamlet is a tragedy written by William Shakespeare around 1600.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.95, "citations": [{"evidence_id": "evidence:17:0", "quoted_span": "written by William Shakespeare"}], "rationale": "The passage affirms Shakespeare wrote Hamlet."}
+    },
+    {
+      "id": "columbus-1492",
+      "statement": "Christopher Columbus reached the Americas in 1492.",
+      "expected": "supports",
+      "provenance": "History; passage affirms the year.",
+      "passages": [
+        {"id": "evidence:18:0", "text": "Christopher Columbus made his first transatlantic voyage in 1492, reaching islands in the Caribbean.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.93, "citations": [{"evidence_id": "evidence:18:0", "quoted_span": "made his first transatlantic voyage in 1492"}], "rationale": "The passage affirms Columbus reached the Americas in 1492."}
+    },
+    {
+      "id": "dna-double-helix",
+      "statement": "DNA has a double-helix structure.",
+      "expected": "supports",
+      "provenance": "Molecular biology; passage affirms the structure.",
+      "passages": [
+        {"id": "evidence:19:0", "text": "DNA is structured as a double helix, two strands wound around each other, as described by Watson and Crick in 1953.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.96, "citations": [{"evidence_id": "evidence:19:0", "quoted_span": "DNA is structured as a double helix"}], "rationale": "The passage affirms DNA's double-helix structure."}
+    },
+    {
+      "id": "great-wall-only-manmade",
+      "statement": "The Great Wall of China is the only man-made structure visible from space.",
+      "expected": "refutes",
+      "provenance": "Adversarial: Great-Wall visibility passage (high similarity) refutes the 'only' claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:20:0", "text": "No single man-made structure is uniquely visible from space; many human structures such as cities and highways are visible, and the Great Wall is in fact difficult to see.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.9, "citations": [{"evidence_id": "evidence:20:0", "quoted_span": "No single man-made structure is uniquely visible from space"}], "rationale": "The passage denies any structure is uniquely visible, refuting the 'only' claim."}
+    },
+    {
+      "id": "sugar-hyperactivity",
+      "statement": "Eating sugar makes children hyperactive.",
+      "expected": "refutes",
+      "provenance": "Adversarial: sugar-and-behavior passage (high similarity) refutes the belief.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:21:0", "text": "Controlled studies have repeatedly found no link between sugar consumption and hyperactivity in children.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.9, "citations": [{"evidence_id": "evidence:21:0", "quoted_span": "no link between sugar consumption and hyperactivity in children"}], "rationale": "The passage states there is no link between sugar and hyperactivity."}
+    },
+    {
+      "id": "bats-blind",
+      "statement": "Bats are blind.",
+      "expected": "refutes",
+      "provenance": "Adversarial: bat-vision passage (high similarity) refutes the saying.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:22:0", "text": "Bats are not blind; all bat species can see, and many have good vision in addition to echolocation.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.93, "citations": [{"evidence_id": "evidence:22:0", "quoted_span": "Bats are not blind"}], "rationale": "The passage states bats are not blind."}
+    },
+    {
+      "id": "einstein-failed-math",
+      "statement": "Albert Einstein failed mathematics in school.",
+      "expected": "refutes",
+      "provenance": "Adversarial: Einstein-schooling passage (high similarity) refutes the anecdote.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:23:0", "text": "Einstein excelled at mathematics from a young age; the story that he failed maths is false and he himself dismissed it.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.92, "citations": [{"evidence_id": "evidence:23:0", "quoted_span": "Einstein excelled at mathematics from a young age"}], "rationale": "The passage states Einstein excelled at maths."}
+    },
+    {
+      "id": "tongue-taste-map",
+      "statement": "Different regions of the tongue are responsible for different tastes.",
+      "expected": "refutes",
+      "provenance": "Adversarial: tongue-taste passage (high similarity) refutes the taste-map myth.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:24:0", "text": "The 'tongue map' is a misconception; all taste qualities can be detected across the whole tongue, with only slight differences in sensitivity.", "similarity": 0.89, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.9, "citations": [{"evidence_id": "evidence:24:0", "quoted_span": "all taste qualities can be detected across the whole tongue"}], "rationale": "The passage states all tastes are detected across the whole tongue."}
+    },
+    {
+      "id": "mars-population",
+      "statement": "Mars currently has a permanent human settlement.",
+      "expected": "not_enough_info",
+      "provenance": "Adversarial NEI: the retrieved passage is about Mars (high topical similarity) but only describes robotic missions, saying nothing about human settlement; a similarity path would falsely treat it as support.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:25:0", "text": "Several robotic rovers, including Perseverance and Curiosity, are currently operating on the surface of Mars studying its geology.", "similarity": 0.86, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "not_enough_info", "confidence": 0.0, "citations": [], "rationale": "The passage describes robotic rovers and says nothing about a human settlement."}
+    },
+    {
+      "id": "coffee-discovered",
+      "statement": "Coffee was first cultivated in Brazil.",
+      "expected": "not_enough_info",
+      "provenance": "Adversarial NEI: passage is about coffee (high similarity) but discusses consumption today, not where it was first cultivated.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:26:0", "text": "Brazil is today the world's largest producer of coffee, accounting for roughly a third of global output.", "similarity": 0.85, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "not_enough_info", "confidence": 0.0, "citations": [], "rationale": "The passage covers current production, not where coffee was first cultivated."}
+    },
+    {
+      "id": "antibiotics-virus",
+      "statement": "Antibiotics are effective against viral infections.",
+      "expected": "refutes",
+      "provenance": "Adversarial: antibiotics passage (high similarity) refutes the claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:27:0", "text": "Antibiotics kill bacteria and are ineffective against viruses such as those causing the common cold or influenza.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.94, "citations": [{"evidence_id": "evidence:27:0", "quoted_span": "ineffective against viruses"}], "rationale": "The passage states antibiotics are ineffective against viruses."}
+    },
+    {
+      "id": "pluto-planet",
+      "statement": "Pluto is classified as a dwarf planet.",
+      "expected": "supports",
+      "provenance": "Astronomy; passage affirms the 2006 reclassification.",
+      "passages": [
+        {"id": "evidence:28:0", "text": "In 2006 the International Astronomical Union reclassified Pluto as a dwarf planet.", "similarity": 0.92, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.95, "citations": [{"evidence_id": "evidence:28:0", "quoted_span": "reclassified Pluto as a dwarf planet"}], "rationale": "The passage affirms Pluto's dwarf-planet classification."}
+    },
+    {
+      "id": "amazon-largest-river",
+      "statement": "The Amazon is the largest river by discharge volume.",
+      "expected": "supports",
+      "provenance": "Geography; passage affirms the claim.",
+      "passages": [
+        {"id": "evidence:29:0", "text": "The Amazon River has the greatest discharge volume of any river in the world, far exceeding the next largest.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.94, "citations": [{"evidence_id": "evidence:29:0", "quoted_span": "the greatest discharge volume of any river in the world"}], "rationale": "The passage affirms the Amazon has the greatest discharge."}
+    },
+    {
+      "id": "stomach-ulcers-stress",
+      "statement": "Most stomach ulcers are caused by stress and spicy food.",
+      "expected": "refutes",
+      "provenance": "Adversarial: ulcer-cause passage (high similarity) attributes most ulcers to H. pylori, refuting the claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:30:0", "text": "Most peptic ulcers are caused by Helicobacter pylori infection or by NSAID use, not by stress or spicy food.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.92, "citations": [{"evidence_id": "evidence:30:0", "quoted_span": "caused by Helicobacter pylori infection or by NSAID use, not by stress or spicy food"}], "rationale": "The passage attributes most ulcers to H. pylori, not stress or food."}
+    },
+    {
+      "id": "human-five-senses",
+      "statement": "Humans have exactly five senses.",
+      "expected": "refutes",
+      "provenance": "Adversarial: senses passage (high similarity) refutes the 'exactly five' claim.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:31:0", "text": "Beyond the classical five senses, humans also have senses such as balance (equilibrioception), body position (proprioception), and temperature.", "similarity": 0.88, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.88, "citations": [{"evidence_id": "evidence:31:0", "quoted_span": "humans also have senses such as balance"}], "rationale": "The passage lists senses beyond five, refuting the 'exactly five' claim."}
+    },
+    {
+      "id": "eiffel-tower-height",
+      "statement": "The Eiffel Tower changes height with temperature.",
+      "expected": "supports",
+      "provenance": "Physics of thermal expansion; passage affirms the claim.",
+      "passages": [
+        {"id": "evidence:32:0", "text": "Because iron expands when heated, the Eiffel Tower can be up to about 15 centimetres taller in summer than in winter.", "similarity": 0.87, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.9, "citations": [{"evidence_id": "evidence:32:0", "quoted_span": "can be up to about 15 centimetres taller in summer than in winter"}], "rationale": "The passage affirms the tower's height varies with temperature."}
+    },
+    {
+      "id": "honey-spoils",
+      "statement": "Honey never spoils if stored properly.",
+      "expected": "supports",
+      "provenance": "Food science; passage affirms honey's stability.",
+      "passages": [
+        {"id": "evidence:33:0", "text": "Due to its low moisture and acidity, honey stored in a sealed container can remain edible essentially indefinitely.", "similarity": 0.88, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "supports", "confidence": 0.9, "citations": [{"evidence_id": "evidence:33:0", "quoted_span": "can remain edible essentially indefinitely"}], "rationale": "The passage affirms honey can remain edible indefinitely."}
+    },
+    {
+      "id": "blood-blue",
+      "statement": "Human blood is blue before it is exposed to oxygen.",
+      "expected": "refutes",
+      "provenance": "Adversarial: blood-colour passage (high similarity) refutes the deoxygenated-blue myth.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:34:0", "text": "Human blood is always red; deoxygenated blood is a darker red, never blue. The blue appearance of veins is an optical effect of skin.", "similarity": 0.91, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.93, "citations": [{"evidence_id": "evidence:34:0", "quoted_span": "Human blood is always red; deoxygenated blood is a darker red, never blue"}], "rationale": "The passage states blood is always red, never blue."}
+    },
+    {
+      "id": "mount-kilimanjaro-country",
+      "statement": "Mount Kilimanjaro is located in Kenya.",
+      "expected": "refutes",
+      "provenance": "Adversarial: Kilimanjaro passage (high similarity) places it in Tanzania, refuting Kenya.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:35:0", "text": "Mount Kilimanjaro, the highest peak in Africa, is located in Tanzania near the border with Kenya.", "similarity": 0.9, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "refutes", "confidence": 0.9, "citations": [{"evidence_id": "evidence:35:0", "quoted_span": "is located in Tanzania near the border with Kenya"}], "rationale": "The passage places Kilimanjaro in Tanzania, not Kenya."}
+    },
+    {
+      "id": "ozone-recovery",
+      "statement": "The ozone layer over Antarctica grew by 40 percent in 2023.",
+      "expected": "not_enough_info",
+      "provenance": "Adversarial NEI: ozone passage (high similarity) discusses recovery trends generally but gives no figure for 2023, so the precise claim is unsettled.",
+      "adversarial": true,
+      "passages": [
+        {"id": "evidence:36:0", "text": "The Antarctic ozone hole has shown signs of gradual recovery since the Montreal Protocol, though year-to-year size varies with weather.", "similarity": 0.86, "kind": "evidence"}
+      ],
+      "model_verdict": {"verdict": "not_enough_info", "confidence": 0.0, "citations": [], "rationale": "The passage describes gradual recovery but gives no 2023 figure to settle the specific claim."}
+    },
+    {
+      "id": "no-evidence-claim",
+      "statement": "The fictional city of Zelvoria held its annual lantern festival last spring.",
+      "expected": "not_enough_info",
+      "provenance": "No relevant evidence is retrievable for an unverifiable claim; the path must return not_enough_info rather than guess.",
+      "passages": [],
+      "model_verdict": {"verdict": "not_enough_info", "confidence": 0.0, "citations": [], "rationale": "No evidence passages address this claim."}
+    }
+  ]
+}
