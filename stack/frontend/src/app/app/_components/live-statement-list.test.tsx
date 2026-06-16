@@ -5,6 +5,7 @@ import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { renderWithPlayback } from "@/test/playback";
 import type { SkipReason } from "@/lib/fact-check/api";
 import type { LiveStatement } from "@/lib/live/statements";
+import { stubScrollLayout } from "@/test/scroll-layout";
 import { LiveStatementList } from "./live-statement-list";
 
 const analysing = (
@@ -27,6 +28,10 @@ const checked = (
   matches: [],
   ...overrides,
 });
+
+function subtitleList() {
+  return screen.getByRole("list", { name: "Subtitle transcript" });
+}
 
 describe("LiveStatementList", () => {
   test("shows an in-flight affordance for an analysing statement", () => {
@@ -228,10 +233,8 @@ describe("LiveStatementList", () => {
     ).toBeInTheDocument();
   });
 
-  test("the inconsistency link scrolls the earlier statement into view", async () => {
-    const spy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+  test("the inconsistency link scrolls the earlier statement into view within the list, not the page", async () => {
+    const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderWithPlayback(
         <LiveStatementList
@@ -250,16 +253,16 @@ describe("LiveStatementList", () => {
           selectedStatementId={null}
         />,
       );
+      scrollTo.mockClear();
 
-      const earlierRow = screen
-        .getByText("an earlier remark about the bridge")
-        .closest("li");
       await userEvent.click(
         screen.getByRole("button", { name: /the bridge opened in 1937/i }),
       );
-      expect(spy.mock.instances).toContain(earlierRow);
+      // The reveal scrolls the subtitle list itself, never the page.
+      expect(scrollTo.mock.instances).toContain(subtitleList());
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      restore();
     }
   });
 
@@ -294,10 +297,8 @@ describe("LiveStatementList", () => {
     expect(rows[2]).toHaveTextContent("the oldest remark");
   });
 
-  test("auto-reveals a newly arrived statement at the top without manual scroll", () => {
-    const spy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+  test("auto-reveals a newly arrived statement by scrolling the list, not the page", () => {
+    const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       const { rerender } = render(
         <PlaybackProvider>
@@ -307,7 +308,7 @@ describe("LiveStatementList", () => {
           />
         </PlaybackProvider>,
       );
-      spy.mockClear();
+      scrollTo.mockClear();
       rerender(
         <PlaybackProvider>
           <LiveStatementList
@@ -317,10 +318,14 @@ describe("LiveStatementList", () => {
         </PlaybackProvider>,
       );
 
-      const newest = screen.getByText("second").closest("li");
-      expect(spy.mock.instances).toContain(newest);
+      // The new line is revealed by scrolling the subtitle list itself; the
+      // page-scrolling scrollIntoView is never used (it would yank the whole page).
+      const calls = scrollTo.mock.calls.map(([opts]) => opts as ScrollToOptions);
+      expect(scrollTo.mock.instances).toContain(subtitleList());
+      expect(calls).toContainEqual({ top: 200, behavior: "smooth" });
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      restore();
     }
   });
 
@@ -343,10 +348,8 @@ describe("LiveStatementList", () => {
     expect(seek).toHaveBeenCalledWith(0);
   });
 
-  test("scrolls the selected statement into view", () => {
-    const spy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+  test("scrolls the selected statement into view within the list, not the page", () => {
+    const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderWithPlayback(
         <LiveStatementList
@@ -355,10 +358,10 @@ describe("LiveStatementList", () => {
         />,
       );
 
-      const selected = screen.getByText("second").closest("li");
-      expect(spy.mock.instances).toContain(selected);
+      expect(scrollTo.mock.instances).toContain(subtitleList());
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      restore();
     }
   });
 });

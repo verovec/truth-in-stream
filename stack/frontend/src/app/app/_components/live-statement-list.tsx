@@ -41,16 +41,44 @@ export const LiveStatementList = memo(function LiveStatementList({
   const activeIndex = usePlayback((snapshot) =>
     findActiveSegmentIndex(statements, snapshot.currentTime),
   );
+  const listRef = useRef<HTMLOListElement>(null);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
 
-  // scrollStatementIntoView reveals a statement by id; a no-op when it is not
-  // currently mounted (e.g. cleared after a reset). block defaults to "nearest"
-  // (minimal scroll) for the playback-active line, the selected line, and the
-  // inconsistency jump-to-earlier; the newest-statement auto-reveal passes
-  // "start" to pull the new line to the top.
+  // scrollStatementIntoView reveals a statement by id, scrolling only the
+  // subtitle list - never the page. The native Element.scrollIntoView walks every
+  // scrollable ancestor up to the document, so a new line arriving would yank the
+  // whole page to align the subtitle to the viewport; we instead adjust this
+  // list's own scrollTop by the row's offset within it. A no-op when the row or
+  // list is not mounted (e.g. cleared after a reset). block defaults to "nearest"
+  // (scroll only when off-screen, by the minimum) for the playback-active line,
+  // the selected line, and the inconsistency jump-to-earlier; the newest-statement
+  // auto-reveal passes "start" to pull the new line to the top.
   const scrollStatementIntoView = useCallback(
     (id: string, block: ScrollLogicalPosition = "nearest") => {
-      itemRefs.current.get(id)?.scrollIntoView({ block, behavior: "smooth" });
+      const list = listRef.current;
+      const row = itemRefs.current.get(id);
+      if (!list || !row) {
+        return;
+      }
+      const rowRect = row.getBoundingClientRect();
+      const listRect = list.getBoundingClientRect();
+      let delta: number;
+      if (block === "start") {
+        delta = rowRect.top - listRect.top;
+      } else if (block === "end") {
+        delta = rowRect.bottom - listRect.bottom;
+      } else if (rowRect.top < listRect.top) {
+        delta = rowRect.top - listRect.top;
+      } else if (rowRect.bottom > listRect.bottom) {
+        delta = rowRect.bottom - listRect.bottom;
+      } else {
+        // Already fully visible within the list: "nearest" means no movement.
+        return;
+      }
+      if (delta === 0) {
+        return;
+      }
+      list.scrollTo({ top: list.scrollTop + delta, behavior: "smooth" });
     },
     [],
   );
@@ -86,6 +114,7 @@ export const LiveStatementList = memo(function LiveStatementList({
 
   return (
     <ol
+      ref={listRef}
       aria-label="Subtitle transcript"
       className="-mr-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-2"
     >

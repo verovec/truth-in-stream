@@ -6,6 +6,7 @@ import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
 import type { LiveStatement } from "@/lib/live/statements";
 import { summarizeStatements } from "@/lib/live/summary";
+import { stubScrollLayout } from "@/test/scroll-layout";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 
 const mockUseLiveAnalysis = vi.hoisted(() => vi.fn<() => LiveAnalysis>());
@@ -144,10 +145,8 @@ describe("LiveFactCheckPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("renders verdicts in the fact-check region and selects the origin subtitle", async () => {
-    const spy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+  test("renders verdicts in the fact-check region and scrolls the origin subtitle into the list", async () => {
+    const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderPanel({
         statements: [
@@ -172,6 +171,7 @@ describe("LiveFactCheckPanel", () => {
         within(factChecks).getByText(/apollo 11 landed in 1969/i),
       ).toBeInTheDocument();
 
+      scrollTo.mockClear();
       await userEvent.click(
         within(factChecks).getByRole("button", {
           name: /the moon landing happened/i,
@@ -179,19 +179,20 @@ describe("LiveFactCheckPanel", () => {
       );
 
       const subtitles = screen.getByRole("region", { name: "Live subtitles" });
-      const originRow = within(subtitles)
-        .getByText("the moon landing happened")
-        .closest("li");
-      expect(spy.mock.instances).toContain(originRow);
+      const list = within(subtitles).getByRole("list", {
+        name: "Subtitle transcript",
+      });
+      // Selecting a fact-check reveals its origin by scrolling the subtitle list,
+      // never the page.
+      expect(scrollTo.mock.instances).toContain(list);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      restore();
     }
   });
 
   test("re-selecting the same fact-check entry scrolls its origin in again", async () => {
-    const spy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView")
-      .mockImplementation(() => {});
+    const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderPanel({
         statements: [
@@ -217,18 +218,19 @@ describe("LiveFactCheckPanel", () => {
       });
 
       await userEvent.click(entry);
-      spy.mockClear();
+      scrollTo.mockClear();
       // Same entry again: the id is unchanged, so without the selection tick the
       // scroll effect would not re-run.
       await userEvent.click(entry);
 
       const subtitles = screen.getByRole("region", { name: "Live subtitles" });
-      const originRow = within(subtitles)
-        .getByText("the moon landing happened")
-        .closest("li");
-      expect(spy.mock.instances).toContain(originRow);
+      const list = within(subtitles).getByRole("list", {
+        name: "Subtitle transcript",
+      });
+      expect(scrollTo.mock.instances).toContain(list);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      restore();
     }
   });
 
