@@ -80,17 +80,31 @@ func run(logger *slog.Logger) error {
 		gate = client
 	}
 
+	// Partition the configured categories for this shard so N parallel producers
+	// (make crawl CRAWL_SHARDS=N) crawl disjoint categories from the one
+	// CRAWL_CATEGORIES list without duplicating API work. Shards=1 (the default)
+	// returns the whole list. A shard that lands on no categories has nothing to
+	// do and exits cleanly rather than walking the full corpus.
+	categories := wiki.ShardCategories(crawlCfg.Categories, crawlCfg.Shards, crawlCfg.ShardIndex)
+	if len(categories) == 0 {
+		logger.InfoContext(ctx, "wiki crawl shard has no categories, nothing to do",
+			slog.Int("shards", crawlCfg.Shards), slog.Int("shard_index", crawlCfg.ShardIndex))
+		return nil
+	}
+
 	logger.InfoContext(ctx, "wiki crawl started",
-		slog.Any("categories", crawlCfg.Categories),
+		slog.Any("categories", categories),
 		slog.String("corpus", crawlCfg.Corpus),
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("max_depth", crawlCfg.MaxDepth),
 		slog.Int("max_pages", crawlCfg.MaxPages),
 		slog.Bool("include_body", crawlCfg.IncludeBody),
-		slog.Bool("checkworthy_gate", gateCfg.Active()))
+		slog.Bool("checkworthy_gate", gateCfg.Active()),
+		slog.Int("shards", crawlCfg.Shards),
+		slog.Int("shard_index", crawlCfg.ShardIndex))
 
 	stats, err := wiki.RunCrawl(ctx, logger, api, qPublisher{client: client}, gate, wiki.CrawlConfig{
-		Categories:      crawlCfg.Categories,
+		Categories:      categories,
 		Corpus:          crawlCfg.Corpus,
 		Project:         crawlCfg.Project,
 		MaxDepth:        crawlCfg.MaxDepth,

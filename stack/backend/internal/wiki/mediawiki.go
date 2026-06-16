@@ -216,9 +216,11 @@ func (c *APIClient) getJSON(ctx context.Context, params url.Values, out any) err
 	}
 }
 
-// fetch performs one GET. On a throttling response it returns a positive wait
-// duration alongside the error, signaling the caller to retry; any other
-// non-200 returns a zero wait (not retryable).
+// fetch performs one GET. On a throttling response (429/maxlag 503) or a
+// transient transport failure it returns a positive wait duration alongside the
+// error, signaling the caller to retry; any other non-200 returns a zero wait
+// (not retryable). The lone non-retryable transport case is the caller's own
+// cancellation, surfaced via ctx.Err().
 func (c *APIClient) fetch(ctx context.Context, target string) ([]byte, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -228,7 +230,16 @@ func (c *APIClient) fetch(ctx context.Context, target string) ([]byte, time.Dura
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("wiki: api request: %w", err)
+		// A transport-level failure (header timeout, connection reset, DNS) means
+		// the server never returned a definitive answer, so a retry is safe; it is
+		// treated as transient and backed off like a maxlag 503. The exception is
+		// the caller's own cancellation (operator SIGINT): ctx.Err() is then
+		// non-nil and the crawl aborts promptly rather than retrying a context
+		// that will never recover.
+		if ctx.Err() != nil {
+			return nil, 0, fmt.Errorf("wiki: api request: %w", err)
+		}
+		return nil, c.transientBackoff(), fmt.Errorf("wiki: api request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -246,19 +257,26 @@ func (c *APIClient) fetch(ctx context.Context, target string) ([]byte, time.Dura
 	}
 }
 
-// retryAfter reads the Retry-After header (whole seconds), falling back to the
-// backoff base when it is absent or unparseable, and never exceeds the cap.
-func (c *APIClient) retryAfter(h http.Header) time.Duration {
+// transientBackoff is the wait before retrying a request that carries no
+// Retry-After header to honor - a transport-level failure (timeout, reset, DNS).
+// It is the configured base (apiRetryBase unless overridden for tests), capped.
+func (c *APIClient) transientBackoff() time.Duration {
 	d := c.retryBase
 	if d == 0 {
 		d = apiRetryBase
 	}
+	return min(d, apiMaxRetryWait)
+}
+
+// retryAfter reads the Retry-After header (whole seconds), falling back to the
+// backoff base when it is absent or unparseable, and never exceeds the cap.
+func (c *APIClient) retryAfter(h http.Header) time.Duration {
 	if v := h.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			d = time.Duration(secs) * time.Second
+			return min(time.Duration(secs)*time.Second, apiMaxRetryWait)
 		}
 	}
-	return min(d, apiMaxRetryWait)
+	return c.transientBackoff()
 }
 
 // sleepCtx waits for d or until ctx is canceled.

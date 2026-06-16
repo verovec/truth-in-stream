@@ -1270,7 +1270,11 @@ const (
 // the provenance tag written to wiki_chunks.corpus (defaults to "<project>-crawl"
 // so crawl rows are isolated from the dump corpus's delta checkpoint); MaxDepth
 // bounds subcategory recursion (0 = direct pages only); MaxPages caps distinct
-// pages collected; IncludeBody adds kind='body' chunks alongside the lead.
+// pages collected; IncludeBody adds kind='body' chunks alongside the lead. Shards
+// and ShardIndex partition Categories across parallel producers: with Shards > 1 a
+// producer crawls only the categories at positions congruent to ShardIndex (mod
+// Shards), so N producers given distinct indices crawl disjoint categories without
+// duplicating API work. Shards defaults to 1 (sharding off).
 type Crawl struct {
 	Categories  []string
 	Project     string
@@ -1278,6 +1282,8 @@ type Crawl struct {
 	MaxDepth    int
 	MaxPages    int
 	IncludeBody bool
+	Shards      int
+	ShardIndex  int
 }
 
 // LoadCrawl reads the category-crawl configuration. CRAWL_CATEGORIES is required
@@ -1319,6 +1325,18 @@ func LoadCrawl() (Crawl, error) {
 		includeBody = b
 	}
 
+	shards, err := intEnv("CRAWL_SHARDS", 1, 1, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+	shardIndex, err := intEnv("CRAWL_SHARD_INDEX", 0, 0, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+	if shardIndex >= shards {
+		return Crawl{}, fmt.Errorf("config: CRAWL_SHARD_INDEX %d out of range for CRAWL_SHARDS %d (must be 0..%d)", shardIndex, shards, shards-1)
+	}
+
 	return Crawl{
 		Categories:  categories,
 		Project:     project,
@@ -1326,6 +1344,8 @@ func LoadCrawl() (Crawl, error) {
 		MaxDepth:    maxDepth,
 		MaxPages:    maxPages,
 		IncludeBody: includeBody,
+		Shards:      shards,
+		ShardIndex:  shardIndex,
 	}, nil
 }
 

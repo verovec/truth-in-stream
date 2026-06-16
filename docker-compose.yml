@@ -336,6 +336,11 @@ services:
       CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
       CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+      # Category sharding (empty/1 = single producer over the whole list). `make
+      # crawl CRAWL_SHARDS=N` overrides these per container so N parallel producers
+      # each crawl a disjoint round-robin slice of CRAWL_CATEGORIES.
+      CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
+      CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
       # Fact-checkability gate: on by default, so a key is required unless you set
       # CRAWL_CHECKWORTHY=false to publish every chunk. The gate drops chunks that
       # are not citable evidence before they reach the broker; gate errors fail

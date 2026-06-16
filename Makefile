@@ -22,6 +22,14 @@ EMBEDWORKER_REPLICAS ?= 2
 # `make crawl-workers CRAWLWORKER_REPLICAS=4`.
 CRAWLWORKER_REPLICAS ?= 2
 
+# Number of parallel crawl producers for `make crawl`. 1 (default) runs a single
+# foreground producer over the whole CRAWL_CATEGORIES list (the original
+# behavior). N > 1 fans the one list out across N detached producers, each
+# crawling a disjoint round-robin slice of the categories - so the single .env
+# list stays the source of truth while the crawl runs in parallel. Read by Make,
+# raise per run, e.g. `make crawl CRAWL_SHARDS=4`.
+CRAWL_SHARDS ?= 1
+
 # Wikipedia corpus keys and embed tuning come from the root .env (gitignored)
 # and any shell override, both read by Compose itself: every WIKI_* knob and
 # EMBEDDING_API_KEY is interpolated in docker-compose.yml as ${VAR:-default},
@@ -136,10 +144,23 @@ crawl-workers: ## Start N category-crawl consumers that drain the crawl queue in
 
 # Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
 # the producer does not reconcile (shrink) it; otherwise bring up the broker and
-# a single worker first so a bare `make crawl` still drains.
-crawl: ## Run the category-crawl producer once: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker
+# a single worker first so a bare `make crawl` still drains. CRAWL_SHARDS>1 fans
+# the one CRAWL_CATEGORIES list out across N parallel producers (each a disjoint
+# round-robin slice), running them to completion and removing each on exit.
+crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
+	@case "$(CRAWL_SHARDS)" in ''|*[!0-9]*) echo "CRAWL_SHARDS must be a positive integer, got '$(CRAWL_SHARDS)'" >&2; exit 1 ;; esac
 	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up rabbitmq crawlworker
-	$(COMPOSE) --profile tools run --rm --no-deps wikicrawl
+	@if [ "$(CRAWL_SHARDS)" -le 1 ]; then \
+		$(COMPOSE) --profile tools run --rm --no-deps wikicrawl; \
+	else \
+		pids=""; i=0; \
+		while [ $$i -lt $(CRAWL_SHARDS) ]; do \
+			$(COMPOSE) --profile tools run --rm --no-deps -e CRAWL_SHARDS=$(CRAWL_SHARDS) -e CRAWL_SHARD_INDEX=$$i wikicrawl & \
+			pids="$$pids $$!"; i=$$((i + 1)); \
+		done; \
+		echo "crawl: launched $(CRAWL_SHARDS) parallel shards over CRAWL_CATEGORIES; watch the drain at http://localhost:15672 (app/dev)"; \
+		rc=0; for p in $$pids; do wait $$p || rc=1; done; exit $$rc; \
+	fi
 
 prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the broker + worker fleet + a one-shot crawl that fills the queue from CRAWL_CATEGORIES (gate on by default - set CHECKWORTHY_API_KEY, or CRAWL_CHECKWORTHY=false, in .env), then the fleet drains it. Plain `make up` stays free (this is the wiki profile). Equivalent to `docker compose --profile wiki up -d` (builds the image if missing).
 	$(COMPOSE) --profile wiki up

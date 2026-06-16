@@ -1227,6 +1227,47 @@ func TestLoadCrawl(t *testing.T) {
 	}
 }
 
+func TestLoadCrawlShardingDefaults(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.Shards != 1 || c.ShardIndex != 0 {
+		t.Errorf("sharding defaults = shards %d index %d, want 1/0 (off)", c.Shards, c.ShardIndex)
+	}
+}
+
+func TestLoadCrawlShardingValid(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_SHARDS", "4")
+	t.Setenv("CRAWL_SHARD_INDEX", "2")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.Shards != 4 || c.ShardIndex != 2 {
+		t.Errorf("sharding = shards %d index %d, want 4/2", c.Shards, c.ShardIndex)
+	}
+}
+
+func TestLoadCrawlShardIndexOutOfRange(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_SHARDS", "2")
+	t.Setenv("CRAWL_SHARD_INDEX", "2")
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl with CRAWL_SHARD_INDEX >= CRAWL_SHARDS = nil error, want error")
+	}
+}
+
+func TestLoadCrawlInvalidShards(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_SHARDS", "0")
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl with CRAWL_SHARDS=0 = nil error, want error (min 1)")
+	}
+}
+
 func TestLoadCrawlRequiresCategories(t *testing.T) {
 	if _, err := LoadCrawl(); err == nil {
 		t.Fatal("LoadCrawl with no CRAWL_CATEGORIES = nil error, want error")
