@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
@@ -43,6 +44,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	gateCfg, err := config.LoadCrawlCheckworthy()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -63,27 +68,44 @@ func run(logger *slog.Logger) error {
 		HTTPClient: &http.Client{Timeout: crawlHTTPTimeout},
 	}
 
+	// A nil gate disables fact-checkability filtering (publish everything); only
+	// an active gate is assigned, so the interface stays an untyped nil rather
+	// than a typed-nil that RunCrawl would mistake for a live gate.
+	var gate wiki.Gate
+	if gateCfg.Active() {
+		client, err := evidencegate.New(evidencegate.Config{APIKey: gateCfg.APIKey, Model: gateCfg.Model})
+		if err != nil {
+			return err
+		}
+		gate = client
+	}
+
 	logger.InfoContext(ctx, "wiki crawl started",
 		slog.Any("categories", crawlCfg.Categories),
 		slog.String("corpus", crawlCfg.Corpus),
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("max_depth", crawlCfg.MaxDepth),
 		slog.Int("max_pages", crawlCfg.MaxPages),
-		slog.Bool("include_body", crawlCfg.IncludeBody))
+		slog.Bool("include_body", crawlCfg.IncludeBody),
+		slog.Bool("checkworthy_gate", gateCfg.Active()))
 
-	stats, err := wiki.RunCrawl(ctx, logger, api, qPublisher{client: client}, wiki.CrawlConfig{
-		Categories:  crawlCfg.Categories,
-		Corpus:      crawlCfg.Corpus,
-		Project:     crawlCfg.Project,
-		MaxDepth:    crawlCfg.MaxDepth,
-		MaxPages:    crawlCfg.MaxPages,
-		IncludeBody: crawlCfg.IncludeBody,
-		MaxPriority: queueCfg.MaxPriority,
+	stats, err := wiki.RunCrawl(ctx, logger, api, qPublisher{client: client}, gate, wiki.CrawlConfig{
+		Categories:      crawlCfg.Categories,
+		Corpus:          crawlCfg.Corpus,
+		Project:         crawlCfg.Project,
+		MaxDepth:        crawlCfg.MaxDepth,
+		MaxPages:        crawlCfg.MaxPages,
+		IncludeBody:     crawlCfg.IncludeBody,
+		MaxPriority:     queueCfg.MaxPriority,
+		GateConcurrency: gateCfg.Concurrency,
+		GateRPM:         gateCfg.RPM,
 	})
 	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "wiki crawl finished",
-		slog.Int("pages", stats.Pages), slog.Int("published_chunks", stats.Published))
+		slog.Int("pages", stats.Pages),
+		slog.Int("published_chunks", stats.Published),
+		slog.Int("dropped_chunks", stats.Dropped))
 	return nil
 }

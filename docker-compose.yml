@@ -332,6 +332,16 @@ services:
       CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
       CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+      # Fact-checkability gate: on by default, so a key is required unless you set
+      # CRAWL_CHECKWORTHY=false to publish every chunk. The gate drops chunks that
+      # are not citable evidence before they reach the broker; gate errors fail
+      # open (the chunk is published). CONCURRENCY caps in-flight judgments;
+      # RPM (empty/0 = unpaced) caps the Anthropic call rate.
+      CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
+      CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
+      CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
+      CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
+      CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod

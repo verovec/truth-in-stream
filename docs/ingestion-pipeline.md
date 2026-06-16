@@ -615,11 +615,12 @@ HTTP - no multi-gigabyte dump download. It never touches the dump pipeline
 ```mermaid
 flowchart LR
     CAT["Wikipedia<br/>Action API"]
-    subgraph PROD["cmd/wikicrawl (producer, DB-free)"]
+    subgraph PROD["cmd/wikicrawl (producer, DB-free, + LLM gate)"]
       M["list=categorymembers<br/>BFS subcats to depth, page cap"]
       X["prop=extracts<br/>lead (exintro) + full (explaintext)"]
       C["Chunk() lead -> kind=lead<br/>body  -> kind=body"]
-      P["publish 1 self-contained<br/>CrawlJob per chunk"]
+      G["fact-checkability gate<br/>internal/evidencegate: citable<br/>evidence? drop if not (fail-open)"]
+      P["publish 1 self-contained<br/>CrawlJob per PASSING chunk"]
     end
     Q[["RabbitMQ<br/>crawl.chunks.v&lt;n&gt;<br/>durable, priority"]]
     subgraph FLEET["cmd/crawlworker x N (competing consumers)"]
@@ -629,7 +630,7 @@ flowchart LR
     V["Voyage voyage-4-large<br/>input_type=document"]
     LIVE[("wiki_chunks (live)<br/>+ HNSW index")]
 
-    CAT --> M --> X --> C --> P --> Q
+    CAT --> M --> X --> C --> G --> P --> Q
     Q --> W1 & WN
     W1 & WN --> V
     W1 & WN -->|"UpsertEmbeddedChunk<br/>(content + vector, atomic)"| LIVE
@@ -639,7 +640,8 @@ flowchart LR
 |---|---|---|
 | Category crawler | `internal/wiki/crawl.go` | `CategoryMembers` BFS over the Action API: subcategories to `MaxDepth`, dedupe page ids, stop at `MaxPages`, follow continuation. |
 | Body extracts | `internal/wiki/mediawiki.go` | `FullExtracts` (`explaintext`, no `exintro`) for the article body; the lead source `Extracts` is unchanged. |
-| Producer logic | `internal/wiki/crawlproduce.go` | `RunCrawl`: crawl, fetch lead + body, chunk, publish one `CrawlJob` per chunk (lead chunks then body, contiguous `chunk_index`). Transport-free, DB-free. |
+| Producer logic | `internal/wiki/crawlproduce.go` | `RunCrawl`: crawl, fetch lead + body, chunk, gate each chunk, publish one `CrawlJob` per *passing* chunk (lead chunks then body, contiguous `chunk_index`). Transport-free, DB-free. |
+| Fact-checkability gate | `internal/evidencegate/evidencegate.go` | Per-chunk LLM judgment: *"is this passage verifiable, citable factual evidence?"* A forced-tool, temperature-0 Haiku call on `internal/llm`. Distinct from `internal/checkworthy` (which judges a short spoken statement). The producer drops chunks it rejects before they reach the broker; on a gate error the chunk is published anyway (fail-open). |
 | Job + consumer | `internal/crawljob/crawljob.go` | The self-contained `CrawlJob` message and the `Worker` that embeds each chunk then upserts it live; mirrors `internal/embedjob` semantics. |
 | Producer binary | `cmd/wikicrawl/` | Wire config + API client + broker; run `RunCrawl`; exit. No DB connection. |
 | Consumer binary | `cmd/crawlworker/` | Wire config + Voyage embedder + store + broker; run the worker until SIGTERM. |
@@ -664,6 +666,20 @@ nacks for requeue. Vector consistency is identical to the dump pipeline (one
 model, 1024 dims, `halfvec`, `input_type=document`), so `make wiki-verify` asserts
 the combined corpus.
 
+**Fact-checkability gate (producer-side).** With `CRAWL_CHECKWORTHY=true` (the
+default), the producer runs a per-chunk LLM judgment after chunking and before
+publishing, with up to `CRAWL_CHECKWORTHY_CONCURRENCY` calls in flight and the
+rate capped by `CRAWL_CHECKWORTHY_RPM` (0 = unpaced). A chunk judged not citable
+evidence is **dropped** (never published), so the broker and all downstream
+embedding spend are bounded to fact-checkable content; dropped vs published is
+counted and logged per batch and at the end of the run. The gate **fails open**:
+on any LLM error the chunk is published anyway, so a flaky model can never
+silently empty the corpus. The decision is baked at crawl time - re-tuning the
+prompt means re-crawling. Set `CRAWL_CHECKWORTHY=false` to publish every chunk
+(the pre-gate behavior); when on, the producer requires `CHECKWORTHY_API_KEY` and
+fails fast without it. The gate runs **only** in the producer; the worker and the
+live `internal/checkworthy` path are untouched.
+
 ### Configuration
 
 | Env var | Default | Controls |
@@ -674,6 +690,11 @@ the combined corpus.
 | `CRAWL_MAX_DEPTH` | `1` | Subcategory recursion depth (0 = direct pages only). |
 | `CRAWL_MAX_PAGES` | `5000` | Hard cap on distinct pages collected. |
 | `CRAWL_INCLUDE_BODY` | `true` | When false, ingest lead only (`kind='lead'`). |
+| `CRAWL_CHECKWORTHY` | `true` | Producer-side fact-checkability gate. `false` publishes every chunk (pre-gate behavior). |
+| `CHECKWORTHY_API_KEY` | (required when gate on) | Anthropic key for the gate; read from env, never logged. |
+| `CRAWL_CHECKWORTHY_MODEL` | `claude-haiku-4-5-20251001` | Gate model (cheapest fast Claude). |
+| `CRAWL_CHECKWORTHY_CONCURRENCY` | `8` | In-flight gate judgments in the producer. |
+| `CRAWL_CHECKWORTHY_RPM` | `0` (unpaced) | Per-producer Anthropic call-rate cap. |
 | `RABBITMQ_CRAWL_QUEUE` | `crawl.chunks` | Base queue name; versioned via `RABBITMQ_QUEUE_VERSIONS`. |
 | `CRAWL_WORKER_CONCURRENCY` | `4` | In-flight embeds per worker replica; also the prefetch. |
 | `CRAWL_WORKER_MAX_ATTEMPTS` | `5` | Delivery budget before a job is dropped. |
@@ -710,6 +731,7 @@ re-embeds unchanged articles. See the design for the rationale and follow-ups:
 - Schema: `stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`
 - Queries: `stack/backend/queries/wiki.sql`
 - Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
+- LLM classifiers: `stack/backend/internal/llm` (shared transport), `internal/evidencegate` (crawl gate), `internal/checkworthy` (live)
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
 - Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy.yml`
 - Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

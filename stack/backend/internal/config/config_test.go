@@ -1273,6 +1273,89 @@ func TestLoadCrawlInvalidIncludeBody(t *testing.T) {
 	}
 }
 
+func TestLoadCrawlCheckworthy(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    CrawlCheckworthy
+		wantErr bool
+	}{
+		{
+			name: "on by default with a key",
+			// CRAWL_CHECKWORTHY left empty so the default (true) is exercised; the
+			// empty value also neutralizes any ambient export so the test is hermetic.
+			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "CHECKWORTHY_API_KEY": "sk-test"},
+			want: CrawlCheckworthy{Enabled: true, APIKey: "sk-test", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+		},
+		{
+			name: "enabled without a key fails fast",
+			// CRAWL_CHECKWORTHY defaults to true, so a missing key is a hard error.
+			// Both vars are pinned (gate on, no key) to stay hermetic under any
+			// ambient environment.
+			env:     map[string]string{"CRAWL_CHECKWORTHY": "", "CHECKWORTHY_API_KEY": ""},
+			wantErr: true,
+		},
+		{
+			name: "disabled needs no key",
+			env:  map[string]string{"CRAWL_CHECKWORTHY": "false"},
+			want: CrawlCheckworthy{Enabled: false, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+		},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				"CRAWL_CHECKWORTHY":             "",
+				"CHECKWORTHY_API_KEY":           "sk-test",
+				"CRAWL_CHECKWORTHY_MODEL":       "claude-haiku-4-5",
+				"CRAWL_CHECKWORTHY_CONCURRENCY": "16",
+				"CRAWL_CHECKWORTHY_RPM":         "120",
+			},
+			want: CrawlCheckworthy{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", Concurrency: 16, RPM: 120},
+		},
+		{name: "non-bool enabled rejected", env: map[string]string{"CRAWL_CHECKWORTHY": "maybe"}, wantErr: true},
+		{name: "zero concurrency rejected", env: map[string]string{"CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_CONCURRENCY": "0"}, wantErr: true},
+		{name: "negative rpm rejected", env: map[string]string{"CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_RPM": "-1"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadCrawlCheckworthy()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCrawlCheckworthyActive(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  CrawlCheckworthy
+		want bool
+	}{
+		{"enabled with key", CrawlCheckworthy{Enabled: true, APIKey: "k"}, true},
+		{"enabled without key", CrawlCheckworthy{Enabled: true, APIKey: ""}, false},
+		{"disabled with key", CrawlCheckworthy{Enabled: false, APIKey: "k"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.Active(); got != tc.want {
+				t.Errorf("Active() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadCrawlQueueDefaultName(t *testing.T) {
 	t.Setenv("RABBITMQ_URL", "amqp://localhost")
 	q, err := LoadCrawlQueue()
