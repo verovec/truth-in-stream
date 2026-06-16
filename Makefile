@@ -60,7 +60,7 @@ bootstrap: ## Generate .env on a fresh checkout (operator email, argon2id hash, 
 
 up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend
 	@sh scripts/doctor.sh --quiet
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up --build
 
 down: ## Stop the stack, keeping the Postgres volume
 	$(COMPOSE) down
@@ -73,7 +73,7 @@ reset: ## Soft reset: drop the schema, re-migrate, and reseed (container stays u
 
 reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch
 	$(COMPOSE) down -v
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up --build
 	@echo "hard reset complete: fresh volume, migrated and seeded"
 
 backup: ## Snapshot the database to a timestamped dump under backups/ and upload it to S3 (set DB_BACKUP_BUCKET); preserves embeddings so a reset needs no re-embed
@@ -98,7 +98,7 @@ refresh-embeddings: ## Regenerate the committed embedding cache from fixtures vi
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh
 
 fleet-up: ## Start the ingestion consumer: the broker plus a long-running embedding worker fleet (EMBEDWORKER_REPLICAS=2, overridable). Run `make wiki-populate` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile) - plain `make up` never starts it
-	$(COMPOSE) --profile wiki up -d --scale embedworker=$(EMBEDWORKER_REPLICAS) rabbitmq embedworker
+	$(COMPOSE) --profile wiki up --scale embedworker=$(EMBEDWORKER_REPLICAS) rabbitmq embedworker
 	@echo "fleet up: rabbitmq + $(EMBEDWORKER_REPLICAS) embedworker(s) running; run 'make wiki-populate' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
 fleet-down: ## Stop the ingestion broker and worker fleet (removes just those containers; the rest of the stack and every named volume, Postgres data included, are left intact)
@@ -131,18 +131,18 @@ reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC
 	@echo "reingest complete: corpus rebuilt (atomic), clustered, and verified"
 
 crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
-	$(COMPOSE) --profile wiki up -d --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
+	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
 	@echo "crawl fleet up: rabbitmq + $(CRAWLWORKER_REPLICAS) crawlworker(s) running; run 'make crawl CRAWL_CATEGORIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
 # Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
 # the producer does not reconcile (shrink) it; otherwise bring up the broker and
 # a single worker first so a bare `make crawl` still drains.
 crawl: ## Run the category-crawl producer once: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker
-	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq crawlworker
+	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up rabbitmq crawlworker
 	$(COMPOSE) --profile tools run --rm --no-deps wikicrawl
 
 prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the broker + worker fleet + a one-shot crawl that fills the queue from CRAWL_CATEGORIES (gate on by default - set CHECKWORTHY_API_KEY, or CRAWL_CHECKWORTHY=false, in .env), then the fleet drains it. Plain `make up` stays free (this is the wiki profile). Equivalent to `docker compose --profile wiki up -d` (builds the image if missing).
-	$(COMPOSE) --profile wiki up -d
+	$(COMPOSE) --profile wiki up
 	@echo "wiki stack up: broker + worker fleet + a one-shot prime crawl (CRAWL_CATEGORIES). Watch the queue fill and drain at http://localhost:15672 (app/dev); 'make crawl-workers CRAWLWORKER_REPLICAS=N' scales the drain."
 
 migrate: ## Apply all up migrations to the running Postgres
