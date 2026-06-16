@@ -66,7 +66,7 @@ WHERE page_id = $2 AND chunk_index = $3;
 -- non-null rows, so the filter does not degrade index use. query_embedding is
 -- referenced twice but sqlc collapses it to one parameter, so the index still
 -- drives the ORDER BY.
-SELECT title, url, content, section, kind, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+SELECT page_id, chunk_index, title, url, content, section, kind, (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> sqlc.arg(query_embedding)

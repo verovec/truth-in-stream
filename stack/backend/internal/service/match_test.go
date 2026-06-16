@@ -95,12 +95,13 @@ func TestMatchSegment(t *testing.T) {
 	}
 	match := func(id string, score float64) Match {
 		return Match{
-			Kind:    domain.MatchKindClaim,
-			ClaimID: id,
-			Text:    "text " + id,
-			Verdict: domain.VerdictContradicts,
-			Sources: []domain.Source{{Title: "t " + id, URL: "https://" + id}},
-			Score:   score,
+			Kind:       domain.MatchKindClaim,
+			ClaimID:    id,
+			Text:       "text " + id,
+			Verdict:    domain.VerdictContradicts,
+			Sources:    []domain.Source{{Title: "t " + id, URL: "https://" + id}},
+			EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, id, 0),
+			Score:      score,
 		}
 	}
 
@@ -223,6 +224,7 @@ func TestMatchSegment(t *testing.T) {
 			if diff := cmp.Diff(tc.want, got, scoreApprox); diff != "" {
 				t.Errorf("matches mismatch (-want +got):\n%s", diff)
 			}
+			assertEvidenceIDsRoundTrip(t, got)
 			if diff := cmp.Diff([]string{tc.segment}, tc.embedder.gotTexts); diff != "" {
 				t.Errorf("embedded texts mismatch (-want +got):\n%s", diff)
 			}
@@ -248,12 +250,14 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 			Distance: distance,
 		}
 	}
-	evidenceHit := func(title string, distance float32) domain.WikiEvidence {
+	evidenceHit := func(pageID int64, chunkIndex int, title string, distance float32) domain.WikiEvidence {
 		return domain.WikiEvidence{
-			Title:    title,
-			URL:      "https://en.wikipedia.org/wiki/" + title,
-			Content:  "lead " + title,
-			Distance: distance,
+			PageID:     pageID,
+			ChunkIndex: chunkIndex,
+			Title:      title,
+			URL:        "https://en.wikipedia.org/wiki/" + title,
+			Content:    "lead " + title,
+			Distance:   distance,
 		}
 	}
 
@@ -266,7 +270,7 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 	searcher := &fakeSearcher{hits: []domain.ClaimMatch{claimHit("a", 0.05), claimHit("b", 0.5)}}
 	// ev2 at distance 0.45 scores 0.55, below the 0.6 evidence threshold, so it
 	// is dropped even though it would clear the laxer claim threshold.
-	evidence := &fakeEvidence{hits: []domain.WikiEvidence{evidenceHit("Wall", 0.1), evidenceHit("Trivia", 0.45)}}
+	evidence := &fakeEvidence{hits: []domain.WikiEvidence{evidenceHit(42, 3, "Wall", 0.1), evidenceHit(99, 0, "Trivia", 0.45)}}
 
 	m, err := NewMatcher(&fakeEmbedder{vecs: [][]float32{queryVec()}}, searcher, evidence, cfg)
 	if err != nil {
@@ -279,18 +283,85 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 	}
 
 	want := []Match{
-		{Kind: domain.MatchKindClaim, ClaimID: "a", Text: "claim a", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S a", URL: "https://c/a"}}, Score: 0.95},
-		{Kind: domain.MatchKindEvidence, Text: "lead Wall", Article: domain.Article{Title: "Wall", URL: "https://en.wikipedia.org/wiki/Wall"}, Score: 0.9},
-		{Kind: domain.MatchKindClaim, ClaimID: "b", Text: "claim b", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S b", URL: "https://c/b"}}, Score: 0.5},
+		{Kind: domain.MatchKindClaim, ClaimID: "a", Text: "claim a", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S a", URL: "https://c/a"}}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, "a", 0), Score: 0.95},
+		{Kind: domain.MatchKindEvidence, Text: "lead Wall", Article: domain.Article{Title: "Wall", URL: "https://en.wikipedia.org/wiki/Wall"}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, "42", 3), Score: 0.9},
+		{Kind: domain.MatchKindClaim, ClaimID: "b", Text: "claim b", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S b", URL: "https://c/b"}}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, "b", 0), Score: 0.5},
 	}
 	if diff := cmp.Diff(want, got, scoreApprox); diff != "" {
 		t.Errorf("merged matches mismatch (-want +got):\n%s", diff)
 	}
+	assertEvidenceIDsRoundTrip(t, got)
 	if evidence.gotTopK != cfg.EvidenceTopK {
 		t.Errorf("evidence topK = %d, want %d", evidence.gotTopK, cfg.EvidenceTopK)
 	}
 	if diff := cmp.Diff(queryVec(), evidence.gotQuery); diff != "" {
 		t.Errorf("evidence query mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// assertEvidenceIDsRoundTrip checks every match carries a non-empty evidence id
+// that domain.ParseEvidenceID decodes back to that match's own kind, so a
+// downstream verifier's citation resolves to the exact source it came from.
+func assertEvidenceIDsRoundTrip(t *testing.T, matches []Match) {
+	t.Helper()
+	for _, mt := range matches {
+		if mt.EvidenceID == "" {
+			t.Errorf("match %+v carries no evidence id", mt)
+			continue
+		}
+		kind, source, chunk, err := domain.ParseEvidenceID(mt.EvidenceID)
+		if err != nil {
+			t.Errorf("ParseEvidenceID(%q): %v", mt.EvidenceID, err)
+			continue
+		}
+		if kind != mt.Kind {
+			t.Errorf("evidence id %q kind = %q, want %q", mt.EvidenceID, kind, mt.Kind)
+		}
+		if mt.Kind == domain.MatchKindClaim {
+			if source != mt.ClaimID {
+				t.Errorf("evidence id %q source = %q, want claim id %q", mt.EvidenceID, source, mt.ClaimID)
+			}
+			if chunk != 0 {
+				t.Errorf("evidence id %q chunk = %d, want 0 for a claim", mt.EvidenceID, chunk)
+			}
+		}
+	}
+}
+
+// TestMatchSegmentEvidenceIDResolvesToSourceRow asserts that a wiki evidence
+// id decodes back to the exact (page_id, chunk_index) coordinates the store
+// returned, so the verifier can resolve a citation to its source row.
+func TestMatchSegmentEvidenceIDResolvesToSourceRow(t *testing.T) {
+	t.Parallel()
+
+	cfg := testMatcherConfig()
+	cfg.EvidenceTopK = 5
+	cfg.EvidenceThreshold = 0.5
+	hit := domain.WikiEvidence{PageID: 7331, ChunkIndex: 4, Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China", Content: "lead", Kind: domain.WikiChunkKindLead, Distance: 0.1}
+	evidence := &fakeEvidence{hits: []domain.WikiEvidence{hit}}
+
+	m, err := NewMatcher(&fakeEmbedder{vecs: [][]float32{queryVec()}}, &fakeSearcher{}, evidence, cfg)
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+
+	got, _, err := m.MatchSegment(t.Context(), "the great wall is ancient")
+	if err != nil {
+		t.Fatalf("MatchSegment: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d matches, want 1", len(got))
+	}
+
+	kind, source, chunk, err := domain.ParseEvidenceID(got[0].EvidenceID)
+	if err != nil {
+		t.Fatalf("ParseEvidenceID(%q): %v", got[0].EvidenceID, err)
+	}
+	if kind != domain.MatchKindEvidence {
+		t.Errorf("kind = %q, want %q", kind, domain.MatchKindEvidence)
+	}
+	if source != "7331" || chunk != 4 {
+		t.Errorf("round-trip = (page %q, chunk %d), want (page \"7331\", chunk 4)", source, chunk)
 	}
 }
 

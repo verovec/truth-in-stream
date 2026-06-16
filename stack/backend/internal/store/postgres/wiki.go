@@ -72,11 +72,13 @@ func (s *Store) SearchWiki(ctx context.Context, query []float32, topK int) ([]do
 	evidence := make([]domain.WikiEvidence, 0, len(rows))
 	for _, r := range rows {
 		evidence = append(evidence, domain.WikiEvidence{
-			Title:   r.Title,
-			URL:     r.Url,
-			Content: r.Content,
-			Section: r.Section,
-			Kind:    domain.WikiChunkKind(r.Kind),
+			PageID:     r.PageID,
+			ChunkIndex: int(r.ChunkIndex),
+			Title:      r.Title,
+			URL:        r.Url,
+			Content:    r.Content,
+			Section:    r.Section,
+			Kind:       domain.WikiChunkKind(r.Kind),
 			// Cosine distance is in [0,2]; the float32 narrowing matches
 			// domain.WikiEvidence and is plenty precise for ranking.
 			Distance: float32(r.Distance),

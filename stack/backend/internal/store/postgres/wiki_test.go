@@ -181,13 +181,13 @@ func TestSearchWikiCarriesSectionAndKind(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunk := wikiChunk(1, 0, "alpha lead")
+	chunk := wikiChunk(8675309, 3, "alpha body")
 	chunk.Section = "History"
 	chunk.Kind = domain.WikiChunkKindBody
 	if err := store.UpsertChunks(ctx, []domain.WikiChunk{chunk}); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
-	setEmbedding(ctx, t, store, 1, 0, unitVec(0))
+	setEmbedding(ctx, t, store, 8675309, 3, unitVec(0))
 
 	got, err := store.SearchWiki(ctx, unitVec(0), 1)
 	if err != nil {
@@ -198,6 +198,11 @@ func TestSearchWikiCarriesSectionAndKind(t *testing.T) {
 	}
 	if got[0].Section != "History" || got[0].Kind != domain.WikiChunkKindBody {
 		t.Errorf("evidence (section, kind) = (%q, %q), want (History, body)", got[0].Section, got[0].Kind)
+	}
+	// The (page_id, chunk_index) source coordinates must survive retrieval so a
+	// composed evidence_id resolves back to this exact row.
+	if got[0].PageID != 8675309 || got[0].ChunkIndex != 3 {
+		t.Errorf("evidence (pageID, chunkIndex) = (%d, %d), want (8675309, 3)", got[0].PageID, got[0].ChunkIndex)
 	}
 }
 
