@@ -299,6 +299,58 @@ func TestExtractsBatchesByLimit(t *testing.T) {
 	}
 }
 
+func TestExtractsFollowsContinuation(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		// First response fills only page 1's extract and hands back an
+		// excontinue token; page 2's extract arrives only on the continued
+		// request. This mirrors TextExtracts splitting a multi-title body batch.
+		if r.URL.Query().Get("excontinue") == "" {
+			// The real Action API returns excontinue as a NUMBER and the generic
+			// continue as a string - the continue envelope is mixed-type.
+			_, _ = w.Write([]byte(`{
+				"continue": {"excontinue": 1, "continue": "||"},
+				"query": {"pages": {
+					"1": {"pageid": 1, "title": "Aspirin", "extract": "Aspirin is a medication.", "revisions": [{"revid": 10}]},
+					"2": {"pageid": 2, "title": "Ibuprofen", "extract": "", "revisions": [{"revid": 20}]}
+				}}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"query": {"pages": {
+				"2": {"pageid": 2, "title": "Ibuprofen", "extract": "Ibuprofen is an NSAID.", "revisions": [{"revid": 20}]}
+			}}
+		}`))
+	})
+
+	got, err := client.FullExtracts(t.Context(), []string{"Aspirin", "Ibuprofen"})
+	if err != nil {
+		t.Fatalf("FullExtracts: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("made %d calls, want 2 (continuation followed)", calls)
+	}
+	byTitle := map[string]Extract{}
+	for _, e := range got {
+		byTitle[e.Title] = e
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d extracts, want 2: %+v", len(got), got)
+	}
+	if asp := byTitle["Aspirin"]; asp.Text == "" || asp.RevisionID != 10 {
+		t.Errorf("Aspirin = %+v, want lead text + rev 10", asp)
+	}
+	// Without following continuation, Ibuprofen's body is lost (empty in the
+	// first response); the merge must recover it from the continued response.
+	if ibu := byTitle["Ibuprofen"]; ibu.Text != "Ibuprofen is an NSAID." || ibu.RevisionID != 20 {
+		t.Errorf("Ibuprofen = %+v, want body recovered via continuation", ibu)
+	}
+}
+
 func TestRetryAfterHonoursHeaderAndCap(t *testing.T) {
 	t.Parallel()
 
