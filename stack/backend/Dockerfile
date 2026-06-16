@@ -30,12 +30,16 @@ RUN set -eux; \
 EXPOSE 8080
 CMD ["go", "run", "./cmd/server"]
 
-# Builder: static binaries. The HTTP server and the embedding worker ship in the
-# one image; the worker runs as its own ECS service with /embedworker as its
-# entrypoint (see stack/terraform/modules/worker).
+# Builder: static binaries. The one image carries the HTTP server and the
+# ingestion entry points; each non-server workload runs as its own ECS task or
+# service selecting its binary as the entrypoint: /embedworker and /crawlworker
+# are the dump and crawl worker fleets (see stack/terraform/modules/worker), and
+# /wikicrawl is the on-demand category-crawl producer (modules/scheduled-task).
 FROM base AS builder
 RUN go build -o /out/server ./cmd/server
 RUN go build -o /out/embedworker ./cmd/embedworker
+RUN go build -o /out/crawlworker ./cmd/crawlworker
+RUN go build -o /out/wikicrawl ./cmd/wikicrawl
 
 # Prod: a slim Debian base (not distroless/static) because the pinned yt-dlp
 # binary and ffmpeg both need a glibc userland. Runs as a non-root system user.
@@ -54,6 +58,8 @@ RUN set -eux; \
     useradd --system --uid 65532 --user-group --no-create-home nonroot
 COPY --from=builder /out/server /server
 COPY --from=builder /out/embedworker /embedworker
+COPY --from=builder /out/crawlworker /crawlworker
+COPY --from=builder /out/wikicrawl /wikicrawl
 EXPOSE 8080
 USER 65532:65532
 ENTRYPOINT ["/server"]

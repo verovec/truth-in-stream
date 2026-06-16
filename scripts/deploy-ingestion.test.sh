@@ -4,6 +4,10 @@
 # task-definition roll, the worker fleet roll via the lifecycle deploy lambda,
 # and the optional queue-version roll are exercised without an AWS account, a
 # real ECS cluster, or a real lambda. `jq` is used for real.
+#
+# The pipeline has two producers (the dump `producer` and the crawl `wikicrawl`)
+# and two worker fleets (`embedworker` and `crawlworker`); by default the deploy
+# ships the one backend image to all four and skips any that are not provisioned.
 # Run: ./scripts/deploy-ingestion.test.sh
 
 set -uo pipefail
@@ -25,10 +29,12 @@ assert_not_contains() { printf '%s' "$1" | grep -qF -- "$2" && fail "$3 (found: 
 # makes (ecs describe-task-definition, ecs register-task-definition, lambda
 # invoke) and logs every invocation so the test can assert on the arguments the
 # script built. Behaviour is steered by exported env:
-#   PRODUCER_MISSING   describe of the producer family fails (not provisioned)
-#   WORKER_MISSING     describe of a worker family fails (not provisioned)
-#   LAMBDA_MISSING     lambda invoke fails with ResourceNotFoundException
-#   LAMBDA_FUNCERROR   lambda invoke returns a FunctionError in its response
+#   PRODUCER_MISSING        describe of the dump producer family fails
+#   CRAWL_PRODUCER_MISSING  describe of the crawl producer (wikicrawl) family fails
+#   WORKER_MISSING          describe of the embedworker family fails
+#   CRAWLWORKER_MISSING     describe of the crawlworker family fails
+#   LAMBDA_MISSING          lambda invoke fails with ResourceNotFoundException
+#   LAMBDA_FUNCERROR        lambda invoke returns a FunctionError in its response
 make_sandbox() {
   SANDBOX="$(mktemp -d "$TMPROOT/sb.XXXXXX")"; BIN="$SANDBOX/bin"; mkdir -p "$BIN"
   AWS_CALL_LOG="$SANDBOX/aws.log"; : >"$AWS_CALL_LOG"
@@ -47,11 +53,20 @@ case "$1 $2" in
       echo "An error occurred (ClientException): Unable to describe task definition." >&2
       exit 254
     fi
+    if [[ "$family" == *"-wikicrawl" && -n "${CRAWL_PRODUCER_MISSING:-}" ]]; then
+      echo "An error occurred (ClientException): Unable to describe task definition." >&2
+      exit 254
+    fi
     if [[ "$family" == *"-embedworker" && -n "${WORKER_MISSING:-}" ]]; then
       echo "An error occurred (ClientException): Unable to describe task definition." >&2
       exit 254
     fi
-    # A minimal but representative task definition the script edits with jq.
+    if [[ "$family" == *"-crawlworker" && -n "${CRAWLWORKER_MISSING:-}" ]]; then
+      echo "An error occurred (ClientException): Unable to describe task definition." >&2
+      exit 254
+    fi
+    # A minimal but representative task definition the script edits with jq. The
+    # container name echoes the family so a register call is attributable to it.
     cat <<JSON
 {
   "taskDefinition": {
@@ -71,7 +86,7 @@ case "$1 $2" in
     "requiresCompatibilities": ["FARGATE"],
     "containerDefinitions": [
       {
-        "name": "producer",
+        "name": "${family}",
         "image": "old-registry/img:old",
         "essential": true,
         "environment": [
@@ -109,26 +124,29 @@ AWS
   chmod +x "$BIN/aws"
   export PATH="$BIN:$PATH" AWS_CALL_LOG \
     PRODUCER_MISSING="${PRODUCER_MISSING:-}" \
+    CRAWL_PRODUCER_MISSING="${CRAWL_PRODUCER_MISSING:-}" \
     WORKER_MISSING="${WORKER_MISSING:-}" \
+    CRAWLWORKER_MISSING="${CRAWLWORKER_MISSING:-}" \
     LAMBDA_MISSING="${LAMBDA_MISSING:-}" \
     LAMBDA_FUNCERROR="${LAMBDA_FUNCERROR:-}"
 }
 
 BACKEND_IMAGE="123.dkr.ecr.eu-west-3.amazonaws.com/truth-in-stream-dev-backend:sha-abc1234"
 
-echo "TEST: image-only deploy rolls the producer image and the worker fleet"
+echo "TEST: image-only deploy rolls both producers and both worker fleets"
 (
   PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" make_sandbox
   out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" bash "$DEPLOY" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on the happy path" || fail "exit 0 on the happy path (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
-  assert_contains "$log" "describe-task-definition --task-definition truth-in-stream-dev-producer" "describes the producer task family"
+  assert_contains "$log" "describe-task-definition --task-definition truth-in-stream-dev-producer" "describes the dump producer task family"
+  assert_contains "$log" "describe-task-definition --task-definition truth-in-stream-dev-wikicrawl" "describes the crawl producer task family"
   assert_contains "$log" "register-task-definition" "registers a new producer revision"
   assert_contains "$log" "$BACKEND_IMAGE" "pins the producer revision to the deployed image"
   assert_contains "$log" "lambda invoke" "invokes the worker-lifecycle deploy lambda"
   assert_contains "$log" "truth-in-stream-dev-workerlifecycle-deploy" "targets the deploy lambda by convention name"
   assert_contains "$log" '"image":"'"$BACKEND_IMAGE"'"' "passes the deployed image in the lambda payload"
-  assert_contains "$log" '"services":["embedworker"]' "rolls the embedworker service"
+  assert_contains "$log" '"services":["embedworker","crawlworker"]' "rolls both the embedworker and crawlworker services"
 )
 
 echo "TEST: image-only deploy does not change RABBITMQ_QUEUE_VERSIONS"
@@ -136,36 +154,81 @@ echo "TEST: image-only deploy does not change RABBITMQ_QUEUE_VERSIONS"
   PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" make_sandbox
   PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" bash "$DEPLOY" >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
-  # The producer revision keeps the existing version; no worker family is
-  # re-registered (the lambda copies the live revision unchanged). embedworker
-  # therefore appears only in the lambda payload, never in a register call.
+  # The producer revisions keep the existing version; no worker family is
+  # re-registered (the lambda copies the live revision unchanged). The worker
+  # families therefore appear only in the lambda payload, never in a register call.
   assert_not_contains "$log" '"value":"1,2"' "leaves the queue versions untouched"
-  reg_with_worker="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c "embedworker" || true)"
-  [[ "$reg_with_worker" -eq 0 ]] && ok "does not re-register the worker family without a version roll" || fail "re-registered the worker family unexpectedly"
+  reg_with_worker="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -cE "embedworker|crawlworker" || true)"
+  [[ "$reg_with_worker" -eq 0 ]] && ok "does not re-register a worker family without a version roll" || fail "re-registered a worker family unexpectedly"
 )
 
-echo "TEST: queue-version roll stamps producer and worker with the new versions"
+echo "TEST: queue-version roll stamps both producers and both workers"
 (
   PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" QUEUE_VERSIONS="1,2" make_sandbox
   out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" QUEUE_VERSIONS="1,2" bash "$DEPLOY" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 with a version roll" || fail "exit 0 with a version roll (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" '"name":"RABBITMQ_QUEUE_VERSIONS","value":"1,2"' "stamps the new queue versions"
-  reg_with_worker="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c "embedworker" || true)"
-  [[ "$reg_with_worker" -ge 1 ]] && ok "re-registers the worker family so the lambda copies the rolled version" || fail "did not re-register the worker family for the version roll"
+  reg_with_embed="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c "embedworker" || true)"
+  [[ "$reg_with_embed" -ge 1 ]] && ok "re-registers the embedworker family so the lambda copies the rolled version" || fail "did not re-register the embedworker family for the version roll"
+  reg_with_crawl="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c "crawlworker" || true)"
+  [[ "$reg_with_crawl" -ge 1 ]] && ok "re-registers the crawlworker family so the lambda copies the rolled version" || fail "did not re-register the crawlworker family for the version roll"
   assert_contains "$log" "lambda invoke" "still rolls the worker fleet via the lambda"
 )
 
-echo "TEST: a missing producer task definition is skipped, not fatal"
+echo "TEST: a missing dump producer task definition is skipped, not fatal"
 (
   PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" PRODUCER_MISSING=1 make_sandbox
   out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" PRODUCER_MISSING=1 bash "$DEPLOY" 2>&1)"; rc=$?
-  [[ $rc -eq 0 ]] && ok "exit 0 when the producer is absent" || fail "exit 0 when the producer is absent (got $rc)"
-  assert_contains "$out" "producer" "explains the producer was skipped"
+  [[ $rc -eq 0 ]] && ok "exit 0 when the dump producer is absent" || fail "exit 0 when the dump producer is absent (got $rc)"
+  assert_contains "$out" "truth-in-stream-dev-producer" "explains the dump producer was skipped"
   log="$(cat "$AWS_CALL_LOG")"
-  reg_with_producer="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c "producer" || true)"
-  [[ "$reg_with_producer" -eq 0 ]] && ok "does not register a producer revision when absent" || fail "registered a producer revision despite absence"
+  reg_with_producer="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c '"family":"truth-in-stream-dev-producer"' || true)"
+  [[ "$reg_with_producer" -eq 0 ]] && ok "does not register a dump producer revision when absent" || fail "registered a dump producer revision despite absence"
+  reg_with_crawl="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c '"family":"truth-in-stream-dev-wikicrawl"' || true)"
+  [[ "$reg_with_crawl" -ge 1 ]] && ok "still deploys the crawl producer" || fail "did not deploy the crawl producer"
   assert_contains "$log" "lambda invoke" "still rolls the worker fleet"
+)
+
+echo "TEST: a missing crawl producer task definition is skipped, not fatal"
+(
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" CRAWL_PRODUCER_MISSING=1 make_sandbox
+  out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" CRAWL_PRODUCER_MISSING=1 bash "$DEPLOY" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 when the crawl producer is absent" || fail "exit 0 when the crawl producer is absent (got $rc)"
+  assert_contains "$out" "truth-in-stream-dev-wikicrawl" "explains the crawl producer was skipped"
+  log="$(cat "$AWS_CALL_LOG")"
+  reg_with_crawl="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c '"family":"truth-in-stream-dev-wikicrawl"' || true)"
+  [[ "$reg_with_crawl" -eq 0 ]] && ok "does not register a crawl producer revision when absent" || fail "registered a crawl producer revision despite absence"
+  reg_with_producer="$(grep "register-task-definition" "$AWS_CALL_LOG" | grep -c '"family":"truth-in-stream-dev-producer"' || true)"
+  [[ "$reg_with_producer" -ge 1 ]] && ok "still deploys the dump producer" || fail "did not deploy the dump producer"
+)
+
+echo "TEST: a missing embedworker fleet is dropped from the payload, not fatal"
+(
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_MISSING=1 make_sandbox
+  out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_MISSING=1 bash "$DEPLOY" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 when embedworker is absent" || fail "exit 0 when embedworker is absent (got $rc)"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" '"services":["crawlworker"]' "rolls only the provisioned crawlworker"
+  assert_not_contains "$log" '"services":["embedworker","crawlworker"]' "drops the absent embedworker from the payload"
+)
+
+echo "TEST: a missing crawlworker fleet is dropped from the payload, not fatal"
+(
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" CRAWLWORKER_MISSING=1 make_sandbox
+  out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" CRAWLWORKER_MISSING=1 bash "$DEPLOY" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 when crawlworker is absent" || fail "exit 0 when crawlworker is absent (got $rc)"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" '"services":["embedworker"]' "rolls only the provisioned embedworker"
+)
+
+echo "TEST: when no worker fleet is provisioned the lambda roll is skipped, not fatal"
+(
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_MISSING=1 CRAWLWORKER_MISSING=1 make_sandbox
+  out="$(PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_MISSING=1 CRAWLWORKER_MISSING=1 bash "$DEPLOY" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 when no worker fleet is provisioned" || fail "exit 0 when no worker fleet is provisioned (got $rc)"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_not_contains "$log" "lambda invoke" "does not invoke the deploy lambda with an empty service list"
 )
 
 echo "TEST: a missing deploy lambda is skipped, not fatal"
@@ -184,12 +247,15 @@ echo "TEST: a lambda FunctionError fails the deploy"
   assert_contains "$out" "FunctionError" "reports the function error"
 )
 
-echo "TEST: a custom worker service list is honoured"
+echo "TEST: custom producer and worker service lists are honoured"
 (
-  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_SERVICES="embedworker,fastworker" make_sandbox
-  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" WORKER_SERVICES="embedworker,fastworker" bash "$DEPLOY" >/dev/null 2>&1
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" \
+    PRODUCER_SERVICES="producer" WORKER_SERVICES="embedworker,fastworker" make_sandbox
+  PROJECT=truth-in-stream ENVIRONMENT=dev IMAGE="$BACKEND_IMAGE" \
+    PRODUCER_SERVICES="producer" WORKER_SERVICES="embedworker,fastworker" bash "$DEPLOY" >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" '"services":["embedworker","fastworker"]' "passes every requested worker service"
+  assert_not_contains "$log" "describe-task-definition --task-definition truth-in-stream-dev-wikicrawl" "does not touch the crawl producer when not requested"
 )
 
 echo "TEST: a missing IMAGE is rejected before any AWS call"
