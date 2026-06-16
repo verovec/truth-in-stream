@@ -1192,6 +1192,21 @@ func boolEnv(key string) (bool, error) {
 	return v, nil
 }
 
+// boolEnvDefault reads a boolean environment variable, returning fallback when
+// unset. It exists for flags that default to true, where boolEnv's unset-is-false
+// rule would invert the intended default.
+func boolEnvDefault(key string, fallback bool) (bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("config: %s %q: %w", key, raw, err)
+	}
+	return v, nil
+}
+
 // boundedDurationEnv reads a positive Go duration, applying fallback when unset
 // and rejecting values above maximum.
 func boundedDurationEnv(key string, fallback, maximum time.Duration) (time.Duration, error) {
@@ -1311,6 +1326,69 @@ func LoadCrawl() (Crawl, error) {
 		MaxDepth:    maxDepth,
 		MaxPages:    maxPages,
 		IncludeBody: includeBody,
+	}, nil
+}
+
+// Crawl fact-checkability gate defaults: the gate is on by default so the corpus
+// stays bounded to citable evidence, runs on the cheapest fast Claude model, and
+// allows a modest number of in-flight judgments. The rate cap is unpaced by
+// default; an operator sets it to bound Anthropic spend on a large crawl.
+const (
+	defaultCrawlCheckworthyModel       = "claude-haiku-4-5-20251001"
+	defaultCrawlCheckworthyConcurrency = 8
+)
+
+// CrawlCheckworthy configures the producer-side fact-checkability gate. Enabled
+// (default true) runs an LLM judgment on each chunk before publishing so only
+// citable evidence reaches the broker; false publishes every chunk, the pre-gate
+// behavior. Model selects the classifier; Concurrency caps in-flight judgments;
+// RPM (0 = unpaced) caps the per-producer Anthropic call rate. APIKey is a secret
+// read from CHECKWORTHY_API_KEY and never logged.
+type CrawlCheckworthy struct {
+	Enabled     bool
+	APIKey      string
+	Model       string
+	Concurrency int
+	RPM         int
+}
+
+// Active reports whether the LLM gate should be wired. The loader already
+// guarantees an enabled gate carries a key, so this is true exactly when the gate
+// is on; callers pass a nil gate to the producer when it is false.
+func (c CrawlCheckworthy) Active() bool {
+	return c.Enabled && c.APIKey != ""
+}
+
+// LoadCrawlCheckworthy reads the crawl fact-checkability gate configuration.
+// CRAWL_CHECKWORTHY defaults to true, so the gate is on unless explicitly
+// disabled; when on it requires CHECKWORTHY_API_KEY and fails fast otherwise
+// rather than silently publishing everything. Bad values fail at startup. The
+// secret is read but never logged.
+func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
+	enabled, err := boolEnvDefault("CRAWL_CHECKWORTHY", true)
+	if err != nil {
+		return CrawlCheckworthy{}, err
+	}
+	apiKey := getenv("CHECKWORTHY_API_KEY", "")
+	if enabled && apiKey == "" {
+		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but CHECKWORTHY_API_KEY is not set")
+	}
+
+	concurrency, err := intEnv("CRAWL_CHECKWORTHY_CONCURRENCY", defaultCrawlCheckworthyConcurrency, 1, math.MaxInt32)
+	if err != nil {
+		return CrawlCheckworthy{}, err
+	}
+	rpm, err := intEnv("CRAWL_CHECKWORTHY_RPM", 0, 0, math.MaxInt32)
+	if err != nil {
+		return CrawlCheckworthy{}, err
+	}
+
+	return CrawlCheckworthy{
+		Enabled:     enabled,
+		APIKey:      apiKey,
+		Model:       getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
+		Concurrency: concurrency,
+		RPM:         rpm,
 	}, nil
 }
 
