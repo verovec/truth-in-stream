@@ -234,3 +234,44 @@ func TestRetryAfterHonoursHeaderAndCap(t *testing.T) {
 		t.Errorf("retryAfter(absent) = %v, want base %v", got, apiRetryBase)
 	}
 }
+
+func TestFullExtractsReturnsBodyTextWithoutExintro(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("exintro") != "" {
+			t.Errorf("FullExtracts must not set exintro, got %q", q.Get("exintro"))
+		}
+		if q.Get("explaintext") != "1" {
+			t.Errorf("explaintext = %q, want 1", q.Get("explaintext"))
+		}
+		_, _ = w.Write([]byte(`{"query":{"pages":{"10":{"pageid":10,"title":"Atom","extract":"Atom intro.\n\nBody section text.","revisions":[{"revid":99}]}}}}`))
+	})
+	got, err := c.FullExtracts(t.Context(), []string{"Atom"})
+	if err != nil {
+		t.Fatalf("FullExtracts: %v", err)
+	}
+	if len(got) != 1 || got[0].PageID != 10 || got[0].RevisionID != 99 {
+		t.Fatalf("got %+v, want pageid 10 rev 99", got)
+	}
+	if got[0].Text != "Atom intro.\n\nBody section text." {
+		t.Errorf("text = %q", got[0].Text)
+	}
+}
+
+func TestExtractsStillSetsExintro(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("exintro") != "1" {
+			t.Errorf("Extracts must set exintro=1, got %q", r.URL.Query().Get("exintro"))
+		}
+		_, _ = w.Write([]byte(`{"query":{"pages":{"10":{"pageid":10,"title":"Atom","extract":"Atom intro.","revisions":[{"revid":99}]}}}}`))
+	})
+	got, err := c.Extracts(t.Context(), []string{"Atom"})
+	if err != nil {
+		t.Fatalf("Extracts: %v", err)
+	}
+	if len(got) != 1 || got[0].Text != "Atom intro." {
+		t.Fatalf("got %+v, want lead-only text", got)
+	}
+}
