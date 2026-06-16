@@ -107,19 +107,20 @@ func TestRetryExhaustsAttemptsOnPersistentRateLimit(t *testing.T) {
 func TestRetryHonoursRetryAfter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The provider returns a 429 with a Retry-After far longer than the
-		// exponential base delay would pick. The decorator must wait the
-		// server-requested back-off, not its own guess, so the elapsed time equals
-		// Retry-After exactly under the fake clock.
+		// exponential base delay would pick. The decorator must wait at least the
+		// server-requested back-off (not its own smaller guess), plus up to one
+		// BaseDelay of jitter to de-sync a throttled fleet.
 		const retryAfter = 25 * time.Second
+		const baseDelay = time.Second
 		f := &fakeDoc{failTimes: 1, status: http.StatusTooManyRequests, retryAfter: retryAfter}
-		rc := WithRetry(f, RetryConfig{MaxAttempts: 5, BaseDelay: time.Second, MaxDelay: time.Minute})
+		rc := WithRetry(f, RetryConfig{MaxAttempts: 5, BaseDelay: baseDelay, MaxDelay: time.Minute})
 
 		start := time.Now()
 		if _, err := rc.EmbedDocuments(t.Context(), []string{"x"}); err != nil {
 			t.Fatalf("EmbedDocuments: %v", err)
 		}
-		if elapsed := time.Since(start); elapsed != retryAfter {
-			t.Errorf("waited %s, want exactly the Retry-After %s", elapsed, retryAfter)
+		if elapsed := time.Since(start); elapsed < retryAfter || elapsed > retryAfter+baseDelay {
+			t.Errorf("waited %s, want within [%s, %s] (Retry-After floor + jitter)", elapsed, retryAfter, retryAfter+baseDelay)
 		}
 		if f.calls != 2 {
 			t.Errorf("calls = %d, want 2 (one 429 then success)", f.calls)

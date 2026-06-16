@@ -70,12 +70,18 @@ func run(logger *slog.Logger) error {
 
 	// Prefetch sizes the broker's in-flight window to a full batch per concurrent
 	// slot, so each replica can fill every batch it embeds in parallel without
-	// handing it a backlog it cannot work. The product is bounded so an
-	// extreme batch size cannot overflow an int32 prefetch.
-	prefetch := workerCfg.Concurrency * workerCfg.BatchSize
-	if prefetch < 1 {
-		prefetch = 1
+	// handing it a backlog it cannot work. The product is computed in int64 and
+	// clamped to AMQP's 16-bit prefetch_count ceiling, so an extreme
+	// concurrency x batch_size cannot overflow or exceed what the wire allows.
+	const maxPrefetch = 65535
+	prefetch64 := int64(workerCfg.Concurrency) * int64(workerCfg.BatchSize)
+	if prefetch64 < 1 {
+		prefetch64 = 1
 	}
+	if prefetch64 > maxPrefetch {
+		prefetch64 = maxPrefetch
+	}
+	prefetch := int(prefetch64)
 	client, err := queue.New(queue.Config{
 		URL:         queueCfg.URL,
 		QueueName:   queueCfg.VersionedName(),

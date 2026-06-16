@@ -128,19 +128,27 @@ func retryReason(err error) string {
 }
 
 // delayFor chooses the wait before the next attempt. When the provider returned
-// a 429 carrying a Retry-After, that server-requested back-off is honored
-// (capped at MaxDelay so a hostile or stuck header cannot stall the run past its
-// ceiling), making the pacing adaptive to the provider rather than a fixed
-// guess. Absent a usable Retry-After, it falls back to the jittered exponential
-// backoff.
+// a 429 carrying a Retry-After, that server-requested back-off is honored as a
+// floor (so pacing is adaptive to the provider rather than a fixed guess), plus
+// a small jitter above it so a fleet of workers throttled by the same 429 does
+// not retry in lockstep and re-trigger the limit; the whole thing is capped at
+// MaxDelay so a hostile or stuck header cannot stall the run past its ceiling.
+// Absent a usable Retry-After, it falls back to the jittered exponential backoff.
 func (r *RetryClient) delayFor(attempt int, err error) time.Duration {
-	if ra := retryAfter(err); ra > 0 {
-		if ra > r.cfg.MaxDelay {
-			return r.cfg.MaxDelay
-		}
-		return ra
+	ra := retryAfter(err)
+	if ra <= 0 {
+		return r.backoff(attempt)
 	}
-	return r.backoff(attempt)
+	if ra >= r.cfg.MaxDelay {
+		return r.cfg.MaxDelay
+	}
+	// Spread retries over up to BaseDelay above the server's floor, bounded by the
+	// remaining room under MaxDelay, so the wait stays in [ra, min(MaxDelay, ra+BaseDelay)].
+	spread := r.cfg.BaseDelay
+	if room := r.cfg.MaxDelay - ra; spread > room {
+		spread = room
+	}
+	return ra + time.Duration(rand.Int64N(int64(spread)+1))
 }
 
 // retryAfter extracts the provider's requested back-off from a rate-limit error,

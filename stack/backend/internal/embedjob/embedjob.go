@@ -431,7 +431,8 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 		return
 	}
 
-	if err := w.writeChunks(ctx, live, staging); err != nil {
+	matched, err := w.writeChunks(ctx, live, staging)
+	if err != nil {
 		if ctx.Err() != nil {
 			w.requeueItems(ctx, good)
 			return
@@ -443,27 +444,41 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 		}
 		return
 	}
+	// A matched count below the batch size means some chunks were obsolete (gone,
+	// or content changed under a re-ingest so the content guard skipped them).
+	// They are dropped, like a single obsolete job, but logged so a stalling
+	// coverage figure is explainable rather than a silent drop.
+	if matched < len(good) {
+		w.logger.InfoContext(ctx, "dropped obsolete embedding jobs (chunk gone or content changed)",
+			slog.Int("dropped", len(good)-matched),
+			slog.Int("batch", len(good)))
+	}
 	for _, g := range good {
 		w.ack(ctx, g.d)
 	}
 }
 
 // writeChunks writes the live and staging halves of a batch, each in one
-// statement. A real queue is single-mode, so one half is normally empty and its
-// method is skipped; routing both keeps a worker correct even if a queue ever
-// carried a mix.
-func (w *Worker) writeChunks(ctx context.Context, live, staging []domain.WikiChunk) error {
+// statement, and returns how many rows matched across both. A real queue is
+// single-mode, so one half is normally empty and its method is skipped; routing
+// both keeps a worker correct even if a queue ever carried a mix.
+func (w *Worker) writeChunks(ctx context.Context, live, staging []domain.WikiChunk) (int, error) {
+	matched := 0
 	if len(live) > 0 {
-		if _, err := w.store.SetLiveChunkEmbeddings(ctx, live); err != nil {
-			return err
+		n, err := w.store.SetLiveChunkEmbeddings(ctx, live)
+		if err != nil {
+			return 0, err
 		}
+		matched += n
 	}
 	if len(staging) > 0 {
-		if _, err := w.store.SetStagingChunkEmbeddings(ctx, staging); err != nil {
-			return err
+		n, err := w.store.SetStagingChunkEmbeddings(ctx, staging)
+		if err != nil {
+			return 0, err
 		}
+		matched += n
 	}
-	return nil
+	return matched, nil
 }
 
 // decode parses and validates one job body, logging and reporting not-ok for a
