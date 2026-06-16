@@ -65,6 +65,36 @@ func (g *Gate) Evaluate(ctx context.Context, text string) (domain.PrecheckDecisi
 	return domain.Checkable(), nil
 }
 
+// ClaimGate is the retrieve-then-verify gate: it answers only "is this a
+// factual, check-worthy claim?" and never consults a reference corpus. The
+// retrieve-then-verify path discovers whether evidence exists by retrieving and
+// reading it, so coverage is no longer a pre-emptive skip - a novel but
+// perfectly checkable claim is no longer dropped as not_covered. It reuses the
+// same ClaimClassifier the two-stage Gate's stage one uses (heuristic, or the
+// heuristic-plus-Haiku cascade), so the only behavioral change from Gate is the
+// removed coverage stage.
+type ClaimGate struct {
+	classifier ClaimClassifier
+}
+
+// NewClaimGate builds a coverage-free gate over the given claim classifier.
+func NewClaimGate(classifier ClaimClassifier) *ClaimGate {
+	return &ClaimGate{classifier: classifier}
+}
+
+// Evaluate decides check-worthiness alone: a non-claim is declined as
+// not_a_claim, everything else is checkable. No corpus is ever consulted.
+func (g *ClaimGate) Evaluate(ctx context.Context, text string) (domain.PrecheckDecision, error) {
+	claim, err := g.classifier.Classify(ctx, text)
+	if err != nil {
+		return domain.PrecheckDecision{}, fmt.Errorf("service: claim gate: classify: %w", err)
+	}
+	if !claim {
+		return domain.Skipped(domain.SkipReasonNotAClaim), nil
+	}
+	return domain.Checkable(), nil
+}
+
 // allowAllPrechecker is the no-op gate: every segment is checkable. It is wired
 // when the precheck is disabled by configuration, so the pipeline keeps its
 // pre-gate behavior with no special-casing in the processor.

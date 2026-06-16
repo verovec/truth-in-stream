@@ -44,6 +44,11 @@ const (
 	// when the stance check completes, after the statement's subtitle and result,
 	// and never delays them. Its Consistency field links to the earlier statement.
 	LiveEventConsistency LiveEventKind = "consistency"
+	// LiveEventClaims carries the atomic claims a checkable unit decomposed into,
+	// each with a stable ClaimID the client keys per-claim results on. It is
+	// emitted only on the retrieve-then-verify path (FACTCHECK_VERIFY_PATH on),
+	// once per unit after its subtitles and before any per-claim result.
+	LiveEventClaims LiveEventKind = "claims"
 )
 
 // LiveEvent is one incremental output of live analysis. ID is the per-statement
@@ -53,6 +58,13 @@ const (
 // plus the live-only Err, set when analysis failed without ending the stream.
 // Confidence is the corroboration score over Matches, set only on a checked
 // result and nil for a skipped or errored one.
+//
+// The remaining fields carry the retrieve-then-verify path's per-claim progress
+// and are all zero on the default (flag-off) path, so a flag-off event is
+// byte-for-byte the legacy shape. Claims lists a unit's atomic claims on a
+// LiveEventClaims event. On a per-claim LiveEventResult, ClaimID keys the claim
+// the client replaces in place, ClaimStatus is its lifecycle state, Source tags
+// a verified verdict's origin, and Verdict carries the grounded judgment.
 type LiveEvent struct {
 	Kind        LiveEventKind
 	ID          string
@@ -62,6 +74,11 @@ type LiveEvent struct {
 	Confidence  *domain.Confidence
 	Err         string
 	Consistency *ConsistencyFlag
+	Claims      []AtomicClaim
+	ClaimID     string
+	ClaimStatus ClaimStatus
+	Source      VerdictSource
+	Verdict     *VerifiedVerdict
 }
 
 // defaultLiveConcurrency bounds in-flight unit analyses. Subtitles emit in order
@@ -121,6 +138,12 @@ type LiveAnalyzerConfig struct {
 	Stance           StanceClassifier
 	ConsistencyTopK  int
 	ConsistencyFloor float64
+	// Verify, when non-nil, switches a checkable unit onto the retrieve-then-
+	// verify path (FACTCHECK_VERIFY_PATH on): decompose into atomic claims, run a
+	// fast curated near-match per claim and an evidence-verifier fallback, and
+	// emit per-claim progressive results. When nil the analyzer runs the legacy
+	// single-pool gate-and-match path unchanged.
+	Verify *VerifyPath
 }
 
 // LiveAnalyzer turns streaming audio into incremental fact-check events. It
@@ -143,6 +166,7 @@ type LiveAnalyzer struct {
 	consistencyTopK  int
 	consistencyFloor float64
 	stanceSem        chan struct{}
+	verify           *VerifyPath
 }
 
 // NewLiveAnalyzer builds a LiveAnalyzer from cfg, applying defaults and failing
@@ -206,6 +230,7 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 		consistencyTopK:  consistencyTopK,
 		consistencyFloor: consistencyFloor,
 		stanceSem:        stanceSem,
+		verify:           cfg.Verify,
 	}, nil
 }
 
@@ -431,6 +456,10 @@ func (a *LiveAnalyzer) dispatch(ctx context.Context, out chan<- LiveEvent, queue
 // Failures during teardown (ctx canceled) are not logged, as the event is
 // dropped on the closing stream.
 func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit) {
+	if a.verify != nil {
+		a.verify.scoreUnit(ctx, a, out, mem, pu)
+		return
+	}
 	members := pu.members
 	text := combinedText(members)
 	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, text)
@@ -522,6 +551,50 @@ func (a *LiveAnalyzer) detectConsistency(ctx context.Context, out chan<- LiveEve
 	}
 	// Remember after comparing so a statement is never compared against itself.
 	mem.remember(pu.speaker, priorStatement{id: newID, text: text, embedding: embedding})
+}
+
+// detectClaimConsistency is the per-atomic-claim variant of detectConsistency
+// used by the retrieve-then-verify path: it compares one atomic claim against
+// the speaker's prior atomic claims (reusing the claim's retrieval embedding,
+// never re-embedding) and flags the first contradiction, then remembers the
+// claim. It is a no-op unless the feature is configured and the claim carries a
+// known speaker and a reusable embedding. The consistency event keys on the
+// claim's id and segment so the UI links it to the same claim its verdict
+// rendered on. A stance failure is logged and skipped, never ending the session.
+func (a *LiveAnalyzer) detectClaimConsistency(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, claim AtomicClaim, embedding []float32, seg domain.Segment) {
+	if a.stance == nil || speaker == "" || len(embedding) == 0 {
+		return
+	}
+	lock := mem.speakerLock(speaker)
+	lock.Lock()
+	defer lock.Unlock()
+
+	for _, prior := range rankBySimilarity(embedding, mem.prior(speaker), a.consistencyFloor, a.consistencyTopK) {
+		contradicts, rationale, err := a.classifyStance(ctx, prior.text, claim.Text)
+		if err != nil {
+			if ctx.Err() == nil {
+				a.logger.WarnContext(ctx, "stance check failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+			}
+			continue
+		}
+		if contradicts {
+			if !sendEvent(ctx, out, LiveEvent{
+				Kind:    LiveEventConsistency,
+				ID:      claim.ClaimID,
+				Segment: seg,
+				Consistency: &ConsistencyFlag{
+					EarlierID:   prior.id,
+					EarlierText: prior.text,
+					Speaker:     speaker,
+					Rationale:   rationale,
+				},
+			}) {
+				return
+			}
+			break
+		}
+	}
+	mem.remember(speaker, priorStatement{id: claim.ClaimID, text: claim.Text, embedding: embedding})
 }
 
 // classifyStance runs one stance check under the in-flight bound, so a burst of

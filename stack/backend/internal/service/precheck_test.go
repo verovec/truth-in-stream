@@ -91,6 +91,42 @@ func TestGatePropagatesClassifierError(t *testing.T) {
 	}
 }
 
+func TestClaimGateDecidesCheckWorthinessAlone(t *testing.T) {
+	t.Parallel()
+	// The retrieve-then-verify gate consults no corpus: a check-worthy claim is
+	// checkable regardless of coverage (coverage is discovered by retrieval), and
+	// a non-claim is declined as not_a_claim.
+	tests := []struct {
+		name       string
+		classifier stubClassifier
+		want       domain.PrecheckDecision
+	}{
+		{"a claim is checkable with no coverage lookup", stubClassifier{checkable: true}, domain.Checkable()},
+		{"a non-claim is declined", stubClassifier{checkable: false}, domain.Skipped(domain.SkipReasonNotAClaim)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NewClaimGate(tc.classifier).Evaluate(t.Context(), "some text")
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Evaluate = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaimGateSurfacesClassifierError(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("classify boom")
+	_, err := NewClaimGate(stubClassifier{err: sentinel}).Evaluate(t.Context(), "a claim")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Evaluate err = %v, want wrapping %v", err, sentinel)
+	}
+}
+
 func TestAllowAllPrecheckerChecksEverything(t *testing.T) {
 	t.Parallel()
 	got, err := allowAllPrechecker{}.Evaluate(t.Context(), "anything at all")

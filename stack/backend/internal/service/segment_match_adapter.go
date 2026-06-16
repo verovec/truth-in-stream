@@ -63,6 +63,7 @@ func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResu
 			Sources:      []domain.Source{},
 			Similarity:   h.Score,
 			Contribution: contribution,
+			EvidenceID:   h.EvidenceID,
 		}
 		if h.Kind == domain.MatchKindEvidence {
 			article := h.Article
