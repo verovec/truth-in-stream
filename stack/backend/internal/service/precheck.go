@@ -87,7 +87,7 @@ func NewClaimGate(classifier ClaimClassifier) *ClaimGate {
 func (g *ClaimGate) Evaluate(ctx context.Context, text string) (domain.PrecheckDecision, error) {
 	claim, err := g.classifier.Classify(ctx, text)
 	if err != nil {
-		return domain.PrecheckDecision{}, fmt.Errorf("service: claim gate classify: %w", err)
+		return domain.PrecheckDecision{}, fmt.Errorf("service: claim gate: classify: %w", err)
 	}
 	if !claim {
 		return domain.Skipped(domain.SkipReasonNotAClaim), nil

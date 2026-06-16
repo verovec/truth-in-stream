@@ -1443,6 +1443,7 @@ func TestLoadCrawlWorkerOverrides(t *testing.T) {
 }
 
 func TestLoadVerifyPathDefaultsOff(t *testing.T) {
+	t.Parallel()
 	got, err := LoadVerifyPath()
 	if err != nil {
 		t.Fatalf("LoadVerifyPath: %v", err)
@@ -1482,11 +1483,12 @@ func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
 
 func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 	tests := map[string]string{
-		"FACTCHECK_VERIFY_CONCURRENCY": "0",
-		"FACTCHECK_VERIFY_FAST_TAU":    "1.5",
-		"FACTCHECK_VERIFY_QUEUE_DEPTH": "-1",
-		"FACTCHECK_VERIFY_CACHE_TTL":   "-1s",
-		"FACTCHECK_VERIFY_DEADLINE":    "0s",
+		"FACTCHECK_VERIFY_CONCURRENCY":   "0",
+		"FACTCHECK_VERIFY_FAST_TAU":      "1.5",
+		"FACTCHECK_VERIFY_QUEUE_DEPTH":   "-1",
+		"FACTCHECK_VERIFY_CACHE_TTL":     "-1s",
+		"FACTCHECK_VERIFY_DEADLINE":      "0s",
+		"FACTCHECK_VERIFY_FAST_DEADLINE": "0s",
 	}
 	for key, val := range tests {
 		t.Run(key, func(t *testing.T) {

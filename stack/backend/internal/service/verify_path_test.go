@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -180,6 +181,7 @@ func TestVerifyPathEventLifecycle(t *testing.T) {
 	if len(claimsEv.Claims) != 2 {
 		t.Fatalf("claims = %d, want 2", len(claimsEv.Claims))
 	}
+	unitID := claimsEv.ID
 	fastID, verifyID := claimsEv.Claims[0].ClaimID, claimsEv.Claims[1].ClaimID
 	if fastID == verifyID || fastID == "" {
 		t.Fatalf("claim ids not distinct/stable: %q %q", fastID, verifyID)
@@ -193,6 +195,11 @@ func TestVerifyPathEventLifecycle(t *testing.T) {
 	if fastResults[0].ClaimStatus != ClaimStatusVerified || fastResults[0].Source != SourceCurated {
 		t.Fatalf("fast result = status %q source %q, want verified/curated", fastResults[0].ClaimStatus, fastResults[0].Source)
 	}
+	// Every per-claim result carries ID=unit anchor and ClaimID=claim id: id means
+	// the unit, claim_id exclusively identifies the claim.
+	if fastResults[0].ID != unitID {
+		t.Fatalf("fast result ID = %q, want unit anchor %q", fastResults[0].ID, unitID)
+	}
 
 	// Verify claim: checking then verified, source verified, same claim_id.
 	verifyResults := resultsForClaim(events, verifyID)
@@ -201,6 +208,9 @@ func TestVerifyPathEventLifecycle(t *testing.T) {
 	}
 	if verifyResults[0].ClaimStatus != ClaimStatusChecking {
 		t.Fatalf("first verify result status = %q, want checking", verifyResults[0].ClaimStatus)
+	}
+	if verifyResults[0].ID != unitID || verifyResults[1].ID != unitID {
+		t.Fatalf("verify result IDs = %q,%q, want unit anchor %q on both", verifyResults[0].ID, verifyResults[1].ID, unitID)
 	}
 	if verifyResults[1].ClaimStatus != ClaimStatusVerified || verifyResults[1].Source != SourceVerified {
 		t.Fatalf("final verify result = status %q source %q, want verified/verified", verifyResults[1].ClaimStatus, verifyResults[1].Source)
@@ -243,6 +253,51 @@ func TestVerifyPathFastCuratedNearMatchEmitsImmediately(t *testing.T) {
 	}
 	if got := verifier.seen(); len(got) != 0 {
 		t.Fatalf("verifier was called %v, want no verify call on a curated near-match", got)
+	}
+}
+
+func TestVerifyPathVerifierErrorEmitsErrorTerminal(t *testing.T) {
+	t.Parallel()
+	// A claim whose verify call fails ends in the error terminal status (not
+	// verified, not unchecked) carrying the failure reason, so a client tells a
+	// failed claim apart from a reached verdict or a capacity shed.
+	unit := "the moon is made of cheese."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+		unit: {{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}},
+	}}
+	verifier := &fakeVerifier{
+		byClaim: map[string]ClaimVerdict{},
+		err:     map[string]error{unit: errors.New("verifier transport boom")},
+	}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   verifier,
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	// checking, then the error terminal.
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2 (checking, error)", len(results))
+	}
+	last := results[len(results)-1]
+	if last.ClaimStatus != ClaimStatusError {
+		t.Fatalf("terminal status = %q, want error (not verified/unchecked)", last.ClaimStatus)
+	}
+	if last.Err == "" {
+		t.Fatal("error terminal carries no Err")
+	}
+	if last.Verdict != nil {
+		t.Fatalf("error terminal must not carry a verdict, got %+v", last.Verdict)
+	}
+	if last.ID != claimsEv.ID {
+		t.Fatalf("error terminal ID = %q, want unit anchor %q", last.ID, claimsEv.ID)
 	}
 }
 

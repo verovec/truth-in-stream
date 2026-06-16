@@ -260,8 +260,8 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
-		{Kind: service.LiveEventResult, ID: "0-0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
-		{Kind: service.LiveEventResult, ID: "0-0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
 			Verdict: &service.VerifiedVerdict{Verdict: "refutes", Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"}},
 	}}
 	wsURL := liveTestServer(t, fake, nil)
@@ -289,19 +289,56 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	}
 
 	checking := readFrame(ctx, t, conn)
-	if checking.Type != "claim_result" || checking.ClaimID != "0-0" || checking.Status != "checking" {
-		t.Fatalf("checking frame = %+v, want claim_result claim_id 0-0 checking", checking)
+	if checking.Type != "claim_result" || checking.ID != "0" || checking.ClaimID != "0-0" || checking.Status != "checking" {
+		t.Fatalf("checking frame = %+v, want claim_result id 0 claim_id 0-0 checking", checking)
 	}
 
 	verified := readFrame(ctx, t, conn)
-	if verified.Type != "claim_result" || verified.ClaimID != "0-0" || verified.Status != "verified" || verified.Source != "verified" {
-		t.Fatalf("verified frame = %+v, want claim_result 0-0 verified/verified", verified)
+	if verified.Type != "claim_result" || verified.ID != "0" || verified.ClaimID != "0-0" || verified.Status != "verified" || verified.Source != "verified" {
+		t.Fatalf("verified frame = %+v, want claim_result id 0 claim_id 0-0 verified/verified", verified)
 	}
 	if verified.Verdict != "refutes" || verified.Confidence == nil || *verified.Confidence != 0.9 {
 		t.Errorf("verdict=%q confidence=%v, want refutes/0.9", verified.Verdict, verified.Confidence)
 	}
 	if len(verified.Matches) != 1 || verified.Matches[0].EvidenceID != "evidence:42:0" {
 		t.Errorf("citations did not round-trip: %+v", verified.Matches)
+	}
+}
+
+func TestLiveHandlerSerializesClaimErrorTerminal(t *testing.T) {
+	t.Parallel()
+	// A claim that fails verification serializes to a claim_result with status
+	// "error" and the failure reason, distinct on the wire from a verified verdict
+	// so the client does not render it as a reached verdict.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusError, Err: "verification failed"},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "claim_result" || frame.ID != "0" || frame.ClaimID != "0-0" || frame.Status != "error" {
+		t.Fatalf("error frame = %+v, want claim_result id 0 claim_id 0-0 error", frame)
+	}
+	if frame.Error != "verification failed" {
+		t.Errorf("error frame Error = %q, want verification failed", frame.Error)
+	}
+	if frame.Verdict != "" {
+		t.Errorf("error frame must not carry a verdict, got %q", frame.Verdict)
 	}
 }
 

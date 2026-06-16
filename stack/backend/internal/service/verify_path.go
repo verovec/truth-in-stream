@@ -16,8 +16,9 @@ import (
 // ClaimStatus is the lifecycle state of one atomic claim's verdict on the
 // retrieve-then-verify path. A claim starts pending (announced in
 // LiveEventClaims), may transit checking (a verify call is in flight), and ends
-// either verified (a verdict was emitted) or unchecked (the verify pool was
-// saturated, an honest terminal state rather than a silent drop).
+// either verified (a verdict was emitted), unchecked (the verify pool was
+// saturated, an honest terminal state rather than a silent drop), or error (a
+// retrieval or verifier failure, distinct from a reached verdict).
 type ClaimStatus string
 
 const (
@@ -34,6 +35,10 @@ const (
 	// saturated; its SkipReason is the capacity shed reason. It is terminal: the
 	// claim is honestly reported as not checked rather than dropped.
 	ClaimStatusUnchecked ClaimStatus = "unchecked"
+	// ClaimStatusError marks a claim whose retrieval or verify call failed; its Err
+	// carries the reason. It is terminal and distinct from a reached verdict: the
+	// client can tell a failed claim apart from a verified one or a capacity shed.
+	ClaimStatusError ClaimStatus = "error"
 )
 
 // VerdictSource tags where a verified claim's verdict came from: a borrowed
@@ -293,13 +298,14 @@ func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string
 // scoreClaim runs one atomic claim's lifecycle: fast curated near-match, then
 // the evidence verifier under the verify pool, emitting per-claim results keyed
 // on claim.ClaimID so the client replaces in place. A cache hit short-circuits a
-// repeated claim. Retrieval and verdict errors are reported as a non-fatal
-// checking->verified-with-error sequence rather than ending the session.
+// repeated claim. Retrieval and verdict errors are reported as the non-fatal
+// error terminal status rather than ending the session.
 func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim) {
+	unitID := pu.members[0].id
 	seg := pu.members[0].seg
 
 	if cached, ok := vp.cacheGet(claim.Text); ok {
-		vp.emitVerdict(ctx, out, claim, seg, cached.source, cached.verdict)
+		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, cached.embedding)
 		return
 	}
@@ -309,7 +315,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "verify-path retrieval failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
-		vp.emitClaimError(ctx, out, claim, seg)
+		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
 
@@ -318,30 +324,32 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	if fast, ok := vp.fastMatch(ret.matches); ok {
 		verdict := &VerifiedVerdict{Verdict: string(fast.Verdict), Confidence: fast.Similarity, Citations: []domain.SegmentMatch{fast}, Rationale: ""}
 		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
-		vp.emitVerdict(ctx, out, claim, seg, SourceCurated, verdict)
+		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 		return
 	}
 
 	// Verify path: announce checking, then run the verifier under the bounded
 	// pool. Pool saturation sheds the claim to unchecked rather than dropping it.
-	if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: claim.ClaimID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusChecking}) {
+	// Every per-claim frame carries ID=unit anchor and ClaimID=claim id, so id
+	// always means the unit and claim_id exclusively identifies the claim.
+	if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusChecking}) {
 		return
 	}
 	verdict, shed, err := vp.verifyClaim(ctx, claim.Text, ret.matches)
 	if shed {
-		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: claim.ClaimID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
+		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
 		return
 	}
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "verify-path verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
-		vp.emitClaimError(ctx, out, claim, seg)
+		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
-	vp.emitVerdict(ctx, out, claim, seg, SourceVerified, verdict)
+	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 }
 
@@ -423,8 +431,10 @@ func (vp *VerifyPath) acquireVerifySlot(ctx context.Context) bool {
 	// A bounded wait turns a brief burst past the pool into a queue rather than an
 	// immediate shed; the deadline keeps a sustained overload from stalling the
 	// claim indefinitely. The window scales with the verify deadline and queue
-	// depth so the queue drains roughly one pool-cycle per slot.
-	wait := time.NewTimer(vp.verifyDeadline * time.Duration(vp.verifyQueue))
+	// depth but is capped at two verify deadlines so a deep queue cannot defer an
+	// honest capacity shed for many pool-cycles.
+	window := min(vp.verifyDeadline*time.Duration(vp.verifyQueue), 2*vp.verifyDeadline)
+	wait := time.NewTimer(window)
 	defer wait.Stop()
 	select {
 	case <-ctx.Done():
@@ -444,13 +454,14 @@ func (vp *VerifyPath) recordConsistency(ctx context.Context, a *LiveAnalyzer, ou
 	a.detectClaimConsistency(ctx, out, mem, pu.speaker, claim, embedding, pu.members[0].seg)
 }
 
-// emitVerdict sends one claim's verified result, keyed on its claim id with the
-// given source tag. The verdict's citations are surfaced as the result's wire
+// emitVerdict sends one claim's verified result. ID is the unit anchor and
+// ClaimID identifies the claim, so id always means the unit and the client keys
+// the row by claim_id. The verdict's citations are surfaced as the result's wire
 // matches so the verifier's evidence round-trips to the UI.
-func (vp *VerifyPath) emitVerdict(ctx context.Context, out chan<- LiveEvent, claim AtomicClaim, seg domain.Segment, source VerdictSource, verdict *VerifiedVerdict) {
+func (vp *VerifyPath) emitVerdict(ctx context.Context, out chan<- LiveEvent, unitID string, claim AtomicClaim, seg domain.Segment, source VerdictSource, verdict *VerifiedVerdict) {
 	_ = sendEvent(ctx, out, LiveEvent{
 		Kind:        LiveEventResult,
-		ID:          claim.ClaimID,
+		ID:          unitID,
 		Segment:     seg,
 		ClaimID:     claim.ClaimID,
 		ClaimStatus: ClaimStatusVerified,
@@ -461,14 +472,16 @@ func (vp *VerifyPath) emitVerdict(ctx context.Context, out chan<- LiveEvent, cla
 }
 
 // emitClaimError reports a non-fatal per-claim failure (retrieval or verifier)
-// as a verified result with an error, so one bad claim never ends the session.
-func (vp *VerifyPath) emitClaimError(ctx context.Context, out chan<- LiveEvent, claim AtomicClaim, seg domain.Segment) {
+// as the error terminal status, distinct from a reached verdict, so one bad
+// claim never ends the session and the client does not mistake it for a verdict.
+// ID is the unit anchor and ClaimID identifies the claim.
+func (vp *VerifyPath) emitClaimError(ctx context.Context, out chan<- LiveEvent, unitID string, claim AtomicClaim, seg domain.Segment) {
 	_ = sendEvent(ctx, out, LiveEvent{
 		Kind:        LiveEventResult,
-		ID:          claim.ClaimID,
+		ID:          unitID,
 		Segment:     seg,
 		ClaimID:     claim.ClaimID,
-		ClaimStatus: ClaimStatusVerified,
+		ClaimStatus: ClaimStatusError,
 		Err:         "verification failed",
 	})
 }
