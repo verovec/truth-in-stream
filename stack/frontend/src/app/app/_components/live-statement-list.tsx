@@ -7,8 +7,10 @@ import {
 } from "@/components/playback/playback-provider";
 import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
+import type { LiveClaim } from "@/lib/live/claims";
 import { isScored, type LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
+import { LiveClaimList } from "./live-claim-list";
 
 // speakerLabel renders the diarized speaker label as a reader-facing tag. The
 // provider emits a bare identifier (e.g. "A"); the "Speaker" prefix makes it
@@ -30,12 +32,17 @@ export const LiveStatementList = memo(function LiveStatementList({
   statements,
   selectedStatementId,
   selectionTick = 0,
+  claimsFor,
 }: {
   statements: LiveStatement[];
   selectedStatementId: string | null;
   // Bumped by the parent on every fact-check selection so re-selecting the same
   // entry scrolls its origin back into view even when the id is unchanged.
   selectionTick?: number;
+  // Returns a statement's atomic claims (retrieve-then-verify path), empty on a
+  // legacy stream that emits no claim frames so the row renders exactly as
+  // before when no claims arrive.
+  claimsFor?: (statementId: string) => LiveClaim[];
 }) {
   const store = usePlaybackStore();
   const activeIndex = usePlayback((snapshot) =>
@@ -125,6 +132,7 @@ export const LiveStatementList = memo(function LiveStatementList({
         .map((statement, index) => {
           const active = index === activeIndex;
           const selected = statement.id === selectedStatementId;
+          const claims = claimsFor?.(statement.id) ?? [];
           return (
             <li
               key={statement.id}
@@ -168,7 +176,16 @@ export const LiveStatementList = memo(function LiveStatementList({
                   {statement.text}
                 </span>
               </button>
-              <SubtitleStatus statement={statement} />
+              {/* On the retrieve-then-verify path the unit fans into atomic
+                  claims that each carry their own verdict; the per-statement
+                  status marker is then redundant, so it yields to the claim
+                  list. A legacy stream emits no claims and renders the marker as
+                  before. */}
+              {claims.length > 0 ? (
+                <LiveClaimList claims={claims} />
+              ) : (
+                <SubtitleStatus statement={statement} />
+              )}
               {statement.inconsistency ? (
                 <InconsistencyFlag
                   inconsistency={statement.inconsistency}

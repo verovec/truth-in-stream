@@ -104,6 +104,30 @@ const resultFrame = (
 const interimFrame = (text: string) =>
   JSON.stringify({ type: "interim", text });
 
+const claimsFrame = (
+  unitId: string,
+  ...claims: [claimId: string, text: string][]
+) =>
+  JSON.stringify({
+    type: "claims",
+    id: unitId,
+    claims: claims.map(([claim_id, text]) => ({ claim_id, text, status: "pending" })),
+  });
+
+const claimResultFrame = (
+  unitId: string,
+  claimId: string,
+  status: string,
+  extra: Record<string, unknown> = {},
+) =>
+  JSON.stringify({
+    type: "claim_result",
+    id: unitId,
+    claim_id: claimId,
+    status,
+    ...extra,
+  });
+
 const play = (store: PlaybackStore) =>
   act(() => store.update({ paused: false }));
 const pause = (store: PlaybackStore) =>
@@ -194,6 +218,89 @@ describe("useLiveAnalysis", () => {
 
     act(() => h.sockets[0].handlers.onFrame(resultFrame("0", 1, "claim one")));
     expect(h.analysis().statements[0]).toMatchObject({ status: "checked" });
+  });
+
+  test("a legacy stream with no claim frames carries no per-statement claims", () => {
+    // Backward compatibility: a subtitle + legacy result stream resolves exactly
+    // as before, and claimsFor is empty for the statement, so the old rendering
+    // path is untouched.
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() => h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "claim one")));
+    act(() => h.sockets[0].handlers.onFrame(resultFrame("0", 1, "claim one")));
+
+    const statement = h.analysis().statements[0];
+    expect(statement).toMatchObject({ status: "checked" });
+    expect(h.analysis().claimsFor(statement.id)).toEqual([]);
+  });
+
+  test("the verify path folds claim frames into the statement's claims, keyed on claim_id and namespaced by session", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    // Subtitle establishes the unit; the analyzer namespaces the id as "1:0"
+    // (first session seq), shared by the claims and claim_result frames.
+    act(() => h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "the bridge opened in 1937")));
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimsFrame("0", ["0-0", "the bridge opened in 1937"]),
+      ),
+    );
+
+    const statementId = h.analysis().statements[0].id;
+    expect(statementId).toBe("1:0");
+    expect(h.analysis().claimsFor(statementId)).toEqual([
+      { claimId: "0-0", text: "the bridge opened in 1937", status: "pending" },
+    ]);
+
+    // checking -> verified replaces the row in place under the same claim_id.
+    act(() => h.sockets[0].handlers.onFrame(claimResultFrame("0", "0-0", "checking")));
+    expect(h.analysis().claimsFor(statementId)[0].status).toBe("checking");
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimResultFrame("0", "0-0", "verified", {
+          source: "verified",
+          verdict: "supports",
+          confidence: 0.8,
+        }),
+      ),
+    );
+    const claims = h.analysis().claimsFor(statementId);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]).toMatchObject({
+      status: "verified",
+      source: "verified",
+      verdict: "supports",
+    });
+  });
+
+  test("seeking drops the claims of in-flight units but keeps a resolved unit's claims", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    // A resolved unit: legacy result resolves the statement to checked, and its
+    // claims must survive the seek alongside the statement.
+    act(() => h.sockets[0].handlers.onFrame(resultFrame("0", 1, "resolved")));
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimsFrame("0", ["0-0", "resolved claim"]),
+      ),
+    );
+    // An in-flight unit: only a subtitle, so it is dropped on the seek.
+    act(() => h.sockets[0].handlers.onFrame(subtitleFrame("1", 5, "in flight")));
+    act(() =>
+      h.sockets[0].handlers.onFrame(claimsFrame("1", ["1-0", "in-flight claim"])),
+    );
+
+    act(() => h.store().notifySeeked());
+
+    const resolvedId = h.analysis().statements[0].id;
+    expect(h.analysis().statements).toHaveLength(1);
+    expect(h.analysis().claimsFor(resolvedId)).toHaveLength(1);
+    // The dropped unit's claims are gone with it.
+    expect(h.analysis().claimsFor("1:1")).toEqual([]);
   });
 
   test("an interim frame surfaces a live caption that a subtitle then clears", () => {

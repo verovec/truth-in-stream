@@ -4,11 +4,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayback, usePlaybackStore } from "@/components/playback/playback-provider";
 import { createMediaElementCapture } from "@/lib/live/audio-capture";
 import {
+  type ClaimResultFrame,
+  type ClaimsFrame,
   type ConsistencyFrame,
   parseLiveFrame,
   type ResultFrame,
   type SubtitleFrame,
 } from "@/lib/live/frames";
+import {
+  applyClaimResultFrame,
+  applyClaimsFrame,
+  type ClaimsState,
+  claimsForUnit,
+  dropUnits,
+  emptyClaims,
+  type LiveClaim,
+} from "@/lib/live/claims";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import {
@@ -43,7 +54,24 @@ export type LiveAnalysis = {
   caption: string;
   status: LiveStatus;
   summary: LiveSummary;
+  // claimsFor returns one statement's atomic claims in announced order, empty on
+  // a legacy stream that emits no claim frames. The subtitle list reads it per
+  // row to render the progressive per-claim disclosure under each statement.
+  claimsFor: (statementId: string) => LiveClaim[];
 };
+
+// survivingUnitIds returns the ids of statements that clearAnalysing keeps (the
+// checked ones), so the claims store can be pruned to exactly the units that
+// remain after an in-flight reset, dropping the claims of dangling statements.
+function survivingUnitIds(state: StatementsState): Set<string> {
+  const ids = new Set<string>();
+  for (const [id, statement] of state.byId) {
+    if (statement.status === "checked") {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
 
 // reconnectDelayMs grows the backoff with each consecutive failed attempt,
 // capped so a persistently-down backend retries on a steady cadence rather than
@@ -56,11 +84,18 @@ function reconnectDelayMs(attempt: number): number {
 // clock (baseTime is the video position when the session opened) and namespaces
 // its correlation id by session, so ids from a reconnect cannot collide with a
 // prior session's.
+type CommittedFrame =
+  | SubtitleFrame
+  | ResultFrame
+  | ConsistencyFrame
+  | ClaimsFrame
+  | ClaimResultFrame;
+
 function prepareFrame(
-  frame: SubtitleFrame | ResultFrame | ConsistencyFrame,
+  frame: CommittedFrame,
   sessionSeq: number,
   baseTime: number,
-): SubtitleFrame | ResultFrame | ConsistencyFrame {
+): CommittedFrame {
   const id = `${sessionSeq}:${frame.id}`;
   if (frame.type === "subtitle") {
     return {
@@ -74,6 +109,13 @@ function prepareFrame(
     // A consistency frame carries no timestamps; both ids it references are
     // namespaced so it resolves to this session's statements after a reconnect.
     return { ...frame, id, earlierId: `${sessionSeq}:${frame.earlierId}` };
+  }
+  if (frame.type === "claims" || frame.type === "claim_result") {
+    // Claim frames carry the unit's correlation id and no timestamps; namespacing
+    // the unit id alone keys them to this session's statement after a reconnect.
+    // claim_id is per-unit and needs no session prefix - it is only ever read
+    // within a unit already namespaced by id.
+    return { ...frame, id };
   }
   return {
     ...frame,
@@ -109,6 +151,10 @@ export function useLiveAnalysis(
   const captureFactory = options.captureFactory ?? createMediaElementCapture;
 
   const [statements, setStatements] = useState<StatementsState>(emptyStatements);
+  // claims holds the per-claim verify-path lifecycle, keyed by unit id then
+  // claim_id. It is empty on a legacy stream that emits no claim frames, so the
+  // statement list renders exactly as before when no claims arrive.
+  const [claims, setClaims] = useState<ClaimsState>(emptyClaims);
   // caption is the live, still-being-spoken utterance from interim frames,
   // shown verbatim until it commits to a statement or the session resets.
   const [caption, setCaption] = useState("");
@@ -132,11 +178,16 @@ export function useLiveAnalysis(
   const socketFactoryRef = useRef(socketFactory);
   const captureFactoryRef = useRef(captureFactory);
   const videoIdRef = useRef(videoId);
+  // statementsRef mirrors the latest statements so the long-lived command closure
+  // can read which units survive a clearAnalysing without closing over a stale
+  // state value; the clear runs synchronously off this same snapshot.
+  const statementsRef = useRef(statements);
   useEffect(() => {
     socketFactoryRef.current = socketFactory;
     captureFactoryRef.current = captureFactory;
     videoIdRef.current = videoId;
     liveRef.current = status === "live";
+    statementsRef.current = statements;
   });
 
   const dispatchRef = useRef<(event: LiveSessionEvent) => void>(() => {});
@@ -161,6 +212,14 @@ export function useLiveAnalysis(
         setCaption("");
       }
       const prepared = prepareFrame(frame, sessionSeq, baseTimeRef.current);
+      if (prepared.type === "claims") {
+        setClaims((prev) => applyClaimsFrame(prev, prepared));
+        return;
+      }
+      if (prepared.type === "claim_result") {
+        setClaims((prev) => applyClaimResultFrame(prev, prepared));
+        return;
+      }
       setStatements((prev) => applyFrame(prev, prepared));
     }
 
@@ -231,6 +290,13 @@ export function useLiveAnalysis(
           break;
         case "clearAnalysing":
           setStatements((prev) => clearAnalysing(prev));
+          // Drop the claims of any unit whose statement is in-flight (dropped by
+          // clearAnalysing), keeping the claims of statements that survive so a
+          // resolved unit's verdicts are not lost on reconnect. The updater reads
+          // the surviving ids from the same cleared set, so the two stay in sync.
+          setClaims((prev) =>
+            dropUnits(prev, survivingUnitIds(statementsRef.current)),
+          );
           // The caption is not cleared here: a reset (seek or a dropped
           // connection) always moves status off "live", and the status effect
           // below clears it. Keeping that the single owner avoids two clear sites.
@@ -303,5 +369,13 @@ export function useLiveAnalysis(
     [orderedStatements],
   );
 
-  return { statements: orderedStatements, caption, status, summary };
+  // claimsFor is memoized on the claims state so its identity is stable across
+  // interim-only and statement-only updates (which never touch claims), keeping
+  // the memoized statement list from re-rendering when only a caption changed.
+  const claimsFor = useMemo(
+    () => (statementId: string) => claimsForUnit(claims, statementId),
+    [claims],
+  );
+
+  return { statements: orderedStatements, caption, status, summary, claimsFor };
 }

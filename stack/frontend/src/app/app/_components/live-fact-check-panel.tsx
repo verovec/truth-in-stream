@@ -6,6 +6,7 @@ import {
   type SeparatorProps,
   useVerticalSplit,
 } from "@/hooks/use-vertical-split";
+import type { LiveClaim } from "@/lib/live/claims";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveStatement } from "@/lib/live/statements";
@@ -17,6 +18,14 @@ import { PlaybackClock } from "./playback-clock";
 // value every render while no video is being analysed, keeping
 // useSyncExternalStore from looping.
 const EMPTY: LiveStatement[] = [];
+
+// NO_CLAIMS is a stable empty result for claimsFor while no session is active,
+// so the subtitle list reads the same identity every render rather than a fresh
+// closure that would re-render the memoized list each tick.
+const EMPTY_CLAIMS: LiveClaim[] = [];
+function NO_CLAIMS(): LiveClaim[] {
+  return EMPTY_CLAIMS;
+}
 
 // LiveFactCheckPanel feeds the live analysis stream for the selected video into
 // two stacked, independently-scrolling regions inside one fixed-height
@@ -36,6 +45,12 @@ export function LiveFactCheckPanel() {
   );
   const status = useLiveAnalysisSelector(
     (snapshot) => snapshot?.status ?? "idle",
+  );
+  // claimsFor keeps a stable identity across interim/statement-only updates (it
+  // changes only when the claims store changes), so the memoized statement list
+  // re-renders only when a claim actually progresses.
+  const claimsFor = useLiveAnalysisSelector(
+    (snapshot) => snapshot?.claimsFor ?? NO_CLAIMS,
   );
   // tick increments on every selection so re-selecting the same fact-check entry
   // still scrolls its origin subtitle back into view.
@@ -100,6 +115,7 @@ export function LiveFactCheckPanel() {
               statements={statements}
               selectedStatementId={selection?.id ?? null}
               selectionTick={selection?.tick ?? 0}
+              claimsFor={claimsFor}
             />
           )}
           {statements.length === 0 && !caption && <EmptyHint status={status} />}
