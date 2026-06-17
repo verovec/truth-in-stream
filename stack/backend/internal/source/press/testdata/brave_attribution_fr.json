@@ -1,0 +1,66 @@
+{
+  "type": "search",
+  "query": {
+    "original": "Marine Tournier \"il faut doubler le budget de la defense\"",
+    "country": "fr",
+    "more_results_available": true
+  },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "type": "search_result",
+        "title": "Marine Tournier : \"Il faut doubler le budget de la defense\"",
+        "url": "https://www.lemonde.fr/politique/article/2024/03/12/tournier-defense.html",
+        "description": "Lors d'un meeting a Lyon, Marine Tournier a declare : \"Il faut doubler le budget de la defense d'ici 2030.\"",
+        "language": "fr",
+        "family_friendly": true,
+        "page_age": "2024-03-12T18:30:00",
+        "age": "2024-03-12",
+        "extra_snippets": [
+          "\"Notre pays ne peut plus se permettre de sous-investir dans son armee\", a-t-elle ajoute.",
+          "La declaration a suscite de vives reactions a l'Assemblee."
+        ],
+        "profile": {
+          "name": "Le Monde",
+          "long_name": "lemonde.fr"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "www.lemonde.fr",
+          "hostname": "www.lemonde.fr",
+          "favicon": "https://imgs.search.brave.com/lemonde",
+          "path": "politique > article > 2024 > 03 > 12 > tournier-defense"
+        }
+      },
+      {
+        "type": "search_result",
+        "title": "Defense : la sortie de Tournier fait debat",
+        "url": "https://www.lefigaro.fr/politique/defense-tournier-debat-20240313",
+        "description": "Le Figaro revient sur la proposition de Marine Tournier de doubler le budget de la defense.",
+        "language": "fr",
+        "family_friendly": true,
+        "age": "2024-03-13",
+        "extra_snippets": [],
+        "profile": {
+          "name": "Le Figaro",
+          "long_name": "lefigaro.fr"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "www.lefigaro.fr",
+          "hostname": "www.lefigaro.fr",
+          "favicon": "https://imgs.search.brave.com/lefigaro",
+          "path": "politique > defense-tournier-debat-20240313"
+        }
+      }
+    ],
+    "family_friendly": true
+  },
+  "mixed": {
+    "type": "mixed",
+    "main": [{ "type": "web", "index": 0, "all": false }],
+    "top": [],
+    "side": []
+  }
+}

@@ -37,6 +37,14 @@ const (
 	KindStatsEurostat Kind = "eurostat"
 	// KindWebSearch is an open web search result.
 	KindWebSearch Kind = "websearch"
+	// KindVotingRecord is a recorded parliamentary vote (Assemblee Nationale or
+	// Senat scrutin) read from the structured voting store. The routing layer
+	// (card J) selects the voting pack for any voting-record claim.
+	KindVotingRecord Kind = "voting"
+	// KindAttribution is a press or transcript passage retrieved for an
+	// attribution claim ("Z said ..."). The routing layer selects the press pack
+	// for any attribution claim.
+	KindAttribution Kind = "attribution"
 )
 
 // Source is the provenance of a piece of evidence: the human-readable publisher
