@@ -1,0 +1,48 @@
+{
+  "version": "2.0",
+  "class": "dataset",
+  "label": "Unemployment by sex and age - annual data",
+  "source": "ESTAT",
+  "updated": "2026-06-11T23:00:00+0200",
+  "id": ["freq", "geo", "time"],
+  "size": [1, 1, 5],
+  "dimension": {
+    "freq": {
+      "label": "Time frequency",
+      "category": {
+        "index": { "A": 0 },
+        "label": { "A": "Annual" }
+      }
+    },
+    "geo": {
+      "label": "Geopolitical entity (reporting)",
+      "category": {
+        "index": { "FR": 0 },
+        "label": { "FR": "France" }
+      }
+    },
+    "time": {
+      "label": "Time",
+      "category": {
+        "index": { "2020": 0, "2021": 1, "2022": 2, "2023": 3, "2024": 4 },
+        "label": { "2020": "2020", "2021": "2021", "2022": "2022", "2023": "2023", "2024": "2024" }
+      }
+    }
+  },
+  "value": {
+    "0": 8.0,
+    "1": 7.9,
+    "2": 7.3,
+    "4": 7.4
+  },
+  "status": {
+    "3": "d"
+  },
+  "extension": {
+    "datasetId": "une_rt_a",
+    "lang": "EN",
+    "status": {
+      "d": { "label": "definition differs" }
+    }
+  }
+}

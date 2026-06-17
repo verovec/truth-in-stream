@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<message:StructureSpecificData
+    xmlns:message="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"
+    xmlns:data="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/data/structurespecific">
+  <message:Header>
+    <message:ID>BDM_001688526</message:ID>
+    <message:Test>false</message:Test>
+    <message:Prepared>2026-05-15T08:00:00</message:Prepared>
+  </message:Header>
+  <message:DataSet>
+    <data:Series IDBANK="001688526" FREQ="T" REF_AREA="FM"
+        TITLE_FR="Taux de chomage au sens du BIT - France hors Mayotte"
+        LAST_UPDATE="2026-05-15" UNIT_MULT="0" UNIT_MEASURE="PCT">
+      <data:Obs TIME_PERIOD="2024-Q4" OBS_VALUE="7.3" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2024-Q3" OBS_VALUE="7.4" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2024-Q2" OBS_VALUE="7.3" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2024-Q1" OBS_VALUE="7.5" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2023-Q4" OBS_VALUE="7.5" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2023-Q3" OBS_VALUE="7.4" OBS_STATUS="A" OBS_QUAL="DEF"/>
+      <data:Obs TIME_PERIOD="2023-Q2" OBS_VALUE="NaN" OBS_STATUS="O" OBS_QUAL="DEF"/>
+    </data:Series>
+  </message:DataSet>
+</message:StructureSpecificData>

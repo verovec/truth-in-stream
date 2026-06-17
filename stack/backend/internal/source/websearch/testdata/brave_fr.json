@@ -1,0 +1,55 @@
+{
+  "type": "search",
+  "query": {
+    "original": "investissement public France 2024",
+    "country": "fr",
+    "more_results_available": true
+  },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "type": "search_result",
+        "title": "L'investissement public en France en 2024 - INSEE",
+        "url": "https://www.insee.fr/fr/statistiques/investissement-public-2024",
+        "description": "En 2024, l'investissement public represente 3,9 % du PIB francais, en hausse par rapport a 2023.",
+        "language": "fr",
+        "family_friendly": true,
+        "age": "2024-09-12",
+        "extra_snippets": [
+          "L'investissement des administrations publiques a progresse de 1,8 % en volume en 2024.",
+          "Les collectivites locales portent l'essentiel de la hausse de l'investissement public."
+        ],
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "www.insee.fr",
+          "hostname": "www.insee.fr",
+          "favicon": "https://imgs.search.brave.com/insee",
+          "path": "fr > statistiques > investissement-public-2024"
+        }
+      },
+      {
+        "type": "search_result",
+        "title": "Budget 2024 : les chiffres cles de l'investissement public",
+        "url": "https://www.vie-publique.fr/budget-2024-investissement",
+        "description": "Le projet de loi de finances 2024 prevoit une enveloppe d'investissement de 25 milliards d'euros.",
+        "language": "fr",
+        "family_friendly": true,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "www.vie-publique.fr",
+          "hostname": "www.vie-publique.fr",
+          "favicon": "https://imgs.search.brave.com/viepublique",
+          "path": "budget-2024-investissement"
+        }
+      }
+    ],
+    "family_friendly": true
+  },
+  "mixed": {
+    "type": "mixed",
+    "main": [{ "type": "web", "index": 0, "all": false }],
+    "top": [],
+    "side": []
+  }
+}
