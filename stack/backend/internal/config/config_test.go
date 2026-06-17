@@ -1562,3 +1562,94 @@ func TestLoadPolitical(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadFactCheckQueueDefaultName(t *testing.T) {
+	t.Setenv("RABBITMQ_URL", "amqp://localhost")
+	q, err := LoadFactCheckQueue()
+	if err != nil {
+		t.Fatalf("LoadFactCheckQueue: %v", err)
+	}
+	if q.VersionedName() != "factcheck.claims.v1" {
+		t.Errorf("VersionedName = %q, want factcheck.claims.v1", q.VersionedName())
+	}
+}
+
+func TestLoadFactCheckArchive(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         map[string]string
+		wantErr     bool
+		wantQueries []string
+		wantLang    string
+		wantPages   int
+	}{
+		{
+			name:        "defaults",
+			env:         map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "Macron, retraites"},
+			wantQueries: []string{"Macron", "retraites"},
+			wantLang:    "fr",
+			wantPages:   0,
+		},
+		{
+			name: "overrides",
+			env: map[string]string{
+				"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "chômage",
+				"FACTCHECK_LANGUAGE": "en", "FACTCHECK_MAX_PAGES": "3",
+			},
+			wantQueries: []string{"chômage"},
+			wantLang:    "en",
+			wantPages:   3,
+		},
+		{
+			name:    "missing key",
+			env:     map[string]string{"FACTCHECK_QUERIES": "x"},
+			wantErr: true,
+		},
+		{
+			name:    "missing queries",
+			env:     map[string]string{"FACTCHECK_API_KEY": "k"},
+			wantErr: true,
+		},
+		{
+			name:    "blank queries",
+			env:     map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": " , , "},
+			wantErr: true,
+		},
+		{
+			name:    "bad max pages",
+			env:     map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "x", "FACTCHECK_MAX_PAGES": "-1"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadFactCheckArchive()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFactCheckArchive: %v", err)
+			}
+			if len(got.Queries) != len(tc.wantQueries) {
+				t.Fatalf("queries = %v, want %v", got.Queries, tc.wantQueries)
+			}
+			for i, q := range tc.wantQueries {
+				if got.Queries[i] != q {
+					t.Errorf("query[%d] = %q, want %q", i, got.Queries[i], q)
+				}
+			}
+			if got.Language != tc.wantLang {
+				t.Errorf("language = %q, want %q", got.Language, tc.wantLang)
+			}
+			if got.MaxPages != tc.wantPages {
+				t.Errorf("max pages = %d, want %d", got.MaxPages, tc.wantPages)
+			}
+		})
+	}
+}

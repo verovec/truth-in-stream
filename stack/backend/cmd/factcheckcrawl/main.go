@@ -1,0 +1,90 @@
+// Command factcheckcrawl reads already-checked French claims from the Google
+// Fact Check Tools API (the standardized aggregator of schema.org ClaimReview
+// data published by Les Decodeurs, AFP Factuel, and franceinfo Vrai ou Fake) and
+// publishes one self-contained curated-claim job per reviewed claim to the
+// fact-check queue, then exits. It needs no database: every field a
+// political_claims row requires travels in the message, so the fact-check worker
+// (cmd/factcheckworker) drains the queue into the curated claim DB independently.
+// The broker comes from RABBITMQ_URL; FACTCHECK_* selects the API key, queries,
+// and shape. Reading the API rather than scraping article HTML keeps ingestion
+// within each outlet's terms of service.
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/factcheckarchive"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+	if err := run(logger); err != nil {
+		logger.Error("fact-check crawl exited with error", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	archiveCfg, err := config.LoadFactCheckArchive()
+	if err != nil {
+		return err
+	}
+	queueCfg, err := config.LoadFactCheckQueue()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	client, err := queue.New(queue.Config{
+		URL:         queueCfg.URL,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
+		MaxPriority: queueCfg.MaxPriority,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	producer, err := factcheckarchive.New(factcheckarchive.Config{
+		APIKey:       archiveCfg.APIKey,
+		LanguageCode: archiveCfg.Language,
+		MaxPriority:  queueCfg.MaxPriority,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger.InfoContext(ctx, "fact-check crawl started",
+		slog.Any("queries", archiveCfg.Queries),
+		slog.String("language", archiveCfg.Language),
+		slog.String("queue", queueCfg.VersionedName()),
+		slog.Int("max_pages", archiveCfg.MaxPages))
+
+	var total factcheckarchive.Stats
+	for _, query := range archiveCfg.Queries {
+		stats, err := producer.Run(ctx, logger, qPublisher{client: client}, factcheckarchive.RunConfig{
+			Query:    query,
+			MaxPages: archiveCfg.MaxPages,
+		})
+		if err != nil {
+			return err
+		}
+		total.Published += stats.Published
+		total.Skipped += stats.Skipped
+	}
+
+	logger.InfoContext(ctx, "fact-check crawl finished",
+		slog.Int("published_claims", total.Published),
+		slog.Int("skipped_claims", total.Skipped))
+	return nil
+}

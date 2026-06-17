@@ -1124,6 +1124,10 @@ const (
 	// kept separate from the embedding-jobs queue so the crawl worker and the
 	// dump-pipeline fleet never consume each other's messages.
 	defaultCrawlQueueName = "crawl.chunks"
+	// defaultFactCheckQueueName is the base queue the fact-check-archive producer
+	// publishes curated-claim jobs to, kept separate from the wiki crawl and
+	// embedding queues so the fact-check worker never consumes a wiki chunk.
+	defaultFactCheckQueueName = "factcheck.claims"
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -1172,6 +1176,15 @@ func LoadQueue() (Queue, error) {
 // crawl producer and worker never share a queue with the dump-pipeline fleet.
 func LoadCrawlQueue() (Queue, error) {
 	return loadQueue("RABBITMQ_CRAWL_QUEUE", defaultCrawlQueueName)
+}
+
+// LoadFactCheckQueue reads the fact-check-archive broker configuration. It shares
+// the broker URL, priority, prefetch, and version machinery with LoadQueue but
+// binds to its own base queue name (RABBITMQ_FACTCHECK_QUEUE, default
+// factcheck.claims), so the fact-check producer and worker never share a queue
+// with the wiki crawl or dump-pipeline fleets.
+func LoadFactCheckQueue() (Queue, error) {
+	return loadQueue("RABBITMQ_FACTCHECK_QUEUE", defaultFactCheckQueueName)
 }
 
 // loadQueue reads the broker configuration, taking the base queue name from
@@ -1581,6 +1594,57 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 		Model:       getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
 		Concurrency: concurrency,
 		RPM:         rpm,
+	}, nil
+}
+
+// defaultFactCheckLanguage filters the fact-check archive to French claims, the
+// only jurisdiction this ingest targets.
+const defaultFactCheckLanguage = "fr"
+
+// FactCheckArchive configures the fact-check-archive producer that reads
+// already-checked claims from the Google Fact Check Tools API into the curated
+// claim DB. APIKey is the Google API key (sourced from the environment only,
+// never logged); Queries are the comma-separated claims:search query terms to
+// walk (a politician's name, a policy area); Language filters by claim language;
+// MaxPages caps result pages followed per query (0 = follow every page).
+type FactCheckArchive struct {
+	APIKey   string
+	Queries  []string
+	Language string
+	MaxPages int
+}
+
+// LoadFactCheckArchive reads the fact-check-archive producer configuration.
+// FACTCHECK_API_KEY and FACTCHECK_QUERIES are required (the producer has nothing
+// to ingest without a query); the rest default. Bad values fail fast at startup.
+// The secret is read but never logged.
+func LoadFactCheckArchive() (FactCheckArchive, error) {
+	apiKey, err := requireEnv("FACTCHECK_API_KEY")
+	if err != nil {
+		return FactCheckArchive{}, err
+	}
+	raw, err := requireEnv("FACTCHECK_QUERIES")
+	if err != nil {
+		return FactCheckArchive{}, err
+	}
+	queries := make([]string, 0)
+	for _, q := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(q); trimmed != "" {
+			queries = append(queries, trimmed)
+		}
+	}
+	if len(queries) == 0 {
+		return FactCheckArchive{}, fmt.Errorf("config: FACTCHECK_QUERIES %q has no query", raw)
+	}
+	maxPages, err := intEnv("FACTCHECK_MAX_PAGES", 0, 0, math.MaxInt32)
+	if err != nil {
+		return FactCheckArchive{}, err
+	}
+	return FactCheckArchive{
+		APIKey:   apiKey,
+		Queries:  queries,
+		Language: getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
+		MaxPages: maxPages,
 	}, nil
 }
 

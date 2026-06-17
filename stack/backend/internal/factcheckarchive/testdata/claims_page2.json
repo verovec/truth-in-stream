@@ -1,0 +1,39 @@
+{
+  "claims": [
+    {
+      "text": "Cette vidéo montre une manifestation à Paris en mars 2024.",
+      "claimant": "Comptes anonymes sur X",
+      "claimDate": "2024-03-20T00:00:00Z",
+      "claimReview": [
+        {
+          "publisher": {
+            "name": "Les Décodeurs",
+            "site": "lemonde.fr"
+          },
+          "url": "https://www.lemonde.fr/les-decodeurs/article/2024/03/22/intox_6543211_4355770.html",
+          "title": "Non, cette vidéo ne date pas de mars 2024",
+          "reviewDate": "2024-03-22T00:00:00Z",
+          "textualRating": "Trompeur",
+          "languageCode": "fr"
+        }
+      ]
+    },
+    {
+      "text": "Aucune vérification disponible pour cette affirmation.",
+      "claimant": "Source inconnue",
+      "claimReview": [
+        {
+          "publisher": {
+            "name": "AFP Factuel",
+            "site": "factuel.afp.com"
+          },
+          "url": "https://factuel.afp.com/doc.afp.com.99ZZ9ZZ",
+          "title": "Verdict non concluant",
+          "reviewDate": "2024-04-01T00:00:00Z",
+          "textualRating": "Pas de preuve",
+          "languageCode": "fr"
+        }
+      ]
+    }
+  ]
+}
