@@ -14,6 +14,7 @@ import {
 } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
+import { LiveSpeakerCredibility } from "./live-speaker-credibility";
 import { LiveSummaryStrip } from "./live-summary-strip";
 import { GALLERY_GRID_CLASS, VideoGallery } from "./video-gallery";
 import { VideoUploader } from "./video-uploader";
@@ -277,6 +278,7 @@ export function LibraryExperience({
       <LiveAnalysisProvider videoId={activeVideoId}>
         <div className="flex flex-col gap-4">
           <LiveSummaryStrip />
+          <LiveSpeakerCredibility />
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="flex flex-col gap-4">
               <PlayerStage active={active} />

@@ -455,6 +455,7 @@ func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, logg
 		FastDeadline:      cfg.FastDeadline,
 		VerifyDeadline:    cfg.VerifyDeadline,
 		CacheTTL:          cfg.CacheTTL,
+		PriorStrength:     cfg.SpeakerPriorStrength,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -496,6 +497,7 @@ func (v verifierAdapter) Verify(ctx context.Context, claim string, passages []se
 	}
 	return service.ClaimVerdict{
 		Verdict:    res.Verdict,
+		Basis:      res.Basis,
 		Confidence: res.Confidence,
 		Citations:  citations,
 		Rationale:  res.Rationale,

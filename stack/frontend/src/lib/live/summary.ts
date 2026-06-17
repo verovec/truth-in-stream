@@ -92,21 +92,21 @@ export function summarizeStatements(
   return summary;
 }
 
-// VERIFY_VERDICT_BUCKET maps a verified claim's verdict (the verifier's
-// supports/refutes/not_enough_info vocabulary) onto the strip's corroborates/
-// contradicts/unclear counts, so the per-claim list and the summary read the
-// same. A verified claim with no verdict (a degenerate frame) reads as
-// not_enough_info, mirroring how the list renders it. The Record over
-// ClaimVerdict is exhaustive by construction: a new verdict added to the wire
-// enum fails to compile here until it is given a bucket, rather than silently
-// falling through to a wrong count.
+// VERIFY_VERDICT_BUCKET maps a verified claim's credibility verdict (the
+// verifier's credible/disputed/unverifiable vocabulary) onto the strip's
+// positive/negative/neutral counts, which the legacy curated path also feeds, so
+// the per-claim list and the summary read the same and both paths share one tally.
+// A verified claim with no verdict (a degenerate frame) reads as unverifiable,
+// mirroring how the list renders it. The Record over ClaimVerdict is exhaustive by
+// construction: a new verdict added to the wire enum fails to compile here until it
+// is given a bucket, rather than silently falling through to a wrong count.
 const VERIFY_VERDICT_BUCKET: Record<
   ClaimVerdict,
   "corroborates" | "contradicts" | "unclear"
 > = {
-  supports: "corroborates",
-  refutes: "contradicts",
-  not_enough_info: "unclear",
+  credible: "corroborates",
+  disputed: "contradicts",
+  unverifiable: "unclear",
 };
 
 // tallyClaimUnit folds one verify-path unit's claims into the summary. The unit
@@ -129,6 +129,6 @@ function tallyClaimUnit(summary: LiveSummary, unitClaims: LiveClaim[]): void {
     if (claim.status !== "verified") {
       continue;
     }
-    summary[VERIFY_VERDICT_BUCKET[claim.verdict ?? "not_enough_info"]] += 1;
+    summary[VERIFY_VERDICT_BUCKET[claim.verdict ?? "unverifiable"]] += 1;
   }
 }

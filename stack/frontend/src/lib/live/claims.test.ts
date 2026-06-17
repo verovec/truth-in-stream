@@ -65,7 +65,7 @@ describe("claims store", () => {
       state,
       result("u0", "u0-0", "verified", {
         source: "verified",
-        verdict: "supports",
+        verdict: "credible",
         confidence: 0.82,
         rationale: "the source confirms the year",
         matches: [claimMatch("opened 1937")],
@@ -79,7 +79,7 @@ describe("claims store", () => {
       text: "the bridge opened in 1937",
       status: "verified",
       source: "verified",
-      verdict: "supports",
+      verdict: "credible",
       confidence: 0.82,
     });
     expect(claims[0].matches).toHaveLength(1);
@@ -94,19 +94,19 @@ describe("claims store", () => {
       state,
       result("u0", "u0-0", "verified", {
         source: "curated",
-        verdict: "refutes",
+        verdict: "disputed",
       }),
     );
     state = applyClaimResultFrame(
       state,
       result("u0", "u0-1", "verified", {
         source: "verified",
-        verdict: "supports",
+        verdict: "credible",
       }),
     );
     const claims = claimsForUnit(state, "u0");
-    expect(claims[0]).toMatchObject({ source: "curated", verdict: "refutes" });
-    expect(claims[1]).toMatchObject({ source: "verified", verdict: "supports" });
+    expect(claims[0]).toMatchObject({ source: "curated", verdict: "disputed" });
+    expect(claims[1]).toMatchObject({ source: "verified", verdict: "credible" });
   });
 
   test("not_enough_info is a terminal verified verdict, not an error", () => {
@@ -115,13 +115,13 @@ describe("claims store", () => {
       state,
       result("u0", "u0-0", "verified", {
         source: "verified",
-        verdict: "not_enough_info",
+        verdict: "unverifiable",
         confidence: 0,
       }),
     );
     expect(claimsForUnit(state, "u0")[0]).toMatchObject({
       status: "verified",
-      verdict: "not_enough_info",
+      verdict: "unverifiable",
       error: undefined,
     });
   });
@@ -156,26 +156,26 @@ describe("claims store", () => {
     let state = applyClaimsFrame(emptyClaims(), claimsFrame("u0", ["u0-0", "c"]));
     state = applyClaimResultFrame(
       state,
-      result("u0", "u0-0", "verified", { verdict: "supports" }),
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
     );
     state = applyClaimResultFrame(state, result("u0", "u0-0", "checking"));
     expect(claimsForUnit(state, "u0")[0]).toMatchObject({
       status: "verified",
-      verdict: "supports",
+      verdict: "credible",
     });
   });
 
   test("a result arriving before its claims frame still renders and keeps its verdict", () => {
     let state = applyClaimResultFrame(
       emptyClaims(),
-      result("u0", "u0-0", "verified", { verdict: "supports" }),
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
     );
     // The announcement lands after the verdict (reconnect replay): the verdict is
     // kept and the announced text backfilled.
     state = applyClaimsFrame(state, claimsFrame("u0", ["u0-0", "the claim text"]));
     expect(claimsForUnit(state, "u0")[0]).toMatchObject({
       status: "verified",
-      verdict: "supports",
+      verdict: "credible",
       text: "the claim text",
     });
   });
@@ -205,7 +205,7 @@ describe("claims store", () => {
     const first = applyClaimsFrame(emptyClaims(), claimsFrame("u0", ["u0-0", "a"]));
     const second = applyClaimResultFrame(
       first,
-      result("u0", "u0-0", "verified", { verdict: "supports" }),
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
     );
     expect(claimsForUnit(first, "u0")[0].status).toBe("pending");
     expect(claimsForUnit(second, "u0")[0].status).toBe("verified");

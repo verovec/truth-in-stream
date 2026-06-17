@@ -13,6 +13,7 @@ import type {
   ClaimsFrame,
   ClaimStatus,
   ClaimVerdict,
+  VerdictBasis,
   VerdictSource,
 } from "./frames";
 
@@ -28,6 +29,7 @@ export type LiveClaim = {
   status: ClaimStatus;
   source?: VerdictSource;
   verdict?: ClaimVerdict;
+  basis?: VerdictBasis;
   confidence?: number;
   rationale?: string;
   matches?: SegmentMatch[];
@@ -110,6 +112,7 @@ export function applyClaimResultFrame(
     status: frame.status,
     source: frame.source,
     verdict: frame.verdict,
+    basis: frame.basis,
     confidence: frame.confidence,
     rationale: frame.rationale,
     matches: frame.matches,

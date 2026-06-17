@@ -64,15 +64,17 @@ type AtomicClaim struct {
 	Text    string
 }
 
-// VerifiedVerdict is the retrieve-then-verify path's grounded verdict for one
-// atomic claim, carried on a LiveEventResult. Verdict is supports/refutes/
-// not_enough_info; Confidence comes from the verifier (or the near-match
-// similarity for a curated verdict); Citations are the retrieved matches the
-// verdict cited (with their evidence ids, so the grounding round-trips);
-// Rationale is the one-sentence reason. It is nil for a checking or unchecked
-// result.
+// VerifiedVerdict is the retrieve-then-verify path's grounded credibility verdict
+// for one atomic claim, carried on a LiveEventResult. Verdict is credible/disputed/
+// unverifiable; Basis is evidence (grounded in a surviving citation) or knowledge
+// (the verifier's world-knowledge tiebreaker); Confidence comes from the verifier
+// (or the near-match similarity for a curated verdict); Citations are the retrieved
+// matches the verdict cited (with their evidence ids, so the grounding
+// round-trips); Rationale is the one-sentence reason. It is nil for a checking or
+// unchecked result.
 type VerifiedVerdict struct {
 	Verdict    string
+	Basis      string
 	Confidence float64
 	Citations  []domain.SegmentMatch
 	Rationale  string
@@ -102,11 +104,13 @@ type EvidenceCitation struct {
 	QuotedSpan string
 }
 
-// ClaimVerdict is the verifier's grounded judgment for one atomic claim:
-// supports/refutes/not_enough_info, the verifier's calibrated confidence, the
-// validated citations, and a one-sentence rationale.
+// ClaimVerdict is the verifier's grounded credibility judgment for one atomic
+// claim: credible/disputed/unverifiable, the grounding basis (evidence or
+// knowledge), the verifier's calibrated confidence, the validated citations, and a
+// one-sentence rationale.
 type ClaimVerdict struct {
 	Verdict    string
+	Basis      string
 	Confidence float64
 	Citations  []EvidenceCitation
 	Rationale  string
@@ -150,7 +154,10 @@ type VerifyPathConfig struct {
 	FastDeadline      time.Duration
 	VerifyDeadline    time.Duration
 	CacheTTL          time.Duration
-	Logger            *slog.Logger
+	// PriorStrength is the Beta-Binomial prior pseudo-count k for the per-speaker
+	// credibility score. It defaults to defaultPriorStrength when non-positive.
+	PriorStrength float64
+	Logger        *slog.Logger
 }
 
 // VerifyPath is the retrieve-then-verify orchestration for one analyzer: per
@@ -167,6 +174,7 @@ type VerifyPath struct {
 	verifyQueue    int
 	fastDeadline   time.Duration
 	verifyDeadline time.Duration
+	priorStrength  float64
 	logger         *slog.Logger
 	cache          *claimCache
 }
@@ -198,6 +206,10 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	priorStrength := cfg.PriorStrength
+	if priorStrength <= 0 {
+		priorStrength = defaultPriorStrength
+	}
 	var cache *claimCache
 	if cfg.CacheTTL > 0 {
 		cache = newClaimCache(cfg.CacheTTL)
@@ -211,6 +223,7 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		verifyQueue:    cfg.VerifyQueueDepth,
 		fastDeadline:   cfg.FastDeadline,
 		verifyDeadline: cfg.VerifyDeadline,
+		priorStrength:  priorStrength,
 		logger:         logger,
 		cache:          cache,
 	}, nil
@@ -306,6 +319,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 
 	if cached, ok := vp.cacheGet(claim.Text); ok {
 		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
+		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, cached.verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, cached.embedding)
 		return
 	}
@@ -322,9 +336,10 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	// Fast path: a high-confidence curated near-match borrows its verdict with no
 	// LLM call, tagged curated, and emitted at once.
 	if fast, ok := vp.fastMatch(ret.matches); ok {
-		verdict := &VerifiedVerdict{Verdict: string(fast.Verdict), Confidence: fast.Similarity, Citations: []domain.SegmentMatch{fast}, Rationale: ""}
+		verdict := curatedVerdict(fast)
 		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
+		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 		return
 	}
@@ -350,6 +365,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	}
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
+	vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 }
 
@@ -391,7 +407,9 @@ func (vp *VerifyPath) fastMatch(matches []domain.SegmentMatch) (domain.SegmentMa
 // evidence is meaningless and the verifier would reject it.
 func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, bool, error) {
 	if len(matches) == 0 {
-		return &VerifiedVerdict{Verdict: verdictNotEnoughInfo, Confidence: 0}, false, nil
+		// No retrieved evidence and no model call: the honest "nothing to check
+		// against" outcome is unverifiable, not a low-confidence judgment.
+		return &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}, false, nil
 	}
 	if !vp.acquireVerifySlot(ctx) {
 		if ctx.Err() != nil {
@@ -496,11 +514,6 @@ func (vp *VerifyPath) emitMemberErrors(ctx context.Context, out chan<- LiveEvent
 	}
 }
 
-// verdictNotEnoughInfo mirrors the verifier package's not_enough_info label so
-// the verify path can return the honest "no evidence" verdict without importing
-// the verifier package (which would couple the orchestration to the adapter).
-const verdictNotEnoughInfo = "not_enough_info"
-
 // passagesFromMatches projects the retrieved wire matches into verifier
 // passages, dropping any match without an evidence id (it cannot be cited and
 // the citation guard would reject it).
@@ -535,10 +548,54 @@ func verdictFromResult(res ClaimVerdict, matches []domain.SegmentMatch) *Verifie
 	}
 	return &VerifiedVerdict{
 		Verdict:    res.Verdict,
+		Basis:      res.Basis,
 		Confidence: res.Confidence,
 		Citations:  citations,
 		Rationale:  res.Rationale,
 	}
+}
+
+// curatedVerdict maps a borrowed curated near-match into a credibility verdict on
+// the fast path. The curated claim is the cited source, so a corroborating curated
+// verdict is credible and a contradicting one is disputed, both basis evidence; an
+// unclear curated claim does not settle the speaker's statement, so it is
+// unverifiable and (per the unverifiable invariant) carries no citation. The
+// borrowed confidence is the near-match similarity.
+func curatedVerdict(fast domain.SegmentMatch) *VerifiedVerdict {
+	state, basis := credibilityFromCurated(fast.Verdict)
+	verdict := &VerifiedVerdict{Verdict: state, Basis: basis, Confidence: fast.Similarity}
+	if state != VerdictUnverifiable {
+		verdict.Citations = []domain.SegmentMatch{fast}
+	}
+	return verdict
+}
+
+// credibilityFromCurated maps the curated corpus verdict vocabulary
+// (corroborates/contradicts/unclear) onto the credibility vocabulary. A curated
+// borrow is always evidence-grounded (the curated claim is the source) except an
+// unclear one, which grounds nothing and is unverifiable.
+func credibilityFromCurated(v domain.Verdict) (state, basis string) {
+	switch v {
+	case domain.VerdictCorroborates:
+		return VerdictCredible, BasisEvidence
+	case domain.VerdictContradicts:
+		return VerdictDisputed, BasisEvidence
+	default:
+		return VerdictUnverifiable, BasisKnowledge
+	}
+}
+
+// recordSpeakerScore folds one claim's reached verdict into the speaker's running
+// credibility score and emits the updated snapshot as a LiveEventSpeakerScore. It
+// is a no-op for an unattributed turn (no speaker to score) or a nil verdict
+// (checking/unchecked/error claims never reach here). Only credible and disputed
+// move the score; unverifiable updates the speaker's tally alone.
+func (vp *VerifyPath) recordSpeakerScore(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, verdict *VerifiedVerdict) {
+	if speaker == "" || verdict == nil {
+		return
+	}
+	score := mem.observeCredibility(speaker, verdict.Verdict, verdict.Confidence, vp.priorStrength)
+	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerScore, SpeakerScore: &score})
 }
 
 // cacheEntry is one cached claim verdict: its source tag, the verdict, and the

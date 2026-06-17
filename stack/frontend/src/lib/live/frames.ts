@@ -72,11 +72,18 @@ export type ClaimStatus =
   | "unchecked"
   | "error";
 
-// ClaimVerdict is the verify path's grounded judgment for one atomic claim. It
-// is a distinct enum from the legacy curated-match Verdict (corroborates/
-// contradicts/unclear): the verifier reasons over evidence and returns
-// supports/refutes/not_enough_info, with not_enough_info a first-class verdict.
-export type ClaimVerdict = "supports" | "refutes" | "not_enough_info";
+// ClaimVerdict is the verify path's grounded credibility judgment for one atomic
+// claim. It is a distinct enum from the legacy curated-match Verdict
+// (corroborates/contradicts/unclear): the verifier answers "can I trust the
+// speaker on this?" and returns credible/disputed/unverifiable, with unverifiable
+// a first-class verdict.
+export type ClaimVerdict = "credible" | "disputed" | "unverifiable";
+
+// VerdictBasis tags what a verdict rests on: a supplied evidence passage the
+// verifier cited, or its world-knowledge tiebreaker (used when no passage bears on
+// the claim). A knowledge-basis verdict is lower-confidence and shown as having no
+// direct sources, so the viewer can weigh it against an evidence-grounded one.
+export type VerdictBasis = "evidence" | "knowledge";
 
 // VerdictSource tags where a verified claim's verdict came from: borrowed from a
 // curated near-match (instant, no LLM) or reasoned by the evidence verifier. The
@@ -117,11 +124,27 @@ export type ClaimResultFrame = {
   status: ClaimStatus;
   source?: VerdictSource;
   verdict?: ClaimVerdict;
+  basis?: VerdictBasis;
   confidence?: number;
   rationale?: string;
   matches?: SegmentMatch[];
   skipReason?: string;
   error?: string;
+};
+
+// SpeakerScoreFrame is a speaker's running credibility snapshot (retrieve-then-
+// verify path), pushed after each of that speaker's claim verdicts updates the
+// aggregate. score is the Beta-Binomial posterior mean in [0,1]; credible,
+// disputed, and unverifiable are the lifetime verdict tallies, so the widget can
+// show the score with its sample size and de-emphasize a thin one. It is additive:
+// a client that ignores it renders everything else unchanged.
+export type SpeakerScoreFrame = {
+  type: "speaker_score";
+  speaker: string;
+  score: number;
+  credible: number;
+  disputed: number;
+  unverifiable: number;
 };
 
 export type LiveFrame =
@@ -130,7 +153,8 @@ export type LiveFrame =
   | ResultFrame
   | ConsistencyFrame
   | ClaimsFrame
-  | ClaimResultFrame;
+  | ClaimResultFrame
+  | SpeakerScoreFrame;
 
 const CLAIM_STATUSES: ReadonlySet<string> = new Set([
   "pending",
@@ -141,10 +165,12 @@ const CLAIM_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 const CLAIM_VERDICTS: ReadonlySet<string> = new Set([
-  "supports",
-  "refutes",
-  "not_enough_info",
+  "credible",
+  "disputed",
+  "unverifiable",
 ]);
+
+const VERDICT_BASES: ReadonlySet<string> = new Set(["evidence", "knowledge"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -270,6 +296,9 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     if (typeof value.verdict === "string" && CLAIM_VERDICTS.has(value.verdict)) {
       frame.verdict = value.verdict as ClaimVerdict;
     }
+    if (typeof value.basis === "string" && VERDICT_BASES.has(value.basis)) {
+      frame.basis = value.basis as VerdictBasis;
+    }
     if (isFiniteNumber(value.confidence)) {
       frame.confidence = value.confidence;
     }
@@ -286,6 +315,24 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
       frame.error = value.error;
     }
     return frame;
+  }
+
+  if (value.type === "speaker_score") {
+    if (
+      typeof value.speaker !== "string" ||
+      value.speaker.length === 0 ||
+      !isFiniteNumber(value.score)
+    ) {
+      return null;
+    }
+    return {
+      type: "speaker_score",
+      speaker: value.speaker,
+      score: value.score,
+      credible: isFiniteNumber(value.credible) ? value.credible : 0,
+      disputed: isFiniteNumber(value.disputed) ? value.disputed : 0,
+      unverifiable: isFiniteNumber(value.unverifiable) ? value.unverifiable : 0,
+    };
   }
 
   if (value.type === "consistency") {

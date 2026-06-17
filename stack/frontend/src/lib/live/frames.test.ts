@@ -220,7 +220,7 @@ describe("parseLiveFrame", () => {
     });
   });
 
-  test("parses a verified claim_result with source, verdict, and normalized matches", () => {
+  test("parses a verified claim_result with source, verdict, basis, and normalized matches", () => {
     const frame = parseLiveFrame(
       JSON.stringify({
         type: "claim_result",
@@ -228,7 +228,8 @@ describe("parseLiveFrame", () => {
         claim_id: "u0-0",
         status: "verified",
         source: "verified",
-        verdict: "supports",
+        verdict: "credible",
+        basis: "evidence",
         confidence: 0.8,
         rationale: "the passage confirms it",
         matches: [
@@ -249,11 +250,42 @@ describe("parseLiveFrame", () => {
       claimId: "u0-0",
       status: "verified",
       source: "verified",
-      verdict: "supports",
+      verdict: "credible",
+      basis: "evidence",
       confidence: 0.8,
       rationale: "the passage confirms it",
     });
     expect((frame as { matches: unknown[] }).matches).toHaveLength(1);
+  });
+
+  test("drops an unrecognised basis tag rather than rendering it", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        basis: "hunch",
+      }),
+    );
+    expect(frame).not.toHaveProperty("basis");
+    expect(frame).toMatchObject({ verdict: "credible" });
+  });
+
+  test("parses a knowledge-basis claim_result with no citations", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        basis: "knowledge",
+        confidence: 0.55,
+      }),
+    );
+    expect(frame).toMatchObject({ verdict: "credible", basis: "knowledge" });
   });
 
   test("parses a checking claim_result carrying only its status", () => {
@@ -300,11 +332,11 @@ describe("parseLiveFrame", () => {
         claim_id: "u0-0",
         status: "verified",
         source: "guessed",
-        verdict: "supports",
+        verdict: "credible",
       }),
     );
     expect(frame).not.toHaveProperty("source");
-    expect(frame).toMatchObject({ verdict: "supports" });
+    expect(frame).toMatchObject({ verdict: "credible" });
   });
 
   test("returns null for a claim_result with an unknown status", () => {
@@ -326,5 +358,46 @@ describe("parseLiveFrame", () => {
         JSON.stringify({ type: "claim_result", id: "u0", status: "checking" }),
       ),
     ).toBeNull();
+  });
+
+  test("parses a speaker_score frame with score and tallies", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "speaker_score",
+        speaker: "A",
+        score: 0.6,
+        credible: 1,
+        disputed: 0,
+        unverifiable: 2,
+      }),
+    );
+    expect(frame).toEqual({
+      type: "speaker_score",
+      speaker: "A",
+      score: 0.6,
+      credible: 1,
+      disputed: 0,
+      unverifiable: 2,
+    });
+  });
+
+  test("returns null for a speaker_score frame missing its speaker", () => {
+    expect(
+      parseLiveFrame(JSON.stringify({ type: "speaker_score", score: 0.6 })),
+    ).toBeNull();
+  });
+
+  test("defaults missing speaker_score tallies to zero", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({ type: "speaker_score", speaker: "B", score: 0.5 }),
+    );
+    expect(frame).toEqual({
+      type: "speaker_score",
+      speaker: "B",
+      score: 0.5,
+      credible: 0,
+      disputed: 0,
+      unverifiable: 0,
+    });
   });
 });

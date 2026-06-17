@@ -146,11 +146,26 @@ type claimResultFrame struct {
 	Status     string                `json:"status"`
 	Source     string                `json:"source,omitempty"`
 	Verdict    string                `json:"verdict,omitempty"`
+	Basis      string                `json:"basis,omitempty"`
 	Confidence *float64              `json:"confidence,omitempty"`
 	Rationale  string                `json:"rationale,omitempty"`
 	Matches    []domain.SegmentMatch `json:"matches,omitempty"`
 	SkipReason string                `json:"skip_reason,omitempty"`
 	Error      string                `json:"error,omitempty"`
+}
+
+// speakerScoreFrame is the wire form of a speaker-score event (retrieve-then-verify
+// path): a speaker's running credibility score in [0,1] and the verdict tallies
+// that produced it, so the client can render a per-speaker credibility widget keyed
+// on speaker and de-emphasize a thin sample. It is additive - a client that does
+// not understand it drops the frame and renders everything else unchanged.
+type speakerScoreFrame struct {
+	Type         string  `json:"type"`
+	Speaker      string  `json:"speaker"`
+	Score        float64 `json:"score"`
+	Credible     int     `json:"credible"`
+	Disputed     int     `json:"disputed"`
+	Unverifiable int     `json:"unverifiable"`
 }
 
 // liveHandler upgrades the request to a WebSocket and bridges it to the live
@@ -270,6 +285,21 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 			Speaker: ev.Segment.Speaker,
 		})
 	}
+	if ev.Kind == service.LiveEventSpeakerScore {
+		// The service always sets SpeakerScore for this kind; the guard keeps a
+		// malformed event from emitting a zero-valued score frame.
+		if ev.SpeakerScore == nil {
+			return nil
+		}
+		return wsjson.Write(ctx, conn, speakerScoreFrame{
+			Type:         string(ev.Kind),
+			Speaker:      ev.SpeakerScore.Speaker,
+			Score:        ev.SpeakerScore.Score,
+			Credible:     ev.SpeakerScore.Credible,
+			Disputed:     ev.SpeakerScore.Disputed,
+			Unverifiable: ev.SpeakerScore.Unverifiable,
+		})
+	}
 	if ev.Kind == service.LiveEventClaims {
 		claims := make([]atomicClaimJSON, len(ev.Claims))
 		for i, c := range ev.Claims {
@@ -327,6 +357,7 @@ func toClaimResultFrame(ev service.LiveEvent) claimResultFrame {
 	}
 	if ev.Verdict != nil {
 		f.Verdict = ev.Verdict.Verdict
+		f.Basis = ev.Verdict.Basis
 		confidence := ev.Verdict.Confidence
 		f.Confidence = &confidence
 		f.Rationale = ev.Verdict.Rationale

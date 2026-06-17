@@ -550,6 +550,14 @@ const (
 	// every claim short-circuits to a no-evidence not_enough_info verdict.
 	// FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD overrides it.
 	defaultVerifyRetrievalThreshold = 0.45
+	// defaultSpeakerScorePriorStrength is the Beta-Binomial prior pseudo-count k
+	// for the per-speaker credibility score. A symmetric Beta(k/2, k/2) prior is
+	// neutral (mean 0.5); larger k shrinks harder toward neutral, so the score
+	// moves more slowly and a speaker with one credible claim does not read as a
+	// confident 100% (k=4 puts one full-confidence credible claim at 60%).
+	// SPEAKER_SCORE_PRIOR_STRENGTH overrides it; the service package mirrors the
+	// same default for direct construction.
+	defaultSpeakerScorePriorStrength = 4.0
 )
 
 // VerifyPath holds the retrieve-then-verify configuration. The path is wired only
@@ -576,6 +584,9 @@ type VerifyPath struct {
 	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
 	// discarded before the verifier ever sees it.
 	RetrievalThreshold float64
+	// SpeakerPriorStrength is the Beta-Binomial prior pseudo-count for the
+	// per-speaker credibility score. Larger values move the score more slowly.
+	SpeakerPriorStrength float64
 }
 
 // Active reports whether the retrieve-then-verify path should be wired: it is
@@ -593,15 +604,16 @@ func (v VerifyPath) Active() bool {
 // whole feature (default off). The secret is read but never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
-		Model:              defaultVerifyModel,
-		MaxClaimsPerUnit:   defaultVerifyMaxClaimsPerUnit,
-		FastTau:            defaultVerifyFastTau,
-		Concurrency:        defaultVerifyConcurrency,
-		QueueDepth:         defaultVerifyQueueDepth,
-		FastDeadline:       defaultVerifyFastDeadline,
-		VerifyDeadline:     defaultVerifyDeadline,
-		CacheTTL:           defaultVerifyCacheTTL,
-		RetrievalThreshold: defaultVerifyRetrievalThreshold,
+		Model:                defaultVerifyModel,
+		MaxClaimsPerUnit:     defaultVerifyMaxClaimsPerUnit,
+		FastTau:              defaultVerifyFastTau,
+		Concurrency:          defaultVerifyConcurrency,
+		QueueDepth:           defaultVerifyQueueDepth,
+		FastDeadline:         defaultVerifyFastDeadline,
+		VerifyDeadline:       defaultVerifyDeadline,
+		CacheTTL:             defaultVerifyCacheTTL,
+		RetrievalThreshold:   defaultVerifyRetrievalThreshold,
+		SpeakerPriorStrength: defaultSpeakerScorePriorStrength,
 	}
 	var err error
 	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
@@ -632,6 +644,11 @@ func LoadVerifyPath() (VerifyPath, error) {
 	}
 	// 0 disables the repeated-claim cache; a positive value is the collapse window.
 	if v.CacheTTL, err = durationEnvAllowZero("FACTCHECK_VERIFY_CACHE_TTL", v.CacheTTL); err != nil {
+		return VerifyPath{}, err
+	}
+	// The prior strength must stay positive (a non-positive k has no valid Beta
+	// prior); the lower bound keeps it meaningfully above a single observation.
+	if v.SpeakerPriorStrength, err = floatEnv("SPEAKER_SCORE_PRIOR_STRENGTH", v.SpeakerPriorStrength, 0.5, 1000); err != nil {
 		return VerifyPath{}, err
 	}
 	return v, nil

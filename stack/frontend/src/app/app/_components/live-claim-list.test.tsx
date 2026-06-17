@@ -45,7 +45,7 @@ describe("LiveClaimList", () => {
             claimId: "c0",
             status: "verified",
             source: "verified",
-            verdict: "refutes",
+            verdict: "disputed",
             rationale: "the source gives a different year",
             matches: [evidence("Construction finished in 1937.")],
           }),
@@ -54,7 +54,7 @@ describe("LiveClaimList", () => {
     );
 
     // The verdict is visible at once; the reasoning is hidden until tapped.
-    expect(screen.getByText(/refuted/i)).toBeInTheDocument();
+    expect(screen.getByText(/disputed/i)).toBeInTheDocument();
     expect(
       screen.queryByText(/the source gives a different year/i),
     ).not.toBeInTheDocument();
@@ -70,8 +70,8 @@ describe("LiveClaimList", () => {
     render(
       <LiveClaimList
         claims={[
-          claim({ claimId: "c0", status: "verified", source: "curated", verdict: "supports" }),
-          claim({ claimId: "c1", status: "verified", source: "verified", verdict: "supports" }),
+          claim({ claimId: "c0", status: "verified", source: "curated", verdict: "credible" }),
+          claim({ claimId: "c1", status: "verified", source: "verified", verdict: "credible" }),
         ]}
       />,
     );
@@ -79,7 +79,7 @@ describe("LiveClaimList", () => {
     expect(screen.getByText(/checked against evidence/i)).toBeInTheDocument();
   });
 
-  test("renders not_enough_info as an honest verdict, not an error", () => {
+  test("renders unverifiable as an honest verdict, not an error", () => {
     render(
       <LiveClaimList
         claims={[
@@ -87,13 +87,30 @@ describe("LiveClaimList", () => {
             claimId: "c0",
             status: "verified",
             source: "verified",
-            verdict: "not_enough_info",
+            verdict: "unverifiable",
           }),
         ]}
       />,
     );
-    expect(screen.getByText(/not enough info/i)).toBeInTheDocument();
+    expect(screen.getByText(/unverifiable/i)).toBeInTheDocument();
     expect(screen.queryByText(/could not be checked/i)).not.toBeInTheDocument();
+  });
+
+  test("marks a knowledge-basis verdict as having no direct sources", () => {
+    render(
+      <LiveClaimList
+        claims={[
+          claim({
+            claimId: "c0",
+            status: "verified",
+            source: "verified",
+            verdict: "credible",
+            basis: "knowledge",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/no direct sources/i)).toBeInTheDocument();
   });
 
   test("renders an unchecked claim as a capacity terminal state", () => {
@@ -117,10 +134,10 @@ describe("LiveClaimList", () => {
   test("a verified verdict with no rationale or citations offers no disclosure", () => {
     render(
       <LiveClaimList
-        claims={[claim({ claimId: "c0", status: "verified", verdict: "supports" })]}
+        claims={[claim({ claimId: "c0", status: "verified", verdict: "credible" })]}
       />,
     );
-    expect(screen.getByText(/supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/credible/i)).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /show reasoning/i }),
     ).not.toBeInTheDocument();

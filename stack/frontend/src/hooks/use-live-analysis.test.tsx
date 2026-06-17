@@ -128,6 +128,22 @@ const claimResultFrame = (
     ...extra,
   });
 
+const speakerScoreFrame = (
+  speaker: string,
+  score: number,
+  credible: number,
+  disputed: number,
+  unverifiable: number,
+) =>
+  JSON.stringify({
+    type: "speaker_score",
+    speaker,
+    score,
+    credible,
+    disputed,
+    unverifiable,
+  });
+
 const play = (store: PlaybackStore) =>
   act(() => store.update({ paused: false }));
 const pause = (store: PlaybackStore) =>
@@ -262,7 +278,7 @@ describe("useLiveAnalysis", () => {
       h.sockets[0].handlers.onFrame(
         claimResultFrame("0", "0-0", "verified", {
           source: "verified",
-          verdict: "supports",
+          verdict: "credible",
           confidence: 0.8,
         }),
       ),
@@ -272,7 +288,7 @@ describe("useLiveAnalysis", () => {
     expect(claims[0]).toMatchObject({
       status: "verified",
       source: "verified",
-      verdict: "supports",
+      verdict: "credible",
     });
   });
 
@@ -301,6 +317,34 @@ describe("useLiveAnalysis", () => {
     expect(h.analysis().claimsFor(resolvedId)).toHaveLength(1);
     // The dropped unit's claims are gone with it.
     expect(h.analysis().claimsFor("1:1")).toEqual([]);
+  });
+
+  test("speaker_score frames accumulate the latest snapshot per speaker", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+
+    act(() => h.sockets[0].handlers.onFrame(speakerScoreFrame("A", 0.6, 1, 0, 0)));
+    act(() => h.sockets[0].handlers.onFrame(speakerScoreFrame("B", 0.4, 0, 1, 0)));
+    // A's freshest (larger-sample) snapshot replaces its earlier one.
+    act(() => h.sockets[0].handlers.onFrame(speakerScoreFrame("A", 0.55, 2, 1, 0)));
+
+    expect(h.analysis().speakers).toEqual([
+      { speaker: "A", score: 0.55, credible: 2, disputed: 1, unverifiable: 0 },
+      { speaker: "B", score: 0.4, credible: 0, disputed: 1, unverifiable: 0 },
+    ]);
+  });
+
+  test("seeking resets the running speaker scores to match the backend's new session", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() => h.sockets[0].handlers.onFrame(speakerScoreFrame("A", 0.6, 1, 0, 0)));
+    expect(h.analysis().speakers).toHaveLength(1);
+
+    act(() => h.store().notifySeeked());
+
+    expect(h.analysis().speakers).toEqual([]);
   });
 
   test("an interim frame surfaces a live caption that a subtitle then clears", () => {
@@ -506,7 +550,7 @@ describe("useLiveAnalysis", () => {
       h.sockets[0].handlers.onFrame(
         claimResultFrame("0", "0-0", "verified", {
           source: "verified",
-          verdict: "supports",
+          verdict: "credible",
           confidence: 0.8,
         }),
       ),

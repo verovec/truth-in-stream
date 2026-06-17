@@ -50,14 +50,37 @@ type speakerMemory struct {
 	mu        sync.Mutex
 	bySpeaker map[string][]priorStatement
 	locks     map[string]*sync.Mutex
+	// credibility holds each speaker's running Beta-Binomial credibility tally,
+	// created lazily on a speaker's first scored verdict. It lives here, per
+	// session, so a later session never inherits a prior one's score; mu guards it
+	// alongside the consistency history.
+	credibility map[string]*speakerCredibility
 }
 
 // newSpeakerMemory builds an empty per-session memory.
 func newSpeakerMemory() *speakerMemory {
 	return &speakerMemory{
-		bySpeaker: make(map[string][]priorStatement),
-		locks:     make(map[string]*sync.Mutex),
+		bySpeaker:   make(map[string][]priorStatement),
+		locks:       make(map[string]*sync.Mutex),
+		credibility: make(map[string]*speakerCredibility),
 	}
+}
+
+// observeCredibility folds one claim verdict into the speaker's running
+// credibility score and returns the updated snapshot, stamped with the speaker.
+// The aggregator is created on first use with the given prior strength. Access is
+// mutex-guarded because the worker pool scores a speaker's claims concurrently.
+func (m *speakerMemory) observeCredibility(speaker, state string, confidence, priorStrength float64) SpeakerScore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc := m.credibility[speaker]
+	if sc == nil {
+		sc = newSpeakerCredibility(priorStrength)
+		m.credibility[speaker] = sc
+	}
+	snapshot := sc.observe(state, confidence)
+	snapshot.Speaker = speaker
+	return snapshot
 }
 
 // speakerLock returns the per-speaker detection lock, creating it on first use.

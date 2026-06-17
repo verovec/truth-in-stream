@@ -59,11 +59,14 @@ func TestNewRequiresAPIKey(t *testing.T) {
 	}
 }
 
-// TestVerifyEntailment exercises the model-judgment path end to end against a
-// faked LLM, including the headline adversarial pairs the redesign exists to fix:
-// evidence stating the opposite of the claim yields refutes, and a same-topic but
-// non-bearing passage yields not_enough_info rather than a false support.
-func TestVerifyEntailment(t *testing.T) {
+// TestVerifyCredibility exercises the model-judgment path end to end against a
+// faked LLM, including the headline cases the credibility reframe exists to get
+// right: evidence stating the opposite of the claim yields disputed/evidence; an
+// affirming passage yields credible/evidence; a same-topic but non-bearing passage
+// no longer forces a verdict but falls back to a knowledge-basis credible verdict
+// (the "Most people slip into addiction gradually" case); and a private/anecdotal
+// claim is unverifiable.
+func TestVerifyCredibility(t *testing.T) {
 	t.Parallel()
 
 	const autismClaim = "the vaccine causes autism"
@@ -78,11 +81,12 @@ func TestVerifyEntailment(t *testing.T) {
 		want      Result
 	}{
 		{
-			name:     "opposite-truth evidence refutes",
+			name:     "opposite-truth evidence disputes",
 			claim:    autismClaim,
 			passages: []Passage{refutingPassage},
 			toolInput: map[string]any{
-				"verdict":    VerdictRefutes,
+				"verdict":    VerdictDisputed,
+				"basis":      BasisEvidence,
 				"confidence": 0.93,
 				"citations": []map[string]any{
 					{"evidence_id": "wiki:vaccine:0", "quoted_span": "the vaccine does not cause autism"},
@@ -90,35 +94,20 @@ func TestVerifyEntailment(t *testing.T) {
 				"rationale": "The passage directly states the vaccine does not cause autism.",
 			},
 			want: Result{
-				Verdict:    VerdictRefutes,
+				Verdict:    VerdictDisputed,
+				Basis:      BasisEvidence,
 				Confidence: 0.93,
 				Citations:  []Citation{{EvidenceID: "wiki:vaccine:0", QuotedSpan: "the vaccine does not cause autism"}},
 				Rationale:  "The passage directly states the vaccine does not cause autism.",
 			},
 		},
 		{
-			name:     "same-topic non-bearing passage yields not_enough_info",
-			claim:    autismClaim,
-			passages: []Passage{sameTopicPassage},
-			toolInput: map[string]any{
-				"verdict":    VerdictNotEnoughInfo,
-				"confidence": 0.4,
-				"citations":  []map[string]any{},
-				"rationale":  "The passage is about dosing and does not address causation of autism.",
-			},
-			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0.4,
-				Citations:  []Citation{},
-				Rationale:  "The passage is about dosing and does not address causation of autism.",
-			},
-		},
-		{
-			name:     "affirming evidence supports",
+			name:     "affirming evidence is credible",
 			claim:    "the treaty was signed in 1648",
 			passages: []Passage{{ID: "claim:42", Text: "The Peace of Westphalia treaty was signed in 1648."}},
 			toolInput: map[string]any{
-				"verdict":    VerdictSupports,
+				"verdict":    VerdictCredible,
+				"basis":      BasisEvidence,
 				"confidence": 0.88,
 				"citations": []map[string]any{
 					{"evidence_id": "claim:42", "quoted_span": "signed in 1648"},
@@ -126,10 +115,49 @@ func TestVerifyEntailment(t *testing.T) {
 				"rationale": "The passage states the treaty was signed in 1648.",
 			},
 			want: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.88,
 				Citations:  []Citation{{EvidenceID: "claim:42", QuotedSpan: "signed in 1648"}},
 				Rationale:  "The passage states the treaty was signed in 1648.",
+			},
+		},
+		{
+			name:     "same-topic non-bearing passage falls back to knowledge credible",
+			claim:    "most people slip into addiction gradually",
+			passages: []Passage{sameTopicPassage},
+			toolInput: map[string]any{
+				"verdict":    VerdictCredible,
+				"basis":      BasisKnowledge,
+				"confidence": 0.55,
+				"citations":  []map[string]any{},
+				"rationale":  "No passage bears on the claim, but it is broadly consistent with general understanding of addiction.",
+			},
+			want: Result{
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: 0.55,
+				Citations:  []Citation{},
+				Rationale:  "No passage bears on the claim, but it is broadly consistent with general understanding of addiction.",
+			},
+		},
+		{
+			name:     "private anecdotal claim is unverifiable",
+			claim:    "my uncle quit smoking last tuesday",
+			passages: []Passage{sameTopicPassage},
+			toolInput: map[string]any{
+				"verdict":    VerdictUnverifiable,
+				"basis":      BasisKnowledge,
+				"confidence": 0.2,
+				"citations":  []map[string]any{},
+				"rationale":  "A private anecdote no general knowledge can confirm or deny.",
+			},
+			want: Result{
+				Verdict:    VerdictUnverifiable,
+				Basis:      BasisKnowledge,
+				Confidence: 0.2,
+				Citations:  []Citation{},
+				Rationale:  "A private anecdote no general knowledge can confirm or deny.",
 			},
 		},
 	}
@@ -161,7 +189,8 @@ func TestVerifyForcesStructuredToolCall(t *testing.T) {
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{
-			"verdict":    VerdictNotEnoughInfo,
+			"verdict":    VerdictUnverifiable,
+			"basis":      BasisKnowledge,
 			"confidence": 0.1,
 			"citations":  []map[string]any{},
 			"rationale":  "",
@@ -220,15 +249,18 @@ func TestVerifyMissingToolCallErrors(t *testing.T) {
 	}
 }
 
-// TestVerifyDropsFabricatedCitationOverWire confirms the citation guard runs on
-// the model-judgment path, not just in isolation: a faked verdict that cites a
-// passage never supplied comes back downgraded to not_enough_info.
-func TestVerifyDropsFabricatedCitationOverWire(t *testing.T) {
+// TestVerifyDemotesFabricatedCitationOverWire confirms the citation guard runs on
+// the model-judgment path, not just in isolation: a faked evidence-basis verdict
+// that cites a passage never supplied comes back demoted to basis knowledge with a
+// capped confidence - the credibility judgment stands, but it loses its claimed
+// evidence grounding rather than being forced to unverifiable.
+func TestVerifyDemotesFabricatedCitationOverWire(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{
-			"verdict":    VerdictSupports,
+			"verdict":    VerdictCredible,
+			"basis":      BasisEvidence,
 			"confidence": 0.9,
 			"citations": []map[string]any{
 				{"evidence_id": "ghost:99", "quoted_span": "not in any supplied passage"},
@@ -241,8 +273,14 @@ func TestVerifyDropsFabricatedCitationOverWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if got.Verdict != VerdictNotEnoughInfo {
-		t.Errorf("verdict = %q, want %q after dropping the fabricated citation", got.Verdict, VerdictNotEnoughInfo)
+	if got.Verdict != VerdictCredible {
+		t.Errorf("verdict = %q, want %q (state is not forced when evidence is lost)", got.Verdict, VerdictCredible)
+	}
+	if got.Basis != BasisKnowledge {
+		t.Errorf("basis = %q, want %q after dropping the fabricated citation", got.Basis, BasisKnowledge)
+	}
+	if got.Confidence != knowledgeConfidenceCap {
+		t.Errorf("confidence = %v, want it capped at %v", got.Confidence, knowledgeConfidenceCap)
 	}
 	if len(got.Citations) != 0 {
 		t.Errorf("citations = %v, want none", got.Citations)
@@ -250,9 +288,10 @@ func TestVerifyDropsFabricatedCitationOverWire(t *testing.T) {
 }
 
 // TestValidateCitations exercises the deterministic guard directly, without the
-// model: fabricated ids and non-substring spans are dropped, supports/refutes
-// left ungrounded are downgraded to not_enough_info, and an already-NEI verdict
-// keeps its surviving citations untouched.
+// model: fabricated ids and non-substring spans are dropped; an evidence-basis
+// verdict left ungrounded is demoted to knowledge and confidence-capped (not
+// forced to unverifiable); a knowledge-basis verdict needs no citation; and an
+// unverifiable verdict is stripped of citations and never upgraded.
 func TestValidateCitations(t *testing.T) {
 	t.Parallel()
 	passages := []Passage{
@@ -268,54 +307,61 @@ func TestValidateCitations(t *testing.T) {
 		want Result
 	}{
 		{
-			name: "valid citation kept",
+			name: "valid evidence citation kept with model confidence",
 			in: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.9,
 				Citations:  []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}},
 				Rationale:  "ok",
 			},
 			want: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.9,
 				Citations:  []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}},
 				Rationale:  "ok",
 			},
 		},
 		{
-			name: "fabricated evidence_id dropped and verdict downgraded",
+			name: "fabricated evidence_id dropped and basis demoted to knowledge",
 			in: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.95,
 				Citations:  []Citation{{EvidenceID: "nope", QuotedSpan: "Earth orbits the Sun"}},
 				Rationale:  "hallucinated id",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0,
-				Citations:  nil,
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  []Citation{},
 				Rationale:  "hallucinated id",
 			},
 		},
 		{
-			name: "non-substring span dropped and verdict downgraded",
+			name: "non-substring span dropped and disputed demoted to knowledge",
 			in: Result{
-				Verdict:    VerdictRefutes,
+				Verdict:    VerdictDisputed,
+				Basis:      BasisEvidence,
 				Confidence: 0.8,
 				Citations:  []Citation{{EvidenceID: "e2", QuotedSpan: "water freezes at 100"}},
 				Rationale:  "span not present",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0,
-				Citations:  nil,
+				Verdict:    VerdictDisputed,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  []Citation{},
 				Rationale:  "span not present",
 			},
 		},
 		{
-			name: "supports kept when at least one citation survives",
+			name: "evidence kept when at least one citation survives",
 			in: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.7,
 				Citations: []Citation{
 					{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"},
@@ -324,85 +370,113 @@ func TestValidateCitations(t *testing.T) {
 				Rationale: "one real, one fake",
 			},
 			want: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.7,
 				Citations:  []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}},
 				Rationale:  "one real, one fake",
 			},
 		},
 		{
-			name: "not_enough_info not upgraded and keeps surviving citations",
+			name: "knowledge verdict needs no citation and is confidence-capped",
 			in: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0.3,
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: 0.95,
+				Citations:  nil,
+				Rationale:  "broadly true",
+			},
+			want: Result{
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  []Citation{},
+				Rationale:  "broadly true",
+			},
+		},
+		{
+			name: "knowledge verdict keeps a surviving stray citation and drops a fabricated one",
+			in: Result{
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: 0.4,
 				Citations: []Citation{
 					{EvidenceID: "e2", QuotedSpan: "boils at 100 degrees"},
 					{EvidenceID: "ghost", QuotedSpan: "anything"},
 				},
-				Rationale: "inconclusive",
+				Rationale: "knowledge with a stray real citation",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0.3,
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: 0.4,
 				Citations:  []Citation{{EvidenceID: "e2", QuotedSpan: "boils at 100 degrees"}},
-				Rationale:  "inconclusive",
+				Rationale:  "knowledge with a stray real citation",
 			},
 		},
 		{
-			name: "not_enough_info with no valid citations is left as-is",
+			name: "unverifiable cleared of citations, set knowledge, capped, never upgraded",
 			in: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0.2,
-				Citations:  []Citation{{EvidenceID: "ghost", QuotedSpan: "anything"}},
-				Rationale:  "nothing relevant",
+				Verdict:    VerdictUnverifiable,
+				Basis:      BasisEvidence,
+				Confidence: 0.95,
+				Citations:  []Citation{{EvidenceID: "e2", QuotedSpan: "boils at 100 degrees"}},
+				Rationale:  "nothing settles it",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0.2,
-				Citations:  []Citation{},
-				Rationale:  "nothing relevant",
+				Verdict:    VerdictUnverifiable,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  nil,
+				Rationale:  "nothing settles it",
 			},
 		},
 		{
-			name: "empty quoted_span dropped and supports downgraded",
+			name: "empty quoted_span dropped and credible demoted",
 			in: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.91,
 				Citations:  []Citation{{EvidenceID: "e1", QuotedSpan: ""}},
 				Rationale:  "blank span must not ground a verdict",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0,
-				Citations:  nil,
+				Verdict:    VerdictCredible,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  []Citation{},
 				Rationale:  "blank span must not ground a verdict",
 			},
 		},
 		{
-			name: "whitespace-only quoted_span dropped and refutes downgraded",
+			name: "whitespace-only quoted_span dropped and disputed demoted",
 			in: Result{
-				Verdict:    VerdictRefutes,
+				Verdict:    VerdictDisputed,
+				Basis:      BasisEvidence,
 				Confidence: 0.77,
 				Citations:  []Citation{{EvidenceID: "e2", QuotedSpan: "   \t\n"}},
 				Rationale:  "whitespace span grounds nothing",
 			},
 			want: Result{
-				Verdict:    VerdictNotEnoughInfo,
-				Confidence: 0,
-				Citations:  nil,
+				Verdict:    VerdictDisputed,
+				Basis:      BasisKnowledge,
+				Confidence: knowledgeConfidenceCap,
+				Citations:  []Citation{},
 				Rationale:  "whitespace span grounds nothing",
 			},
 		},
 		{
 			name: "duplicate evidence_id keeps a span valid against an earlier passage",
 			in: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.85,
 				Citations:  []Citation{{EvidenceID: "dup", QuotedSpan: "first body"}},
 				Rationale:  "span matches the first of two same-id passages",
 			},
 			want: Result{
-				Verdict:    VerdictSupports,
+				Verdict:    VerdictCredible,
+				Basis:      BasisEvidence,
 				Confidence: 0.85,
 				Citations:  []Citation{{EvidenceID: "dup", QuotedSpan: "first body"}},
 				Rationale:  "span matches the first of two same-id passages",
@@ -419,34 +493,55 @@ func TestValidateCitations(t *testing.T) {
 	}
 }
 
-// TestValidateCitationsClampsConfidence asserts an out-of-range or NaN
-// confidence from the model is pulled into the documented [0,1] range on the
-// guard's return path, regardless of verdict, so no sentinel value reaches the
-// caller.
-func TestValidateCitationsClampsConfidence(t *testing.T) {
+// TestValidateCitationsConfidence asserts the documented confidence rules on each
+// basis: an evidence-grounded verdict keeps the model's value clamped to [0,1],
+// while any non-evidence verdict (knowledge or unverifiable) is additionally
+// bounded at the knowledge cap so a tiebreaker can never read high-confidence.
+func TestValidateCitationsConfidence(t *testing.T) {
 	t.Parallel()
 	passages := []Passage{{ID: "e1", Text: "The Earth orbits the Sun."}}
 
 	tests := []struct {
 		name string
-		in   float64
+		in   Result
 		want float64
 	}{
-		{name: "above one clamped to one", in: 1.5, want: 1},
-		{name: "below zero clamped to zero", in: -0.2, want: 0},
-		{name: "nan becomes zero", in: math.NaN(), want: 0},
-		{name: "in range untouched", in: 0.42, want: 0.42},
+		{
+			name: "evidence above one clamped to one",
+			in:   Result{Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 1.5, Citations: []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}}},
+			want: 1,
+		},
+		{
+			name: "evidence below zero clamped to zero",
+			in:   Result{Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: -0.2, Citations: []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}}},
+			want: 0,
+		},
+		{
+			name: "evidence nan becomes zero",
+			in:   Result{Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: math.NaN(), Citations: []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}}},
+			want: 0,
+		},
+		{
+			name: "evidence in range untouched",
+			in:   Result{Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.42, Citations: []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}}},
+			want: 0.42,
+		},
+		{
+			name: "knowledge above cap bounded to cap",
+			in:   Result{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.95},
+			want: knowledgeConfidenceCap,
+		},
+		{
+			name: "knowledge below cap untouched",
+			in:   Result{Verdict: VerdictDisputed, Basis: BasisKnowledge, Confidence: 0.3},
+			want: 0.3,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := ValidateCitations(Result{
-				Verdict:    VerdictSupports,
-				Confidence: tc.in,
-				Citations:  []Citation{{EvidenceID: "e1", QuotedSpan: "Earth orbits the Sun"}},
-				Rationale:  "grounded",
-			}, passages)
+			got := ValidateCitations(tc.in, passages)
 			if got.Confidence != tc.want {
 				t.Errorf("confidence = %v, want %v", got.Confidence, tc.want)
 			}
@@ -458,6 +553,9 @@ func assertResultEqual(t *testing.T, got, want Result) {
 	t.Helper()
 	if got.Verdict != want.Verdict {
 		t.Errorf("verdict = %q, want %q", got.Verdict, want.Verdict)
+	}
+	if got.Basis != want.Basis {
+		t.Errorf("basis = %q, want %q", got.Basis, want.Basis)
 	}
 	if got.Confidence != want.Confidence {
 		t.Errorf("confidence = %v, want %v", got.Confidence, want.Confidence)
