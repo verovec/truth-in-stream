@@ -1457,7 +1457,7 @@ func TestLoadVerifyPathDefaultsOff(t *testing.T) {
 	if got.MaxClaimsPerUnit != defaultVerifyMaxClaimsPerUnit || got.FastTau != defaultVerifyFastTau ||
 		got.Concurrency != defaultVerifyConcurrency || got.QueueDepth != defaultVerifyQueueDepth ||
 		got.FastDeadline != defaultVerifyFastDeadline || got.VerifyDeadline != defaultVerifyDeadline ||
-		got.CacheTTL != defaultVerifyCacheTTL {
+		got.CacheTTL != defaultVerifyCacheTTL || got.RetrievalThreshold != defaultVerifyRetrievalThreshold {
 		t.Errorf("defaults wrong: %+v", got)
 	}
 }
@@ -1469,6 +1469,7 @@ func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
 	t.Setenv("FACTCHECK_VERIFY_QUEUE_DEPTH", "8")
 	t.Setenv("FACTCHECK_VERIFY_FAST_TAU", "0.9")
 	t.Setenv("FACTCHECK_VERIFY_CACHE_TTL", "0")
+	t.Setenv("FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD", "0.5")
 	got, err := LoadVerifyPath()
 	if err != nil {
 		t.Fatalf("LoadVerifyPath: %v", err)
@@ -1476,19 +1477,21 @@ func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
 	if !got.Active() {
 		t.Fatal("enabled with a key must be Active")
 	}
-	if got.Concurrency != 3 || got.QueueDepth != 8 || got.FastTau != 0.9 || got.CacheTTL != 0 {
+	if got.Concurrency != 3 || got.QueueDepth != 8 || got.FastTau != 0.9 || got.CacheTTL != 0 ||
+		got.RetrievalThreshold != 0.5 {
 		t.Errorf("overrides wrong: %+v", got)
 	}
 }
 
 func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 	tests := map[string]string{
-		"FACTCHECK_VERIFY_CONCURRENCY":   "0",
-		"FACTCHECK_VERIFY_FAST_TAU":      "1.5",
-		"FACTCHECK_VERIFY_QUEUE_DEPTH":   "-1",
-		"FACTCHECK_VERIFY_CACHE_TTL":     "-1s",
-		"FACTCHECK_VERIFY_DEADLINE":      "0s",
-		"FACTCHECK_VERIFY_FAST_DEADLINE": "0s",
+		"FACTCHECK_VERIFY_CONCURRENCY":         "0",
+		"FACTCHECK_VERIFY_FAST_TAU":            "1.5",
+		"FACTCHECK_VERIFY_QUEUE_DEPTH":         "-1",
+		"FACTCHECK_VERIFY_CACHE_TTL":           "-1s",
+		"FACTCHECK_VERIFY_DEADLINE":            "0s",
+		"FACTCHECK_VERIFY_FAST_DEADLINE":       "0s",
+		"FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD": "1.5",
 	}
 	for key, val := range tests {
 		t.Run(key, func(t *testing.T) {

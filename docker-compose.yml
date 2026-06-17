@@ -495,6 +495,31 @@ services:
       CHECKWORTHINESS_ENABLED: "${CHECKWORTHINESS_ENABLED:-}"
       CHECKWORTHINESS_API_KEY: "${CHECKWORTHINESS_API_KEY:-}"
       CHECKWORTHINESS_MODEL: "${CHECKWORTHINESS_MODEL:-}"
+      # Retrieve-then-verify fact-check path: decompose each unit into atomic
+      # claims, retrieve evidence, and have an LLM verifier derive the verdict
+      # (supports/refutes/not_enough_info) from that evidence instead of borrowing
+      # a curated near-match by similarity. Off unless FACTCHECK_VERIFY_PATH is
+      # true AND FACTCHECK_VERIFY_API_KEY (Anthropic) is set; with no key it
+      # degrades to the legacy gate-and-match path. Optional tuning falls back to
+      # binary defaults when empty: FACTCHECK_VERIFY_MODEL (claude-haiku-4-5-20251001),
+      # FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT (4), FACTCHECK_VERIFY_FAST_TAU (0.85),
+      # FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD (0.45 - the recall floor for evidence
+      # fed to the verifier; lower than the legacy 0.6 borrow threshold so the
+      # on-topic band is retrieved instead of short-circuiting to not_enough_info),
+      # FACTCHECK_VERIFY_CONCURRENCY (2), FACTCHECK_VERIFY_QUEUE_DEPTH (4),
+      # FACTCHECK_VERIFY_FAST_DEADLINE (800ms), FACTCHECK_VERIFY_DEADLINE (4s),
+      # FACTCHECK_VERIFY_CACHE_TTL (30s).
+      FACTCHECK_VERIFY_PATH: "${FACTCHECK_VERIFY_PATH:-}"
+      FACTCHECK_VERIFY_API_KEY: "${FACTCHECK_VERIFY_API_KEY:-}"
+      FACTCHECK_VERIFY_MODEL: "${FACTCHECK_VERIFY_MODEL:-}"
+      FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT: "${FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT:-}"
+      FACTCHECK_VERIFY_FAST_TAU: "${FACTCHECK_VERIFY_FAST_TAU:-}"
+      FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD: "${FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD:-}"
+      FACTCHECK_VERIFY_CONCURRENCY: "${FACTCHECK_VERIFY_CONCURRENCY:-}"
+      FACTCHECK_VERIFY_QUEUE_DEPTH: "${FACTCHECK_VERIFY_QUEUE_DEPTH:-}"
+      FACTCHECK_VERIFY_FAST_DEADLINE: "${FACTCHECK_VERIFY_FAST_DEADLINE:-}"
+      FACTCHECK_VERIFY_DEADLINE: "${FACTCHECK_VERIFY_DEADLINE:-}"
+      FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
       # carries Origin: http://localhost:3000 while the proxy rewrites Host to the

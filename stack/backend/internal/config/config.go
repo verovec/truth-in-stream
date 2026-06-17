@@ -535,6 +535,21 @@ const (
 	defaultVerifyFastDeadline     = 800 * time.Millisecond
 	defaultVerifyDeadline         = 4 * time.Second
 	defaultVerifyCacheTTL         = 30 * time.Second
+	// defaultVerifyRetrievalThreshold is the cosine floor for the evidence the
+	// verify path retrieves and hands the LLM verifier. It is deliberately lower
+	// than the legacy match/evidence threshold (defaultMatchEvidenceThreshold,
+	// 0.6): that bar answers "is this hit strong enough to *borrow* a verdict by
+	// similarity", where precision matters, whereas the verifier wants *recall* -
+	// pull the plausible passages and let the model judge them. The legacy 0.6
+	// "sat above the on-topic band entirely" (see defaultPrecheckWikiCoverageThreshold):
+	// on-topic factual statements retrieve in 0.51-0.65 with voyage-4-large query
+	// embeddings (e.g. "Weed is a serious drug..." -> Legality of cannabis 0.5143)
+	// while off-topic filler tops out at 0.32-0.42. 0.45 sits in that separation
+	// gap, admitting the on-topic band the verifier needs while still rejecting
+	// filler; at 0.6 the verify path retrieves nothing for these statements and
+	// every claim short-circuits to a no-evidence not_enough_info verdict.
+	// FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD overrides it.
+	defaultVerifyRetrievalThreshold = 0.45
 )
 
 // VerifyPath holds the retrieve-then-verify configuration. The path is wired only
@@ -556,6 +571,11 @@ type VerifyPath struct {
 	FastDeadline     time.Duration
 	VerifyDeadline   time.Duration
 	CacheTTL         time.Duration
+	// RetrievalThreshold is the cosine floor for the evidence the verify path
+	// retrieves and feeds the verifier. It is a recall bar, lower than the legacy
+	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
+	// discarded before the verifier ever sees it.
+	RetrievalThreshold float64
 }
 
 // Active reports whether the retrieve-then-verify path should be wired: it is
@@ -573,14 +593,15 @@ func (v VerifyPath) Active() bool {
 // whole feature (default off). The secret is read but never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
-		Model:            defaultVerifyModel,
-		MaxClaimsPerUnit: defaultVerifyMaxClaimsPerUnit,
-		FastTau:          defaultVerifyFastTau,
-		Concurrency:      defaultVerifyConcurrency,
-		QueueDepth:       defaultVerifyQueueDepth,
-		FastDeadline:     defaultVerifyFastDeadline,
-		VerifyDeadline:   defaultVerifyDeadline,
-		CacheTTL:         defaultVerifyCacheTTL,
+		Model:              defaultVerifyModel,
+		MaxClaimsPerUnit:   defaultVerifyMaxClaimsPerUnit,
+		FastTau:            defaultVerifyFastTau,
+		Concurrency:        defaultVerifyConcurrency,
+		QueueDepth:         defaultVerifyQueueDepth,
+		FastDeadline:       defaultVerifyFastDeadline,
+		VerifyDeadline:     defaultVerifyDeadline,
+		CacheTTL:           defaultVerifyCacheTTL,
+		RetrievalThreshold: defaultVerifyRetrievalThreshold,
 	}
 	var err error
 	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
@@ -592,6 +613,9 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	if v.FastTau, err = thresholdEnv("FACTCHECK_VERIFY_FAST_TAU", v.FastTau); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.RetrievalThreshold, err = thresholdEnv("FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD", v.RetrievalThreshold); err != nil {
 		return VerifyPath{}, err
 	}
 	if v.Concurrency, err = intEnv("FACTCHECK_VERIFY_CONCURRENCY", v.Concurrency, 1, math.MaxInt32); err != nil {

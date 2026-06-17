@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -196,7 +197,11 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
-	verifyPath, err := buildVerifyPath(verifyPathCfg, segmentMatcher, logger)
+	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, embedder, store, segmentMatcher)
+	if err != nil {
+		return err
+	}
+	verifyPath, err := buildVerifyPath(verifyPathCfg, verifyMatcher, logger)
 	if err != nil {
 		return err
 	}
@@ -384,6 +389,44 @@ func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, logger *slog
 		return nil, err
 	}
 	return service.NewClaimGate(classifier), nil
+}
+
+// evidenceStore is the slice of the store the verify-path matcher needs: nearest
+// neighbors over both the curated-claims and Wikipedia corpora. The concrete
+// *postgres.Store satisfies it structurally.
+type evidenceStore interface {
+	service.ClaimSearcher
+	service.EvidenceSearcher
+}
+
+// buildVerifyMatcher builds the high-recall matcher the verify path retrieves
+// through. It mirrors the legacy matcher's configuration but lowers the claim and
+// evidence thresholds to the verify path's retrieval floor, so the on-topic
+// evidence band is pulled for the verifier to judge rather than discarded by the
+// legacy borrow-by-similarity precision bar (at which the verify path retrieves
+// nothing and every claim short-circuits to a no-evidence not_enough_info). When
+// the path is inactive it returns the supplied fallback unchanged - buildVerifyPath
+// ignores it - so the extra matcher exists only when it is used.
+func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder service.QueryEmbedder, store evidenceStore, fallback service.SegmentMatcher) (service.SegmentMatcher, error) {
+	if !cfg.Active() {
+		return fallback, nil
+	}
+	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
+		TopK:                  matchCfg.TopK,
+		ScoreThreshold:        cfg.RetrievalThreshold,
+		EvidenceTopK:          matchCfg.EvidenceTopK,
+		EvidenceThreshold:     cfg.RetrievalThreshold,
+		MaxResults:            matchCfg.MaxResults,
+		EmbedConcurrency:      matchCfg.EmbedConcurrency,
+		Timeout:               matchCfg.Timeout,
+		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
+		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
+		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build verify matcher: %w", err)
+	}
+	return service.NewSegmentMatchAdapter(matcher), nil
 }
 
 // buildVerifyPath wires the retrieve-then-verify orchestration, or returns nil
