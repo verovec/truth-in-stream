@@ -47,7 +47,7 @@ describe("LiveStatementList", () => {
                   text: "the bridge opened in 1937",
                   status: "verified",
                   source: "verified",
-                  verdict: "supports",
+                  verdict: "credible",
                 },
               ]
             : []
@@ -55,7 +55,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/credible/i)).toBeInTheDocument();
     expect(screen.getByText(/checked against evidence/i)).toBeInTheDocument();
     // The per-statement "Checking this statement" marker yields to the claim list.
     expect(

@@ -1,7 +1,7 @@
-// Package eval is the offline golden-eval harness for the retrieve-then-verify
-// fact-check path (VER-88). It turns "the verify path feels more accurate" into a
-// number: it runs a committed set of labeled statements through both the legacy
-// similarity-only path and the grounded retrieve-then-verify path and reports
+// Package eval is the offline golden-eval harness for the speaker-credibility
+// fact-check path. It turns "the verify path feels more accurate" into a number:
+// it runs a committed set of labeled statements through both the legacy
+// similarity-only path and the grounded credibility-verify path and reports
 // per-verdict accuracy, so a regression test can assert the verify path is at
 // least as accurate as the recorded baseline before the flag flips on.
 //
@@ -24,12 +24,13 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
 
-// Verdict labels. They mirror the verify package's labels so a recorded model
-// verdict, an expected label, and a path's output all live in one vocabulary.
+// Verdict labels. They mirror the verify package's credibility labels so a
+// recorded model verdict, an expected label, and a path's output all live in one
+// vocabulary.
 const (
-	VerdictSupports      = verify.VerdictSupports
-	VerdictRefutes       = verify.VerdictRefutes
-	VerdictNotEnoughInfo = verify.VerdictNotEnoughInfo
+	VerdictCredible     = verify.VerdictCredible
+	VerdictDisputed     = verify.VerdictDisputed
+	VerdictUnverifiable = verify.VerdictUnverifiable
 )
 
 // Passage is one retrieved evidence passage for a golden case: the stable
@@ -52,6 +53,7 @@ type Passage struct {
 // not ground is downgraded by the guard exactly as in production.
 type ModelVerdict struct {
 	Verdict    string  `json:"verdict"`
+	Basis      string  `json:"basis"`
 	Confidence float64 `json:"confidence"`
 	Citations  []struct {
 		EvidenceID string `json:"evidence_id"`
@@ -115,20 +117,20 @@ func LoadGolden(path string) (Golden, error) {
 	return g, nil
 }
 
-// validLabel reports whether v is one of the three first-class verdict labels.
+// validLabel reports whether v is one of the three first-class credibility labels.
 func validLabel(v string) bool {
-	return v == VerdictSupports || v == VerdictRefutes || v == VerdictNotEnoughInfo
+	return v == VerdictCredible || v == VerdictDisputed || v == VerdictUnverifiable
 }
 
 // LegacyVerdict is the legacy similarity-only path's verdict for one case,
 // modeled on the inputs the old path actually had: ranked matches and their
 // similarities, with no entailment step. The old path surfaced the strongest
-// match above a corroboration floor as support and otherwise reported nothing
-// settled it. It cannot tell a passage that affirms the claim from one that
-// refutes it or merely shares its topic - that is the "similarity is not
+// match above a corroboration floor as a corroboration and otherwise reported
+// nothing settled it. It cannot tell a passage that affirms the claim from one
+// that disputes it or merely shares its topic - that is the "similarity is not
 // entailment" bug this eval exists to measure - so a strong topical hit always
-// reads as supports. With no passage clearing the floor it returns
-// not_enough_info. legacyFloor is the corroboration similarity floor.
+// reads as credible. With no passage clearing the floor it returns unverifiable.
+// legacyFloor is the corroboration similarity floor.
 func LegacyVerdict(c Case, legacyFloor float64) string {
 	best := -1.0
 	for _, p := range c.Passages {
@@ -137,21 +139,21 @@ func LegacyVerdict(c Case, legacyFloor float64) string {
 		}
 	}
 	if best >= legacyFloor {
-		return VerdictSupports
+		return VerdictCredible
 	}
-	return VerdictNotEnoughInfo
+	return VerdictUnverifiable
 }
 
-// VerifyVerdict is the retrieve-then-verify path's verdict for one case. It
-// mirrors the live path's verifyClaim wiring: with no passages it returns
-// not_enough_info without a model call (a verdict without evidence is
-// meaningless); otherwise it calls the real verify.Client, which forces the
-// recorded tool call through the fake server and runs the real citation guard, so
-// the label that comes back is exactly the one the production path would emit for
-// these passages and this recorded model output.
+// VerifyVerdict is the credibility-verify path's verdict for one case. It mirrors
+// the live path's verifyClaim wiring: with no passages it returns unverifiable
+// without a model call (there is nothing to check against); otherwise it calls the
+// real verify.Client, which forces the recorded tool call through the fake server
+// and runs the real citation guard, so the label that comes back is exactly the
+// one the production path would emit for these passages and this recorded model
+// output.
 func VerifyVerdict(ctx context.Context, v *verify.Client, c Case) (string, error) {
 	if len(c.Passages) == 0 {
-		return VerdictNotEnoughInfo, nil
+		return VerdictUnverifiable, nil
 	}
 	passages := make([]verify.Passage, 0, len(c.Passages))
 	for _, p := range c.Passages {

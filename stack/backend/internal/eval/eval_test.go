@@ -119,6 +119,7 @@ func toolUseResponse(t *testing.T, mv ModelVerdict) string {
 	}
 	input, err := json.Marshal(map[string]any{
 		"verdict":    mv.Verdict,
+		"basis":      mv.Basis,
 		"confidence": mv.Confidence,
 		"citations":  citations,
 		"rationale":  mv.Rationale,
@@ -178,7 +179,7 @@ func TestLoadGoldenSet(t *testing.T) {
 			t.Errorf("case %q has no provenance for its label", c.ID)
 		}
 	}
-	for _, label := range []string{VerdictSupports, VerdictRefutes, VerdictNotEnoughInfo} {
+	for _, label := range []string{VerdictCredible, VerdictDisputed, VerdictUnverifiable} {
 		if labels[label] == 0 {
 			t.Errorf("golden set carries no %q case", label)
 		}
@@ -189,13 +190,14 @@ func TestLoadGoldenSet(t *testing.T) {
 }
 
 // baselineAccuracy is the recorded legacy similarity-only accuracy over the
-// committed golden set (15/37 = 0.41), the gate the verify path must meet or
-// beat. The legacy path scores every supports case right, every refutes/NEI case
-// with a strong topical hit wrong (it reads similarity as support), and the one
-// case with no retrievable evidence right (nothing clears the floor, so it
-// reports not_enough_info). Recorded here so a fixture change that shifts the
-// baseline is a visible, reviewed diff rather than a silent gate move.
-const baselineAccuracy = 0.41
+// committed golden set (16/38 = 0.42), the gate the verify path must meet or
+// beat. The legacy path scores every credible case right (a strong hit reads as
+// credible), every disputed/unverifiable case with a strong topical hit wrong (it
+// still reads similarity as credible), and the one case with no retrievable
+// evidence right (nothing clears the floor, so it reports unverifiable). Recorded
+// here so a fixture change that shifts the baseline is a visible, reviewed diff
+// rather than a silent gate move.
+const baselineAccuracy = 0.42
 
 // TestGoldenEvalAccuracyGate is the regression gate: it runs both paths over the
 // committed golden set and asserts the verify path is at least as accurate as the

@@ -159,7 +159,7 @@ func TestVerifyPathEventLifecycle(t *testing.T) {
 		},
 	}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
-		verifyClaim: {Verdict: "refutes", Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:42:0", QuotedSpan: "rock"}}, Rationale: "the moon is rock, not cheese"},
+		verifyClaim: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:42:0", QuotedSpan: "rock"}}, Rationale: "the moon is rock, not cheese"},
 	}}
 
 	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
@@ -215,8 +215,11 @@ func TestVerifyPathEventLifecycle(t *testing.T) {
 	if verifyResults[1].ClaimStatus != ClaimStatusVerified || verifyResults[1].Source != SourceVerified {
 		t.Fatalf("final verify result = status %q source %q, want verified/verified", verifyResults[1].ClaimStatus, verifyResults[1].Source)
 	}
-	if verifyResults[1].Verdict == nil || verifyResults[1].Verdict.Verdict != "refutes" {
-		t.Fatalf("verify verdict = %+v, want refutes", verifyResults[1].Verdict)
+	if verifyResults[1].Verdict == nil || verifyResults[1].Verdict.Verdict != VerdictDisputed {
+		t.Fatalf("verify verdict = %+v, want disputed", verifyResults[1].Verdict)
+	}
+	if verifyResults[1].Verdict.Basis != BasisEvidence {
+		t.Fatalf("verify basis = %q, want evidence", verifyResults[1].Verdict.Basis)
 	}
 	// The cited evidence round-trips: the verdict's citation resolves to the
 	// retrieved match carrying that evidence id.
@@ -414,8 +417,8 @@ func TestVerifyPathCacheCollapsesRepeatedClaim(t *testing.T) {
 	mk := []domain.SegmentMatch{{Kind: domain.MatchKindEvidence, Claim: "Peace of Westphalia 1648", Similarity: 0.7, EvidenceID: "evidence:9:0"}}
 	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{u1: mk, u2: mk}}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
-		u1: {Verdict: "supports", Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
-		u2: {Verdict: "supports", Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
+		u1: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
+		u2: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
 	}}
 
 	vp, err := NewVerifyPath(VerifyPathConfig{
@@ -475,6 +478,208 @@ func TestNormalizeClaim(t *testing.T) {
 	if got := normalizeClaim("  The   Earth\tis ROUND. "); got != "the earth is round." {
 		t.Fatalf("normalizeClaim = %q", got)
 	}
+}
+
+func TestVerifyPathCuratedVerdictMapping(t *testing.T) {
+	t.Parallel()
+	// The fast curated borrow maps the corpus verdict vocabulary onto credibility:
+	// a corroborating curated near-match is credible/evidence and a contradicting
+	// one is disputed/evidence, the curated match cited as the source - no verify
+	// call either way.
+	tests := []struct {
+		name        string
+		curated     domain.Verdict
+		wantVerdict string
+		wantBasis   string
+	}{
+		{"corroborates maps to credible", domain.VerdictCorroborates, VerdictCredible, BasisEvidence},
+		{"contradicts maps to disputed", domain.VerdictContradicts, VerdictDisputed, BasisEvidence},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			unit := "a borrowed statement."
+			stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+			matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+				unit: {{Kind: domain.MatchKindClaim, Claim: "curated source", Verdict: tc.curated, Similarity: 0.95, EvidenceID: "claim:c1:0"}},
+			}}
+			verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{}}
+			a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+				Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+				Verifier:   verifier,
+			})
+
+			events := runVerifyPath(t, a)
+			claimsEv := firstOfKind(events, LiveEventClaims)
+			if claimsEv == nil || len(claimsEv.Claims) != 1 {
+				t.Fatalf("claims event = %+v, want one claim", claimsEv)
+			}
+			results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+			if len(results) != 1 || results[0].Source != SourceCurated || results[0].Verdict == nil {
+				t.Fatalf("results = %+v, want one curated verdict", results)
+			}
+			got := results[0].Verdict
+			if got.Verdict != tc.wantVerdict || got.Basis != tc.wantBasis {
+				t.Fatalf("curated verdict = %q/%q, want %q/%q", got.Verdict, got.Basis, tc.wantVerdict, tc.wantBasis)
+			}
+			if len(got.Citations) != 1 {
+				t.Fatalf("curated verdict citations = %+v, want the borrowed match", got.Citations)
+			}
+			if seen := verifier.seen(); len(seen) != 0 {
+				t.Fatalf("verifier called %v, want no verify call on a curated borrow", seen)
+			}
+		})
+	}
+}
+
+func TestVerifyPathNoEvidenceIsUnverifiable(t *testing.T) {
+	t.Parallel()
+	// A claim that retrieves no evidence short-circuits to unverifiable/knowledge
+	// with no verify call - the honest "nothing to check against" outcome rather
+	// than a low-confidence judgment.
+	unit := "an utterly unindexed private remark."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}} // no matches for the claim
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   verifier,
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	last := results[len(results)-1]
+	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
+		t.Fatalf("terminal result = %+v, want a verified verdict", last)
+	}
+	if last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("no-evidence verdict = %q/%q, want unverifiable/knowledge", last.Verdict.Verdict, last.Verdict.Basis)
+	}
+	if seen := verifier.seen(); len(seen) != 0 {
+		t.Fatalf("verifier called %v, want no verify call with no evidence", seen)
+	}
+}
+
+func TestVerifyPathEmitsSpeakerScore(t *testing.T) {
+	t.Parallel()
+	// A speaker's claims feed the running credibility aggregate: a credible curated
+	// borrow and a disputed verified claim move the score, an unverifiable claim
+	// only its tally, and the basis round-trips from the verifier. The final
+	// cumulative snapshot (the one with the largest sample) carries the right
+	// counts and the Beta-Binomial-shrunk score.
+	unit := "three claims in one breath."
+	credClaim, dispClaim, unverClaim := "credible fact.", "disputed fact.", "unverifiable fact."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+		credClaim:  {{Kind: domain.MatchKindClaim, Claim: "curated corroboration", Verdict: domain.VerdictCorroborates, Similarity: 0.9, EvidenceID: "claim:c1:0"}},
+		dispClaim:  {{Kind: domain.MatchKindEvidence, Claim: "refuting passage", Similarity: 0.7, EvidenceID: "evidence:2:0"}},
+		unverClaim: {{Kind: domain.MatchKindEvidence, Claim: "unrelated passage", Similarity: 0.5, EvidenceID: "evidence:3:0"}},
+	}}
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
+		dispClaim:  {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:2:0", QuotedSpan: "refuting"}}},
+		unverClaim: {Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0},
+	}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer:    fakeDecomposer{byText: map[string][]string{unit: {credClaim, dispClaim, unverClaim}}},
+		Verifier:      verifier,
+		PriorStrength: 4,
+	})
+
+	events := runVerifyPath(t, a)
+
+	scores := speakerScores(events)
+	if len(scores) != 3 {
+		t.Fatalf("speaker score events = %d, want 3 (one per reached verdict)", len(scores))
+	}
+	final := maxSampleScore(scores)
+	if final.Speaker != "A" {
+		t.Fatalf("speaker = %q, want A", final.Speaker)
+	}
+	if final.Credible != 1 || final.Disputed != 1 || final.Unverifiable != 1 {
+		t.Fatalf("tallies = %d/%d/%d, want credible 1 disputed 1 unverifiable 1", final.Credible, final.Disputed, final.Unverifiable)
+	}
+	// (k/2 + S) / (k + S + F) = (2 + 0.9) / (4 + 0.9 + 0.8) = 2.9 / 5.7.
+	if want := 2.9 / 5.7; !approxEqual(final.Score, want) {
+		t.Fatalf("score = %v, want %v", final.Score, want)
+	}
+
+	// The basis round-trips from the verifier onto the emitted verdict.
+	dispResults := resultsForClaimText(events, dispClaim)
+	if dispResults == nil || dispResults.Verdict == nil || dispResults.Verdict.Basis != BasisEvidence {
+		t.Fatalf("disputed verdict basis did not round-trip: %+v", dispResults)
+	}
+}
+
+func TestVerifyPathNoSpeakerScoreForUnattributedTurn(t *testing.T) {
+	t.Parallel()
+	// An unattributed turn (no diarized speaker) reaches a verdict but emits no
+	// speaker-score event: there is no speaker to attribute credibility to.
+	unit := "an unattributed statement."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+		unit: {{Kind: domain.MatchKindClaim, Claim: "curated source", Verdict: domain.VerdictCorroborates, Similarity: 0.95, EvidenceID: "claim:c1:0"}},
+	}}
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   verifier,
+	})
+
+	events := runVerifyPath(t, a)
+	if scores := speakerScores(events); len(scores) != 0 {
+		t.Fatalf("speaker score events = %d, want 0 for an unattributed turn", len(scores))
+	}
+}
+
+// speakerScores returns the speaker-score snapshots from the event stream in order.
+func speakerScores(events []LiveEvent) []SpeakerScore {
+	var out []SpeakerScore
+	for _, ev := range events {
+		if ev.Kind == LiveEventSpeakerScore && ev.SpeakerScore != nil {
+			out = append(out, *ev.SpeakerScore)
+		}
+	}
+	return out
+}
+
+// maxSampleScore returns the snapshot with the largest verdict sample, i.e. the
+// freshest cumulative score regardless of the order concurrent claims emitted in.
+func maxSampleScore(scores []SpeakerScore) SpeakerScore {
+	var best SpeakerScore
+	bestTotal := -1
+	for _, s := range scores {
+		if total := s.Credible + s.Disputed + s.Unverifiable; total > bestTotal {
+			bestTotal = total
+			best = s
+		}
+	}
+	return best
+}
+
+// resultsForClaimText returns the terminal verified result for the claim whose
+// announced text matches, or nil. It maps the claim text to its id via the claims
+// event, then to its last result.
+func resultsForClaimText(events []LiveEvent, text string) *LiveEvent {
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil {
+		return nil
+	}
+	var claimID string
+	for _, c := range claimsEv.Claims {
+		if c.Text == text {
+			claimID = c.ClaimID
+		}
+	}
+	results := resultsForClaim(events, claimID)
+	if len(results) == 0 {
+		return nil
+	}
+	last := results[len(results)-1]
+	return &last
 }
 
 // runVerifyPath runs the analyzer over its stream and drains every event.

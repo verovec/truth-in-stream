@@ -49,6 +49,11 @@ const (
 	// emitted only on the retrieve-then-verify path (FACTCHECK_VERIFY_PATH on),
 	// once per unit after its subtitles and before any per-claim result.
 	LiveEventClaims LiveEventKind = "claims"
+	// LiveEventSpeakerScore carries a speaker's running credibility score and
+	// verdict tallies, emitted after each of that speaker's claim verdicts updates
+	// the aggregate (retrieve-then-verify path only). It is additive: a client that
+	// ignores it still works, and it is never emitted for an unattributed turn.
+	LiveEventSpeakerScore LiveEventKind = "speaker_score"
 )
 
 // LiveEvent is one incremental output of live analysis. ID is the per-statement
@@ -79,6 +84,9 @@ type LiveEvent struct {
 	ClaimStatus ClaimStatus
 	Source      VerdictSource
 	Verdict     *VerifiedVerdict
+	// SpeakerScore carries the running per-speaker credibility snapshot on a
+	// LiveEventSpeakerScore event; it is nil on every other kind.
+	SpeakerScore *SpeakerScore
 }
 
 // defaultLiveConcurrency bounds in-flight unit analyses. Subtitles emit in order

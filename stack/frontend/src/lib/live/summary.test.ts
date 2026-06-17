@@ -170,14 +170,14 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
   });
 
   test("a unit resolves once every claim is terminal, tallying per-claim verdicts", () => {
-    // supports -> corroborates, refutes -> contradicts, not_enough_info ->
+    // credible -> corroborates, disputed -> contradicts, unverifiable ->
     // unclear: the strip mirrors the per-claim fact-check list one-for-one.
     const summary = summarizeStatements(
       [analysing("u1", 0)],
       unitClaims("u1", [
-        { status: "verified", verdict: "supports" },
-        { status: "verified", verdict: "refutes" },
-        { status: "verified", verdict: "not_enough_info" },
+        { status: "verified", verdict: "credible" },
+        { status: "verified", verdict: "disputed" },
+        { status: "verified", verdict: "unverifiable" },
       ]),
     );
 
@@ -196,7 +196,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
     const summary = summarizeStatements(
       [analysing("u1", 0)],
       unitClaims("u1", [
-        { status: "verified", verdict: "supports" },
+        { status: "verified", verdict: "credible" },
         { status: "unchecked" },
       ]),
     );
@@ -238,7 +238,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
         checked("a", 0, { matches: [claim("corroborates")] }),
         analysing("b", 2),
       ],
-      unitClaims("orphan", [{ status: "verified", verdict: "supports" }]),
+      unitClaims("orphan", [{ status: "verified", verdict: "credible" }]),
     );
 
     expect(summary).toEqual({
@@ -255,7 +255,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
   test("mixes legacy and verify-path units in one pass", () => {
     const summary = summarizeStatements(
       [checked("legacy", 0, { matches: [claim("contradicts")] }), analysing("u1", 2)],
-      unitClaims("u1", [{ status: "verified", verdict: "supports" }]),
+      unitClaims("u1", [{ status: "verified", verdict: "credible" }]),
     );
 
     expect(summary).toMatchObject({

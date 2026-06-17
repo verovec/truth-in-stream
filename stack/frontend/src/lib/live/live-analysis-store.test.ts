@@ -9,6 +9,7 @@ const snapshot = (overrides: Partial<LiveAnalysis> = {}): LiveAnalysis => ({
   status: "live",
   summary: emptySummary(),
   claimsFor: () => [],
+  speakers: [],
   ...overrides,
 });
 

@@ -100,7 +100,13 @@ type wireFrame struct {
 	Status     string   `json:"status"`
 	Source     string   `json:"source"`
 	Verdict    string   `json:"verdict"`
+	Basis      string   `json:"basis"`
 	Confidence *float64 `json:"confidence"`
+	// Speaker-score frame fields.
+	Score        float64 `json:"score"`
+	Credible     int     `json:"credible"`
+	Disputed     int     `json:"disputed"`
+	Unverifiable int     `json:"unverifiable"`
 }
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
@@ -261,8 +267,10 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
-		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
-			Verdict: &service.VerifiedVerdict{Verdict: "refutes", Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"}},
+		{
+			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictDisputed, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"},
+		},
 	}}
 	wsURL := liveTestServer(t, fake, nil)
 
@@ -297,11 +305,43 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	if verified.Type != "claim_result" || verified.ID != "0" || verified.ClaimID != "0-0" || verified.Status != "verified" || verified.Source != "verified" {
 		t.Fatalf("verified frame = %+v, want claim_result id 0 claim_id 0-0 verified/verified", verified)
 	}
-	if verified.Verdict != "refutes" || verified.Confidence == nil || *verified.Confidence != 0.9 {
-		t.Errorf("verdict=%q confidence=%v, want refutes/0.9", verified.Verdict, verified.Confidence)
+	if verified.Verdict != "disputed" || verified.Basis != "evidence" || verified.Confidence == nil || *verified.Confidence != 0.9 {
+		t.Errorf("verdict=%q basis=%q confidence=%v, want disputed/evidence/0.9", verified.Verdict, verified.Basis, verified.Confidence)
 	}
 	if len(verified.Matches) != 1 || verified.Matches[0].EvidenceID != "evidence:42:0" {
 		t.Errorf("citations did not round-trip: %+v", verified.Matches)
+	}
+}
+
+func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
+	t.Parallel()
+	// A speaker-score event serializes to a speaker_score frame carrying the running
+	// credibility score and verdict tallies, keyed on speaker.
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, Disputed: 0, Unverifiable: 2}},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "speaker_score" || frame.Speaker != "A" {
+		t.Fatalf("frame = %+v, want speaker_score for A", frame)
+	}
+	if frame.Score != 0.6 || frame.Credible != 1 || frame.Disputed != 0 || frame.Unverifiable != 2 {
+		t.Errorf("score frame = %+v, want score 0.6 credible 1 disputed 0 unverifiable 2", frame)
 	}
 }
 

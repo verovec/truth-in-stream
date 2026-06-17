@@ -24,20 +24,20 @@ export function LiveClaimList({ claims }: { claims: LiveClaim[] }) {
   );
 }
 
-// VERDICT_LABELS renders the verify path's verdict enum in reader-facing terms.
-// not_enough_info is a first-class verdict, shown as "not enough info" rather
-// than an error or an empty row.
+// VERDICT_LABELS renders the verify path's credibility verdict enum in
+// reader-facing terms. unverifiable is a first-class verdict, shown as
+// "Unverifiable" rather than an error or an empty row.
 const VERDICT_LABELS: Record<ClaimVerdict, string> = {
-  supports: "Supported",
-  refutes: "Refuted",
-  not_enough_info: "Not enough info",
+  credible: "Credible",
+  disputed: "Disputed",
+  unverifiable: "Unverifiable",
 };
 
 const VERDICT_STYLES: Record<ClaimVerdict, string> = {
-  supports:
+  credible:
     "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  refutes: "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300",
-  not_enough_info:
+  disputed: "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300",
+  unverifiable:
     "bg-zinc-200 text-zinc-700 dark:bg-zinc-700/40 dark:text-zinc-300",
 };
 
@@ -110,7 +110,7 @@ function ClaimState({ claim }: { claim: LiveClaim }) {
 
 function VerifiedClaim({ claim }: { claim: LiveClaim }) {
   const [expanded, setExpanded] = useState(false);
-  const verdict = claim.verdict ?? "not_enough_info";
+  const verdict = claim.verdict ?? "unverifiable";
   const matches = claim.matches ?? [];
   const hasDetail = matches.length > 0 || Boolean(claim.rationale);
 
@@ -122,6 +122,14 @@ function VerifiedClaim({ claim }: { claim: LiveClaim }) {
         >
           {VERDICT_LABELS[verdict]}
         </span>
+        {claim.basis === "knowledge" ? (
+          // A knowledge-basis verdict rests on the model's general knowledge, not a
+          // retrieved passage, so it is marked as having no direct sources and the
+          // viewer can weigh it as lower-confidence.
+          <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
+            no direct sources
+          </span>
+        ) : null}
         {claim.source ? (
           <span
             className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${SOURCE_STYLES[claim.source]}`}

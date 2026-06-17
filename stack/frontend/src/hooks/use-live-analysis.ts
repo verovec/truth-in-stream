@@ -12,6 +12,13 @@ import {
   type SubtitleFrame,
 } from "@/lib/live/frames";
 import {
+  applySpeakerScoreFrame,
+  emptySpeakers,
+  listSpeakers,
+  type SpeakerCredibility,
+  type SpeakersState,
+} from "@/lib/live/speakers";
+import {
   applyClaimResultFrame,
   applyClaimsFrame,
   type ClaimsState,
@@ -58,6 +65,9 @@ export type LiveAnalysis = {
   // a legacy stream that emits no claim frames. The subtitle list reads it per
   // row to render the progressive per-claim disclosure under each statement.
   claimsFor: (statementId: string) => LiveClaim[];
+  // speakers is each speaker's running credibility snapshot in stable label
+  // order, empty on a legacy stream that emits no speaker-score frames.
+  speakers: SpeakerCredibility[];
 };
 
 // survivingUnitIds returns the ids of statements that clearAnalysing keeps (the
@@ -155,6 +165,9 @@ export function useLiveAnalysis(
   // claim_id. It is empty on a legacy stream that emits no claim frames, so the
   // statement list renders exactly as before when no claims arrive.
   const [claims, setClaims] = useState<ClaimsState>(emptyClaims);
+  // speakers holds each speaker's running credibility snapshot, keyed by speaker
+  // label. It is empty on a legacy stream that emits no speaker-score frames.
+  const [speakers, setSpeakers] = useState<SpeakersState>(emptySpeakers);
   // caption is the live, still-being-spoken utterance from interim frames,
   // shown verbatim until it commits to a statement or the session resets.
   const [caption, setCaption] = useState("");
@@ -204,6 +217,13 @@ export function useLiveAnalysis(
         if (liveRef.current) {
           setCaption(frame.text);
         }
+        return;
+      }
+      // A speaker-score frame keys on a stable speaker label, not a per-session
+      // correlation id, so it bypasses id-namespacing; the reducer keeps the
+      // freshest snapshot per speaker regardless of arrival order.
+      if (frame.type === "speaker_score") {
+        setSpeakers((prev) => applySpeakerScoreFrame(prev, frame));
         return;
       }
       // A subtitle commits the current utterance to a statement, so the live
@@ -297,6 +317,11 @@ export function useLiveAnalysis(
           setClaims((prev) =>
             dropUnits(prev, survivingUnitIds(statementsRef.current)),
           );
+          // The backend recreates each speaker's credibility aggregate per session
+          // and re-emits it from scratch on reconnect, so the running scores reset
+          // here to match; otherwise the freshest-sample guard would reject the
+          // post-reconnect snapshots until they exceeded the stale sample.
+          setSpeakers(emptySpeakers);
           // The caption is not cleared here: a reset (seek or a dropped
           // connection) always moves status off "live", and the status effect
           // below clears it. Keeping that the single owner avoids two clear sites.
@@ -379,5 +404,17 @@ export function useLiveAnalysis(
     [claims],
   );
 
-  return { statements: orderedStatements, caption, status, summary, claimsFor };
+  // The speaker list is a pure projection of the speakers state, memoized on it so
+  // its identity is stable across interim/statement/claim updates that never touch
+  // speaker scores.
+  const speakerList = useMemo(() => listSpeakers(speakers), [speakers]);
+
+  return {
+    statements: orderedStatements,
+    caption,
+    status,
+    summary,
+    claimsFor,
+    speakers: speakerList,
+  };
 }
