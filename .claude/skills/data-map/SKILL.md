@@ -35,8 +35,10 @@ access patterns are the sqlc queries.
 
 ## Live tables
 
-Four tables hold real data. Each `embedding` is `halfvec(1024)` from Voyage `voyage-4-large`
+Six tables hold real data. Each `embedding` is `halfvec(1024)` from Voyage `voyage-4-large`
 (1024 dims, HNSW cosine, same model for ingest `input_type=document` and query `input_type=query`).
+The political-fact-check stores (`political_claims`, `voting_records`) are additive and inert until
+the political verify path (`FACTCHECK_POLITICAL`, later in epic VER-93) wires them in.
 
 ### `claims` - curated verified claims (vector store)
 
@@ -109,6 +111,50 @@ the vector stores.
 | `error` | `text` NULL | Why an ingest failed. |
 
 - Index `videos_created_at_idx (created_at DESC)` - the library lists newest first.
+
+### `political_claims` - curated pre-checked political claims (vector store)
+
+The political fast-path matcher: spoken segments are matched against these by cosine similarity to
+borrow an instant two-axis verdict for a repeated talking point. Separate from `claims` (which uses
+the corroborates/contradicts verdict model); this store carries the literal-plus-flags model.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | `text` PK | Stable claim id (upsert key). |
+| `content` | `text` | The claim text. |
+| `literal_verdict` | `text` | CHECK in `('accurate','inaccurate','unverifiable')` - the objective accuracy axis. |
+| `flags` | `text[]` NOT NULL default `{}` | Orthogonal manipulation flags: `missing-context`, `cherry-picked`, `outdated`, `misattributed`, `misleading-causation`. |
+| `source_name` | `text` | Primary source name. |
+| `source_url` | `text` | Primary source URL. |
+| `quoted_span` | `text` default `''` | The exact span quoted from the source. |
+| `outlet` | `text` | Fact-check outlet the record was sourced from. |
+| `checked_at` | `timestamptz` NULL | When the outlet published its check. |
+| `embedding` | `halfvec(1024)` NOT NULL | Claim vector. |
+| `synced_at` | `timestamptz` | Last upsert time. |
+
+- Index `political_claims_embedding_hnsw` (HNSW `halfvec_cosine_ops`, `m=16`, `ef_construction=200`).
+- Retrieval: `SearchPoliticalClaims` orders by `embedding <=> query_embedding` (cosine distance).
+- The crawler upserts content and embedding together text-form (`::halfvec`, never binary COPY).
+
+### `voting_records` - structured AN/Senat scrutins (no embeddings)
+
+Per-person recorded positions on dated scrutins, queried RELATIONALLY by (person, bill, date) - never
+by cosine. The voting source adapter answers "did X vote for/against bill Y" from this store.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `person_id` | `text` | Deputy/senator id. Part of PK. |
+| `person_name` | `text` | Display name. |
+| `chamber` | `text` | CHECK in `('assemblee','senat')`. |
+| `scrutin_id` | `text` | Scrutin id. Part of PK. |
+| `bill_title` | `text` | Bill the scrutin was on. |
+| `voted_on` | `date` | Scrutin date. |
+| `position` | `text` | CHECK in `('for','against','abstain','absent')`. |
+| `source_url` | `text` | AN/Senat open-data source URL. |
+| `synced_at` | `timestamptz` | Last upsert time. |
+
+- PK `(person_id, scrutin_id)` - one recorded position per person per scrutin, making re-ingest idempotent.
+- Index `voting_records_person_bill_date_idx (person_id, bill_title, voted_on)` matches the lookup predicate.
 
 ## Tables that no longer exist
 

@@ -18,6 +18,20 @@ type Claim struct {
 	Embedding pgvector.HalfVector
 }
 
+type PoliticalClaim struct {
+	ID             string
+	Content        string
+	LiteralVerdict string
+	Flags          []string
+	SourceName     string
+	SourceUrl      string
+	QuotedSpan     string
+	Outlet         string
+	CheckedAt      pgtype.Timestamptz
+	Embedding      pgvector.HalfVector
+	SyncedAt       pgtype.Timestamptz
+}
+
 type Video struct {
 	ID          uuid.UUID
 	Title       string
@@ -32,6 +46,18 @@ type Video struct {
 	SourceID    pgtype.Text
 	DurationMs  int64
 	Error       pgtype.Text
+}
+
+type VotingRecord struct {
+	PersonID   string
+	PersonName string
+	Chamber    string
+	ScrutinID  string
+	BillTitle  string
+	VotedOn    pgtype.Date
+	Position   string
+	SourceUrl  string
+	SyncedAt   pgtype.Timestamptz
 }
 
 type WikiChunk struct {
