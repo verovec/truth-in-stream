@@ -112,6 +112,7 @@ describe("LiveSummaryStrip", () => {
       caption: "",
       status: "live",
       summary: summary({ checked: 9, contradicts: 2 }),
+      claimsFor: () => [],
     });
 
     render(

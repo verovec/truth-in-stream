@@ -183,4 +183,148 @@ describe("parseLiveFrame", () => {
       parseLiveFrame(JSON.stringify({ type: "consistency", id: "1" })),
     ).toBeNull();
   });
+
+  test("parses a claims frame and marks each claim pending", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [
+          { claim_id: "u0-0", text: "first", status: "pending" },
+          { claim_id: "u0-1", text: "second", status: "pending" },
+        ],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [
+        { claimId: "u0-0", text: "first", status: "pending" },
+        { claimId: "u0-1", text: "second", status: "pending" },
+      ],
+    });
+  });
+
+  test("skips a malformed claim entry rather than losing the whole frame", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ text: "no id" }, { claim_id: "u0-1", text: "kept" }],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [{ claimId: "u0-1", text: "kept", status: "pending" }],
+    });
+  });
+
+  test("parses a verified claim_result with source, verdict, and normalized matches", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        source: "verified",
+        verdict: "supports",
+        confidence: 0.8,
+        rationale: "the passage confirms it",
+        matches: [
+          {
+            kind: "claim",
+            claim: "x",
+            verdict: "corroborates",
+            sources: [],
+            similarity: 0.7,
+            evidence_id: "claim:42:0",
+          },
+        ],
+      }),
+    );
+    expect(frame).toMatchObject({
+      type: "claim_result",
+      id: "u0",
+      claimId: "u0-0",
+      status: "verified",
+      source: "verified",
+      verdict: "supports",
+      confidence: 0.8,
+      rationale: "the passage confirms it",
+    });
+    expect((frame as { matches: unknown[] }).matches).toHaveLength(1);
+  });
+
+  test("parses a checking claim_result carrying only its status", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "checking",
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claim_result",
+      id: "u0",
+      claimId: "u0-0",
+      status: "checking",
+    });
+  });
+
+  test("parses an unchecked claim_result with its capacity skip reason", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "unchecked",
+        skip_reason: "not_checked",
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claim_result",
+      id: "u0",
+      claimId: "u0-0",
+      status: "unchecked",
+      skipReason: "not_checked",
+    });
+  });
+
+  test("drops an unrecognised source tag rather than rendering it", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        source: "guessed",
+        verdict: "supports",
+      }),
+    );
+    expect(frame).not.toHaveProperty("source");
+    expect(frame).toMatchObject({ verdict: "supports" });
+  });
+
+  test("returns null for a claim_result with an unknown status", () => {
+    expect(
+      parseLiveFrame(
+        JSON.stringify({
+          type: "claim_result",
+          id: "u0",
+          claim_id: "u0-0",
+          status: "exploded",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  test("returns null for a claim_result missing its claim_id", () => {
+    expect(
+      parseLiveFrame(
+        JSON.stringify({ type: "claim_result", id: "u0", status: "checking" }),
+      ),
+    ).toBeNull();
+  });
 });

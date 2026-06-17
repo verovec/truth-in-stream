@@ -34,6 +34,46 @@ function subtitleList() {
 }
 
 describe("LiveStatementList", () => {
+  test("renders a statement's atomic claims under it, suppressing the generic marker", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[analysing("0", 0, "the bridge opened in 1937")]}
+        selectedStatementId={null}
+        claimsFor={(id) =>
+          id === "0"
+            ? [
+                {
+                  claimId: "0-0",
+                  text: "the bridge opened in 1937",
+                  status: "verified",
+                  source: "verified",
+                  verdict: "supports",
+                },
+              ]
+            : []
+        }
+      />,
+    );
+
+    expect(screen.getByText(/supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/verified against evidence/i)).toBeInTheDocument();
+    // The per-statement "Checking this statement" marker yields to the claim list.
+    expect(
+      screen.queryByText(/checking this statement/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a legacy statement with no claims renders the generic marker as before", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[analysing("0", 0, "the earth is round")]}
+        selectedStatementId={null}
+        claimsFor={() => []}
+      />,
+    );
+    expect(screen.getByText(/checking this statement/i)).toBeInTheDocument();
+  });
+
   test("shows an in-flight affordance for an analysing statement", () => {
     renderWithPlayback(
       <LiveStatementList

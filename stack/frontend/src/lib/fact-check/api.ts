@@ -101,7 +101,7 @@ export type SegmentWire = {
   confidence?: ConfidenceWire;
 };
 
-function normalizeMatch(wire: MatchWire): SegmentMatch {
+export function normalizeMatch(wire: MatchWire): SegmentMatch {
   // Discriminate on kind alone: evidence must never fall through to the claim
   // branch, or a missing attribution would fabricate an "unclear" verdict on
   // content the corpus cannot adjudicate. A malformed evidence payload without
