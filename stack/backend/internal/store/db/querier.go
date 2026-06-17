@@ -41,6 +41,11 @@ type Querier interface {
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	ListVideos(ctx context.Context) ([]Video, error)
+	// The voting adapter answers "how did person X vote on bill Y around date Z". The
+	// predicate order matches voting_records_person_bill_date_idx. The date is an
+	// exact match on the recorded scrutin date; a caller resolves the scrutin date
+	// before lookup.
+	LookupVotingRecords(ctx context.Context, arg LookupVotingRecordsParams) ([]LookupVotingRecordsRow, error)
 	// Atomically claim a failed ingest for retry: flip it back to pending only if it
 	// is currently failed, so two concurrent re-submissions cannot both re-download.
 	// The guard returns no row (and thus no claim) when the record is not failed.
@@ -49,6 +54,11 @@ type Querier interface {
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
+	// Approximate nearest-neighbor retrieval over the curated political claim DB,
+	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated
+	// talking point. query_embedding is referenced twice but sqlc collapses it to one
+	// parameter, so the HNSW index drives the ORDER BY.
+	SearchPoliticalClaims(ctx context.Context, arg SearchPoliticalClaimsParams) ([]SearchPoliticalClaimsRow, error)
 	// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
 	// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
 	// the result regardless of the chosen plan; the HNSW index only indexes
@@ -86,10 +96,19 @@ type Querier interface {
 	// is never visible to search without its matching vector. The embedding is always
 	// the freshly computed one, so a re-crawl rewrites the same vector idempotently.
 	UpsertEmbeddedChunk(ctx context.Context, arg UpsertEmbeddedChunkParams) error
+	// The fact-check-archive crawler writes a curated claim with its embedding in one
+	// statement, so a row is never visible to ANN search without its matching vector.
+	// The embedding is the freshly computed one, so a re-crawl rewrites the same row
+	// idempotently. The embedding is bound text-form (::halfvec via the pgvector
+	// Valuer), never binary COPY.
+	UpsertPoliticalClaim(ctx context.Context, arg UpsertPoliticalClaimParams) error
 	// size_bytes keeps a known size against a zero reseed: an offline reseed with no
 	// cached media seeds the record with size 0, which must not clobber the real
 	// size recorded when the media was last uploaded (the object still exists).
 	UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error)
+	// Scrutins ingest writes one recorded position per person per scrutin. Re-running
+	// the ingest rewrites the same row, so a bulk re-run is idempotent.
+	UpsertVotingRecord(ctx context.Context, arg UpsertVotingRecordParams) error
 	// Ingest never writes embeddings; the CASE keeps an existing embedding only
 	// while the content it was computed from is unchanged, so re-ingesting a
 	// changed revision invalidates the stale vector instead of serving it.
