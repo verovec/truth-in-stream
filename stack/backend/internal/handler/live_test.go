@@ -101,12 +101,15 @@ type wireFrame struct {
 	Source     string   `json:"source"`
 	Verdict    string   `json:"verdict"`
 	Basis      string   `json:"basis"`
+	Literal    string   `json:"literal"`
+	Flags      []string `json:"flags"`
 	Confidence *float64 `json:"confidence"`
 	// Speaker-score frame fields.
-	Score        float64 `json:"score"`
-	Credible     int     `json:"credible"`
-	Disputed     int     `json:"disputed"`
-	Unverifiable int     `json:"unverifiable"`
+	Score             float64 `json:"score"`
+	Credible          int     `json:"credible"`
+	Disputed          int     `json:"disputed"`
+	Unverifiable      int     `json:"unverifiable"`
+	MisleadingFraming int     `json:"misleading_framing"`
 }
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
@@ -342,6 +345,86 @@ func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
 	}
 	if frame.Score != 0.6 || frame.Credible != 1 || frame.Disputed != 0 || frame.Unverifiable != 2 {
 		t.Errorf("score frame = %+v, want score 0.6 credible 1 disputed 0 unverifiable 2", frame)
+	}
+	if frame.MisleadingFraming != 0 {
+		t.Errorf("misleading_framing = %d, want 0 on the credibility-only path", frame.MisleadingFraming)
+	}
+}
+
+func TestLiveHandlerForwardsPoliticalTwoAxisVerdict(t *testing.T) {
+	t.Parallel()
+	// A political per-claim verdict serializes its two orthogonal axes onto the wire:
+	// the literal verdict and the manipulation flags, alongside the credibility verdict
+	// and the cited source, so the frontend (VER-104) can render the two-axis display.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "le chômage a baissé", Speaker: "A"}
+	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "taux", Similarity: 1, EvidenceID: "insee:CHOM:0", Sources: []domain.Source{{Title: "INSEE", URL: "https://insee.fr/x"}}}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{
+			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{
+				Verdict: service.VerdictCredible, Basis: service.BasisEvidence, Confidence: 0.9,
+				Literal: service.LiteralAccurate, Flags: []string{service.FlagCherryPicked},
+				Citations: []domain.SegmentMatch{cite}, Rationale: "exact mais cherry-picked",
+			},
+		},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "claim_result" || frame.Status != "verified" {
+		t.Fatalf("frame = %+v, want verified claim_result", frame)
+	}
+	if frame.Literal != "accurate" {
+		t.Errorf("literal = %q, want accurate", frame.Literal)
+	}
+	if len(frame.Flags) != 1 || frame.Flags[0] != "cherry-picked" {
+		t.Errorf("flags = %v, want [cherry-picked]", frame.Flags)
+	}
+	if frame.Verdict != "credible" {
+		t.Errorf("verdict = %q, want credible (credibility axis)", frame.Verdict)
+	}
+}
+
+func TestLiveHandlerForwardsMisleadingFramingTally(t *testing.T) {
+	t.Parallel()
+	// A speaker-score event with a misleading-framing tally serializes it onto the
+	// wire, so the frontend can distinguish outright falsehood from misleading framing.
+	fake := &recordingLive{events: []service.LiveEvent{
+		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 2, MisleadingFraming: 1}},
+	}}
+	wsURL := liveTestServer(t, fake, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "speaker_score" || frame.MisleadingFraming != 1 {
+		t.Fatalf("frame = %+v, want speaker_score with misleading_framing 1", frame)
 	}
 }
 

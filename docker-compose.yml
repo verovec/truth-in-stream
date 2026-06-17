@@ -586,9 +586,28 @@ services:
       FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
       # French/EU political fact-checking mode. Off by default; when true the live
       # transcription biases toward French (language_code=fr) and the gate and
-      # claim decomposition prompt and reason in French. Read at startup, so
-      # recreate the backend after changing it.
+      # claim decomposition prompt and reason in French. When it is on AND the
+      # verify path is active (FACTCHECK_VERIFY_PATH + key), the per-claim verify
+      # stage switches to the political pipeline: each claim is classified, routed
+      # to its authoritative source (stats / voting / press) and broadened to web
+      # search, then judged on two axes (literal verdict + manipulation flags), and
+      # folded into a flag-aware per-speaker score. With it off the verify path runs
+      # its credibility-only stage unchanged. Read at startup, so recreate the
+      # backend after changing it. FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS (default 1)
+      # is the thin-result floor below which the router broadens to web search.
       FACTCHECK_POLITICAL: "${FACTCHECK_POLITICAL:-}"
+      FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS: "${FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS:-}"
+      # Political source packs (read only when FACTCHECK_POLITICAL is on). Web search
+      # is the mandatory open-ended fallback, so WEBSEARCH_API_KEY (a Brave token) is
+      # required in political mode; the press pack joins only when PRESS_API_KEY is
+      # set, and the stats pack is keyless (optional STATS_TIMEOUT / STATS_CACHE_TTL
+      # tuning only). Secrets are never logged.
+      WEBSEARCH_API_KEY: "${WEBSEARCH_API_KEY:-}"
+      WEBSEARCH_TIMEOUT: "${WEBSEARCH_TIMEOUT:-}"
+      PRESS_API_KEY: "${PRESS_API_KEY:-}"
+      PRESS_TIMEOUT: "${PRESS_TIMEOUT:-}"
+      STATS_TIMEOUT: "${STATS_TIMEOUT:-}"
+      STATS_CACHE_TTL: "${STATS_CACHE_TTL:-}"
       # The browser's real origin. HTTP /api rides the same-origin frontend proxy
       # so the SameSite=Strict cookie rides along, but the live WebSocket upgrade
       # carries Origin: http://localhost:3000 while the proxy rewrites Host to the

@@ -694,14 +694,35 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 	return c, nil
 }
 
-// Political holds the French/EU political fact-checking mode flag. The whole
-// redesign rides FACTCHECK_POLITICAL (default off) so main stays shippable: with
-// the flag off the locale is the default English behavior, and with it on the
-// live LLM stages prompt and reason in French and the transcriber biases toward
-// French. This card wires only the locale; later cards gate the political verify
-// path and sources behind the same flag.
+// defaultPoliticalRouterMinResults is the floor below which a routed source's
+// result is considered thin and the Router broadens to web search. One
+// authoritative passage is enough to keep an authoritative answer; below it the
+// open web fills in.
+const defaultPoliticalRouterMinResults = 1
+
+// Political holds the French/EU political fact-checking mode flag and the routing
+// knob the capstone (VER-103) wires behind it. The whole redesign rides
+// FACTCHECK_POLITICAL (default off) so main stays shippable: with the flag off the
+// locale is the default English behavior and the verify path (when active) runs its
+// credibility-only stage unchanged, and with it on the live LLM stages prompt and
+// reason in French, the transcriber biases toward French, and the verify path's
+// per-claim stage routes through the political pipeline (classify -> route+retrieve
+// -> two-axis verify). RouterMinResults is the thin-result floor below which the
+// router broadens to web search.
 type Political struct {
-	Enabled bool
+	Enabled          bool
+	RouterMinResults int
+}
+
+// Active reports whether the political verify path should be wired: the political
+// flag is on and the retrieve-then-verify path it layers onto is itself active
+// (enabled with an API key). With the flag off, or the verify path inactive, the
+// political pipeline is not constructed and the live path behaves exactly as it
+// does today (credibility-only verify when the verify path is on, legacy
+// gate-and-match when it is off). Wiring keys off this so an enabled-but-verify-off
+// configuration degrades gracefully rather than failing to start.
+func (p Political) Active(verifyActive bool) bool {
+	return p.Enabled && verifyActive
 }
 
 // Locale resolves the language the live stages run in: French when the political
@@ -715,15 +736,29 @@ func (p Political) Locale() domain.Locale {
 	return domain.LocaleEnglish
 }
 
-// LoadPolitical reads the political fact-checking mode flag from the
-// environment. FACTCHECK_POLITICAL gates the whole feature (default off); an
+// RouterLang is the BCP-47 language threaded onto every routed source query,
+// derived from the political locale so the source packs and the live stages cannot
+// drift onto different languages within one run.
+func (p Political) RouterLang() string {
+	return p.Locale().LanguageCode()
+}
+
+// LoadPolitical reads the political fact-checking mode flag and routing knob from
+// the environment. FACTCHECK_POLITICAL gates the whole feature (default off); an
 // unparseable value fails fast rather than silently defaulting.
+// FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS overrides the thin-result floor and must
+// be positive (a non-positive floor would treat every result as thin and stampede
+// the web fallback).
 func LoadPolitical() (Political, error) {
 	enabled, err := boolEnv("FACTCHECK_POLITICAL")
 	if err != nil {
 		return Political{}, err
 	}
-	return Political{Enabled: enabled}, nil
+	minResults, err := intEnv("FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS", defaultPoliticalRouterMinResults, 1, math.MaxInt32)
+	if err != nil {
+		return Political{}, err
+	}
+	return Political{Enabled: enabled, RouterMinResults: minResults}, nil
 }
 
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and

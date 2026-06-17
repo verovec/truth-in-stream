@@ -66,11 +66,17 @@ func newSpeakerMemory() *speakerMemory {
 	}
 }
 
-// observeCredibility folds one claim verdict into the speaker's running
-// credibility score and returns the updated snapshot, stamped with the speaker.
-// The aggregator is created on first use with the given prior strength. Access is
-// mutex-guarded because the worker pool scores a speaker's claims concurrently.
-func (m *speakerMemory) observeCredibility(speaker, state string, confidence, priorStrength float64) SpeakerScore {
+// observeVerdict folds one claim verdict into the speaker's running aggregate and
+// returns the single updated snapshot, stamped with the speaker. state and
+// confidence move the credibility score (the literal axis on the political path,
+// mapped onto the credibility vocabulary); flagged bumps the orthogonal
+// misleading-framing tally when the claim carried at least one manipulation flag.
+// Both axes are folded under one held lock so a concurrently-scored claim for the
+// same speaker can never observe a half-updated state, and exactly one snapshot is
+// emitted per verdict. The aggregator is created on first use with the given prior
+// strength. Access is mutex-guarded because the worker pool scores a speaker's
+// claims concurrently.
+func (m *speakerMemory) observeVerdict(speaker, state string, confidence, priorStrength float64, flagged bool) SpeakerScore {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sc := m.credibility[speaker]
@@ -78,7 +84,11 @@ func (m *speakerMemory) observeCredibility(speaker, state string, confidence, pr
 		sc = newSpeakerCredibility(priorStrength)
 		m.credibility[speaker] = sc
 	}
-	snapshot := sc.observe(state, confidence)
+	sc.observe(state, confidence)
+	snapshot := sc.snapshot()
+	if flagged {
+		snapshot = sc.observeFraming()
+	}
 	snapshot.Speaker = speaker
 	return snapshot
 }

@@ -139,6 +139,13 @@ const claimResultType = "claim_result"
 // Verdict, Confidence, Citations, and Rationale are present once verified. The
 // embedded matches carry the cited evidence (with evidence_id) so the grounding
 // round-trips to the UI.
+//
+// Literal and Flags are the political path's two orthogonal axes (FACTCHECK_POLITICAL
+// on): Literal is the face-value verdict (accurate|inaccurate|unverifiable) and
+// Flags is the subset of the closed manipulation vocabulary that applies to the
+// framing. Both are omitted on the credibility-only path, so a flag-off frame is
+// byte-for-byte the legacy shape; the frontend (VER-104) keys its two-axis display
+// on them.
 type claimResultFrame struct {
 	Type       string                `json:"type"`
 	ID         string                `json:"id"`
@@ -147,6 +154,8 @@ type claimResultFrame struct {
 	Source     string                `json:"source,omitempty"`
 	Verdict    string                `json:"verdict,omitempty"`
 	Basis      string                `json:"basis,omitempty"`
+	Literal    string                `json:"literal,omitempty"`
+	Flags      []string              `json:"flags,omitempty"`
 	Confidence *float64              `json:"confidence,omitempty"`
 	Rationale  string                `json:"rationale,omitempty"`
 	Matches    []domain.SegmentMatch `json:"matches,omitempty"`
@@ -159,13 +168,21 @@ type claimResultFrame struct {
 // that produced it, so the client can render a per-speaker credibility widget keyed
 // on speaker and de-emphasize a thin sample. It is additive - a client that does
 // not understand it drops the frame and renders everything else unchanged.
+//
+// MisleadingFraming is the political path's separate count of the speaker's claims
+// that carried at least one manipulation flag, orthogonal to the credibility
+// tallies, so the UI can distinguish an outright falsehood from honest-but-
+// misleading framing. It is omitted when zero, so the credibility-only path (which
+// never flags a claim) keeps its byte-for-byte wire shape; the frontend treats an
+// absent value as zero.
 type speakerScoreFrame struct {
-	Type         string  `json:"type"`
-	Speaker      string  `json:"speaker"`
-	Score        float64 `json:"score"`
-	Credible     int     `json:"credible"`
-	Disputed     int     `json:"disputed"`
-	Unverifiable int     `json:"unverifiable"`
+	Type              string  `json:"type"`
+	Speaker           string  `json:"speaker"`
+	Score             float64 `json:"score"`
+	Credible          int     `json:"credible"`
+	Disputed          int     `json:"disputed"`
+	Unverifiable      int     `json:"unverifiable"`
+	MisleadingFraming int     `json:"misleading_framing,omitempty"`
 }
 
 // liveHandler upgrades the request to a WebSocket and bridges it to the live
@@ -292,12 +309,13 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 			return nil
 		}
 		return wsjson.Write(ctx, conn, speakerScoreFrame{
-			Type:         string(ev.Kind),
-			Speaker:      ev.SpeakerScore.Speaker,
-			Score:        ev.SpeakerScore.Score,
-			Credible:     ev.SpeakerScore.Credible,
-			Disputed:     ev.SpeakerScore.Disputed,
-			Unverifiable: ev.SpeakerScore.Unverifiable,
+			Type:              string(ev.Kind),
+			Speaker:           ev.SpeakerScore.Speaker,
+			Score:             ev.SpeakerScore.Score,
+			Credible:          ev.SpeakerScore.Credible,
+			Disputed:          ev.SpeakerScore.Disputed,
+			Unverifiable:      ev.SpeakerScore.Unverifiable,
+			MisleadingFraming: ev.SpeakerScore.MisleadingFraming,
 		})
 	}
 	if ev.Kind == service.LiveEventClaims {
@@ -362,6 +380,11 @@ func toClaimResultFrame(ev service.LiveEvent) claimResultFrame {
 		f.Confidence = &confidence
 		f.Rationale = ev.Verdict.Rationale
 		f.Matches = ev.Verdict.Citations
+		// The two-axis fields are populated only on the political path; on the
+		// credibility-only path they are zero and omitted, keeping the wire shape
+		// unchanged.
+		f.Literal = ev.Verdict.Literal
+		f.Flags = ev.Verdict.Flags
 	}
 	return f
 }

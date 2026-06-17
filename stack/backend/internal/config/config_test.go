@@ -1508,33 +1508,49 @@ func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 
 func TestLoadPolitical(t *testing.T) {
 	tests := []struct {
-		name        string
-		env         map[string]string
-		wantEnabled bool
-		wantLocale  domain.Locale
-		wantErr     bool
+		name           string
+		env            map[string]string
+		wantEnabled    bool
+		wantLocale     domain.Locale
+		wantMinResults int
+		wantErr        bool
 	}{
 		{
-			name:        "disabled by default keeps english locale",
-			env:         map[string]string{},
-			wantEnabled: false,
-			wantLocale:  domain.LocaleEnglish,
+			name:           "disabled by default keeps english locale",
+			env:            map[string]string{},
+			wantEnabled:    false,
+			wantLocale:     domain.LocaleEnglish,
+			wantMinResults: 1,
 		},
 		{
-			name:        "enabled selects french locale",
-			env:         map[string]string{"FACTCHECK_POLITICAL": "true"},
-			wantEnabled: true,
-			wantLocale:  domain.LocaleFrench,
+			name:           "enabled selects french locale",
+			env:            map[string]string{"FACTCHECK_POLITICAL": "true"},
+			wantEnabled:    true,
+			wantLocale:     domain.LocaleFrench,
+			wantMinResults: 1,
 		},
 		{
-			name:        "explicit false keeps english locale",
-			env:         map[string]string{"FACTCHECK_POLITICAL": "false"},
-			wantEnabled: false,
-			wantLocale:  domain.LocaleEnglish,
+			name:           "explicit false keeps english locale",
+			env:            map[string]string{"FACTCHECK_POLITICAL": "false"},
+			wantEnabled:    false,
+			wantLocale:     domain.LocaleEnglish,
+			wantMinResults: 1,
+		},
+		{
+			name:           "router min results override",
+			env:            map[string]string{"FACTCHECK_POLITICAL": "true", "FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS": "3"},
+			wantEnabled:    true,
+			wantLocale:     domain.LocaleFrench,
+			wantMinResults: 3,
 		},
 		{
 			name:    "non-boolean fails",
 			env:     map[string]string{"FACTCHECK_POLITICAL": "maybe"},
+			wantErr: true,
+		},
+		{
+			name:    "non-positive router min results fails",
+			env:     map[string]string{"FACTCHECK_POLITICAL": "true", "FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS": "0"},
 			wantErr: true,
 		},
 	}
@@ -1559,7 +1575,46 @@ func TestLoadPolitical(t *testing.T) {
 			if got.Locale() != tc.wantLocale {
 				t.Errorf("Locale() = %q, want %q", got.Locale(), tc.wantLocale)
 			}
+			if got.RouterMinResults != tc.wantMinResults {
+				t.Errorf("RouterMinResults = %d, want %d", got.RouterMinResults, tc.wantMinResults)
+			}
 		})
+	}
+}
+
+// TestPoliticalActive asserts the political verify path activates only when the
+// flag is on and the verify path it layers onto is itself active, so it degrades
+// gracefully rather than failing to start when the verify path is off.
+func TestPoliticalActive(t *testing.T) {
+	tests := []struct {
+		name         string
+		enabled      bool
+		verifyActive bool
+		want         bool
+	}{
+		{"both on activates", true, true, true},
+		{"flag off stays inactive", false, true, false},
+		{"verify path off stays inactive", true, false, false},
+		{"both off stays inactive", false, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Political{Enabled: tc.enabled}
+			if got := p.Active(tc.verifyActive); got != tc.want {
+				t.Errorf("Active(%v) = %v, want %v", tc.verifyActive, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPoliticalRouterLang asserts the routed source query language tracks the
+// political locale, so the source packs and the live stages share one language.
+func TestPoliticalRouterLang(t *testing.T) {
+	if got := (Political{Enabled: true}).RouterLang(); got != domain.LocaleFrench.LanguageCode() {
+		t.Errorf("RouterLang() on = %q, want %q", got, domain.LocaleFrench.LanguageCode())
+	}
+	if got := (Political{Enabled: false}).RouterLang(); got != domain.LocaleEnglish.LanguageCode() {
+		t.Errorf("RouterLang() off = %q, want %q", got, domain.LocaleEnglish.LanguageCode())
 	}
 }
 

@@ -14,6 +14,30 @@ const (
 	VerdictUnverifiable = "unverifiable"
 )
 
+// LiteralAccurate, LiteralInaccurate, and LiteralUnverifiable are the political
+// path's literal-axis verdict labels: is the claim, taken at face value, true
+// against the routed evidence? They mirror the verify package's two-axis labels so
+// a verdict the political verifier returned and the service's mapping onto the
+// credibility axis (credibilityFromLiteral) live in one vocabulary without the
+// service layer importing the adapter package.
+const (
+	LiteralAccurate     = "accurate"
+	LiteralInaccurate   = "inaccurate"
+	LiteralUnverifiable = "unverifiable"
+)
+
+// The manipulation-flag vocabulary for the political path's second axis, mirrored
+// from the verify package so the service carries a flag through to the wire without
+// importing the adapter. The set is closed; the verifier adapter's guard drops
+// anything outside it before a flag reaches the live path.
+const (
+	FlagMissingContext      = "missing-context"
+	FlagCherryPicked        = "cherry-picked"
+	FlagOutdated            = "outdated"
+	FlagMisattributed       = "misattributed"
+	FlagMisleadingCausation = "misleading-causation"
+)
+
 // BasisEvidence and BasisKnowledge tag what a verdict rests on: a surviving
 // citation, or the verifier's world-knowledge tiebreaker. The service carries the
 // basis through to the wire so the UI can mark a knowledge-only verdict as having
@@ -36,12 +60,21 @@ const defaultPriorStrength = 4.0
 // aggregate. Score is the Beta-Binomial posterior mean in [0,1]; Credible,
 // Disputed, and Unverifiable are the lifetime verdict tallies, so the UI can show
 // the score with its sample size and de-emphasize a thin one.
+//
+// MisleadingFraming is the political path's separate count of this speaker's
+// claims that carried at least one manipulation flag (cherry-picked, missing
+// context, ...). It is orthogonal to the credibility tallies and to the score: a
+// claim can be literally accurate (counted Credible, moving the score up) yet
+// carry a flag (counted MisleadingFraming), so the UI can distinguish an outright
+// falsehood from honest-but-misleading framing. It stays zero on the
+// credibility-only (non-political) verify path, which emits no flags.
 type SpeakerScore struct {
-	Speaker      string
-	Score        float64
-	Credible     int
-	Disputed     int
-	Unverifiable int
+	Speaker           string
+	Score             float64
+	Credible          int
+	Disputed          int
+	Unverifiable      int
+	MisleadingFraming int
 }
 
 // speakerCredibility is the pure, per-speaker Beta-Binomial credibility tally. It
@@ -62,6 +95,11 @@ type speakerCredibility struct {
 	credible     int
 	disputed     int
 	unverifiable int
+	// misleadingFraming counts this speaker's claims that carried at least one
+	// manipulation flag, orthogonal to the credibility tallies above and to the
+	// score. It moves only on the political path; the credibility-only path emits
+	// no flags and never touches it.
+	misleadingFraming int
 }
 
 // newSpeakerCredibility builds an empty aggregator with the given prior strength,
@@ -96,6 +134,17 @@ func (s *speakerCredibility) observe(state string, confidence float64) SpeakerSc
 	return s.snapshot()
 }
 
+// observeFraming records that the speaker's just-scored claim carried at least
+// one manipulation flag, bumping the misleading-framing tally and returning the
+// updated snapshot. It is orthogonal to observe: the score and the
+// credible/disputed/unverifiable tallies are untouched, since a flag judges the
+// framing, not the literal truth. It is the political path's second axis and is
+// never called on the credibility-only path.
+func (s *speakerCredibility) observeFraming() SpeakerScore {
+	s.misleadingFraming++
+	return s.snapshot()
+}
+
 // snapshot returns the current score and tallies without mutating the aggregator.
 // The score is the Beta-Binomial posterior mean (k/2 + S) / (k + S + F): with no
 // scored claims it is exactly 0.5, and it converges to the confidence-weighted
@@ -104,10 +153,11 @@ func (s *speakerCredibility) snapshot() SpeakerScore {
 	half := s.priorStrength / 2
 	score := (half + s.successes) / (s.priorStrength + s.successes + s.failures)
 	return SpeakerScore{
-		Score:        score,
-		Credible:     s.credible,
-		Disputed:     s.disputed,
-		Unverifiable: s.unverifiable,
+		Score:             score,
+		Credible:          s.credible,
+		Disputed:          s.disputed,
+		Unverifiable:      s.unverifiable,
+		MisleadingFraming: s.misleadingFraming,
 	}
 }
 

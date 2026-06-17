@@ -188,6 +188,57 @@ func TestSpeakerCredibilityClampsConfidence(t *testing.T) {
 	}
 }
 
+// TestSpeakerCredibilityFramingIsOrthogonal asserts the political path's second
+// axis: a manipulation flag bumps the misleading-framing tally without moving the
+// score or any credibility tally, and a flagged-but-accurate claim moves the
+// score up (via observe) and the framing tally (via observeFraming) independently.
+func TestSpeakerCredibilityFramingIsOrthogonal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("flag alone moves only the framing tally", func(t *testing.T) {
+		t.Parallel()
+		sc := newSpeakerCredibility(4)
+		got := sc.observeFraming()
+		if !approxEqual(got.Score, 0.5) {
+			t.Errorf("score = %v, want neutral 0.5 (framing must not move the score)", got.Score)
+		}
+		if got.Credible != 0 || got.Disputed != 0 || got.Unverifiable != 0 {
+			t.Errorf("credibility tallies = %d/%d/%d, want all zero", got.Credible, got.Disputed, got.Unverifiable)
+		}
+		if got.MisleadingFraming != 1 {
+			t.Errorf("misleading framing = %d, want 1", got.MisleadingFraming)
+		}
+	})
+
+	t.Run("accurate-but-flagged moves the score up and the framing tally", func(t *testing.T) {
+		t.Parallel()
+		sc := newSpeakerCredibility(4)
+		sc.observe(VerdictCredible, 1.0)
+		got := sc.observeFraming()
+		// (2 + 1) / (4 + 1) = 0.6: the literal-accurate claim moved the score; the
+		// flag is independent.
+		if !approxEqual(got.Score, 0.6) {
+			t.Errorf("score = %v, want 0.6", got.Score)
+		}
+		if got.Credible != 1 {
+			t.Errorf("credible = %d, want 1", got.Credible)
+		}
+		if got.MisleadingFraming != 1 {
+			t.Errorf("misleading framing = %d, want 1", got.MisleadingFraming)
+		}
+	})
+
+	t.Run("framing tally accumulates across claims", func(t *testing.T) {
+		t.Parallel()
+		sc := newSpeakerCredibility(4)
+		sc.observeFraming()
+		got := sc.observeFraming()
+		if got.MisleadingFraming != 2 {
+			t.Errorf("misleading framing = %d, want 2", got.MisleadingFraming)
+		}
+	})
+}
+
 // TestNewSpeakerCredibilityFallsBackOnNonPositivePrior asserts a non-positive prior
 // strength falls back to the default rather than producing a divide-by-zero score.
 func TestNewSpeakerCredibilityFallsBackOnNonPositivePrior(t *testing.T) {
