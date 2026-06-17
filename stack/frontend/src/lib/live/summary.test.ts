@@ -93,6 +93,7 @@ describe("summarizeStatements", () => {
       corroborates: 2,
       contradicts: 1,
       unclear: 1,
+      unverifiable: 0,
       evidence: 1,
       skipped: 0,
       analysing: 0,
@@ -126,6 +127,7 @@ describe("summarizeStatements", () => {
       corroborates: 0,
       contradicts: 0,
       unclear: 0,
+      unverifiable: 0,
       evidence: 0,
       skipped: 3,
       analysing: 0,
@@ -170,8 +172,9 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
   });
 
   test("a unit resolves once every claim is terminal, tallying per-claim verdicts", () => {
-    // credible -> corroborates, disputed -> contradicts, unverifiable ->
-    // unclear: the strip mirrors the per-claim fact-check list one-for-one.
+    // The verify path's unverifiable verdict keeps its own bucket rather than
+    // collapsing into the curated unclear count, so the strip reads the same
+    // word as the per-claim list.
     const summary = summarizeStatements(
       [analysing("u1", 0)],
       unitClaims("u1", [
@@ -185,7 +188,8 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       checked: 1,
       corroborates: 1,
       contradicts: 1,
-      unclear: 1,
+      unclear: 0,
+      unverifiable: 1,
       evidence: 0,
       skipped: 0,
       analysing: 0,
@@ -215,19 +219,22 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       corroborates: 0,
       contradicts: 0,
       unclear: 0,
+      unverifiable: 0,
       evidence: 0,
       skipped: 1,
       analysing: 0,
     });
   });
 
-  test("a degenerate verified claim with no verdict counts as unclear, like the list", () => {
+  test("a degenerate verified claim with no verdict counts as unverifiable, like the list", () => {
+    // live-claim-list renders a verdict-less verified claim as "Unverifiable",
+    // so the strip must tally it the same way, never as curated unclear.
     const summary = summarizeStatements(
       [analysing("u1", 0)],
       unitClaims("u1", [{ status: "verified" }]),
     );
 
-    expect(summary).toMatchObject({ checked: 1, unclear: 1 });
+    expect(summary).toMatchObject({ checked: 1, unverifiable: 1, unclear: 0 });
   });
 
   test("legacy statements with no claims keep their statement-derived counts", () => {
@@ -246,6 +253,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       corroborates: 1,
       contradicts: 0,
       unclear: 0,
+      unverifiable: 0,
       evidence: 0,
       skipped: 0,
       analysing: 1,

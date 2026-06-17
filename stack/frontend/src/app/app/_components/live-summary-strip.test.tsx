@@ -2,8 +2,15 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
+import {
+  applyClaimResultFrame,
+  applyClaimsFrame,
+  emptyClaims,
+} from "@/lib/live/claims";
+import { parseLiveFrame } from "@/lib/live/frames";
+import type { LiveStatement } from "@/lib/live/statements";
 import type { LiveSummary } from "@/lib/live/summary";
-import { emptySummary } from "@/lib/live/summary";
+import { emptySummary, summarizeStatements } from "@/lib/live/summary";
 import { LiveSummaryStrip, SummaryStripView } from "./live-summary-strip";
 
 const mockUseLiveAnalysis = vi.hoisted(() => vi.fn<() => LiveAnalysis>());
@@ -47,6 +54,7 @@ describe("SummaryStripView", () => {
           corroborates: 3,
           contradicts: 1,
           unclear: 1,
+          unverifiable: 2,
           evidence: 2,
           skipped: 4,
         })}
@@ -58,6 +66,9 @@ describe("SummaryStripView", () => {
     expect(screen.getByLabelText("Corroborated: 3")).toBeInTheDocument();
     expect(screen.getByLabelText("Contradicted: 1")).toBeInTheDocument();
     expect(screen.getByLabelText("Unclear: 1")).toBeInTheDocument();
+    // The verify path's unverifiable verdict reads "Unverifiable", matching the
+    // per-claim list, instead of being folded into the curated "Unclear" count.
+    expect(screen.getByLabelText("Unverifiable: 2")).toBeInTheDocument();
     // Supporting evidence is distinguishable from claim verdicts.
     expect(screen.getByLabelText("Evidence: 2")).toBeInTheDocument();
     expect(screen.getByLabelText("Not checked: 4")).toBeInTheDocument();
@@ -102,6 +113,48 @@ describe("SummaryStripView", () => {
     );
 
     expect(screen.getByText(/2 in progress/i)).toBeInTheDocument();
+  });
+});
+
+describe("verify-path unverifiable verdict end to end", () => {
+  test("a parsed unverifiable claim_result surfaces as an Unverifiable count, not Unclear", () => {
+    // Drive the operator-visible path the way a live stream does: a real
+    // claim_result frame off the wire, through the claim reducers and the
+    // summary projection, into the rendered strip. The verify path's
+    // unverifiable verdict must read "Unverifiable" in the strip, matching the
+    // per-claim list, and must not inflate the curated "Unclear" count.
+    const claimsFrame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u1",
+        claims: [{ claim_id: "u1-0", text: "the claim" }],
+      }),
+    );
+    const resultFrame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u1",
+        claim_id: "u1-0",
+        status: "verified",
+        verdict: "unverifiable",
+      }),
+    );
+    if (claimsFrame?.type !== "claims" || resultFrame?.type !== "claim_result") {
+      throw new Error("frames failed to parse");
+    }
+
+    let claims = applyClaimsFrame(emptyClaims(), claimsFrame);
+    claims = applyClaimResultFrame(claims, resultFrame);
+
+    const statements: LiveStatement[] = [
+      { id: "u1", start: 0, end: 2, text: "the claim", status: "analysing" },
+    ];
+    const summary = summarizeStatements(statements, claims);
+
+    render(<SummaryStripView summary={summary} status="live" />);
+
+    expect(screen.getByLabelText("Unverifiable: 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Unclear: 0")).toBeInTheDocument();
   });
 });
 
