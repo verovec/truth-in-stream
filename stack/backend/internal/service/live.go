@@ -112,6 +112,17 @@ const defaultMaxSentences = 3
 // a couple of seconds of silence rather than held until the next speaker.
 const defaultIdleFlush = 2 * time.Second
 
+// defaultMaxHold bounds how long a SILENT unit whose trailing text ends
+// mid-sentence is held past the idle window for the rest of the sentence to land.
+// Beyond it the fragment is scored anyway, so a sentence that never completes
+// still resolves to a verdict within a few seconds instead of hanging. The bound
+// counts consecutive idle (silent) windows: fresh same-speaker speech refreshes
+// it (continuation is progress toward a complete sentence), so a unit that keeps
+// growing is bounded not by MaxHold but by the sentence cap (defaultMaxSentences).
+// The effective silent bound is the largest multiple of IdleFlush not exceeding
+// MaxHold.
+const defaultMaxHold = 6 * time.Second
+
 // defaultConsistencyTopK caps how many of a speaker's topically-closest prior
 // statements get a stance call per new statement, so detection cost is bounded
 // at a few LLM calls even for a speaker with a long history. defaultConsistency
@@ -128,21 +139,28 @@ const (
 // Prechecker defaults to the no-op gate that checks every segment, Logger to
 // slog.Default, Concurrency to defaultLiveConcurrency, QueueDepth to
 // defaultLiveQueueDepth, MaxSentences to defaultMaxSentences, and IdleFlush to
-// defaultIdleFlush.
+// defaultIdleFlush, and MaxHold to defaultMaxHold.
 // Stance is the optional intra-speaker consistency capability. When nil the
 // feature is off and live analysis behaves exactly as before - no consistency
 // events, no errors. ConsistencyTopK and ConsistencyFloor tune detection and
 // default to defaultConsistencyTopK and defaultConsistencyFloor; they matter
 // only when Stance is set.
 type LiveAnalyzerConfig struct {
-	Stream           SegmentStream
-	Matcher          SegmentMatcher
-	Prechecker       SegmentPrechecker
-	Logger           *slog.Logger
-	Concurrency      int
-	QueueDepth       int
-	MaxSentences     int
-	IdleFlush        time.Duration
+	Stream       SegmentStream
+	Matcher      SegmentMatcher
+	Prechecker   SegmentPrechecker
+	Logger       *slog.Logger
+	Concurrency  int
+	QueueDepth   int
+	MaxSentences int
+	IdleFlush    time.Duration
+	// MaxHold bounds how long a SILENT unit ending mid-sentence is held past the
+	// idle window for the rest of the sentence to land before it is scored anyway.
+	// The bound counts consecutive idle windows; fresh same-speaker speech refreshes
+	// it, so an actively-growing unit is bounded by MaxSentences, not MaxHold. Zero
+	// applies defaultMaxHold; a value below IdleFlush disables the hold, so an
+	// incomplete trailing fragment is scored on the first idle tick as before.
+	MaxHold          time.Duration
 	Stance           StanceClassifier
 	ConsistencyTopK  int
 	ConsistencyFloor float64
@@ -170,6 +188,7 @@ type LiveAnalyzer struct {
 	queueDepth       int
 	maxSentences     int
 	idleFlush        time.Duration
+	maxHold          time.Duration
 	stance           StanceClassifier
 	consistencyTopK  int
 	consistencyFloor float64
@@ -210,6 +229,15 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 	if idleFlush <= 0 {
 		idleFlush = defaultIdleFlush
 	}
+	// A zero MaxHold takes the default; a negative one is clamped to zero, which
+	// disables the hold (the loop holds for zero idle windows).
+	maxHold := cfg.MaxHold
+	if maxHold == 0 {
+		maxHold = defaultMaxHold
+	}
+	if maxHold < 0 {
+		maxHold = 0
+	}
 	consistencyTopK := cfg.ConsistencyTopK
 	if consistencyTopK <= 0 {
 		consistencyTopK = defaultConsistencyTopK
@@ -234,6 +262,7 @@ func NewLiveAnalyzer(cfg LiveAnalyzerConfig) (*LiveAnalyzer, error) {
 		queueDepth:       queueDepth,
 		maxSentences:     maxSentences,
 		idleFlush:        idleFlush,
+		maxHold:          maxHold,
 		stance:           cfg.Stance,
 		consistencyTopK:  consistencyTopK,
 		consistencyFloor: consistencyFloor,
@@ -360,13 +389,23 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	timer.Stop()
 	defer timer.Stop()
 
+	// A unit whose trailing text ends mid-sentence is held past the idle window for
+	// the rest of the sentence to land, up to maxHold of silence. Hold time is
+	// counted in idle windows: idleHolds tracks how many consecutive ones the
+	// current unit has been held, reset whenever fresh speech arrives, and
+	// maxIdleHolds is the bound. A maxHold below idleFlush yields zero, so the hold
+	// is disabled and an incomplete fragment is scored on the first idle tick.
+	maxIdleHolds := int(a.maxHold / a.idleFlush)
+
 	var unit liveUnit
 	seq := 0
+	idleHolds := 0
 	flush := func() bool {
 		if unit.empty() {
 			return true
 		}
 		timer.Stop()
+		idleHolds = 0
 		// Read the speaker into a local before take resets the unit: evaluation
 		// order of unit.speaker against unit.take() in one literal is unspecified,
 		// so reading it inline can pick up the post-reset empty label.
@@ -379,8 +418,16 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			// An idle buffer is scored now rather than held for speech that may
-			// never come, so a trailing short turn still gets a verdict.
+			// An idle buffer is normally scored now rather than held for speech that
+			// may never come. But when its trailing text ends mid-sentence, the unit
+			// is held for same-speaker continuation up to maxHold so a verdict is
+			// never rendered against a truncated fragment; once held to the bound it
+			// is scored anyway so a never-completing sentence still resolves.
+			if !unit.empty() && idleHolds < maxIdleHolds && incompleteTrailingFragment(combinedText(unit.members)) {
+				idleHolds++
+				timer.Reset(a.idleFlush)
+				continue
+			}
 			if !flush() {
 				return
 			}
@@ -415,6 +462,10 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 				}
 			}
 			unit.add(id, seg, sentences)
+			// Fresh same-speaker speech is progress toward a complete sentence, so it
+			// refreshes the hold budget; a runaway accumulation is still bounded by
+			// the sentence cap below.
+			idleHolds = 0
 			timer.Stop()
 			timer.Reset(a.idleFlush)
 			// A full unit is scored at once instead of waiting for a boundary, so
@@ -641,6 +692,13 @@ func sameSpeaker(incoming, current string) bool {
 // so an unpunctuated monologue flushes instead of growing without bound.
 const maxWordsPerSentence = 25
 
+// isTerminator reports whether r ends a sentence. An ellipsis rune counts, as do
+// the three ASCII sentence terminators; a run of them ("?!" or "...") is one
+// boundary, handled by the callers that collapse consecutive terminators.
+func isTerminator(r rune) bool {
+	return r == '.' || r == '!' || r == '?' || r == '…'
+}
+
 // sentenceCount estimates how many sentences a segment holds in a single
 // allocation-free pass. It counts groups of terminal punctuation (so "?!" or an
 // ellipsis is one boundary, not several) and, as a fallback for unpunctuated
@@ -657,7 +715,7 @@ func sentenceCount(text string) int {
 			inWord = true
 			words++
 		}
-		term := r == '.' || r == '!' || r == '?' || r == '…'
+		term := isTerminator(r)
 		if term && !prevTerm {
 			terminators++
 		}
@@ -668,6 +726,36 @@ func sentenceCount(text string) int {
 	}
 	byWords := (words + maxWordsPerSentence - 1) / maxWordsPerSentence
 	return max(1, max(terminators, byWords))
+}
+
+// incompleteTrailingFragment reports whether text ends mid-sentence: the trailing
+// run since the last sentence terminator (the whole text when it has none) is a
+// non-empty open fragment shorter than one sentence's worth of words
+// (maxWordsPerSentence). Such a unit is held on the idle path for same-speaker
+// continuation rather than scored as a truncated claim. Text ending in terminal
+// punctuation leaves no open run (a terminator resets the count), and an open run
+// already a full sentence long is complete enough to score now; both, as well as
+// empty or whitespace-only text, return false.
+func incompleteTrailingFragment(text string) bool {
+	trailingWords := 0
+	inWord := false
+	for _, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			inWord = false
+		case isTerminator(r):
+			// A terminator closes the current sentence: the open run restarts after
+			// it, so words counted so far no longer belong to a trailing fragment.
+			inWord = false
+			trailingWords = 0
+		default:
+			if !inWord {
+				inWord = true
+				trailingWords++
+			}
+		}
+	}
+	return trailingWords > 0 && trailingWords < maxWordsPerSentence
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the
