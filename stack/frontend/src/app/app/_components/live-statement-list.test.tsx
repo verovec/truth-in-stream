@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
@@ -414,7 +414,7 @@ describe("LiveStatementList", () => {
     expect(rows[2]).toHaveTextContent("the oldest remark");
   });
 
-  test("auto-reveals a newly arrived statement by scrolling the list, not the page", () => {
+  test("snaps the newest statement to the top while pinned, never scrolling the page", () => {
     const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       const { rerender } = render(
@@ -435,22 +435,86 @@ describe("LiveStatementList", () => {
         </PlaybackProvider>,
       );
 
-      // The new line is revealed by scrolling the subtitle list itself; the
-      // page-scrolling scrollIntoView is never used (it would yank the whole page).
+      // Pinned (resting at the top) by default: a new line snaps the subtitle list
+      // back to its top instantly - no smooth animation that would read as a
+      // down-then-back bounce - and never the page-scrolling scrollIntoView.
       const calls = scrollTo.mock.calls.map(([opts]) => opts as ScrollToOptions);
       expect(scrollTo.mock.instances).toContain(subtitleList());
-      expect(calls).toContainEqual({ top: 200, behavior: "smooth" });
+      expect(calls).toContainEqual({ top: 0 });
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       restore();
     }
   });
 
-  test("marks the statement at the playback position active and seeks on click", async () => {
+  test("freezes the scroll position once the operator scrolls away from the top", () => {
+    const { scrollTo, restore } = stubScrollLayout();
+    try {
+      const { rerender } = render(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+      // The operator scrolls down to read earlier lines, dropping the pin.
+      fireEvent.scroll(subtitleList(), { target: { scrollTop: 500 } });
+      scrollTo.mockClear();
+      rerender(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first"), checked("1", 10, "second")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+
+      // A newly arrived statement must not move their view: no pin-to-top scroll.
+      expect(scrollTo).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  test("re-pins and snaps to the top when the operator scrolls back up", () => {
+    const { scrollTo, restore } = stubScrollLayout();
+    try {
+      const { rerender } = render(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+      fireEvent.scroll(subtitleList(), { target: { scrollTop: 500 } });
+      // Back to the top: the pin is restored.
+      fireEvent.scroll(subtitleList(), { target: { scrollTop: 0 } });
+      scrollTo.mockClear();
+      rerender(
+        <PlaybackProvider>
+          <LiveStatementList
+            statements={[checked("0", 0, "first"), checked("1", 10, "second")]}
+            selectedStatementId={null}
+          />
+        </PlaybackProvider>,
+      );
+
+      const calls = scrollTo.mock.calls.map(([opts]) => opts as ScrollToOptions);
+      expect(calls).toContainEqual({ top: 0 });
+    } finally {
+      restore();
+    }
+  });
+
+  test("marks the statement at the playback position active and selects, not seeks, on click", async () => {
+    const onSelect = vi.fn();
     const { store } = renderWithPlayback(
       <LiveStatementList
         statements={[checked("0", 0, "first"), checked("1", 10, "second")]}
         selectedStatementId={null}
+        onSelect={onSelect}
       />,
     );
 
@@ -459,10 +523,14 @@ describe("LiveStatementList", () => {
     const active = screen.getByText("second").closest("li");
     expect(active).toHaveAttribute("aria-current", "true");
 
+    // Clicking a transcript line highlights it for inspection; it must never seek
+    // the video, because a seek restarts the live session and wipes the running
+    // speaker credibility and in-flight findings.
     const seek = vi.fn();
     store.registerSeekHandler(seek);
     await userEvent.click(screen.getByText("first"));
-    expect(seek).toHaveBeenCalledWith(0);
+    expect(onSelect).toHaveBeenCalledWith("0");
+    expect(seek).not.toHaveBeenCalled();
   });
 
   test("scrolls the selected statement into view within the list, not the page", () => {

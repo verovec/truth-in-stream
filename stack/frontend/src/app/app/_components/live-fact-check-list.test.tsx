@@ -5,6 +5,7 @@ import type { FactCheckEntry } from "@/lib/live/fact-checks";
 import { LiveFactCheckList } from "./live-fact-check-list";
 
 const claimEntry: FactCheckEntry = {
+  kind: "match",
   key: "s1:0",
   statementId: "s1",
   start: 12,
@@ -19,6 +20,7 @@ const claimEntry: FactCheckEntry = {
 };
 
 const evidenceEntry: FactCheckEntry = {
+  kind: "match",
   key: "s2:0",
   statementId: "s2",
   start: 30,
@@ -28,6 +30,30 @@ const evidenceEntry: FactCheckEntry = {
     excerpt: "Earth is the third planet from the Sun",
     article: { title: "Earth", url: "https://en.wikipedia.org/wiki/Earth" },
     similarity: 0.8,
+  },
+};
+
+const verifiedClaimEntry: FactCheckEntry = {
+  kind: "claim",
+  key: "s3:claim:c0",
+  statementId: "s3",
+  start: 45,
+  snippet: "the bridge opened in 1937",
+  claim: {
+    claimId: "c0",
+    text: "the bridge opened in 1937",
+    status: "verified",
+    source: "verified",
+    verdict: "disputed",
+    rationale: "the source gives a different year",
+    matches: [
+      {
+        kind: "evidence",
+        excerpt: "Construction finished in 1937.",
+        article: { title: "Golden Gate Bridge", url: "https://en.wikipedia.org/wiki/x" },
+        similarity: 0.8,
+      },
+    ],
   },
 };
 
@@ -65,6 +91,32 @@ describe("LiveFactCheckList", () => {
       "href",
       "https://en.wikipedia.org/wiki/Earth",
     );
+  });
+
+  test("renders a verified claim's verdict, revealing its reasoning on tap", async () => {
+    const user = userEvent.setup();
+    render(
+      <LiveFactCheckList
+        entries={[verifiedClaimEntry]}
+        selectedStatementId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    // The verdict shows at once; the rationale and citations are hidden until tapped.
+    expect(screen.getByText(/disputed/i)).toBeInTheDocument();
+    expect(screen.getByText("0:45")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/the source gives a different year/i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /show reasoning/i }));
+    expect(
+      screen.getByText(/the source gives a different year/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/construction finished in 1937/i),
+    ).toBeInTheDocument();
   });
 
   test("selecting an entry reports its originating statement id", async () => {

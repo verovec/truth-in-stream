@@ -196,6 +196,88 @@ describe("LiveFactCheckPanel", () => {
     }
   });
 
+  test("highlights the matching fact-check when its transcript line is clicked", async () => {
+    renderPanel({
+      statements: [
+        checked(5, "the moon landing happened", {
+          matches: [
+            {
+              kind: "claim",
+              claim: "Apollo 11 landed in 1969",
+              verdict: "corroborates",
+              sources: [],
+              similarity: 0.9,
+            },
+          ],
+        }),
+      ],
+      caption: "",
+      status: "live",
+    });
+
+    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    // Clicking the transcript line selects it for inspection; this must not seek.
+    await userEvent.click(
+      within(subtitles).getByText(/the moon landing happened/i),
+    );
+
+    const factChecks = screen.getByRole("region", { name: "Fact checks" });
+    const entry = within(factChecks)
+      .getByRole("button", { name: /the moon landing happened/i })
+      .closest("li");
+    expect(entry).toHaveAttribute("aria-current", "true");
+  });
+
+  test("fills the fact-check region from verified claims on the verify path", () => {
+    // A verify-path statement stays "analysing" and carries no statement-level
+    // matches; its verdicts arrive as atomic claims. The fact-check region must
+    // read those claims, otherwise it stays permanently empty.
+    renderPanel({
+      statements: [
+        {
+          id: "u1",
+          start: 5,
+          end: 6,
+          text: "the bridge opened in 1937",
+          status: "analysing",
+        },
+      ],
+      caption: "",
+      status: "live",
+      claimsFor: (id) =>
+        id === "u1"
+          ? [
+              {
+                claimId: "c0",
+                text: "the bridge opened in 1937",
+                status: "verified",
+                source: "verified",
+                verdict: "credible",
+              },
+            ]
+          : [],
+    });
+
+    const factChecks = screen.getByRole("region", { name: "Fact checks" });
+    expect(within(factChecks).getByText(/credible/i)).toBeInTheDocument();
+    expect(
+      within(factChecks).getByText(/checked against evidence/i),
+    ).toBeInTheDocument();
+    // The empty hint is gone once a verdict resolves.
+    expect(
+      within(factChecks).queryByText(/fact-checks appear here/i),
+    ).not.toBeInTheDocument();
+  });
+
+  test("sticks the panel to the viewport so it stays fully visible", () => {
+    renderPanel({ statements: [], caption: "", status: "idle" });
+    // The panel is sticky so the speaker-credibility strip pushing the column
+    // down never leaves its bottom below the fold; it pins as the page scrolls.
+    const panel = screen.getByRole("complementary", { name: /live analysis/i });
+    expect(panel.className).toContain("sticky");
+    expect(panel.className).toContain("top-4");
+  });
+
   test("re-selecting the same fact-check entry scrolls its origin in again", async () => {
     const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {

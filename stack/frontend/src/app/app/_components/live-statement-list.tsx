@@ -1,10 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useRef } from "react";
-import {
-  usePlayback,
-  usePlaybackStore,
-} from "@/components/playback/playback-provider";
+import { usePlayback } from "@/components/playback/playback-provider";
 import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import type { LiveClaim } from "@/lib/live/claims";
@@ -19,6 +16,12 @@ function speakerLabel(speaker: string): string {
   return `Speaker ${speaker}`;
 }
 
+// PIN_THRESHOLD_PX is how close to the top the list must be scrolled to count as
+// pinned. A few pixels of slack absorbs sub-pixel scroll positions and the
+// momentum overscroll a touchpad leaves behind, so a list resting at the top
+// stays pinned rather than flickering unpinned on a stray fractional scrollTop.
+const PIN_THRESHOLD_PX = 8;
+
 // LiveStatementList is the subtitle region: the running transcript of finalised
 // statements, rendered as one continuous, borderless flow (not boxed cards) so
 // it reads like a transcript. Each line carries its speaker label (when
@@ -26,13 +29,17 @@ function speakerLabel(speaker: string): string {
 // (analysing, could-not-check, skipped, or no-match); verdicts live in the
 // decoupled fact-check list below. Two scroll drivers coexist without fighting:
 // the active line tracks the playback clock, and a line selected from the
-// fact-check list scrolls into view on demand. Memoized so a caption-only update
-// of the parent panel (every interim word) does not re-render the list.
+// fact-check list scrolls into view on demand. Clicking a line selects it for
+// inspection - it never seeks, because a seek restarts the live session and would
+// wipe the running speaker credibility and in-flight findings. Memoized so a
+// caption-only update of the parent panel (every interim word) does not re-render
+// the list.
 export const LiveStatementList = memo(function LiveStatementList({
   statements,
   selectedStatementId,
   selectionTick = 0,
   claimsFor,
+  onSelect,
 }: {
   statements: LiveStatement[];
   selectedStatementId: string | null;
@@ -43,63 +50,71 @@ export const LiveStatementList = memo(function LiveStatementList({
   // legacy stream that emits no claim frames so the row renders exactly as
   // before when no claims arrive.
   claimsFor?: (statementId: string) => LiveClaim[];
+  // Lifts a clicked statement's id to the parent so the line and its fact-check
+  // entry highlight together. Optional so the list still renders standalone.
+  onSelect?: (statementId: string) => void;
 }) {
-  const store = usePlaybackStore();
   const activeIndex = usePlayback((snapshot) =>
     findActiveSegmentIndex(statements, snapshot.currentTime),
   );
   const listRef = useRef<HTMLOListElement>(null);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
+  // pinned tracks whether the list is anchored to the top (the newest line).
+  // True until the operator scrolls away from the top; scrolling back to the top
+  // re-pins. While pinned, a newly arrived statement keeps the top in view; once
+  // unpinned, new statements never move the operator's scroll position. A ref,
+  // not state, because only the scroll effects read it and it must never trigger
+  // a re-render.
+  const pinnedRef = useRef(true);
 
-  // scrollStatementIntoView reveals a statement by id, scrolling only the
-  // subtitle list - never the page. The native Element.scrollIntoView walks every
-  // scrollable ancestor up to the document, so a new line arriving would yank the
-  // whole page to align the subtitle to the viewport; we instead adjust this
-  // list's own scrollTop by the row's offset within it. A no-op when the row or
-  // list is not mounted (e.g. cleared after a reset). block defaults to "nearest"
-  // (scroll only when off-screen, by the minimum) for the playback-active line,
-  // the selected line, and the inconsistency jump-to-earlier; the newest-statement
-  // auto-reveal passes "start" to pull the new line to the top.
-  const scrollStatementIntoView = useCallback(
-    (id: string, block: ScrollLogicalPosition = "nearest") => {
-      const list = listRef.current;
-      const row = itemRefs.current.get(id);
-      if (!list || !row) {
-        return;
-      }
-      const rowRect = row.getBoundingClientRect();
-      const listRect = list.getBoundingClientRect();
-      let delta: number;
-      if (block === "start") {
-        delta = rowRect.top - listRect.top;
-      } else if (block === "end") {
-        delta = rowRect.bottom - listRect.bottom;
-      } else if (rowRect.top < listRect.top) {
-        delta = rowRect.top - listRect.top;
-      } else if (rowRect.bottom > listRect.bottom) {
-        delta = rowRect.bottom - listRect.bottom;
-      } else {
-        // Already fully visible within the list: "nearest" means no movement.
-        return;
-      }
-      if (delta === 0) {
-        return;
-      }
-      list.scrollTo({ top: list.scrollTop + delta, behavior: "smooth" });
-    },
-    [],
-  );
-
-  // The active line tracks the playback clock.
-  const activeId = activeIndex >= 0 ? statements[activeIndex]?.id : undefined;
-  useEffect(() => {
-    if (activeId === undefined) {
+  // scrollStatementIntoView reveals a statement by id on demand (a selected
+  // fact-check, an inconsistency jump-to-earlier), scrolling only the subtitle
+  // list - never the page. The native Element.scrollIntoView walks every
+  // scrollable ancestor up to the document, so it would yank the whole page to
+  // align the subtitle to the viewport; we instead adjust this list's own
+  // scrollTop by the row's offset within it. It moves by the minimum: only when
+  // the row sits off the top or bottom edge, and only far enough to bring it
+  // back, so a row already visible never jumps. A no-op when the row or list is
+  // not mounted (e.g. cleared after a reset).
+  const scrollStatementIntoView = useCallback((id: string) => {
+    const list = listRef.current;
+    const row = itemRefs.current.get(id);
+    if (!list || !row) {
       return;
     }
-    scrollStatementIntoView(activeId);
-  }, [activeId, scrollStatementIntoView]);
+    const rowRect = row.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    let delta: number;
+    if (rowRect.top < listRect.top) {
+      delta = rowRect.top - listRect.top;
+    } else if (rowRect.bottom > listRect.bottom) {
+      delta = rowRect.bottom - listRect.bottom;
+    } else {
+      // Already fully visible within the list: no movement.
+      return;
+    }
+    if (delta === 0) {
+      return;
+    }
+    list.scrollTo({ top: list.scrollTop + delta, behavior: "smooth" });
+  }, []);
 
-  // A line selected from the fact-check list scrolls into view on demand.
+  // onScroll re-evaluates the pin on every scroll: the list is pinned only while
+  // resting at the top. The operator scrolling away (in either direction) drops
+  // the pin so new lines stop moving the view; scrolling back to the top restores
+  // it. A programmatic pin-to-top scroll lands at 0, so it re-confirms the pin
+  // rather than fighting it.
+  const handleScroll = useCallback(() => {
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+    pinnedRef.current = list.scrollTop <= PIN_THRESHOLD_PX;
+  }, []);
+
+  // A line selected from the fact-check list scrolls into view on demand. This is
+  // operator-initiated, so it is honoured regardless of the pin (and naturally
+  // drops the pin by scrolling the selected line away from the top).
   useEffect(() => {
     if (selectedStatementId === null) {
       return;
@@ -107,21 +122,24 @@ export const LiveStatementList = memo(function LiveStatementList({
     scrollStatementIntoView(selectedStatementId);
   }, [selectedStatementId, selectionTick, scrollStatementIntoView]);
 
-  // The newest statement renders at the top; reveal it there as it arrives so a
-  // new line surfaces without the operator scrolling. Keyed on the newest id so
-  // it fires only when a statement is appended, not on every active-segment or
-  // selection change.
+  // The newest statement renders at the top. While pinned, snap back to the top
+  // as a line arrives so the newest stays in view; while the operator has
+  // scrolled away, leave their position untouched so a new line never yanks the
+  // view down-then-back. The snap is instant (no smooth behaviour) so a rapid
+  // burst of statements never animates. Keyed on the newest id so it fires only
+  // when a statement is appended, not on every active-segment or selection change.
   const newestId = statements.at(-1)?.id;
   useEffect(() => {
-    if (newestId === undefined) {
+    if (newestId === undefined || !pinnedRef.current) {
       return;
     }
-    scrollStatementIntoView(newestId, "start");
-  }, [newestId, scrollStatementIntoView]);
+    listRef.current?.scrollTo({ top: 0 });
+  }, [newestId]);
 
   return (
     <ol
       ref={listRef}
+      onScroll={handleScroll}
       aria-label="Subtitle transcript"
       className="-mr-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-2"
     >
@@ -153,7 +171,7 @@ export const LiveStatementList = memo(function LiveStatementList({
             >
               <button
                 type="button"
-                onClick={() => store.seekTo(statement.start)}
+                onClick={() => onSelect?.(statement.id)}
                 className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
               >
                 <span className="flex items-baseline gap-2 text-[11px]">

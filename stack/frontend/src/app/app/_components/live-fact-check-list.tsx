@@ -3,6 +3,7 @@
 import { memo } from "react";
 import type { FactCheckEntry } from "@/lib/live/fact-checks";
 import { formatTime } from "@/lib/playback/format-time";
+import { VerifiedClaim } from "./live-claim-verdict";
 import {
   LIVE_ROW_BASE_CLASS,
   LIVE_ROW_EMPHASIZED_CLASS,
@@ -59,7 +60,11 @@ export const LiveFactCheckList = memo(function LiveFactCheckList({
               </span>
             </button>
             <div className="border-t border-zinc-200 px-3 py-2 dark:border-zinc-800">
-              <MatchRow match={entry.match} />
+              {entry.kind === "match" ? (
+                <MatchRow match={entry.match} />
+              ) : (
+                <VerifiedClaim claim={entry.claim} />
+              )}
             </div>
           </li>
         );

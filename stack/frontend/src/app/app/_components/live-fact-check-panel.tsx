@@ -58,18 +58,26 @@ export function LiveFactCheckPanel() {
     id: string;
     tick: number;
   } | null>(null);
-  // Stable identity (the updater is functional, no external deps) so the
-  // memoized fact-check list does not re-render on every interim caption word.
-  const selectFactCheck = useCallback(
+  // Selecting a statement - from either the fact-check list or a transcript line -
+  // lifts its id here so the line and its fact-check entry highlight together and
+  // the subtitle scrolls into view. Stable identity (the updater is functional, no
+  // external deps) so the memoized lists do not re-render on every interim word.
+  const selectStatement = useCallback(
     (statementId: string) =>
       setSelection((prev) => ({ id: statementId, tick: (prev?.tick ?? 0) + 1 })),
     [],
   );
-  // Derived from the same statements that drive the subtitles, so the two can
-  // never disagree. Memoized (the React compiler is not enabled) so the interim
-  // caption updating on every spoken word does not re-derive or re-render the
-  // memoized fact-check list.
-  const entries = useMemo(() => deriveFactChecks(statements), [statements]);
+  // Derived from the same statements and claims that drive the subtitles, so the
+  // two can never disagree. On the verify path the verdicts live in the claims
+  // store (statements stay "analysing"), so the list must read claimsFor to fill
+  // at all. Memoized (the React compiler is not enabled) on both inputs - and
+  // claimsFor keeps a stable identity except when a claim progresses - so the
+  // interim caption updating on every spoken word does not re-derive or re-render
+  // the memoized fact-check list.
+  const entries = useMemo(
+    () => deriveFactChecks(statements, claimsFor),
+    [statements, claimsFor],
+  );
 
   // The operator can drag (or arrow-key) the divider to trade height between the
   // transcript and the fact-check list, so a long transcript and a long verdict
@@ -80,7 +88,16 @@ export function LiveFactCheckPanel() {
   return (
     <aside
       aria-labelledby="live-analysis-heading"
-      className="flex h-[78svh] flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
+      // Sticky so the panel stays fully on screen as the page scrolls. Its height
+      // is the viewport minus the stack above the grid - the page header, the
+      // summary strip, and the speaker-credibility strip plus their gaps, ~16rem -
+      // so the bottom clears the fold even before any scroll, when that stack has
+      // pushed the column furthest down. A fixed svh could not account for the
+      // credibility strip and fell below the fold once it appeared. Pinned at the
+      // small top inset, the same height keeps it within the viewport. Works
+      // because the grid is items-start, so the taller left column gives this
+      // column travel to stick.
+      className="sticky top-4 flex h-[calc(100svh-16rem)] flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
     >
       <header className="flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -116,6 +133,7 @@ export function LiveFactCheckPanel() {
               selectedStatementId={selection?.id ?? null}
               selectionTick={selection?.tick ?? 0}
               claimsFor={claimsFor}
+              onSelect={selectStatement}
             />
           )}
           {statements.length === 0 && !caption && <EmptyHint status={status} />}
@@ -123,16 +141,21 @@ export function LiveFactCheckPanel() {
 
         <PanelSeparator {...separatorProps} />
 
+        {/* The fact-checks region sits in a faintly-tinted, rounded tray bled to
+            the panel edges so it reads as a zone distinct from the free-flowing
+            transcript above, rather than the two blurring into one column. The
+            negative margins cancel the panel's padding so the tint reaches the
+            border; the padding is added back so the content keeps its inset. */}
         <section
           aria-label="Fact checks"
           style={{ flexGrow: bottomGrow, flexBasis: 0 }}
-          className="flex min-h-0 flex-col gap-2 overflow-hidden pt-3"
+          className="-mx-4 -mb-4 flex min-h-0 flex-col gap-2 overflow-hidden rounded-b-xl bg-zinc-50/80 px-4 pb-4 pt-3 dark:bg-zinc-900/40"
         >
           <RegionHeading>Fact checks</RegionHeading>
           <LiveFactCheckList
             entries={entries}
             selectedStatementId={selection?.id ?? null}
-            onSelect={selectFactCheck}
+            onSelect={selectStatement}
           />
         </section>
       </div>
