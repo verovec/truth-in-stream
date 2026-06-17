@@ -1,8 +1,16 @@
 // Derives the running findings summary shown in the top-of-page strip from the
-// same live statement state that drives the subtitles and the fact-check list,
-// so the three can never disagree. It is a pure projection over the already
-// id-deduped, ordered statement list, so a replay after a reconnect cannot be
-// double-counted: the statements reducer collapses it before it reaches here.
+// same live statement and claim state that drives the subtitles and the
+// fact-check list, so the three can never disagree. It is a pure projection over
+// the already id-deduped, ordered statement list, so a replay after a reconnect
+// cannot be double-counted: the statements reducer collapses it before it
+// reaches here.
+import {
+  type ClaimsState,
+  claimsForUnit,
+  isTerminalClaimStatus,
+  type LiveClaim,
+} from "./claims";
+import type { ClaimVerdict } from "./frames";
 import { isScored, type LiveStatement } from "./statements";
 
 // LiveSummary is the at-a-glance tally for one analysis session. Every statement
@@ -40,18 +48,30 @@ export function emptySummary(): LiveSummary {
 }
 
 /**
- * Folds the live statements into a LiveSummary. Verdicts and evidence are
- * tallied only from scored statements (see isScored), the same rule the
- * fact-check list uses, so a row the list marks "not checked" can never inflate
- * a verdict count here. A checked-but-skipped or errored statement counts as
- * not-checked even if it carries matches; a statement still analysing is
- * in-progress.
+ * Folds the live statements into a LiveSummary. On the retrieve-then-verify
+ * path a unit fans into atomic claims, each carrying its own verdict, so when a
+ * statement has claims the summary derives from those claims (the same entries
+ * the fact-check list renders) rather than the statement's own status, which the
+ * verify path never resolves. A legacy statement with no claims is tallied from
+ * its status and matches exactly as before.
+ *
+ * Verdicts and evidence are tallied only from scored statements (see isScored)
+ * or verified claims, the same rule the fact-check list uses, so a row the list
+ * marks "not checked" can never inflate a verdict count here. A checked-but-
+ * skipped or errored statement counts as not-checked even if it carries matches;
+ * a statement still analysing is in-progress.
  */
 export function summarizeStatements(
   statements: readonly LiveStatement[],
+  claims?: ClaimsState,
 ): LiveSummary {
   const summary = emptySummary();
   for (const statement of statements) {
+    const unitClaims = claims ? claimsForUnit(claims, statement.id) : [];
+    if (unitClaims.length > 0) {
+      tallyClaimUnit(summary, unitClaims);
+      continue;
+    }
     if (statement.status === "analysing") {
       summary.analysing += 1;
       continue;
@@ -70,4 +90,45 @@ export function summarizeStatements(
     }
   }
   return summary;
+}
+
+// VERIFY_VERDICT_BUCKET maps a verified claim's verdict (the verifier's
+// supports/refutes/not_enough_info vocabulary) onto the strip's corroborates/
+// contradicts/unclear counts, so the per-claim list and the summary read the
+// same. A verified claim with no verdict (a degenerate frame) reads as
+// not_enough_info, mirroring how the list renders it. The Record over
+// ClaimVerdict is exhaustive by construction: a new verdict added to the wire
+// enum fails to compile here until it is given a bucket, rather than silently
+// falling through to a wrong count.
+const VERIFY_VERDICT_BUCKET: Record<
+  ClaimVerdict,
+  "corroborates" | "contradicts" | "unclear"
+> = {
+  supports: "corroborates",
+  refutes: "contradicts",
+  not_enough_info: "unclear",
+};
+
+// tallyClaimUnit folds one verify-path unit's claims into the summary. The unit
+// is in progress until every claim is terminal; once resolved it counts as
+// checked when at least one claim reached a verdict, otherwise not-checked (every
+// claim was shed to capacity or errored). Verified claims contribute their
+// verdict to the matching count; non-verified terminal claims contribute none,
+// the same way the list shows them as a status rather than a verdict.
+function tallyClaimUnit(summary: LiveSummary, unitClaims: LiveClaim[]): void {
+  if (!unitClaims.every((claim) => isTerminalClaimStatus(claim.status))) {
+    summary.analysing += 1;
+    return;
+  }
+  if (unitClaims.some((claim) => claim.status === "verified")) {
+    summary.checked += 1;
+  } else {
+    summary.skipped += 1;
+  }
+  for (const claim of unitClaims) {
+    if (claim.status !== "verified") {
+      continue;
+    }
+    summary[VERIFY_VERDICT_BUCKET[claim.verdict ?? "not_enough_info"]] += 1;
+  }
 }

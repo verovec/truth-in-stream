@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
 import type { SegmentMatch, Verdict } from "@/lib/fact-check/api";
+import {
+  applyClaimResultFrame,
+  applyClaimsFrame,
+  type ClaimsState,
+  emptyClaims,
+} from "./claims";
+import type { ClaimStatus, ClaimVerdict } from "./frames";
 import type { LiveStatement } from "./statements";
 import { emptySummary, summarizeStatements } from "./summary";
 
@@ -39,6 +46,35 @@ const evidence = (): SegmentMatch => ({
   article: { title: "Earth", url: "https://en.wikipedia.org/wiki/Earth" },
   similarity: 0.7,
 });
+
+// unitClaims builds a real ClaimsState for one unit through the same reducers
+// the live hook uses, so the summary is exercised against genuine claim state
+// rather than a hand-built map.
+function unitClaims(
+  unitId: string,
+  claims: { status: ClaimStatus; verdict?: ClaimVerdict }[],
+): ClaimsState {
+  const ids = claims.map((_, i) => `${unitId}-${i}`);
+  let state = applyClaimsFrame(emptyClaims(), {
+    type: "claims",
+    id: unitId,
+    claims: ids.map((claimId, i) => ({
+      claimId,
+      text: `claim ${i}`,
+      status: "pending" as const,
+    })),
+  });
+  claims.forEach((c, i) => {
+    state = applyClaimResultFrame(state, {
+      type: "claim_result",
+      id: unitId,
+      claimId: ids[i],
+      status: c.status,
+      verdict: c.verdict,
+    });
+  });
+  return state;
+}
 
 describe("summarizeStatements", () => {
   test("an empty list summarizes to all-zero counts", () => {
@@ -120,5 +156,113 @@ describe("summarizeStatements", () => {
     expect(summary.checked + summary.skipped + summary.analysing).toBe(
       statements.length,
     );
+  });
+});
+
+describe("summarizeStatements on the verify path (claims-aware)", () => {
+  test("a unit with a still-checking claim stays in progress, never checked", () => {
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [{ status: "checking" }]),
+    );
+
+    expect(summary).toMatchObject({ analysing: 1, checked: 0, skipped: 0 });
+  });
+
+  test("a unit resolves once every claim is terminal, tallying per-claim verdicts", () => {
+    // supports -> corroborates, refutes -> contradicts, not_enough_info ->
+    // unclear: the strip mirrors the per-claim fact-check list one-for-one.
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [
+        { status: "verified", verdict: "supports" },
+        { status: "verified", verdict: "refutes" },
+        { status: "verified", verdict: "not_enough_info" },
+      ]),
+    );
+
+    expect(summary).toEqual({
+      checked: 1,
+      corroborates: 1,
+      contradicts: 1,
+      unclear: 1,
+      evidence: 0,
+      skipped: 0,
+      analysing: 0,
+    });
+  });
+
+  test("a unit with at least one verified claim counts as checked", () => {
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [
+        { status: "verified", verdict: "supports" },
+        { status: "unchecked" },
+      ]),
+    );
+
+    expect(summary).toMatchObject({ checked: 1, skipped: 0, corroborates: 1 });
+  });
+
+  test("a unit whose claims are all unchecked or errored counts as not checked", () => {
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [{ status: "unchecked" }, { status: "error" }]),
+    );
+
+    expect(summary).toEqual({
+      checked: 0,
+      corroborates: 0,
+      contradicts: 0,
+      unclear: 0,
+      evidence: 0,
+      skipped: 1,
+      analysing: 0,
+    });
+  });
+
+  test("a degenerate verified claim with no verdict counts as unclear, like the list", () => {
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [{ status: "verified" }]),
+    );
+
+    expect(summary).toMatchObject({ checked: 1, unclear: 1 });
+  });
+
+  test("legacy statements with no claims keep their statement-derived counts", () => {
+    // Claims for a unit that has no statement in the list must not leak into the
+    // tally, and statements with no claims fall back to the legacy path.
+    const summary = summarizeStatements(
+      [
+        checked("a", 0, { matches: [claim("corroborates")] }),
+        analysing("b", 2),
+      ],
+      unitClaims("orphan", [{ status: "verified", verdict: "supports" }]),
+    );
+
+    expect(summary).toEqual({
+      checked: 1,
+      corroborates: 1,
+      contradicts: 0,
+      unclear: 0,
+      evidence: 0,
+      skipped: 0,
+      analysing: 1,
+    });
+  });
+
+  test("mixes legacy and verify-path units in one pass", () => {
+    const summary = summarizeStatements(
+      [checked("legacy", 0, { matches: [claim("contradicts")] }), analysing("u1", 2)],
+      unitClaims("u1", [{ status: "verified", verdict: "supports" }]),
+    );
+
+    expect(summary).toMatchObject({
+      checked: 2,
+      corroborates: 1,
+      contradicts: 1,
+      analysing: 0,
+    });
   });
 });

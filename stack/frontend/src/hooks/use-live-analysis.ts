@@ -360,13 +360,15 @@ export function useLiveAnalysis(
   // not produce a new array reference and re-render the memoized statement list.
   const orderedStatements = useMemo(() => listStatements(statements), [statements]);
 
-  // The running summary is a pure projection of the same statements, memoized on
-  // them so an interim caption (which never touches the statement set) does not
-  // recompute it. This is the single source the top-of-page strip and the
-  // fact-check list both read, so they can never disagree.
+  // The running summary is a pure projection of the same statements and claims,
+  // memoized on them so an interim caption (which touches neither) does not
+  // recompute it. On the verify path a unit resolves through its claims, never a
+  // statement-level result, so the summary must read claims to leave "in
+  // progress"; recomputing when claims change keeps the strip and the per-claim
+  // list - the single source both read - in lockstep.
   const summary = useMemo(
-    () => summarizeStatements(orderedStatements),
-    [orderedStatements],
+    () => summarizeStatements(orderedStatements, claims),
+    [orderedStatements, claims],
   );
 
   // claimsFor is memoized on the claims state so its identity is stable across
