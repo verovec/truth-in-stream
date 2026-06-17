@@ -212,3 +212,50 @@ accuracy at least at the current baseline. `main` stays shippable throughout.
 4. Wire the verify pool + new events behind `FACTCHECK_VERIFY_PATH` (default off).
 5. Frontend: per-claim progressive-disclosure rendering.
 6. Golden eval set + accuracy gate; flip the flag on once baseline is met.
+
+## Golden eval results + flag decision (VER-88)
+
+The golden eval set lives at `stack/backend/internal/eval/testdata/golden.json` (37 labelled
+atomic claims: 14 supports, 19 refutes, 4 not_enough_info; 20 of them adversarial
+same-topic-opposite-truth cases, each with a provenance note justifying its label). The harness
+(`internal/eval/eval.go`, gated by `TestGoldenEvalAccuracyGate`) runs both paths over the set and
+asserts the verify path is at least as accurate as the recorded legacy baseline.
+
+### Offline (CI) numbers — faked model, in-memory evidence
+
+This run is **deterministic and runs in CI with no external API and no DB**: each case carries the
+evidence passages retrieval would surface and a recorded verifier tool-call, which a fake Anthropic
+server replays so the real `verify.Client` and its real citation guard execute. It is a regression
+guard on the wiring and the citation/verdict logic, **not** a measurement of live model accuracy.
+
+| Path | Overall | supports | refutes | not_enough_info |
+|------|---------|----------|---------|-----------------|
+| Legacy similarity-only (baseline) | 15/37 (40.5%) | 14/14 | 0/19 | 1/4 |
+| Retrieve-then-verify | 37/37 (100%) | 14/14 | 19/19 | 4/4 |
+
+The baseline reads every strong topical hit as support, so it scores every adversarial refutes/NEI
+case wrong — exactly the "similarity is not entailment" bug the redesign exists to kill. The
+grounded path reads the passage and labels every case correctly. The CI gate (`baselineAccuracy =
+0.41`) fails if the verify path ever regresses below the legacy baseline.
+
+### Flag decision: `FACTCHECK_VERIFY_PATH` stays default OFF
+
+The default is **NOT** flipped in this change. The offline eval is a faked-model run; flipping the
+production default on the strength of a faked run alone would be dishonest, because it measures the
+wiring, not whether the live `voyage-4-large` retrieval plus the live Claude verifier hit the
+baseline on a real corpus. The flag remains `default off` until a real-model eval (below) is run
+and meets or beats the legacy baseline.
+
+### How to run the real eval and flip the flag
+
+1. Seed a throwaway Postgres+pgvector DB with the curated claims and wiki corpus
+   (`make seed`; never point `TEST_DATABASE_URL`/`DATABASE_URL` at the shared `truthinstream` DB —
+   the store integration tests drop all tables).
+2. Set `FACTCHECK_VERIFY_API_KEY` and `EMBEDDING_API_KEY`, then run each golden statement through
+   the live `Matcher` (real Voyage retrieval) and the live `verify.Client` (real Claude), comparing
+   the emitted verdict against the `expected` label in `golden.json`.
+3. If live verify-path accuracy >= the legacy baseline on that real corpus, flip the default:
+   change `boolEnv("FACTCHECK_VERIFY_PATH")` to default true in
+   `internal/config/config.go` (`LoadVerifyPath`), update `TestLoadVerifyPathDefaultsOff`
+   accordingly, and record the real numbers here. Until then the offline gate guards the wiring and
+   the path stays opt-in via `FACTCHECK_VERIFY_PATH=true`.
