@@ -46,7 +46,7 @@ const VERDICT_STYLES: Record<ClaimVerdict, string> = {
 // can weigh a borrowed verdict against a reasoned one.
 const SOURCE_LABELS: Record<VerdictSource, string> = {
   curated: "from a curated source",
-  verified: "verified against evidence",
+  verified: "checked against evidence",
 };
 
 const SOURCE_STYLES: Record<VerdictSource, string> = {
