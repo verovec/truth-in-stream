@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -62,6 +63,45 @@ func (p pausingStream) StreamSegments(ctx context.Context, _ <-chan []byte) (<-c
 		for _, t := range p.transcripts {
 			select {
 			case ch <- t:
+			case <-ctx.Done():
+				return
+			}
+		}
+		<-ctx.Done()
+	}()
+	return ch, nil
+}
+
+// pacedItem is one transcript a pacedStream emits after waiting `after` since the
+// previous item, so a test can place a deterministic gap between two turns.
+type pacedItem struct {
+	after      time.Duration
+	transcript domain.LiveTranscript
+}
+
+// pacedStream replays its items with a controlled delay before each, then holds
+// the channel open until ctx is canceled. Under synctest the delays run on the
+// fake clock, so a test can observe the idle timer fire in the gap between turns.
+type pacedStream struct {
+	items []pacedItem
+}
+
+func (p pacedStream) StreamSegments(ctx context.Context, _ <-chan []byte) (<-chan domain.LiveTranscript, error) {
+	ch := make(chan domain.LiveTranscript)
+	go func() {
+		defer close(ch)
+		for _, it := range p.items {
+			if it.after > 0 {
+				timer := time.NewTimer(it.after)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
+			}
+			select {
+			case ch <- it.transcript:
 			case <-ctx.Done():
 				return
 			}
@@ -479,6 +519,219 @@ func TestLiveAnalyzerIdleFlushesTrailingShortTurn(t *testing.T) {
 		cancel()
 		drainLiveEvents(t, out) // let the bubble's goroutines exit before asserting
 	})
+}
+
+func TestIncompleteTrailingFragment(t *testing.T) {
+	t.Parallel()
+	// A run of n single-letter words separated by spaces, with no terminal
+	// punctuation, used to probe the word-count boundary.
+	words := func(n int) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = "w"
+		}
+		return strings.Join(parts, " ")
+	}
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"empty", "", false},
+		{"whitespace only", "   ", false},
+		{"ends with period", "Hello world.", false},
+		{"ends with bang", "Hello world!", false},
+		{"ends with question", "Hello world?", false},
+		{"ends with ellipsis rune", "Hello world…", false},
+		{"trailing whitespace after terminator", "Hello world.   ", false},
+		{"mid-sentence fragment", "Weed is a serious drug that can have", true},
+		{"short fragment", "i think that", true},
+		{"single unpunctuated word", "yes", true},
+		{"complete then open fragment", "The earth is round. And the sky", true},
+		{"two complete sentences", "The earth is round. It is blue.", false},
+		{"open run just under a sentence", words(maxWordsPerSentence - 1), true},
+		{"open run a full sentence long", words(maxWordsPerSentence), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := incompleteTrailingFragment(tt.text); got != tt.want {
+				t.Errorf("incompleteTrailingFragment(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLiveAnalyzerHoldsIncompleteFragmentUntilSentenceCompletes(t *testing.T) {
+	// A committed turn that ends mid-sentence is not scored on the idle timer; it
+	// is held for same-speaker continuation, and once the rest of the sentence
+	// lands the whole sentence is scored as one unit. synctest drives the idle
+	// timer on a fake clock so the gap between the two turns is deterministic.
+	synctest.Test(t, func(t *testing.T) {
+		fragment := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "Weed is a serious drug that can have", Speaker: "A"}
+		rest := domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: "serious effects on developing brains.", Speaker: "A"}
+		combined := "Weed is a serious drug that can have serious effects on developing brains."
+		mc := &countingMatcher{}
+		analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+			// The rest of the sentence lands three seconds after the fragment - past
+			// the first idle tick (so the hold is exercised) but inside the max-hold
+			// window, so the completed sentence is scored as one unit.
+			Stream:     pacedStream{items: []pacedItem{{transcript: finalize(fragment)[0]}, {after: 3 * time.Second, transcript: finalize(rest)[0]}}},
+			Matcher:    mc,
+			Prechecker: livePrechecker{},
+			Logger:     discardLogger(),
+			IdleFlush:  2 * time.Second,
+			MaxHold:    6 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewLiveAnalyzer: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		out, err := analyzer.Run(ctx, make(chan []byte))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		// Both subtitles are emitted immediately, before any scoring, so captions are
+		// never delayed by the hold.
+		if sub := <-out; sub.Kind != LiveEventSubtitle || sub.ID != "0" {
+			t.Fatalf("first event = %+v, want subtitle id 0", sub)
+		}
+		if sub := <-out; sub.Kind != LiveEventSubtitle || sub.ID != "1" {
+			t.Fatalf("second event = %+v, want subtitle id 1", sub)
+		}
+
+		// The next events are the results, which arrive only after the completed
+		// sentence is scored. The fragment alone is never scored.
+		res := <-out
+		if res.Kind != LiveEventResult {
+			t.Fatalf("third event = %+v, want a result", res)
+		}
+
+		cancel()
+		drainLiveEvents(t, out)
+
+		if got := mc.calls(); len(got) != 1 || got[0] != combined {
+			t.Fatalf("matcher calls = %v, want one call on the completed sentence %q", got, combined)
+		}
+	})
+}
+
+func TestLiveAnalyzerScoresIncompleteFragmentAtMaxHold(t *testing.T) {
+	// A fragment that never completes is still scored once the max-hold elapses, so
+	// a stuck mid-sentence turn resolves to a verdict rather than hanging forever.
+	synctest.Test(t, func(t *testing.T) {
+		fragment := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "i was going to say", Speaker: "A"}
+		mc := &countingMatcher{}
+		analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+			Stream:     pausingStream{transcripts: finalize(fragment)},
+			Matcher:    mc,
+			Prechecker: livePrechecker{},
+			Logger:     discardLogger(),
+			IdleFlush:  2 * time.Second,
+			MaxHold:    4 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewLiveAnalyzer: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		out, err := analyzer.Run(ctx, make(chan []byte))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		if sub := <-out; sub.Kind != LiveEventSubtitle || sub.ID != "0" {
+			t.Fatalf("first event = %+v, want subtitle id 0", sub)
+		}
+		res := <-out
+		if res.Kind != LiveEventResult || res.ID != "0" {
+			t.Fatalf("second event = %+v, want the max-hold result for id 0", res)
+		}
+
+		cancel()
+		drainLiveEvents(t, out)
+
+		if got := mc.calls(); len(got) != 1 || got[0] != "i was going to say" {
+			t.Fatalf("matcher calls = %v, want the held fragment scored once at max-hold", got)
+		}
+	})
+}
+
+func TestLiveAnalyzerMaxHoldBelowIdleFlushDisablesHold(t *testing.T) {
+	// A MaxHold below IdleFlush disables the hold entirely (maxIdleHolds == 0), so
+	// an incomplete trailing fragment is scored on the very first idle tick, exactly
+	// as before the buffering change - the documented escape hatch.
+	synctest.Test(t, func(t *testing.T) {
+		fragment := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "this is an incomplete fragment", Speaker: "A"}
+		mc := &countingMatcher{}
+		analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+			Stream:     pausingStream{transcripts: finalize(fragment)},
+			Matcher:    mc,
+			Prechecker: livePrechecker{},
+			Logger:     discardLogger(),
+			IdleFlush:  2 * time.Second,
+			MaxHold:    time.Second, // below IdleFlush -> hold disabled
+		})
+		if err != nil {
+			t.Fatalf("NewLiveAnalyzer: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		out, err := analyzer.Run(ctx, make(chan []byte))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		if sub := <-out; sub.Kind != LiveEventSubtitle || sub.ID != "0" {
+			t.Fatalf("first event = %+v, want subtitle id 0", sub)
+		}
+		// With the hold disabled the result arrives at the first idle window, not held.
+		res := <-out
+		if res.Kind != LiveEventResult || res.ID != "0" {
+			t.Fatalf("second event = %+v, want the first-idle result for id 0", res)
+		}
+
+		cancel()
+		drainLiveEvents(t, out)
+
+		if got := mc.calls(); len(got) != 1 || got[0] != "this is an incomplete fragment" {
+			t.Fatalf("matcher calls = %v, want the fragment scored once on the first idle tick", got)
+		}
+	})
+}
+
+func TestLiveAnalyzerScoresIncompleteFragmentOnSpeakerChange(t *testing.T) {
+	t.Parallel()
+	// A speaker change flushes the prior speaker's unit immediately, even when its
+	// trailing text is an incomplete sentence: the hold is an idle-only behavior
+	// and never crosses a speaker boundary.
+	segs := []domain.Segment{
+		{Text: "i think that", Speaker: "A"},
+		{Text: "hello.", Speaker: "B"},
+	}
+	mc := &countingMatcher{}
+	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
+		Stream:     &fakeSegmentStream{transcripts: finalize(segs...)},
+		Matcher:    mc,
+		Prechecker: livePrechecker{},
+		Logger:     discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewLiveAnalyzer: %v", err)
+	}
+
+	out, err := analyzer.Run(t.Context(), make(chan []byte))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	drainLiveEvents(t, out)
+
+	wantCalls := []string{"hello.", "i think that"}
+	if diff := cmp.Diff(wantCalls, sortedCalls(mc)); diff != "" {
+		t.Errorf("speaker change must flush the incomplete fragment (-want +got):\n%s", diff)
+	}
 }
 
 func TestLiveAnalyzerForwardsInterimCaptionsWithoutScoring(t *testing.T) {
