@@ -371,6 +371,70 @@ services:
     profiles: ["wiki"]
     restart: "no"
 
+  # factcheckworker drains self-contained curated-claim jobs from the fact-check
+  # queue, embeds each claim's text, and upserts the political claim record
+  # (text + verdict + flags + source + vector) into the political claim DB. It
+  # mirrors crawlworker but writes a curated claim instead of a wiki chunk and
+  # reuses the same CRAWL_WORKER_* tuning. Scale it like the embed fleet:
+  #   docker compose --profile factcheck up -d --scale factcheckworker=4 rabbitmq factcheckworker
+  factcheckworker:
+    profiles: ["factcheck"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/factcheckworker"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Required for a real embed run; the worker fails fast if unset.
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # Per-replica tuning, shared with the wiki crawl worker.
+      CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-4}"
+      CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-5}"
+      CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # factcheckcrawl reads already-checked French claims from the Google Fact Check
+  # Tools API (the standardized ClaimReview aggregator for Les Decodeurs, AFP
+  # Factuel, franceinfo Vrai ou Fake) and fills the fact-check queue with
+  # self-contained curated-claim jobs, then exits. It needs no database. On-demand
+  # producer (run explicitly), in the "tools" profile:
+  #   docker compose --profile tools run --rm factcheckcrawl   (or: make factcheck-crawl)
+  factcheckcrawl:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/factcheckcrawl"]
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Required: the Google Fact Check Tools API key and comma-separated query
+      # terms (a politician's name, a policy area) to walk. The producer follows
+      # nextPageToken to the end of each query unless FACTCHECK_MAX_PAGES caps it.
+      FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
+      FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      # Claim language filter (default fr) and per-query page cap (empty/0 = all).
+      FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
+      FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in

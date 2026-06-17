@@ -38,7 +38,10 @@ CRAWL_SHARDS ?= 1
 # completion) live next to those references in docker-compose.yml. Override per
 # run with the environment form, e.g. WIKI_EMBED_BATCH_SIZE=128 make wiki-populate.
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers prime migrate logs ps
+# Worker count for the fact-check-archive consumer fleet (`make factcheck-workers`).
+FACTCHECKWORKER_REPLICAS ?= 2
+
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers prime migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -141,6 +144,14 @@ reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC
 crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
 	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
 	@echo "crawl fleet up: rabbitmq + $(CRAWLWORKER_REPLICAS) crawlworker(s) running; run 'make crawl CRAWL_CATEGORIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
+
+factcheck-workers: ## Start N fact-check-archive consumers that drain the fact-check queue into the curated political claim DB (FACTCHECKWORKER_REPLICAS=2, overridable). Run `make factcheck-crawl` afterwards to fill the queue; the running fleet drains it. Paid worker (embeds), opt-in (factcheck profile)
+	$(COMPOSE) --profile factcheck up --scale factcheckworker=$(FACTCHECKWORKER_REPLICAS) rabbitmq factcheckworker
+	@echo "factcheck fleet up: rabbitmq + $(FACTCHECKWORKER_REPLICAS) factcheckworker(s) running; run 'make factcheck-crawl FACTCHECK_QUERIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
+
+factcheck-crawl: ## Run the fact-check-archive producer: read already-checked French claims from the Google Fact Check Tools API for FACTCHECK_QUERIES and publish curated-claim jobs, then exit (DB-free). Requires FACTCHECK_API_KEY and FACTCHECK_QUERIES (e.g. `make factcheck-crawl FACTCHECK_QUERIES="retraites,chômage"`); the factcheckworker fleet embeds and upserts them. Reuses a fleet from `make factcheck-workers`, or brings up the broker and one worker
+	@$(COMPOSE) --profile factcheck ps -q rabbitmq | grep -q . || $(COMPOSE) --profile factcheck up rabbitmq factcheckworker
+	$(COMPOSE) --profile tools run --rm --no-deps factcheckcrawl
 
 # Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
 # the producer does not reconcile (shrink) it; otherwise bring up the broker and

@@ -1,0 +1,41 @@
+{
+  "claims": [
+    {
+      "text": "La criminalité a augmenté de 50% en France depuis 2017.",
+      "claimant": "Partagé sur Facebook",
+      "claimDate": "2024-03-15T00:00:00Z",
+      "claimReview": [
+        {
+          "publisher": {
+            "name": "AFP Factuel",
+            "site": "factuel.afp.com"
+          },
+          "url": "https://factuel.afp.com/doc.afp.com.34PQ6WA",
+          "title": "Non, la criminalité n'a pas augmenté de 50% depuis 2017",
+          "reviewDate": "2024-03-18T00:00:00Z",
+          "textualRating": "Faux",
+          "languageCode": "fr"
+        }
+      ]
+    },
+    {
+      "text": "Le chômage est au plus bas niveau depuis 15 ans.",
+      "claimant": "Un responsable politique",
+      "claimDate": "2024-02-01T00:00:00Z",
+      "claimReview": [
+        {
+          "publisher": {
+            "name": "franceinfo",
+            "site": "francetvinfo.fr"
+          },
+          "url": "https://www.francetvinfo.fr/vrai-ou-fake/chomage-plus-bas_6543210.html",
+          "title": "Le chômage est-il vraiment au plus bas depuis 15 ans ?",
+          "reviewDate": "2024-02-05T00:00:00Z",
+          "textualRating": "Plutôt vrai",
+          "languageCode": "fr"
+        }
+      ]
+    }
+  ],
+  "nextPageToken": "CONTINUE_TOKEN_PAGE2"
+}
