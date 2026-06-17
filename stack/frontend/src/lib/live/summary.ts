@@ -21,10 +21,14 @@ export type LiveSummary = {
   // error. Some may have found no match; they still count as checked.
   checked: number;
   // Claim-verdict tallies across the matches of every checked statement. These
-  // mirror the claim entries in the fact-check list one-for-one.
+  // mirror the claim entries in the fact-check list one-for-one. unclear is the
+  // legacy curated path's neutral verdict; unverifiable is the verify path's
+  // first-class "can't be confirmed" verdict, kept distinct so the strip reads
+  // the same word as the per-claim list.
   corroborates: number;
   contradicts: number;
   unclear: number;
+  unverifiable: number;
   // Supporting Wikipedia evidence matches across checked statements, kept
   // distinct from claim verdicts.
   evidence: number;
@@ -41,6 +45,7 @@ export function emptySummary(): LiveSummary {
     corroborates: 0,
     contradicts: 0,
     unclear: 0,
+    unverifiable: 0,
     evidence: 0,
     skipped: 0,
     analysing: 0,
@@ -93,20 +98,21 @@ export function summarizeStatements(
 }
 
 // VERIFY_VERDICT_BUCKET maps a verified claim's credibility verdict (the
-// verifier's credible/disputed/unverifiable vocabulary) onto the strip's
-// positive/negative/neutral counts, which the legacy curated path also feeds, so
-// the per-claim list and the summary read the same and both paths share one tally.
+// verifier's credible/disputed/unverifiable vocabulary) onto the strip's counts.
+// credible and disputed reuse the curated corroborates/contradicts buckets, but
+// unverifiable keeps its own bucket rather than collapsing into the curated
+// unclear, so the strip reads "Unverifiable" exactly as the per-claim list does.
 // A verified claim with no verdict (a degenerate frame) reads as unverifiable,
 // mirroring how the list renders it. The Record over ClaimVerdict is exhaustive by
 // construction: a new verdict added to the wire enum fails to compile here until it
 // is given a bucket, rather than silently falling through to a wrong count.
 const VERIFY_VERDICT_BUCKET: Record<
   ClaimVerdict,
-  "corroborates" | "contradicts" | "unclear"
+  "corroborates" | "contradicts" | "unverifiable"
 > = {
   credible: "corroborates",
   disputed: "contradicts",
-  unverifiable: "unclear",
+  unverifiable: "unverifiable",
 };
 
 // tallyClaimUnit folds one verify-path unit's claims into the summary. The unit

@@ -24,6 +24,7 @@ const STAT_TONES = {
   positive: "text-emerald-700 dark:text-emerald-300",
   negative: "text-rose-700 dark:text-rose-300",
   unclear: "text-amber-700 dark:text-amber-300",
+  unverifiable: "text-zinc-700 dark:text-zinc-300",
   evidence: "text-sky-700 dark:text-sky-300",
   muted: "text-zinc-500 dark:text-zinc-400",
 } as const;
@@ -37,6 +38,7 @@ const STATS: {
   { key: "corroborates", label: "Corroborated", tone: "positive" },
   { key: "contradicts", label: "Contradicted", tone: "negative" },
   { key: "unclear", label: "Unclear", tone: "unclear" },
+  { key: "unverifiable", label: "Unverifiable", tone: "unverifiable" },
   { key: "evidence", label: "Evidence", tone: "evidence" },
   { key: "skipped", label: "Not checked", tone: "muted" },
 ];
