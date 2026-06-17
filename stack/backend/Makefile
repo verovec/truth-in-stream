@@ -16,7 +16,7 @@ WIKI_MAX_DURATION ?= 15m
 # Persisted across runs so a resume reuses the downloaded dump dir.
 WIKI_DUMP_DIR     ?= /tmp/wikisync-dump
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build lambda-mqmetrics ingest seed refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build lambda-mqmetrics ingest seed scrutins-ingest refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -62,6 +62,9 @@ ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_AP
 
 seed: ## Load the local dataset (claims, wiki, sample videos) offline from the committed cache (DATABASE_URL; no API key)
 	go run ./cmd/seed
+
+scrutins-ingest: ## Bulk-ingest Assemblee Nationale open-data scrutins into the voting-record store; idempotent (DATABASE_URL; SCRUTINS_DIR = unzipped Scrutins.json.zip)
+	go run ./cmd/scrutinsingest -dir=$(SCRUTINS_DIR)
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	go run ./cmd/seed -refresh
