@@ -76,7 +76,7 @@ describe("LiveClaimList", () => {
       />,
     );
     expect(screen.getByText(/from a curated source/i)).toBeInTheDocument();
-    expect(screen.getByText(/verified against evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/checked against evidence/i)).toBeInTheDocument();
   });
 
   test("renders not_enough_info as an honest verdict, not an error", () => {
