@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 // toolUseResponse builds a minimal valid Messages response carrying one forced
@@ -277,5 +279,118 @@ func TestDecomposeRealisticUnit(t *testing.T) {
 
 	if !reflect.DeepEqual(got, modelClaims) {
 		t.Fatalf("Decompose() = %#v, want resolved atomic claims %#v", got, modelClaims)
+	}
+}
+
+func TestDecomposePromptLanguage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		locale domain.Locale
+		want   string
+	}{
+		{"default keeps english prompt", domain.LocaleEnglish, systemPrompt},
+		{"french locale uses french prompt", domain.LocaleFrench, systemPromptFR},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var captured struct {
+				System []struct {
+					Text string `json:"text"`
+				} `json:"system"`
+			}
+			c := newTestClient(t, Config{Locale: tc.locale}, func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &captured)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{}}))
+			})
+
+			c.Decompose(context.Background(), Input{Text: "une affirmation"})
+			if len(captured.System) == 0 {
+				t.Fatal("expected a system prompt")
+			}
+			if captured.System[0].Text != tc.want {
+				t.Errorf("system prompt = %q, want %q", captured.System[0].Text, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecomposeFrenchUserMessageLabels(t *testing.T) {
+	t.Parallel()
+	var captured struct {
+		Messages []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	c := newTestClient(t, Config{Locale: domain.LocaleFrench}, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{"Le Senateur Dupont a vote pour la loi."}}))
+	})
+
+	c.Decompose(context.Background(), Input{
+		Text:    "Il a vote pour cette loi.",
+		Speaker: "Animateur",
+		Context: "L'animateur parle du Senateur Dupont et de la loi de finances.",
+	})
+
+	if len(captured.Messages) == 0 || len(captured.Messages[0].Content) == 0 {
+		t.Fatal("expected a user message with content")
+	}
+	user := captured.Messages[0].Content[0].Text
+	// French labels frame the prompt; the English labels must not leak through.
+	for _, want := range []string{"Locuteur :", "Contexte recent :", "Enonce :", "Animateur"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("french user message missing %q; got %q", want, user)
+		}
+	}
+	for _, banned := range []string{"Speaker:", "Recent context:", "Statement:"} {
+		if strings.Contains(user, banned) {
+			t.Errorf("french user message leaked english label %q; got %q", banned, user)
+		}
+	}
+}
+
+func TestDecomposeFrenchMultiClaimSplit(t *testing.T) {
+	t.Parallel()
+	// The model resolves "il" against the context, drops the opinion, and emits
+	// two French atomic claims; the adapter returns them verbatim.
+	modelClaims := []string{
+		"Le Senateur Dupont a vote pour la loi de finances de 2023.",
+		"La loi de finances de 2023 a alloue mille milliards d'euros.",
+	}
+	c := newTestClient(t, Config{Locale: domain.LocaleFrench, MaxClaimsPerUnit: 4}, claimsResponder(t, modelClaims))
+
+	got := c.Decompose(context.Background(), Input{
+		Text:    "Il a vote pour, et je pense que c'est une bonne chose - mille milliards d'euros.",
+		Speaker: "Animateur",
+		Context: "L'animateur parle du Senateur Dupont et de la loi de finances de 2023.",
+	})
+
+	if !reflect.DeepEqual(got, modelClaims) {
+		t.Fatalf("Decompose() = %#v, want resolved French atomic claims %#v", got, modelClaims)
+	}
+}
+
+func TestDecomposeFrenchErrorFallsBackToSingleClaim(t *testing.T) {
+	t.Parallel()
+	// On a model error the French path degrades the same way: the unit comes back
+	// verbatim as a single claim so the live path never stalls.
+	unit := "Le pont a ouvert en mars 2023."
+	c := newTestClient(t, Config{Locale: domain.LocaleFrench}, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+	})
+
+	got := c.Decompose(context.Background(), Input{Text: unit})
+	if !reflect.DeepEqual(got, []string{unit}) {
+		t.Errorf("Decompose() on error = %#v, want single-claim fallback %#v", got, []string{unit})
 	}
 }

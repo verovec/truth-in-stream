@@ -22,6 +22,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
@@ -51,16 +52,34 @@ const systemPrompt = "You judge whether a single spoken statement is a check-wor
 	"\"my flight was late\"), an opinion, a question, a greeting, a hedge, or a sentence fragment. " +
 	"When you are unsure, record it as not check-worthy. Record your verdict with the record_check_worthiness tool."
 
+// systemPromptFR is the French counterpart of systemPrompt, used in the French/EU
+// political fact-checking mode. It frames the judgment in French and reasons in
+// French so the gate keeps French factual statements and drops French opinions,
+// questions, hedges, and fragments, mirroring systemPrompt's precision-over-recall
+// stance. It is selected by domain.LocaleFrench; every other locale keeps the
+// English prompt, so English behavior is unchanged when French mode is off.
+const systemPromptFR = "Tu evalues si un seul enonce parle est une affirmation factuelle publique verifiable. " +
+	"Un enonce est verifiable uniquement lorsqu'il avance une affirmation publique et verifiable sur le monde - " +
+	"un fait, une statistique, un evenement, ou une declaration attribuable qui pourrait etre confirmee ou refutee a partir de preuves. " +
+	"Il n'est PAS verifiable lorsqu'il s'agit d'une conversation anodine, d'une declaration personnelle ou banale (\"j'ai pris un cafe ce matin\", " +
+	"\"mon vol etait en retard\"), d'une opinion, d'une question, d'une salutation, d'une formule prudente, ou d'un fragment de phrase. " +
+	"En cas de doute, enregistre-le comme non verifiable. Enregistre ton verdict avec l'outil record_check_worthiness."
+
 // Config wires a Client. APIKey is required and comes from the environment only;
-// Model defaults to defaultModel when empty.
+// Model defaults to defaultModel when empty. Locale selects the prompt language:
+// the default (English) keeps the English prompt; domain.LocaleFrench reasons in
+// French. The judgment is unchanged across locales - only the prompt language
+// differs.
 type Config struct {
 	APIKey string
 	Model  string
+	Locale domain.Locale
 }
 
 // Client is the Anthropic-backed CheckWorthinessClassifier adapter.
 type Client struct {
-	llm *llm.Client
+	llm    *llm.Client
+	system string
 }
 
 // New builds a Client, failing when no API key is supplied (the feature is gated
@@ -76,7 +95,17 @@ func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("checkworthy: %w", err)
 	}
-	return &Client{llm: client}, nil
+	return &Client{llm: client, system: promptFor(cfg.Locale)}, nil
+}
+
+// promptFor selects the system prompt for the locale: the French prompt for
+// domain.LocaleFrench, the English prompt for every other locale (including the
+// default), so English behavior is unchanged when French mode is off.
+func promptFor(locale domain.Locale) string {
+	if locale.IsFrench() {
+		return systemPromptFR
+	}
+	return systemPrompt
 }
 
 // verdict is the forced tool's structured input.
@@ -92,7 +121,7 @@ type verdict struct {
 // heuristic decision - this method never panics or blocks the live path.
 func (c *Client) CheckWorthy(ctx context.Context, text string) (bool, error) {
 	v, err := llm.Classify[verdict](ctx, c.llm, llm.Request{
-		System:    systemPrompt,
+		System:    c.system,
 		User:      "Statement: " + text,
 		MaxTokens: maxTokens,
 		Tool: llm.Tool{

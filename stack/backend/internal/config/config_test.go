@@ -1505,3 +1505,60 @@ func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadPolitical(t *testing.T) {
+	tests := []struct {
+		name        string
+		env         map[string]string
+		wantEnabled bool
+		wantLocale  domain.Locale
+		wantErr     bool
+	}{
+		{
+			name:        "disabled by default keeps english locale",
+			env:         map[string]string{},
+			wantEnabled: false,
+			wantLocale:  domain.LocaleEnglish,
+		},
+		{
+			name:        "enabled selects french locale",
+			env:         map[string]string{"FACTCHECK_POLITICAL": "true"},
+			wantEnabled: true,
+			wantLocale:  domain.LocaleFrench,
+		},
+		{
+			name:        "explicit false keeps english locale",
+			env:         map[string]string{"FACTCHECK_POLITICAL": "false"},
+			wantEnabled: false,
+			wantLocale:  domain.LocaleEnglish,
+		},
+		{
+			name:    "non-boolean fails",
+			env:     map[string]string{"FACTCHECK_POLITICAL": "maybe"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadPolitical()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Enabled != tc.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", got.Enabled, tc.wantEnabled)
+			}
+			if got.Locale() != tc.wantLocale {
+				t.Errorf("Locale() = %q, want %q", got.Locale(), tc.wantLocale)
+			}
+		})
+	}
+}

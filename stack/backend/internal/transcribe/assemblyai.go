@@ -213,6 +213,14 @@ func (c *AssemblyAIClient) dial(ctx context.Context, opts Options) (aaiSocket, e
 // assemblyAIURL builds the connection URL with the model, fixed PCM format, and
 // streaming diarization enabled. A positive maxSpeakers and a non-empty language
 // are added only when set, so the provider auto-detects otherwise.
+//
+// The spoken language is biased with the language_code query parameter (the v3
+// streaming key; the older "language" parameter is deprecated for u3-rt-pro), so
+// passing "fr" biases the multilingual model toward French while it keeps its
+// code-switching. Region is pinned by the host (c.url), not a query parameter:
+// the default streaming.assemblyai.com endpoint is the global edge-routed one, so
+// "global" is the default and no model_region parameter is sent - that key is not
+// part of the v3 streaming contract (verified against assemblyai.com/docs, 2026-06).
 func assemblyAIURL(base, model string, maxSpeakers int, language string) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -229,7 +237,7 @@ func assemblyAIURL(base, model string, maxSpeakers int, language string) (string
 		q.Set("max_speakers", strconv.Itoa(maxSpeakers))
 	}
 	if language != "" {
-		q.Set("language", language)
+		q.Set("language_code", language)
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
