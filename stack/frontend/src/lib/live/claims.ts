@@ -95,7 +95,11 @@ export function applyClaimResultFrame(
   const claims = new Map<string, LiveClaim>(byUnit.get(frame.id));
 
   const existing = claims.get(frame.claimId);
-  if (existing && isTerminal(existing.status) && frame.status === "checking") {
+  if (
+    existing &&
+    isTerminalClaimStatus(existing.status) &&
+    frame.status === "checking"
+  ) {
     // A late checking placeholder must not erase a verdict already shown.
     return state;
   }
@@ -122,7 +126,11 @@ export function applyClaimResultFrame(
   return { byUnit, order };
 }
 
-function isTerminal(status: ClaimStatus): boolean {
+// isTerminalClaimStatus is the single definition of claim terminality the
+// reducer and the running summary both key off, so the strip and the per-claim
+// list can never disagree on whether a unit is still in progress. A verdict, a
+// capacity shed, and a failure are all terminal; pending and checking are not.
+export function isTerminalClaimStatus(status: ClaimStatus): boolean {
   return (
     status === "verified" || status === "unchecked" || status === "error"
   );

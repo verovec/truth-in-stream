@@ -477,6 +477,47 @@ describe("useLiveAnalysis", () => {
     });
   });
 
+  test("the verify path drives the summary out of 'in progress' as its claims resolve", () => {
+    // Regression for the stuck top-bar: on the verify path a unit never gets a
+    // statement-level result, so the summary must follow the claim lifecycle.
+    // A subtitle leaves the unit analysing; it stays analysing while a claim is
+    // still checking, and only resolves to checked once every claim is terminal,
+    // tallying the per-claim verdict.
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "the bridge opened in 1937")),
+    );
+    expect(h.analysis().summary).toMatchObject({ analysing: 1, checked: 0 });
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimsFrame("0", ["0-0", "the bridge opened in 1937"]),
+      ),
+    );
+    act(() => h.sockets[0].handlers.onFrame(claimResultFrame("0", "0-0", "checking")));
+    // A claim still in flight keeps the unit in progress, never prematurely
+    // checked.
+    expect(h.analysis().summary).toMatchObject({ analysing: 1, checked: 0 });
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimResultFrame("0", "0-0", "verified", {
+          source: "verified",
+          verdict: "supports",
+          confidence: 0.8,
+        }),
+      ),
+    );
+    expect(h.analysis().summary).toMatchObject({
+      analysing: 0,
+      checked: 1,
+      corroborates: 1,
+    });
+  });
+
   test("the summary keeps a stable identity across interim-only updates", () => {
     const h = harness();
     play(h.store());
