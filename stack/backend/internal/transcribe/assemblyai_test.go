@@ -24,7 +24,7 @@ func silentAssemblyAI() *AssemblyAIClient {
 func TestAssemblyAIURL(t *testing.T) {
 	t.Parallel()
 
-	got, err := assemblyAIURL("wss://streaming.example.test/v3/ws", "u3-rt-pro", 3, "en")
+	got, err := assemblyAIURL("wss://streaming.example.test/v3/ws", "u3-rt-pro", 3, "fr")
 	if err != nil {
 		t.Fatalf("assemblyAIURL: %v", err)
 	}
@@ -42,12 +42,21 @@ func TestAssemblyAIURL(t *testing.T) {
 		"encoding":         "pcm_s16le",
 		"speaker_labels":   "true",
 		"max_speakers":     "3",
-		"language":         "en",
+		"language_code":    "fr",
 		"max_turn_silence": "500",
 	} {
 		if q.Get(key) != want {
 			t.Errorf("query %q = %q, want %q", key, q.Get(key), want)
 		}
+	}
+	// model_region is not part of the v3 streaming contract; region is pinned by
+	// the host, so the global edge-routed default must not gain a fabricated param.
+	if _, ok := q["model_region"]; ok {
+		t.Errorf("model_region must not be sent: %s", got)
+	}
+	// The deprecated "language" key must not be used in place of language_code.
+	if _, ok := q["language"]; ok {
+		t.Errorf("deprecated language key present, want language_code: %s", got)
 	}
 }
 
@@ -63,8 +72,8 @@ func TestAssemblyAIURLOmitsUnsetOptions(t *testing.T) {
 	if _, ok := q["max_speakers"]; ok {
 		t.Errorf("max_speakers present for zero value: %s", got)
 	}
-	if _, ok := q["language"]; ok {
-		t.Errorf("language present for empty value: %s", got)
+	if _, ok := q["language_code"]; ok {
+		t.Errorf("language_code present for empty value: %s", got)
 	}
 	// speaker_labels is always on: diarization is the reason this provider exists.
 	if q.Get("speaker_labels") != "true" {
@@ -260,7 +269,7 @@ func (s *scriptedAAISocket) readJSON(ctx context.Context, v any) error {
 		m := s.msgs[s.idx]
 		s.idx++
 		s.mu.Unlock()
-		*(v.(*aaiMessage)) = m
+		*v.(*aaiMessage) = m
 		return nil
 	}
 	s.mu.Unlock()
@@ -498,6 +507,74 @@ func TestAssemblyAITranscribeStreamReadsOversizedTurn(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for the committed turn event")
+	}
+}
+
+func TestAssemblyAITranscribeStreamFrenchDiarized(t *testing.T) {
+	t.Parallel()
+	// End-to-end over a real WebSocket: a French source dials with the French
+	// language bias and diarization on, and a French committed Turn flows back as
+	// a French diarized segment - the offline stand-in for "a French audio source
+	// produces French diarized subtitles".
+	const frenchTurn = "le chomage a baisse de deux points"
+	gotQuery := make(chan url.Values, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery <- r.URL.Query()
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		if err := wsjson.Write(r.Context(), conn, map[string]any{
+			"type":          aaiMsgTurn,
+			"transcript":    frenchTurn,
+			"speaker_label": "A",
+			"end_of_turn":   true,
+			"words": []map[string]any{
+				{"text": "le", "start": 1000, "end": 2000, "speaker": "A"},
+			},
+		}); err != nil {
+			return
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewAssemblyAI(AssemblyAIConfig{
+		APIKey: "k",
+		URL:    "ws" + strings.TrimPrefix(srv.URL, "http"),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	events, err := client.TranscribeStream(ctx, make(chan []byte), Options{Language: "fr"})
+	if err != nil {
+		t.Fatalf("TranscribeStream: %v", err)
+	}
+
+	select {
+	case q := <-gotQuery:
+		if q.Get("language_code") != "fr" {
+			t.Errorf("language_code = %q, want fr", q.Get("language_code"))
+		}
+		if q.Get("speaker_labels") != "true" {
+			t.Errorf("speaker_labels = %q, want true", q.Get("speaker_labels"))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the dial query")
+	}
+
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("event channel closed with no event")
+		}
+		if !ev.Final || ev.Segment.Text != frenchTurn || ev.Segment.Speaker != "A" {
+			t.Errorf("got final=%v text=%q speaker=%q, want a final French diarized turn", ev.Final, ev.Segment.Text, ev.Segment.Speaker)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the French committed turn event")
 	}
 }
 

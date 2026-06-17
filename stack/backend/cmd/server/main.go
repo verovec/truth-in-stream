@@ -18,6 +18,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
@@ -77,6 +78,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	politicalCfg, err := config.LoadPolitical()
+	if err != nil {
+		return err
+	}
+	locale := politicalCfg.Locale()
 	debugSearchCfg, err := config.LoadDebugSearch()
 	if err != nil {
 		return err
@@ -178,9 +184,9 @@ func run(logger *slog.Logger) error {
 	// legacy two-stage gate (claim + coverage) is used, unchanged.
 	var prechecker service.SegmentPrechecker
 	if verifyPathCfg.Active() {
-		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, logger)
+		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, locale, logger)
 	} else {
-		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, embedder, store, store, logger)
+		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, locale, embedder, store, store, logger)
 	}
 	if err != nil {
 		return err
@@ -201,12 +207,12 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, verifyMatcher, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, verifyMatcher, locale, logger)
 	if err != nil {
 		return err
 	}
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
-		Stream:           liveStream(transcription, logger),
+		Stream:           liveStream(transcription, locale, logger),
 		Matcher:          segmentMatcher,
 		Prechecker:       prechecker,
 		Logger:           logger,
@@ -281,15 +287,17 @@ func liveAllowedOrigins(corsOrigin string) []string {
 // liveStream builds the AssemblyAI streaming transcriber and adapts it to the
 // live pipeline's segment stream. AssemblyAI Universal-3 Pro is the sole
 // transcription provider: live streams and imported videos alike transcribe
-// over its realtime diarizing WebSocket.
-func liveStream(cfg config.Transcription, logger *slog.Logger) service.SegmentStream {
+// over its realtime diarizing WebSocket. The locale biases the spoken language
+// (empty for the default auto-detect, "fr" in French political mode); diarization
+// stays on regardless, since a verdict must never blend two speakers.
+func liveStream(cfg config.Transcription, locale domain.Locale, logger *slog.Logger) service.SegmentStream {
 	client := transcribe.NewAssemblyAI(transcribe.AssemblyAIConfig{
 		APIKey:      cfg.APIKey,
 		Model:       cfg.Model,
 		MaxSpeakers: cfg.MaxSpeakers,
 		Logger:      logger,
 	})
-	return transcribe.NewStreamSegmenter(client, transcribe.Options{})
+	return transcribe.NewStreamSegmenter(client, transcribe.Options{Language: locale.LanguageCode()})
 }
 
 // buildDebugSearch assembles the developer wiki-search probe from config. A
@@ -323,11 +331,11 @@ func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, ev
 // survivors reach the model, which skips casual or personal declaratives a
 // word-list cannot. An unconfigured or keyless model leaves the heuristic alone,
 // exactly the prior behavior.
-func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, logger)
+	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -346,12 +354,12 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, embedder se
 // deterministic heuristic alone when the model is inactive, or the heuristic
 // wrapped in a model cascade when the check-worthiness model is configured. The
 // API key is never logged.
-func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, logger *slog.Logger) (service.ClaimClassifier, error) {
+func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, error) {
 	heuristic := service.NewHeuristicClassifier(cfg.MinWords)
 	if !cw.Active() {
 		return heuristic, nil
 	}
-	model, err := checkworthy.New(checkworthy.Config{APIKey: cw.APIKey, Model: cw.Model})
+	model, err := checkworthy.New(checkworthy.Config{APIKey: cw.APIKey, Model: cw.Model, Locale: locale})
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +388,11 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 // heuristic-plus-model cascade), with no coverage stage. Whether evidence exists
 // is discovered by the verify path's retrieval, not pre-judged here, so a novel
 // but checkable claim is no longer dropped as not_covered.
-func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, logger)
+	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -433,11 +441,11 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // (so the analyzer runs the legacy path) when the feature is not active. The
 // decomposer and verifier are Anthropic-backed adapters over the shared llm
 // transport; both share the configured model. The API key is never logged.
-func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
-	decomposer, err := claimdecomp.New(claimdecomp.Config{APIKey: cfg.APIKey, Model: cfg.Model, MaxClaimsPerUnit: cfg.MaxClaimsPerUnit})
+	decomposer, err := claimdecomp.New(claimdecomp.Config{APIKey: cfg.APIKey, Model: cfg.Model, MaxClaimsPerUnit: cfg.MaxClaimsPerUnit, Locale: locale})
 	if err != nil {
 		return nil, err
 	}

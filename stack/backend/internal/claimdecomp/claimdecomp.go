@@ -23,6 +23,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
@@ -61,13 +62,35 @@ const systemPrompt = "You split one spoken statement into its atomic factual cla
 	"When the statement carries more claims than requested, keep the most check-worthy and drop the rest. " +
 	"Record the claims with the record_claims tool."
 
+// systemPromptFR is the French counterpart of systemPrompt, used in the French/EU
+// political fact-checking mode. The model reads French statements, resolves
+// coreference, and emits French atomic claims; it is selected by
+// domain.LocaleFrench. Every other locale keeps the English prompt, so English
+// behavior is unchanged when French mode is off. It also instructs the model to
+// emit claims in French, so the downstream verifier reasons in one language.
+const systemPromptFR = "Tu decomposes un seul enonce parle en ses affirmations factuelles atomiques. " +
+	"Chaque affirmation doit etre une seule phrase declarative autonome qui tient seule " +
+	"hors de la conversation : resous chaque pronom et chaque reference contextuelle a l'aide du locuteur " +
+	"et du contexte recent, en nommant explicitement le veritable sujet. " +
+	"Emets une affirmation pour chaque assertion verifiable. " +
+	"Ecris chaque affirmation en francais. " +
+	"Ecarte tout ce qui n'est pas une assertion factuelle publique verifiable - les opinions, les formules prudentes, les questions, " +
+	"les salutations, les conversations anodines et les fragments de phrase sont entierement omis. " +
+	"Si l'enonce ne contient aucune affirmation factuelle verifiable, renvoie une liste vide. " +
+	"N'invente jamais d'affirmations que l'enonce ne fait pas. " +
+	"Lorsque l'enonce porte plus d'affirmations que demande, garde les plus verifiables et ecarte le reste. " +
+	"Enregistre les affirmations avec l'outil record_claims."
+
 // Config wires a Client. APIKey is required and comes from the environment only;
 // Model defaults to defaultModel when empty; MaxClaimsPerUnit defaults to
-// defaultMaxClaims when not positive.
+// defaultMaxClaims when not positive. Locale selects the prompt language: the
+// default (English) keeps the English prompt and labels; domain.LocaleFrench
+// prompts and emits claims in French.
 type Config struct {
 	APIKey           string
 	Model            string
 	MaxClaimsPerUnit int
+	Locale           domain.Locale
 }
 
 // Input is one decomposition request: the unit to split, the speaker who said
@@ -79,10 +102,13 @@ type Input struct {
 	Context string
 }
 
-// Client is the Anthropic-backed claim-decomposition adapter.
+// Client is the Anthropic-backed claim-decomposition adapter. locale is the
+// single source for both the system prompt and the user-message labels, so the
+// two cannot drift onto different languages.
 type Client struct {
 	llm       *llm.Client
 	maxClaims int
+	locale    domain.Locale
 }
 
 // New builds a Client, failing when no API key is supplied (the feature is gated
@@ -102,7 +128,18 @@ func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("claimdecomp: %w", err)
 	}
-	return &Client{llm: client, maxClaims: maxClaims}, nil
+	return &Client{llm: client, maxClaims: maxClaims, locale: cfg.Locale}, nil
+}
+
+// promptFor selects the system prompt for the locale: the French prompt for
+// domain.LocaleFrench, the English prompt for every other locale (including the
+// default), so English behavior is unchanged when French mode is off. It mirrors
+// the sibling checkworthy adapter's selection shape.
+func promptFor(locale domain.Locale) string {
+	if locale.IsFrench() {
+		return systemPromptFR
+	}
+	return systemPrompt
 }
 
 // result is the forced tool's structured input.
@@ -126,7 +163,7 @@ func (c *Client) Decompose(ctx context.Context, in Input) []string {
 		return []string{}
 	}
 	res, err := llm.Classify[result](ctx, c.llm, llm.Request{
-		System:    systemPrompt,
+		System:    promptFor(c.locale),
 		User:      c.userMessage(in),
 		MaxTokens: maxTokens,
 		Tool: llm.Tool{
@@ -152,8 +189,12 @@ func (c *Client) Decompose(ctx context.Context, in Input) []string {
 }
 
 // userMessage assembles the prompt body from the unit, its speaker, and recent
-// context, including the cap so the model self-limits the fan-out.
+// context, including the cap so the model self-limits the fan-out. The labels
+// match the prompt language so a French run reads as one coherent French prompt.
 func (c *Client) userMessage(in Input) string {
+	if c.locale.IsFrench() {
+		return c.userMessageFR(in)
+	}
 	var b strings.Builder
 	if in.Speaker != "" {
 		fmt.Fprintf(&b, "Speaker: %s\n", in.Speaker)
@@ -163,6 +204,21 @@ func (c *Client) userMessage(in Input) string {
 	}
 	fmt.Fprintf(&b, "Return at most %d claims.\n\n", c.maxClaims)
 	fmt.Fprintf(&b, "Statement: %s", in.Text)
+	return b.String()
+}
+
+// userMessageFR is the French-labeled prompt body, used when the locale is
+// French so the speaker, context, cap, and statement are all framed in French.
+func (c *Client) userMessageFR(in Input) string {
+	var b strings.Builder
+	if in.Speaker != "" {
+		fmt.Fprintf(&b, "Locuteur : %s\n", in.Speaker)
+	}
+	if in.Context != "" {
+		fmt.Fprintf(&b, "Contexte recent : %s\n", in.Context)
+	}
+	fmt.Fprintf(&b, "Renvoie au plus %d affirmations.\n\n", c.maxClaims)
+	fmt.Fprintf(&b, "Enonce : %s", in.Text)
 	return b.String()
 }
 

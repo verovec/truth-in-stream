@@ -694,6 +694,38 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 	return c, nil
 }
 
+// Political holds the French/EU political fact-checking mode flag. The whole
+// redesign rides FACTCHECK_POLITICAL (default off) so main stays shippable: with
+// the flag off the locale is the default English behavior, and with it on the
+// live LLM stages prompt and reason in French and the transcriber biases toward
+// French. This card wires only the locale; later cards gate the political verify
+// path and sources behind the same flag.
+type Political struct {
+	Enabled bool
+}
+
+// Locale resolves the language the live stages run in: French when the political
+// mode is on, the default English locale otherwise. It is the single source the
+// transcription session and the LLM-stage adapters read, so they cannot drift
+// onto different languages within one run.
+func (p Political) Locale() domain.Locale {
+	if p.Enabled {
+		return domain.LocaleFrench
+	}
+	return domain.LocaleEnglish
+}
+
+// LoadPolitical reads the political fact-checking mode flag from the
+// environment. FACTCHECK_POLITICAL gates the whole feature (default off); an
+// unparseable value fails fast rather than silently defaulting.
+func LoadPolitical() (Political, error) {
+	enabled, err := boolEnv("FACTCHECK_POLITICAL")
+	if err != nil {
+		return Political{}, err
+	}
+	return Political{Enabled: enabled}, nil
+}
+
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
 // rejecting values (including NaN) outside [-1, 1].
 func thresholdEnv(key string, fallback float64) (float64, error) {

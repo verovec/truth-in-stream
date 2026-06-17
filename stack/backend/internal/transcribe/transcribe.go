@@ -27,7 +27,8 @@ type TranscriptEvent struct {
 // Options tunes a single transcription request. The zero value auto-detects the
 // language.
 type Options struct {
-	// Language pins the spoken language as an ISO-639 code; empty means
-	// provider-side auto-detection.
+	// Language biases the spoken language as an ISO-639 code (e.g. "fr"); it is
+	// sent as the provider's language_code parameter. Empty means provider-side
+	// auto-detection.
 	Language string
 }
