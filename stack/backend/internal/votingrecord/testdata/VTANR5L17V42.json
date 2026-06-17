@@ -1,0 +1,107 @@
+{
+  "scrutin": {
+    "uid": "VTANR5L17V42",
+    "numero": "42",
+    "organeRef": "PO717460",
+    "legislature": "17",
+    "sessionRef": "SCR5A2024E1",
+    "seanceRef": "RUANR5L17S2024IDArchive15Oct2024",
+    "dateScrutin": "2024-10-15",
+    "quantiemeJourSeance": "1",
+    "typeVote": {
+      "codeTypeVote": "SPS",
+      "libelleTypeVote": "Scrutin public solennel",
+      "typeMajorite": "majoriteAbsolue"
+    },
+    "sort": {
+      "code": "adopté",
+      "libelle": "Adopté"
+    },
+    "titre": "première partie du projet de loi de finances pour 2025",
+    "demandeur": {
+      "libelle": "le Gouvernement",
+      "referenceLegislative": null
+    },
+    "objet": {
+      "libelle": "sur l'ensemble du projet de loi de finances pour 2025 (première lecture).",
+      "referenceLegislative": null
+    },
+    "modePublicationDesVotes": "DecompteNominatif",
+    "syntheseVote": {
+      "nombreVotants": "5",
+      "suffragesExprimes": "4",
+      "nbrSuffragesRequis": "3",
+      "annonce": {
+        "libelle": "L'Assemblée nationale a adopté"
+      },
+      "decompte": {
+        "pour": "2",
+        "contre": "1",
+        "abstentions": "1",
+        "nonVotants": "1",
+        "nonVotantsVolontaires": "0"
+      }
+    },
+    "miseAuPoint": null,
+    "ventilationVotes": {
+      "organe": {
+        "organeRef": "PO717460",
+        "groupes": {
+          "groupe": [
+            {
+              "organeRef": "PO800502",
+              "nombreMembresGroupe": "3",
+              "vote": {
+                "positionMajoritaire": "pour",
+                "decompteVoix": {
+                  "pour": "2",
+                  "contre": "0",
+                  "abstentions": "0",
+                  "nonVotants": "1"
+                },
+                "decompteNominatif": {
+                  "pours": {
+                    "votant": [
+                      { "acteurRef": "PA1592", "mandatRef": "PM1001", "parDelegation": "false" },
+                      { "acteurRef": "PA1880", "mandatRef": "PM1002", "parDelegation": "true" }
+                    ]
+                  },
+                  "contres": null,
+                  "abstentions": null,
+                  "nonVotants": {
+                    "votant": { "acteurRef": "PA2630", "mandatRef": "PM1003", "causePositionVote": "PAN" }
+                  }
+                }
+              }
+            },
+            {
+              "organeRef": "PO800520",
+              "nombreMembresGroupe": "2",
+              "vote": {
+                "positionMajoritaire": "contre",
+                "decompteVoix": {
+                  "pour": "0",
+                  "contre": "1",
+                  "abstentions": "1",
+                  "nonVotants": "0"
+                },
+                "decompteNominatif": {
+                  "pours": null,
+                  "contres": {
+                    "votant": { "acteurRef": "PA721002", "mandatRef": "PM1004", "parDelegation": "false" }
+                  },
+                  "abstentions": {
+                    "votant": [
+                      { "acteurRef": "PA605036", "mandatRef": "PM1005", "parDelegation": "false" }
+                    ]
+                  },
+                  "nonVotants": null
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
