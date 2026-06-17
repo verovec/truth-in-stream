@@ -244,37 +244,36 @@ func buildPrompt(claim string, passages []Passage) string {
 
 // ValidateCitations is the deterministic citation guard, the second half of the
 // defense against hallucinated grounding. It runs after the model call and is
-// directly unit-testable without the model. It keeps only citations whose
-// evidence_id was actually supplied and whose quoted_span is a non-empty substring
-// of a passage carrying that evidence_id, dropping the rest. An empty or
-// whitespace-only span is treated as invalid, because strings.Contains trivially
-// matches the empty string and a blank span grounds nothing. When the same
-// evidence_id is supplied on more than one passage, a span that matches any of
-// them is kept.
-//
-// The guard then normalizes the verdict's basis and confidence rather than its
-// state, which is the credibility reframe's core rule:
-//   - An unverifiable verdict carries no citations and is treated as knowledge-
-//     basis (nothing grounds it); its confidence is capped like any non-evidence
-//     verdict and it is never upgraded.
-//   - A basis-evidence verdict that lost its last valid citation is demoted to
-//     basis knowledge and confidence-capped, NOT forced to unverifiable: the model
-//     may still hold a defensible knowledge-based judgment, it just loses its
-//     evidence grounding. A basis-evidence verdict that kept a citation stands with
-//     the model's clamped confidence.
-//   - A basis-knowledge verdict needs no citation; any stray citations are still
-//     validated and fabricated ones dropped, and its confidence is capped.
-//
-// Confidence is clamped into [0,1] on every return path (a NaN becomes 0), so a
-// model value outside that range never reaches the caller.
+// directly unit-testable without the model: it validates the cited spans against
+// the supplied passages (validCitations) and then normalizes the verdict's basis
+// and confidence rather than its state (groundVerdict), which is the credibility
+// reframe's core rule - a verdict that loses its evidence grounding is demoted to a
+// capped knowledge basis, never forced to unverifiable.
 func ValidateCitations(res Result, passages []Passage) Result {
+	res.Citations = validCitations(res.Citations, passages)
+	res.Basis, res.Citations, res.Confidence = groundVerdict(
+		res.Verdict == VerdictUnverifiable, res.Basis, res.Citations, res.Confidence,
+	)
+	return res
+}
+
+// validCitations is the deterministic substring check both verifiers share. It
+// keeps only citations whose evidence_id was actually supplied and whose
+// quoted_span is a non-empty substring of a passage carrying that evidence_id,
+// dropping the rest. An empty or whitespace-only span is invalid, because
+// strings.Contains trivially matches the empty string and a blank span grounds
+// nothing. When the same evidence_id is supplied on more than one passage, a span
+// that matches any of them is kept. Sharing one implementation keeps the
+// anti-hallucination grounding check from diverging between the two judgment
+// surfaces.
+func validCitations(cits []Citation, passages []Passage) []Citation {
 	byID := make(map[string][]string, len(passages))
 	for _, p := range passages {
 		byID[p.ID] = append(byID[p.ID], p.Text)
 	}
 
-	valid := make([]Citation, 0, len(res.Citations))
-	for _, c := range res.Citations {
+	valid := make([]Citation, 0, len(cits))
+	for _, c := range cits {
 		if strings.TrimSpace(c.QuotedSpan) == "" {
 			continue
 		}
@@ -289,30 +288,34 @@ func ValidateCitations(res Result, passages []Passage) Result {
 			}
 		}
 	}
-	res.Citations = valid
+	return valid
+}
 
-	switch res.Verdict {
-	case VerdictUnverifiable:
-		// Nothing settles the claim: it carries no citations and rests on no
-		// evidence. Cap and clamp its (cosmetic) confidence like any non-evidence
-		// verdict; never upgrade it.
-		res.Basis = BasisKnowledge
-		res.Citations = nil
-		res.Confidence = capKnowledgeConfidence(res.Confidence)
-	default:
-		// credible or disputed.
-		if res.Basis == BasisEvidence && len(valid) > 0 {
-			// Genuinely grounded: keep the evidence basis and the model's confidence.
-			res.Confidence = clampConfidence(res.Confidence)
-			break
-		}
-		// Either the model already called it knowledge, or it claimed evidence but
-		// no citation survived. Demote (or keep) the basis to knowledge and cap the
-		// confidence; the judgment stands, it is just no longer evidence-grounded.
-		res.Basis = BasisKnowledge
-		res.Confidence = capKnowledgeConfidence(res.Confidence)
+// groundVerdict normalizes a verdict's basis, citations, and confidence after its
+// citations have been validated - the grounding epistemics both verifiers share,
+// governing the basis and confidence rather than the verdict's state. unverifiable
+// is true for a verdict nothing can settle (VerdictUnverifiable / LiteralUnverifiable);
+// validCits are the citations that survived validCitations.
+//
+//   - An unverifiable verdict carries no citations and rests on no evidence: it is
+//     forced to knowledge-basis, stripped of citations, and confidence-capped, and
+//     never upgraded.
+//   - A basis-evidence verdict that kept at least one citation stays evidence with
+//     the model's clamped confidence.
+//   - A verdict that claimed evidence but lost its last citation, or that already
+//     called itself knowledge, is demoted (or kept) at knowledge-basis and
+//     confidence-capped; the judgment stands, it just loses its evidence grounding.
+//     Stray (already validated) citations on a knowledge verdict are kept.
+//
+// Confidence is clamped into [0,1] on every path (a NaN becomes 0).
+func groundVerdict(unverifiable bool, basis string, validCits []Citation, confidence float64) (string, []Citation, float64) {
+	if unverifiable {
+		return BasisKnowledge, nil, capKnowledgeConfidence(confidence)
 	}
-	return res
+	if basis == BasisEvidence && len(validCits) > 0 {
+		return BasisEvidence, validCits, clampConfidence(confidence)
+	}
+	return BasisKnowledge, validCits, capKnowledgeConfidence(confidence)
 }
 
 // capKnowledgeConfidence clamps a confidence into [0,1] and then bounds it at the
