@@ -351,9 +351,11 @@ services:
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
       CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
       CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
-      # LLM provider for the fact-checkability gate (default anthropic). Set
+      # LLM provider for the fact-checkability gate (default deepseek, keyed on
+      # DEEPSEEK_API_KEY). Set LLM_PROVIDER=anthropic to use Claude, or
       # LLM_PROVIDER=gemini + GEMINI_API_KEY to route the gate to Google Gemini.
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     volumes:
       - ./stack/backend:/app
@@ -552,6 +554,7 @@ services:
       CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
       CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       # Fact-check producer config (mirrors the factcheckcrawl service). Required
       # when the fact-check source is enabled.
@@ -679,10 +682,13 @@ services:
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       # LLM provider for every LLM-backed stage (consistency, check-worthiness,
       # claim decomposition, claim typing, the credibility verifier). Defaults to
-      # anthropic (Claude Haiku, unchanged). Set LLM_PROVIDER=gemini + GEMINI_API_KEY
-      # to route the same forced-tool calls to Google Gemini; an unknown value fails
-      # fast at startup. The per-stage *_MODEL and Anthropic *_API_KEY vars still apply.
+      # deepseek (DeepSeek's cheap chat model, keyed on DEEPSEEK_API_KEY). Set
+      # LLM_PROVIDER=anthropic for Claude Haiku, or LLM_PROVIDER=gemini +
+      # GEMINI_API_KEY to route the same forced-tool calls to Google Gemini; an
+      # unknown value fails fast at startup. The per-stage *_MODEL and Anthropic
+      # *_API_KEY vars still apply.
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       # Live intra-speaker consistency: flag when a speaker contradicts their own
       # earlier statement. Off unless CONSISTENCY_ENABLED is true AND

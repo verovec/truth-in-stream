@@ -52,7 +52,7 @@ func modelGate(t *testing.T, verdict bool) *Gate {
 	t.Cleanup(server.Close)
 
 	model, err := checkworthy.New(
-		checkworthy.Config{APIKey: "test-key"},
+		checkworthy.Config{Provider: llm.ProviderAnthropic, APIKey: "test-key"},
 		llm.WithBaseURL(server.URL), llm.WithMaxRetries(0),
 	)
 	if err != nil {

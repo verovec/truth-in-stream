@@ -36,59 +36,94 @@ const defaultDemoMediaDir = "demo"
 // LLM provider selection. Every LLM-backed stage (stance, check-worthiness,
 // claim decomposition, claim typing, the credibility verifier, the ingestion
 // fact-checkability gate) reads one shared provider choice from LLM_PROVIDER and,
-// when that choice is Gemini, the key from GEMINI_API_KEY. LLM_PROVIDER defaults
-// to "anthropic", which keeps every stage on Claude Haiku exactly as the codebase
-// shipped; an unknown value fails fast at startup rather than silently falling
-// back. The per-stage model and the Anthropic per-stage key vars are unchanged;
-// only the provider and the Gemini key are global. GEMINI_API_KEY is a secret and
-// is never logged.
+// when that choice is Gemini, the key from GEMINI_API_KEY, or when DeepSeek, the
+// key from DEEPSEEK_API_KEY. LLM_PROVIDER defaults to "deepseek", which runs every
+// stage on DeepSeek's cheap chat model; an unknown value fails fast at startup
+// rather than silently falling back. The per-stage model and the Anthropic
+// per-stage key vars are unchanged; only the provider and the Gemini/DeepSeek keys
+// are global. GEMINI_API_KEY and DEEPSEEK_API_KEY are secrets and are never logged.
 const (
-	// LLMProviderAnthropic keeps every stage on the Anthropic Claude transport,
-	// the default when LLM_PROVIDER is unset.
+	// LLMProviderDeepSeek runs every stage on DeepSeek's OpenAI-compatible chat
+	// model, the default when LLM_PROVIDER is unset, keyed on DEEPSEEK_API_KEY.
+	LLMProviderDeepSeek = "deepseek"
+	// LLMProviderAnthropic runs every stage on the Anthropic Claude transport,
+	// keyed on each stage's per-stage Anthropic key.
 	LLMProviderAnthropic = "anthropic"
 	// LLMProviderGemini routes every stage to Google Gemini, keyed on
 	// GEMINI_API_KEY.
 	LLMProviderGemini = "gemini"
 )
 
-// LLMSelection is the shared provider choice and Gemini key threaded into every
-// LLM-backed stage's configuration. Provider is the validated LLM_PROVIDER value
-// (default LLMProviderAnthropic); GeminiAPIKey is read from GEMINI_API_KEY and is
-// required only when Provider is LLMProviderGemini and a stage is active. It is
-// never logged.
+// LLMSelection is the shared provider choice and global provider keys threaded
+// into every LLM-backed stage's configuration. Provider is the validated
+// LLM_PROVIDER value (default LLMProviderDeepSeek); GeminiAPIKey is read from
+// GEMINI_API_KEY and DeepSeekAPIKey from DEEPSEEK_API_KEY, each required only when
+// its provider is selected and a stage is active. Neither is ever logged.
 type LLMSelection struct {
-	Provider     string
-	GeminiAPIKey string
+	Provider       string
+	GeminiAPIKey   string
+	DeepSeekAPIKey string
+}
+
+// providerKey returns the key the selected provider needs, given the stage's
+// Anthropic per-stage key. Under Gemini it is GeminiAPIKey, under DeepSeek (the
+// default) it is DeepSeekAPIKey, and under Anthropic it is the per-stage key. It
+// is the single source of the provider-key choice so the loaders and Active()
+// checks cannot drift in which secret a provider reads.
+func (s LLMSelection) providerKey(anthropicKey string) string {
+	switch s.Provider {
+	case LLMProviderGemini:
+		return s.GeminiAPIKey
+	case LLMProviderDeepSeek:
+		return s.DeepSeekAPIKey
+	default:
+		return anthropicKey
+	}
 }
 
 // hasKey reports whether the selected provider has the key it needs, given the
-// stage's Anthropic per-stage key. Under Gemini the key is GeminiAPIKey; under
-// Anthropic (the default) it is the per-stage key. Every stage's Active() routes
-// its key-presence check through this so an enabled-but-keyless feature degrades
-// to off under whichever provider is selected - selecting Gemini and supplying
-// only GEMINI_API_KEY keeps the stage active, where checking the Anthropic key
-// alone would silently disable it.
+// stage's Anthropic per-stage key. Every stage's Active() routes its key-presence
+// check through this so an enabled-but-keyless feature degrades to off under
+// whichever provider is selected - selecting DeepSeek and supplying only
+// DEEPSEEK_API_KEY keeps the stage active, where checking the Anthropic key alone
+// would silently disable it.
 func (s LLMSelection) hasKey(anthropicKey string) bool {
-	if s.Provider == LLMProviderGemini {
-		return s.GeminiAPIKey != ""
+	return s.providerKey(anthropicKey) != ""
+}
+
+// defaultStageModel is the cheapest, fastest current Claude model - the shared
+// Anthropic default for every LLM-backed stage's env layer (the per-stage
+// *_MODEL knobs all default to it). Each provider's adapter keeps its own default
+// for the other backends.
+const defaultStageModel = "claude-haiku-4-5-20251001"
+
+// defaultModel returns the per-stage default model for the selected provider: the
+// shared Anthropic model under Anthropic, and "" under any other provider so that
+// provider's adapter applies its own default (DeepSeek and Gemini name different
+// models than Claude, so threading the Anthropic model would send an unknown
+// model to them). An explicit per-stage *_MODEL override always takes precedence.
+func (s LLMSelection) defaultModel() string {
+	if s.Provider == LLMProviderAnthropic {
+		return defaultStageModel
 	}
-	return anthropicKey != ""
+	return ""
 }
 
 // loadLLMSelection reads the shared LLM provider choice from the environment.
-// LLM_PROVIDER defaults to anthropic and is validated against the known set, so
-// an unknown provider crashes the process at startup with a clear message rather
-// than degrading silently. The Gemini key is read but never logged.
+// LLM_PROVIDER defaults to deepseek and is validated against the known set, so an
+// unknown provider crashes the process at startup with a clear message rather than
+// degrading silently. The Gemini and DeepSeek keys are read but never logged.
 func loadLLMSelection() (LLMSelection, error) {
-	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", LLMProviderAnthropic)))
+	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", LLMProviderDeepSeek)))
 	switch provider {
-	case LLMProviderAnthropic, LLMProviderGemini:
+	case LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini:
 	default:
-		return LLMSelection{}, fmt.Errorf("config: LLM_PROVIDER %q is not a known provider (want %q or %q)", provider, LLMProviderAnthropic, LLMProviderGemini)
+		return LLMSelection{}, fmt.Errorf("config: LLM_PROVIDER %q is not a known provider (want %q, %q, or %q)", provider, LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini)
 	}
 	return LLMSelection{
-		Provider:     provider,
-		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+		Provider:       provider,
+		GeminiAPIKey:   getenv("GEMINI_API_KEY", ""),
+		DeepSeekAPIKey: getenv("DEEPSEEK_API_KEY", ""),
 	}, nil
 }
 
@@ -524,14 +559,12 @@ func LoadLive() (Live, error) {
 	return l, nil
 }
 
-// Intra-speaker consistency defaults. The model is the cheapest fast Claude
-// model, suitable for a binary contradiction judgment over two short
-// statements; TopK 3 caps stance calls per statement; SimilarityFloor 0.6 keeps
-// the stance check off topically-unrelated prior statements. These are the
-// env-layer defaults; the service and stance packages keep matching library
-// defaults for direct construction and must stay in sync with them.
+// Intra-speaker consistency defaults. TopK 3 caps stance calls per statement;
+// SimilarityFloor 0.6 keeps the stance check off topically-unrelated prior
+// statements. These are the env-layer defaults; the service and stance packages
+// keep matching library defaults for direct construction and must stay in sync
+// with them. The stance model defaults to defaultStageModel (see defaultModel).
 const (
-	defaultConsistencyModel = "claude-haiku-4-5-20251001"
 	defaultConsistencyTopK  = 3
 	defaultConsistencyFloor = 0.6
 )
@@ -562,7 +595,6 @@ func (c Consistency) Active() bool {
 // similarity floor. The secret is read but never logged.
 func LoadConsistency() (Consistency, error) {
 	c := Consistency{
-		Model:           defaultConsistencyModel,
 		TopK:            defaultConsistencyTopK,
 		SimilarityFloor: defaultConsistencyFloor,
 	}
@@ -575,7 +607,7 @@ func LoadConsistency() (Consistency, error) {
 		return Consistency{}, err
 	}
 	c.APIKey = getenv("CONSISTENCY_API_KEY", "")
-	c.Model = getenv("CONSISTENCY_MODEL", c.Model)
+	c.Model = getenv("CONSISTENCY_MODEL", llmSel.defaultModel())
 	if c.TopK, err = intEnv("CONSISTENCY_TOP_K", c.TopK, 1, math.MaxInt32); err != nil {
 		return Consistency{}, err
 	}
@@ -593,8 +625,8 @@ func LoadConsistency() (Consistency, error) {
 
 // Retrieve-then-verify defaults. The path is off by default (the old
 // gate-and-match path stays the default until the golden eval clears the
-// baseline). Decomposition and verification both run on the cheapest fast Claude
-// model. MaxClaimsPerUnit caps a unit's fan-out at 4 atomic claims. FastTau 0.85
+// baseline). Decomposition and verification both run on the selected provider's
+// default fast model. MaxClaimsPerUnit caps a unit's fan-out at 4 atomic claims. FastTau 0.85
 // is the curated near-match similarity at or above which the fast path borrows a
 // verdict with no LLM call - a high bar, since a borrowed verdict bypasses
 // reasoning. The verify pool is 2 workers with a 4-deep queue, smaller than the
@@ -604,7 +636,6 @@ func LoadConsistency() (Consistency, error) {
 // repeated within the window. These are the env-layer defaults; the service
 // package validates the same bounds for direct construction.
 const (
-	defaultVerifyModel            = "claude-haiku-4-5-20251001"
 	defaultVerifyMaxClaimsPerUnit = 4
 	defaultVerifyFastTau          = 0.85
 	defaultVerifyConcurrency      = 2
@@ -682,7 +713,6 @@ func (v VerifyPath) Active() bool {
 // whole feature (default off). The secret is read but never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
-		Model:                defaultVerifyModel,
 		MaxClaimsPerUnit:     defaultVerifyMaxClaimsPerUnit,
 		FastTau:              defaultVerifyFastTau,
 		Concurrency:          defaultVerifyConcurrency,
@@ -702,7 +732,7 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	v.APIKey = getenv("FACTCHECK_VERIFY_API_KEY", "")
-	v.Model = getenv("FACTCHECK_VERIFY_MODEL", v.Model)
+	v.Model = getenv("FACTCHECK_VERIFY_MODEL", llmSel.defaultModel())
 	if v.MaxClaimsPerUnit, err = intEnv("FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT", v.MaxClaimsPerUnit, 1, math.MaxInt32); err != nil {
 		return VerifyPath{}, err
 	}
@@ -736,12 +766,6 @@ func LoadVerifyPath() (VerifyPath, error) {
 	return v, nil
 }
 
-// Check-worthiness defaults. The model is the cheapest fast Claude model,
-// suitable for a binary check-worthy/not judgment over one short statement. This
-// is the env-layer default; the checkworthy adapter keeps a matching default for
-// direct construction and the two must stay in sync.
-const defaultCheckWorthinessModel = "claude-haiku-4-5-20251001"
-
 // CheckWorthiness holds the model stage of the check-worthiness gate. It is the
 // optional upgrade to the gate's stage one: when off (the default) or keyless,
 // the deterministic heuristic alone decides claim-worthiness, exactly as before.
@@ -767,7 +791,7 @@ func (c CheckWorthiness) Active() bool {
 // LoadCheckWorthiness reads the model check-worthiness configuration from the
 // environment, applying defaults. The secret is read but never logged.
 func LoadCheckWorthiness() (CheckWorthiness, error) {
-	c := CheckWorthiness{Model: defaultCheckWorthinessModel}
+	c := CheckWorthiness{}
 	llmSel, err := loadLLMSelection()
 	if err != nil {
 		return CheckWorthiness{}, err
@@ -777,7 +801,7 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 		return CheckWorthiness{}, err
 	}
 	c.APIKey = getenv("CHECKWORTHINESS_API_KEY", "")
-	c.Model = getenv("CHECKWORTHINESS_MODEL", c.Model)
+	c.Model = getenv("CHECKWORTHINESS_MODEL", llmSel.defaultModel())
 	return c, nil
 }
 
@@ -1768,13 +1792,10 @@ func LoadCrawl() (Crawl, error) {
 }
 
 // Crawl fact-checkability gate defaults: the gate is on by default so the corpus
-// stays bounded to citable evidence, runs on the cheapest fast Claude model, and
-// allows a modest number of in-flight judgments. The rate cap is unpaced by
-// default; an operator sets it to bound Anthropic spend on a large crawl.
-const (
-	defaultCrawlCheckworthyModel       = "claude-haiku-4-5-20251001"
-	defaultCrawlCheckworthyConcurrency = 8
-)
+// stays bounded to citable evidence, runs on the selected provider's default fast
+// model, and allows a modest number of in-flight judgments. The rate cap is
+// unpaced by default; an operator sets it to bound provider spend on a large crawl.
+const defaultCrawlCheckworthyConcurrency = 8
 
 // CrawlCheckworthy configures the producer-side fact-checkability gate. Enabled
 // (default true) runs an LLM judgment on each chunk before publishing so only
@@ -1813,13 +1834,10 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 		return CrawlCheckworthy{}, err
 	}
 	apiKey := getenv("CHECKWORTHY_API_KEY", "")
-	// The crawl gate needs the selected provider's key when on. Under Gemini the
-	// key is GEMINI_API_KEY; otherwise CHECKWORTHY_API_KEY (the Anthropic key).
-	providerKey := apiKey
-	if llmSel.Provider == LLMProviderGemini {
-		providerKey = llmSel.GeminiAPIKey
-	}
-	if enabled && providerKey == "" {
+	// The crawl gate needs the selected provider's key when on: GEMINI_API_KEY under
+	// Gemini, DEEPSEEK_API_KEY under DeepSeek (the default), otherwise
+	// CHECKWORTHY_API_KEY (the Anthropic key).
+	if enabled && llmSel.providerKey(apiKey) == "" {
 		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but no API key is set for provider %q", llmSel.Provider)
 	}
 
@@ -1836,7 +1854,7 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 		LLMSelection: llmSel,
 		Enabled:      enabled,
 		APIKey:       apiKey,
-		Model:        getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
+		Model:        getenv("CRAWL_CHECKWORTHY_MODEL", llmSel.defaultModel()),
 		Concurrency:  concurrency,
 		RPM:          rpm,
 	}, nil

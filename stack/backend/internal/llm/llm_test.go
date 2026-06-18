@@ -89,16 +89,68 @@ func geminiFunctionResponse(t *testing.T, name string, args map[string]any) stri
 
 // anthropicTestClient points an Anthropic-provider Client at a fake server, so
 // request shaping and response parsing are exercised without hitting the real
-// API. The empty model exercises the default-model fallback.
+// API. The provider is named explicitly because the empty-provider default is
+// now DeepSeek; the empty model still exercises the default-model fallback.
 func anthropicTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	c, err := NewClient(Config{APIKey: "test-key"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	c, err := NewClient(Config{Provider: ProviderAnthropic, APIKey: "test-key"}, WithBaseURL(server.URL), WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	return c
+}
+
+// deepseekTestClient points a DeepSeek-provider Client at a fake OpenAI-compatible
+// server. The empty provider exercises the default selection (DeepSeek) and the
+// empty model the default-model fallback.
+func deepseekTestClient(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	c, err := NewClient(Config{DeepSeekAPIKey: "test-key"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return c
+}
+
+// deepseekToolResponse builds a minimal valid OpenAI Chat Completions response
+// carrying one forced testTool call with the given arguments, so a test can fake
+// DeepSeek's reply without the network.
+func deepseekToolResponse(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal tool args: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   defaultDeepSeekModel,
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]any{
+					"role": "assistant",
+					"tool_calls": []map[string]any{
+						{
+							"id":       "call_test",
+							"type":     "function",
+							"function": map[string]any{"name": name, "arguments": string(raw)},
+						},
+					},
+				},
+				"finish_reason": "tool_calls",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return string(body)
 }
 
 // geminiTestClient points a Gemini-provider Client at a fake server.
@@ -121,8 +173,12 @@ func TestNewClientProviderSelectionAndKeys(t *testing.T) {
 		wantErr string // substring; empty means construction must succeed
 	}{
 		{
-			name: "empty provider defaults to anthropic",
-			cfg:  Config{APIKey: "k"},
+			name: "empty provider defaults to deepseek",
+			cfg:  Config{DeepSeekAPIKey: "k"},
+		},
+		{
+			name: "explicit deepseek",
+			cfg:  Config{Provider: ProviderDeepSeek, DeepSeekAPIKey: "k"},
 		},
 		{
 			name: "explicit anthropic",
@@ -131,6 +187,16 @@ func TestNewClientProviderSelectionAndKeys(t *testing.T) {
 		{
 			name: "gemini with key",
 			cfg:  Config{Provider: ProviderGemini, GeminiAPIKey: "k"},
+		},
+		{
+			name:    "deepseek missing key degrades like the others",
+			cfg:     Config{Provider: ProviderDeepSeek},
+			wantErr: "api key is required",
+		},
+		{
+			name:    "default (deepseek) missing key degrades like the others",
+			cfg:     Config{APIKey: "k"},
+			wantErr: "api key is required",
 		},
 		{
 			name:    "anthropic missing key degrades like before",
@@ -170,7 +236,7 @@ func TestClassifyRejectsNonPositiveMaxTokens(t *testing.T) {
 	// No server is contacted: the guard short-circuits before any provider call,
 	// so a caller bug surfaces uniformly across providers rather than as an
 	// uncapped Gemini request or an Anthropic 400.
-	c, err := NewClient(Config{APIKey: "k"})
+	c, err := NewClient(Config{DeepSeekAPIKey: "k"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -252,7 +318,7 @@ func TestClassifyAnthropicForcesToolCallAtTempZero(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewClient(Config{APIKey: "test-key", Model: "claude-test-model"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	c, err := NewClient(Config{Provider: ProviderAnthropic, APIKey: "test-key", Model: "claude-test-model"}, WithBaseURL(server.URL), WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -349,6 +415,133 @@ func TestClassifyGeminiForcesFunctionCall(t *testing.T) {
 	allowed, ok := fcc["allowedFunctionNames"].([]any)
 	if !ok || len(allowed) != 1 || allowed[0] != testTool {
 		t.Errorf("allowedFunctionNames = %v, want [%s]", fcc["allowedFunctionNames"], testTool)
+	}
+}
+
+func TestClassifyDeepSeekResponseHandling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		want    testVerdict
+		wantErr string
+	}{
+		{
+			name: "decodes tool arguments into caller type",
+			body: deepseekToolResponse(t, testTool, map[string]any{"flag": true, "reason": "because"}),
+			want: testVerdict{Flag: true, Reason: "because"},
+		},
+		{
+			name:    "missing tool call errors",
+			body:    `{"id":"c","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"no tool here"},"finish_reason":"stop"}]}`,
+			wantErr: "no " + testTool,
+		},
+		{
+			name:    "wrong tool name errors",
+			body:    deepseekToolResponse(t, "some_other_tool", map[string]any{"flag": true, "reason": "x"}),
+			wantErr: "no " + testTool,
+		},
+		{
+			name:    "malformed tool arguments errors",
+			body:    deepseekToolResponse(t, testTool, map[string]any{"flag": "not-a-bool", "reason": ""}),
+			wantErr: "decode " + testTool,
+		},
+		{
+			name:    "transport error propagates",
+			status:  http.StatusInternalServerError,
+			body:    `{"error":{"message":"boom","type":"server_error"}}`,
+			wantErr: "forced tool call",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := deepseekTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				_, _ = io.WriteString(w, tc.body)
+			})
+
+			got, err := Classify[testVerdict](context.Background(), c, testRequest())
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("verdict = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyDeepSeekForcesToolCallAtTempZero(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekToolResponse(t, testTool, map[string]any{"flag": false, "reason": ""}))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewClient(Config{Provider: ProviderDeepSeek, DeepSeekAPIKey: "test-key", Model: "deepseek-test-model"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := Classify[testVerdict](context.Background(), c, testRequest()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	if captured["model"] != "deepseek-test-model" {
+		t.Errorf("model = %v, want the supplied deepseek-test-model", captured["model"])
+	}
+	if captured["temperature"] != float64(0) {
+		t.Errorf("temperature = %v, want 0", captured["temperature"])
+	}
+	if captured["max_tokens"] != float64(64) {
+		t.Errorf("max_tokens = %v, want 64", captured["max_tokens"])
+	}
+	// DeepSeek rejects penalty knobs; they must never be sent.
+	if _, ok := captured["frequency_penalty"]; ok {
+		t.Errorf("frequency_penalty must not be sent, got %v", captured["frequency_penalty"])
+	}
+	if _, ok := captured["presence_penalty"]; ok {
+		t.Errorf("presence_penalty must not be sent, got %v", captured["presence_penalty"])
+	}
+	choice, ok := captured["tool_choice"].(map[string]any)
+	if !ok || choice["type"] != "function" {
+		t.Fatalf("tool_choice = %v, want a forced function choice", captured["tool_choice"])
+	}
+	fn, ok := choice["function"].(map[string]any)
+	if !ok || fn["name"] != testTool {
+		t.Errorf("tool_choice.function = %v, want forced %s", choice["function"], testTool)
+	}
+}
+
+func TestNewClientDefaultsDeepSeekModelWhenEmpty(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	c := deepseekTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekToolResponse(t, testTool, map[string]any{"flag": false, "reason": ""}))
+	})
+
+	if _, err := Classify[testVerdict](context.Background(), c, testRequest()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if captured["model"] != defaultDeepSeekModel {
+		t.Errorf("model = %v, want default %s", captured["model"], defaultDeepSeekModel)
 	}
 }
 

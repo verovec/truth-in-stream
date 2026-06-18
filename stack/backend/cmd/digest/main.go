@@ -98,29 +98,36 @@ func buildCollector(epicID string) *report.Collector {
 }
 
 // buildSummarizer wires the per-card summarizer, honoring the global
-// LLM_PROVIDER like every other LLM-backed stage. Under Anthropic (the default)
-// the key is DIGEST_SUMMARY_API_KEY; under Gemini it is GEMINI_API_KEY. With no
-// key for the selected provider the summarizer is off and shipped cards fall
-// back to their titles. A construction error degrades the same way rather than
-// failing the digest.
+// LLM_PROVIDER like every other LLM-backed stage. Under DeepSeek (the default)
+// the key is DEEPSEEK_API_KEY; under Anthropic it is DIGEST_SUMMARY_API_KEY;
+// under Gemini it is GEMINI_API_KEY. With no key for the selected provider the
+// summarizer is off and shipped cards fall back to their titles. A construction
+// error degrades the same way rather than failing the digest.
 func buildSummarizer() report.CardSummarizer {
-	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", string(llm.ProviderAnthropic))))
+	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", string(llm.ProviderDeepSeek))))
 	anthropicKey := os.Getenv("DIGEST_SUMMARY_API_KEY")
 	geminiKey := os.Getenv("GEMINI_API_KEY")
+	deepseekKey := os.Getenv("DEEPSEEK_API_KEY")
 
-	keyPresent := anthropicKey != ""
-	if provider == string(llm.ProviderGemini) {
+	var keyPresent bool
+	switch provider {
+	case string(llm.ProviderGemini):
 		keyPresent = geminiKey != ""
+	case string(llm.ProviderDeepSeek):
+		keyPresent = deepseekKey != ""
+	default:
+		keyPresent = anthropicKey != ""
 	}
 	if !keyPresent {
 		return nil
 	}
 
 	summarizer, err := digestsummary.New(digestsummary.Config{
-		Provider:     llm.ProviderName(provider),
-		APIKey:       anthropicKey,
-		GeminiAPIKey: geminiKey,
-		Model:        os.Getenv("DIGEST_SUMMARY_MODEL"),
+		Provider:       llm.ProviderName(provider),
+		APIKey:         anthropicKey,
+		GeminiAPIKey:   geminiKey,
+		DeepSeekAPIKey: deepseekKey,
+		Model:          os.Getenv("DIGEST_SUMMARY_MODEL"),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "digest: card summaries disabled:", err)

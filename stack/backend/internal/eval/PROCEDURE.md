@@ -17,11 +17,12 @@ the faked CI gate.
 ## What the offline gate proves (and does not)
 
 `TestGoldenEvalAccuracyGate` runs every case in `testdata/golden.json` through the
-real `verify.Client` **under each supported provider** (the Anthropic default and
-Gemini), against a per-provider fake server that replays each case's recorded
-`record_assessment` tool-call in that provider's wire format. The harness takes an
-`eval.Target` (`Provider` + optional `Model`); the gate runs the same golden set
-once per target, so provider selection is exercised offline with no network call.
+real `verify.Client` **under each supported provider** (DeepSeek - the default -
+plus Anthropic and Gemini), against a per-provider fake server that replays each
+case's recorded `record_assessment` tool-call in that provider's wire format. The
+harness takes an `eval.Target` (`Provider` + optional `Model`); the gate runs the
+same golden set once per target, so provider selection is exercised offline with no
+network call.
 `TestGoldenGateFailsOnInjectedRegression` corrupts one recorded verdict and asserts
 the measured accuracy drops below the baseline under every provider, proving the
 gate has teeth on each backend. It asserts two recorded baselines:
@@ -89,13 +90,16 @@ is good enough to run a stage. It costs credit on both providers and is operator
 
 Provider selection is the env already added by VER-109; this card adds no new env.
 
-- `LLM_PROVIDER` — `anthropic` (default, Claude Haiku) or `gemini`. It is the single
-  shared provider choice every LLM-backed stage reads.
-- `GEMINI_API_KEY` — required only when `LLM_PROVIDER=gemini`. The Anthropic key the
+- `LLM_PROVIDER` — `deepseek` (default, DeepSeek's cheap chat model), `anthropic`
+  (Claude Haiku), or `gemini`. It is the single shared provider choice every
+  LLM-backed stage reads.
+- `DEEPSEEK_API_KEY` — required when `LLM_PROVIDER` is `deepseek` (or unset);
+  `GEMINI_API_KEY` — required only when `LLM_PROVIDER=gemini`. The Anthropic key the
   stage already consumes (e.g. the political verifier's key) stays the Anthropic-side
   secret. Keys come from the environment only and are never logged or committed.
 - Optionally a per-stage model override; an empty model falls back to the provider's
-  default (`claude-haiku-4-5-20251001` for Anthropic, `gemini-2.5-flash` for Gemini).
+  default (`deepseek-v4-flash` for DeepSeek, `claude-haiku-4-5-20251001` for
+  Anthropic, `gemini-2.5-flash` for Gemini).
 
 ### How to run it
 

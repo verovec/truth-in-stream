@@ -50,6 +50,11 @@ func newTestClient(t *testing.T, cfg Config, handler http.HandlerFunc) *Client {
 	if cfg.APIKey == "" {
 		cfg.APIKey = "test-key"
 	}
+	if cfg.Provider == "" {
+		// The fake server speaks the Anthropic wire format; name the provider so the
+		// default-provider flip to DeepSeek does not reroute these tests.
+		cfg.Provider = llm.ProviderAnthropic
+	}
 	c, err := New(cfg, llm.WithBaseURL(server.URL), llm.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -81,7 +86,7 @@ func TestNewRequiresAPIKey(t *testing.T) {
 func TestNewDefaultsMaxClaims(t *testing.T) {
 	t.Parallel()
 	for _, in := range []int{0, -1} {
-		c, err := New(Config{APIKey: "test-key", MaxClaimsPerUnit: in})
+		c, err := New(Config{Provider: llm.ProviderAnthropic, APIKey: "test-key", MaxClaimsPerUnit: in})
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
