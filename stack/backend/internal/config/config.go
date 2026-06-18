@@ -1259,6 +1259,10 @@ const (
 	// publishes curated-claim jobs to, kept separate from the wiki crawl and
 	// embedding queues so the fact-check worker never consumes a wiki chunk.
 	defaultFactCheckQueueName = "factcheck.claims"
+	// defaultScrutinsQueueName is the base queue the scrutins-archive producer
+	// publishes per-scrutin jobs to, kept separate from every other queue so the
+	// scrutins worker never consumes a wiki chunk or curated claim.
+	defaultScrutinsQueueName = "scrutins.votes"
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -1316,6 +1320,15 @@ func LoadCrawlQueue() (Queue, error) {
 // with the wiki crawl or dump-pipeline fleets.
 func LoadFactCheckQueue() (Queue, error) {
 	return loadQueue("RABBITMQ_FACTCHECK_QUEUE", defaultFactCheckQueueName)
+}
+
+// LoadScrutinsQueue reads the scrutins-archive broker configuration. It shares
+// the broker URL, priority, prefetch, and version machinery with LoadQueue but
+// binds to its own base queue name (RABBITMQ_SCRUTINS_QUEUE, default
+// scrutins.votes), so the scrutins producer and worker never share a queue with
+// the wiki crawl, fact-check, or dump-pipeline fleets.
+func LoadScrutinsQueue() (Queue, error) {
+	return loadQueue("RABBITMQ_SCRUTINS_QUEUE", defaultScrutinsQueueName)
 }
 
 // loadQueue reads the broker configuration, taking the base queue name from
@@ -1452,6 +1465,16 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 // defaults. Only the env prefix differs from LoadEmbedWorker.
 func LoadCrawlWorker() (EmbedWorker, error) {
 	return loadWorkerCommon("CRAWL_WORKER", defaultWorker())
+}
+
+// LoadScrutinsWorker reads the scrutins-worker configuration (SCRUTINS_WORKER_*).
+// It reuses the EmbedWorker shape and shared defaults for concurrency, attempts,
+// and pacing; the scrutins worker parses and upserts a scrutin per job and never
+// embeds, so it reads only Concurrency and MaxAttempts (the HTTP-timeout and
+// embed-retry fields keep their defaults and are unused). Only the env prefix
+// differs from LoadEmbedWorker.
+func LoadScrutinsWorker() (EmbedWorker, error) {
+	return loadWorkerCommon("SCRUTINS_WORKER", defaultWorker())
 }
 
 // defaultWorker is the worker configuration before any environment override.
@@ -1788,6 +1811,52 @@ func LoadFactCheckArchive() (FactCheckArchive, error) {
 		Queries:  queries,
 		Language: getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
 		MaxPages: maxPages,
+	}, nil
+}
+
+// scrutins-archive defaults. Legislature 17 is the current National Assembly
+// term; the marker file persists the conditional-GET validators between runs so
+// an unchanged archive is skipped, defaulting under a state dir the operator can
+// mount as a volume to survive container restarts.
+const (
+	defaultScrutinsLegislature = "17"
+	defaultScrutinsMarkerPath  = "/state/scrutins-marker.json"
+)
+
+// scrutinsLegislatureRe matches an AN legislature number, interpolated into the
+// archive URL. Only a bare positive integer is valid: anything else would build
+// a dead download URL or, worse, a path-traversal segment.
+var scrutinsLegislatureRe = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// ScrutinsArchive configures the scrutins-archive producer that conditionally
+// downloads the AN open-data Scrutins.json.zip and publishes one job per scrutin.
+// Legislature is the AN legislature number interpolated into the archive URL;
+// MarkerPath is where the conditional-GET validators (ETag/Last-Modified) persist
+// between runs so an unchanged archive does no redundant work (empty disables the
+// skip). It carries no secret: the archive is public open data and the broker URL
+// loads from LoadScrutinsQueue.
+type ScrutinsArchive struct {
+	Legislature string
+	MarkerPath  string
+}
+
+// LoadScrutinsArchive reads the scrutins-archive producer configuration from the
+// environment. SCRUTINS_LEGISLATURE defaults to 17 and must be a bare positive
+// integer (it is interpolated into the download URL); SCRUTINS_MARKER_PATH
+// defaults to a state file and may be set empty to disable the unchanged-archive
+// skip. Bad values fail fast at startup rather than building a dead URL.
+func LoadScrutinsArchive() (ScrutinsArchive, error) {
+	legislature := getenv("SCRUTINS_LEGISLATURE", defaultScrutinsLegislature)
+	if !scrutinsLegislatureRe.MatchString(legislature) {
+		return ScrutinsArchive{}, fmt.Errorf("config: SCRUTINS_LEGISLATURE %q must be a positive integer", legislature)
+	}
+	markerPath := defaultScrutinsMarkerPath
+	if raw, ok := os.LookupEnv("SCRUTINS_MARKER_PATH"); ok {
+		markerPath = raw
+	}
+	return ScrutinsArchive{
+		Legislature: legislature,
+		MarkerPath:  markerPath,
 	}, nil
 }
 
