@@ -64,20 +64,35 @@ type AtomicClaim struct {
 	Text    string
 }
 
-// VerifiedVerdict is the retrieve-then-verify path's grounded credibility verdict
-// for one atomic claim, carried on a LiveEventResult. Verdict is credible/disputed/
-// unverifiable; Basis is evidence (grounded in a surviving citation) or knowledge
-// (the verifier's world-knowledge tiebreaker); Confidence comes from the verifier
-// (or the near-match similarity for a curated verdict); Citations are the retrieved
+// VerifiedVerdict is the retrieve-then-verify path's grounded verdict for one
+// atomic claim, carried on a LiveEventResult. It is nil for a checking or unchecked
+// result.
+//
+// Verdict is the credibility axis (credible/disputed/unverifiable); Basis is
+// evidence (grounded in a surviving citation) or knowledge (the verifier's
+// world-knowledge tiebreaker); Confidence comes from the verifier (or the
+// near-match similarity for a curated verdict); Citations are the retrieved
 // matches the verdict cited (with their evidence ids, so the grounding
-// round-trips); Rationale is the one-sentence reason. It is nil for a checking or
-// unchecked result.
+// round-trips); Rationale is the one-sentence reason.
+//
+// Literal and Flags are the political path's two orthogonal axes and are zero on
+// the credibility-only path (so a non-political verdict is byte-for-byte the
+// legacy shape). Literal is the face-value verdict (accurate/inaccurate/
+// unverifiable); Flags is the subset of the closed manipulation vocabulary
+// (missing-context, cherry-picked, outdated, misattributed, misleading-causation)
+// that applies to the claim's framing, independent of whether the literal claim is
+// true. Verdict (the credibility axis) is derived from Literal on the political
+// path so a single per-speaker score and the existing frontend verdict contract
+// keep working; the frontend (VER-104) reads Literal and Flags for the two-axis
+// display.
 type VerifiedVerdict struct {
 	Verdict    string
 	Basis      string
 	Confidence float64
 	Citations  []domain.SegmentMatch
 	Rationale  string
+	Literal    string
+	Flags      []string
 }
 
 // ClaimDecomposer splits one checkable unit into atomic, self-contained claims.
@@ -158,6 +173,13 @@ type VerifyPathConfig struct {
 	// credibility score. It defaults to defaultPriorStrength when non-positive.
 	PriorStrength float64
 	Logger        *slog.Logger
+	// Political, when non-nil, switches a checkable claim's verify stage onto the
+	// political path (FACTCHECK_POLITICAL on): classify -> route+retrieve -> two-axis
+	// verify, folding into the flag-aware aggregator. The curated fast-path borrow,
+	// the event lifecycle, and the capacity-shed semantics are unchanged. When nil
+	// the path runs the credibility-only verify stage, so the political flag off is
+	// byte-for-byte the legacy retrieve-then-verify behavior.
+	Political *PoliticalConfig
 }
 
 // VerifyPath is the retrieve-then-verify orchestration for one analyzer: per
@@ -177,6 +199,7 @@ type VerifyPath struct {
 	priorStrength  float64
 	logger         *slog.Logger
 	cache          *claimCache
+	pol            *PoliticalConfig
 }
 
 // NewVerifyPath builds a VerifyPath, failing when a required collaborator is
@@ -202,6 +225,16 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	case cfg.CacheTTL < 0:
 		return nil, fmt.Errorf("service: verify path cache ttl must be non-negative, got %s", cfg.CacheTTL)
 	}
+	if cfg.Political != nil {
+		switch {
+		case cfg.Political.Classifier == nil:
+			return nil, errors.New("service: political verify path requires a classifier")
+		case cfg.Political.Retriever == nil:
+			return nil, errors.New("service: political verify path requires a retriever")
+		case cfg.Political.Verifier == nil:
+			return nil, errors.New("service: political verify path requires a two-axis verifier")
+		}
+	}
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -226,6 +259,7 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		priorStrength:  priorStrength,
 		logger:         logger,
 		cache:          cache,
+		pol:            cfg.Political,
 	}, nil
 }
 
@@ -334,13 +368,31 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	}
 
 	// Fast path: a high-confidence curated near-match borrows its verdict with no
-	// LLM call, tagged curated, and emitted at once.
+	// LLM call, tagged curated, and emitted at once. The borrow is shared across the
+	// credibility and political paths; on the political path the curated verdict also
+	// carries its literal axis (curatedVerdict maps corroborates -> accurate).
 	if fast, ok := vp.fastMatch(ret.matches); ok {
 		verdict := curatedVerdict(fast)
+		if vp.political() {
+			// On the political path a borrowed verdict also carries its literal axis,
+			// derived from the credibility verdict the curated corpus already settled
+			// (corroborates -> accurate, contradicts -> inaccurate); a curated borrow
+			// asserts no manipulation flag. The credibility-only path leaves Literal
+			// zero, keeping its wire shape unchanged.
+			verdict.Literal = literalFromCredibility(verdict.Verdict)
+		}
 		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+		return
+	}
+
+	// Political path: the curated borrow was ruled out, so classify, route+retrieve,
+	// and two-axis verify, folding into the flag-aware aggregator. It owns its own
+	// checking/verified/unchecked/error lifecycle from here.
+	if vp.political() {
+		vp.scorePoliticalClaim(ctx, a, out, mem, pu, claim, ret)
 		return
 	}
 
@@ -586,15 +638,20 @@ func credibilityFromCurated(v domain.Verdict) (state, basis string) {
 }
 
 // recordSpeakerScore folds one claim's reached verdict into the speaker's running
-// credibility score and emits the updated snapshot as a LiveEventSpeakerScore. It
-// is a no-op for an unattributed turn (no speaker to score) or a nil verdict
+// aggregate and emits the updated snapshot as a LiveEventSpeakerScore. It is a
+// no-op for an unattributed turn (no speaker to score) or a nil verdict
 // (checking/unchecked/error claims never reach here). Only credible and disputed
-// move the score; unverifiable updates the speaker's tally alone.
+// move the score; unverifiable updates the speaker's tally alone. On the political
+// path a verdict carrying at least one manipulation flag also bumps the orthogonal
+// misleading-framing tally, folded under one lock so the emitted snapshot is
+// internally consistent. The same recorder serves the curated-borrow, cache-hit,
+// verified, and political branches, so the framing axis can never be silently
+// dropped on a replay.
 func (vp *VerifyPath) recordSpeakerScore(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, verdict *VerifiedVerdict) {
 	if speaker == "" || verdict == nil {
 		return
 	}
-	score := mem.observeCredibility(speaker, verdict.Verdict, verdict.Confidence, vp.priorStrength)
+	score := mem.observeVerdict(speaker, verdict.Verdict, verdict.Confidence, vp.priorStrength, len(verdict.Flags) > 0)
 	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerScore, SpeakerScore: &score})
 }
 

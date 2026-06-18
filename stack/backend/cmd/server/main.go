@@ -17,12 +17,18 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
+	"github.com/verovec/truth-in-stream/backend/internal/claimtype"
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
+	"github.com/verovec/truth-in-stream/backend/internal/source"
+	"github.com/verovec/truth-in-stream/backend/internal/source/press"
+	"github.com/verovec/truth-in-stream/backend/internal/source/stats"
+	"github.com/verovec/truth-in-stream/backend/internal/source/voting"
+	"github.com/verovec/truth-in-stream/backend/internal/source/websearch"
 	"github.com/verovec/truth-in-stream/backend/internal/stance"
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
@@ -207,7 +213,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, verifyMatcher, locale, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, verifyMatcher, store, locale, logger)
 	if err != nil {
 		return err
 	}
@@ -440,8 +446,12 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // buildVerifyPath wires the retrieve-then-verify orchestration, or returns nil
 // (so the analyzer runs the legacy path) when the feature is not active. The
 // decomposer and verifier are Anthropic-backed adapters over the shared llm
-// transport; both share the configured model. The API key is never logged.
-func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+// transport; both share the configured model. When political mode is active on top
+// of the verify path (FACTCHECK_POLITICAL on), the per-claim verify stage is
+// switched onto the political pipeline (classify -> route+retrieve -> two-axis
+// verify) by passing the political collaborators through. The API key is never
+// logged.
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher service.SegmentMatcher, votingStore voting.Store, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -450,6 +460,10 @@ func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, loca
 		return nil, err
 	}
 	verifier, err := verify.New(verify.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	pol, err := buildPoliticalConfig(cfg, political, votingStore, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -465,12 +479,129 @@ func buildVerifyPath(cfg config.VerifyPath, matcher service.SegmentMatcher, loca
 		CacheTTL:          cfg.CacheTTL,
 		PriorStrength:     cfg.SpeakerPriorStrength,
 		Logger:            logger,
+		Political:         pol,
 	})
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
+	if pol != nil {
+		logger.Info("political fact-check path enabled (classify -> route -> two-axis verify)", slog.String("model", cfg.Model))
+	} else {
+		logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
+	}
 	return path, nil
+}
+
+// buildPoliticalConfig assembles the political verify path's collaborators - the
+// claim-type classifier, the source router, and the two-axis verifier - or returns
+// nil (so the verify path runs its credibility-only stage unchanged) when political
+// mode is not active on top of the verify path. The classifier and two-axis
+// verifier share the verify path's model and API key; the router is built over the
+// configured source packs with web search as the mandatory open-ended fallback. The
+// API key is never logged.
+func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Political, votingStore voting.Store, logger *slog.Logger) (*service.PoliticalConfig, error) {
+	if !political.Active(verifyCfg.Active()) {
+		return nil, nil
+	}
+	classifier, err := claimtype.New(claimtype.Config{APIKey: verifyCfg.APIKey, Model: verifyCfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	politicalVerifier, err := verify.New(verify.Config{APIKey: verifyCfg.APIKey, Model: verifyCfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	router, err := buildRouter(political, votingStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	return &service.PoliticalConfig{
+		Classifier: classifier,
+		Retriever:  router,
+		Verifier:   politicalVerifierAdapter{politicalVerifier},
+	}, nil
+}
+
+// buildRouter assembles the context-aware source router over the configured source
+// packs. The stats and voting packs are keyless (the voting pack reads the
+// political store); the press pack joins only when its key is set; web search is
+// the mandatory open-ended fallback, so its key is required when political mode is
+// on - a missing key is a fail-fast misconfiguration rather than a router with no
+// fallback. The router's language tracks the political locale.
+func buildRouter(political config.Political, votingStore voting.Store, logger *slog.Logger) (*service.Router, error) {
+	websearchCfg, err := websearch.LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("political mode requires a web-search fallback: %w", err)
+	}
+	web, err := websearch.New(websearch.Config{APIKey: websearchCfg.APIKey, Timeout: websearchCfg.Timeout})
+	if err != nil {
+		return nil, err
+	}
+
+	statsCfg, err := stats.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	retrievers := []source.Retriever{
+		web,
+		stats.New(stats.Config{Timeout: statsCfg.Timeout, CacheTTL: statsCfg.CacheTTL}),
+		voting.New(votingStore),
+	}
+
+	// The press pack is optional: it joins the registry only when its own key is
+	// set, so attribution claims that would route to it fall through to web search
+	// when it is absent rather than failing to wire. A set key with a malformed
+	// tuning value (e.g. a bad PRESS_TIMEOUT) is a real misconfiguration and fails
+	// fast - only the missing-key case is a silent skip, so a typo is never swallowed
+	// as "press absent".
+	if os.Getenv("PRESS_API_KEY") != "" {
+		pressCfg, err := press.LoadConfig()
+		if err != nil {
+			return nil, err
+		}
+		pressPack, err := press.New(press.Config{APIKey: pressCfg.APIKey, Timeout: pressCfg.Timeout})
+		if err != nil {
+			return nil, err
+		}
+		retrievers = append(retrievers, pressPack)
+		logger.Info("political press source enabled")
+	}
+
+	return service.NewRouter(retrievers, service.RouterConfig{
+		MinResults: political.RouterMinResults,
+		Lang:       political.RouterLang(),
+	})
+}
+
+// politicalVerifierAdapter adapts the verify client's two-axis VerifyPolitical to
+// the service PoliticalVerifier port: it maps the service's evidence passages onto
+// the verifier's, and the verifier's two-axis result (already citation-guarded)
+// back onto the service two-axis verdict.
+type politicalVerifierAdapter struct {
+	client *verify.Client
+}
+
+func (v politicalVerifierAdapter) VerifyPolitical(ctx context.Context, claim string, passages []service.EvidencePassage) (service.PoliticalVerdict, error) {
+	in := make([]verify.Passage, len(passages))
+	for i, p := range passages {
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+	}
+	res, err := v.client.VerifyPolitical(ctx, claim, in)
+	if err != nil {
+		return service.PoliticalVerdict{}, err
+	}
+	citations := make([]service.EvidenceCitation, len(res.Citations))
+	for i, c := range res.Citations {
+		citations[i] = service.EvidenceCitation{EvidenceID: c.EvidenceID, QuotedSpan: c.QuotedSpan}
+	}
+	return service.PoliticalVerdict{
+		Literal:    res.Literal,
+		Basis:      res.Basis,
+		Flags:      res.Flags,
+		Confidence: res.Confidence,
+		Citations:  citations,
+		Rationale:  res.Rationale,
+	}, nil
 }
 
 // decomposerAdapter adapts the claimdecomp client to the service ClaimDecomposer
