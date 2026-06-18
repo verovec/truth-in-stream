@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
@@ -81,13 +79,16 @@ const systemPromptFR = "Tu decomposes un seul enonce parle en ses affirmations f
 	"Lorsque l'enonce porte plus d'affirmations que demande, garde les plus verifiables et ecarte le reste. " +
 	"Enregistre les affirmations avec l'outil record_claims."
 
-// Config wires a Client. APIKey is required and comes from the environment only;
-// Model defaults to defaultModel when empty; MaxClaimsPerUnit defaults to
+// Config wires a Client. Provider selects the LLM backend (default Anthropic);
+// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
+// only; Model defaults to defaultModel when empty; MaxClaimsPerUnit defaults to
 // defaultMaxClaims when not positive. Locale selects the prompt language: the
 // default (English) keeps the English prompt and labels; domain.LocaleFrench
 // prompts and emits claims in French.
 type Config struct {
+	Provider         llm.ProviderName
 	APIKey           string
+	GeminiAPIKey     string
 	Model            string
 	MaxClaimsPerUnit int
 	Locale           domain.Locale
@@ -115,7 +116,7 @@ type Client struct {
 // off upstream when unconfigured, so reaching here without a key is a wiring
 // error). Extra request options (e.g. a test base URL) are forwarded to the
 // shared transport, so a caller can point the client at a fake server.
-func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
+func New(cfg Config, opts ...llm.Option) (*Client, error) {
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
@@ -124,7 +125,12 @@ func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
 	if maxClaims <= 0 {
 		maxClaims = defaultMaxClaims
 	}
-	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	client, err := llm.NewClient(llm.Config{
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		GeminiAPIKey: cfg.GeminiAPIKey,
+		Model:        model,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("claimdecomp: %w", err)
 	}

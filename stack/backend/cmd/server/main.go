@@ -22,6 +22,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/source"
@@ -365,7 +366,7 @@ func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale
 	if !cw.Active() {
 		return heuristic, nil
 	}
-	model, err := checkworthy.New(checkworthy.Config{APIKey: cw.APIKey, Model: cw.Model, Locale: locale})
+	model, err := checkworthy.New(checkworthy.Config{Provider: llm.ProviderName(cw.Provider), APIKey: cw.APIKey, GeminiAPIKey: cw.GeminiAPIKey, Model: cw.Model, Locale: locale})
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +382,7 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 	if !cfg.Active() {
 		return nil, nil
 	}
-	client, err := stance.New(stance.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	client, err := stance.New(stance.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, Model: cfg.Model})
 	if err != nil {
 		return nil, err
 	}
@@ -455,11 +456,11 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher 
 	if !cfg.Active() {
 		return nil, nil
 	}
-	decomposer, err := claimdecomp.New(claimdecomp.Config{APIKey: cfg.APIKey, Model: cfg.Model, MaxClaimsPerUnit: cfg.MaxClaimsPerUnit, Locale: locale})
+	decomposer, err := claimdecomp.New(claimdecomp.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, Model: cfg.Model, MaxClaimsPerUnit: cfg.MaxClaimsPerUnit, Locale: locale})
 	if err != nil {
 		return nil, err
 	}
-	verifier, err := verify.New(verify.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	verifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, Model: cfg.Model})
 	if err != nil {
 		return nil, err
 	}
@@ -503,11 +504,11 @@ func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Politica
 	if !political.Active(verifyCfg.Active()) {
 		return nil, nil
 	}
-	classifier, err := claimtype.New(claimtype.Config{APIKey: verifyCfg.APIKey, Model: verifyCfg.Model})
+	classifier, err := claimtype.New(claimtype.Config{Provider: llm.ProviderName(verifyCfg.Provider), APIKey: verifyCfg.APIKey, GeminiAPIKey: verifyCfg.GeminiAPIKey, Model: verifyCfg.Model})
 	if err != nil {
 		return nil, err
 	}
-	politicalVerifier, err := verify.New(verify.Config{APIKey: verifyCfg.APIKey, Model: verifyCfg.Model})
+	politicalVerifier, err := verify.New(verify.Config{Provider: llm.ProviderName(verifyCfg.Provider), APIKey: verifyCfg.APIKey, GeminiAPIKey: verifyCfg.GeminiAPIKey, Model: verifyCfg.Model})
 	if err != nil {
 		return nil, err
 	}
