@@ -97,7 +97,7 @@ func (r *SlackRenderer) buildMessage(p Payload) slackMessage {
 	title := digestTitle(p)
 	blocks := []slackBlock{
 		{Type: "header", Text: &slackText{Type: "plain_text", Text: title}},
-		contextBlock(digestContext(p)),
+		contextBlock(digestContext(p) + " | generated " + p.GeneratedAt.Format("15:04 MST")),
 		{Type: "divider"},
 		mrkdwnSection("Shipped", slackShippedLines(p.Shipped), shippedEmpty(p)),
 		mrkdwnSection("Remaining", slackRemainingLines(p.Remaining), "No cards remaining."),
@@ -193,13 +193,14 @@ func digestTitle(p Payload) string {
 	return "Daily development digest - " + p.GeneratedAt.Format("Mon 2 Jan 2006")
 }
 
-// digestContext is the sub-header line: the window for the daily digest, the
-// epic identifier for an epic recap, plus the generation time.
+// digestContext is the sub-header scope line shared by both renderers: the
+// window for the daily digest, the epic identifier for an epic recap. Each
+// renderer appends the generation time in its own format.
 func digestContext(p Payload) string {
 	if p.Mode == ModeEpic && p.Epic != nil {
-		return fmt.Sprintf("Epic %s | generated %s", p.Epic.ID, p.GeneratedAt.Format("15:04 MST"))
+		return "Epic " + p.Epic.ID
 	}
-	return fmt.Sprintf("Window: last %dh | generated %s", windowHours(p.Window), p.GeneratedAt.Format("15:04 MST"))
+	return fmt.Sprintf("Window: last %dh", windowHours(p.Window))
 }
 
 // shippedEmpty is the placeholder for an empty Shipped section, worded for the

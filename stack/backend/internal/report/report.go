@@ -264,17 +264,15 @@ func (c *Collector) collectShipped(ctx context.Context, p *Payload) []CardMove {
 // the digest never fails on the summarizer.
 func (c *Collector) summarize(ctx context.Context, p *Payload, shipped []CardMove) []CardSummary {
 	out := make([]CardSummary, len(shipped))
+	ids := make([]string, len(shipped))
 	for i, card := range shipped {
 		out[i] = CardSummary{ID: card.ID, Title: card.Title}
+		ids[i] = card.ID
 	}
 	if len(shipped) == 0 || c.summarizer == nil {
 		return out
 	}
 
-	ids := make([]string, len(shipped))
-	for i, card := range shipped {
-		ids[i] = card.ID
-	}
 	var subjects map[string][]string
 	if c.commits != nil {
 		if s, err := c.commits.SubjectsForCards(ctx, ids); err != nil {

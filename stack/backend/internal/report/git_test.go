@@ -86,6 +86,14 @@ func TestSubjectsForCardsPassesGrepArgs(t *testing.T) {
 			t.Errorf("args missing %q: %v", want, gotArgs)
 		}
 	}
+	// The grep pattern must be POSIX-compatible: git's extended-regexp engine
+	// does not understand \d, so a \d pattern would silently match nothing.
+	if !strings.Contains(joined, "VER-[0-9]") {
+		t.Errorf("grep pattern is not POSIX [0-9]: %v", gotArgs)
+	}
+	if strings.Contains(joined, `\d`) {
+		t.Errorf(`grep pattern uses \d, which git extended-regexp does not support: %v`, gotArgs)
+	}
 }
 
 func TestActiveCardIDs(t *testing.T) {

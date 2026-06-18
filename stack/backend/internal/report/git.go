@@ -17,6 +17,12 @@ import (
 // subject such as "feat: do a thing (VER-29)".
 var cardIDPattern = regexp.MustCompile(`VER-\d+`)
 
+// cardIDGrepPattern is the same identifier written for git's grep engine. Git's
+// POSIX extended-regexp (--extended-regexp) does not support the \d shorthand
+// that Go's RE2 accepts, so a literal [0-9] class is used instead; with \d the
+// grep would match nothing and every commit subject would be silently dropped.
+const cardIDGrepPattern = `VER-[0-9]+`
+
 // Runner executes a command and returns its stdout. Injected so tests can stand
 // in for the git CLI.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -55,7 +61,7 @@ func (g *GitCommitSource) SubjectsForCards(ctx context.Context, ids []string) (m
 		want[id] = true
 	}
 	out, err := g.run(ctx, "git", "-C", g.dir, "log", "--no-merges",
-		"--extended-regexp", "--grep", cardIDPattern.String(), "--pretty=format:%s")
+		"--extended-regexp", "--grep", cardIDGrepPattern, "--pretty=format:%s")
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
