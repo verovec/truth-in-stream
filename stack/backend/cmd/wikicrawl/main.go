@@ -18,6 +18,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
@@ -73,7 +74,7 @@ func run(logger *slog.Logger) error {
 	// than a typed-nil that RunCrawl would mistake for a live gate.
 	var gate wiki.Gate
 	if gateCfg.Active() {
-		client, err := evidencegate.New(evidencegate.Config{APIKey: gateCfg.APIKey, Model: gateCfg.Model})
+		client, err := evidencegate.New(evidencegate.Config{Provider: llm.ProviderName(gateCfg.Provider), APIKey: gateCfg.APIKey, GeminiAPIKey: gateCfg.GeminiAPIKey, Model: gateCfg.Model})
 		if err != nil {
 			return err
 		}

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -50,7 +50,7 @@ func newTestClient(t *testing.T, cfg Config, handler http.HandlerFunc) *Client {
 	if cfg.APIKey == "" {
 		cfg.APIKey = "test-key"
 	}
-	c, err := New(cfg, option.WithBaseURL(server.URL), option.WithMaxRetries(0))
+	c, err := New(cfg, llm.WithBaseURL(server.URL), llm.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

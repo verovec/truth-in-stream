@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
@@ -154,7 +154,7 @@ func toolUseResponse(t *testing.T, mv ModelVerdict) string {
 func newVerifier(t *testing.T, g Golden) *verify.Client {
 	t.Helper()
 	srv := recordedModelServer(t, g)
-	v, err := verify.New(verify.Config{APIKey: "test-key"}, option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	v, err := verify.New(verify.Config{APIKey: "test-key"}, llm.WithBaseURL(srv.URL), llm.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("verify.New: %v", err)
 	}

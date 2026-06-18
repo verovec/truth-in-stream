@@ -145,13 +145,21 @@ hard ML step" pattern as Voyage/AssemblyAI. The official Go SDK
 verified latest stable **v1.50.2** via Context7 on 2026-06-16 (v1.50.x only retires dead model
 constants - no change to the tool/`ToolChoice`/`ToolUseBlock` surface).
 
-The Anthropic forced-tool transport is shared, not copied per adapter. `internal/llm`
-(`llm.NewClient(apiKey, model, opts...)` + `llm.Classify[T](ctx, client, llm.Request{...})`)
-owns client construction, the single forced tool call at temperature zero, tool-use extraction,
-and structured decode into a caller-supplied `T`. `internal/stance`, `internal/checkworthy`, and
-any future single-tool classifier are thin callers that supply only their prompt, tool schema,
-and verdict type - `internal/llm` never knows what a verdict means. Add a classifier as a new
-caller here; never triplicate the SDK client.
+The forced-tool transport is shared and provider-agnostic, not copied per adapter. `internal/llm`
+(`llm.NewClient(llm.Config{...}, opts...)` + `llm.Classify[T](ctx, client, llm.Request{...})`)
+owns a `Provider` interface capturing the forced-tool/structured-output contract (one forced
+tool call at temperature zero, decode the tool arguments into a caller-supplied `T`), an
+Anthropic adapter, and a Gemini adapter, selected by the `LLM_PROVIDER` env var (default
+`anthropic`, keeping Claude Haiku behaviour byte-identical) plus `GEMINI_API_KEY`. The six
+callers (`internal/stance`, `internal/checkworthy`, `internal/claimdecomp`, `internal/claimtype`,
+`internal/verify`, `internal/evidencegate`) are thin: they supply only their prompt, tool schema,
+and verdict type and never name a provider. Add a classifier as a new caller here; never
+duplicate a provider client. The Google Gen AI Go SDK is `google.golang.org/genai` (verified
+latest stable **v1.61.0** via Context7 + the registry on 2026-06-18); the Gemini adapter forces a
+single function call via `FunctionCallingConfigModeAny` with the one allowed name at temperature
+zero, the structural twin of the Anthropic forced tool call. A stage stays active under Gemini on
+`GEMINI_API_KEY` alone - `config`'s `Active()` checks the selected provider's key, not the
+Anthropic key.
 
 - Model `claude-haiku-4-5-20251001` (`config.defaultConsistencyModel`) - the cheapest, fastest
   model, right for a binary classification over two short statements. Do NOT reach for a larger

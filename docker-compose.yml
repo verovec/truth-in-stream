@@ -351,6 +351,10 @@ services:
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
       CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
       CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
+      # LLM provider for the fact-checkability gate (default anthropic). Set
+      # LLM_PROVIDER=gemini + GEMINI_API_KEY to route the gate to Google Gemini.
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
@@ -540,6 +544,13 @@ services:
       # model, and note the committed seed cache is keyed under the default - a
       # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # LLM provider for every LLM-backed stage (consistency, check-worthiness,
+      # claim decomposition, claim typing, the credibility verifier). Defaults to
+      # anthropic (Claude Haiku, unchanged). Set LLM_PROVIDER=gemini + GEMINI_API_KEY
+      # to route the same forced-tool calls to Google Gemini; an unknown value fails
+      # fast at startup. The per-stage *_MODEL and Anthropic *_API_KEY vars still apply.
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       # Live intra-speaker consistency: flag when a speaker contradicts their own
       # earlier statement. Off unless CONSISTENCY_ENABLED is true AND
       # CONSISTENCY_API_KEY (Anthropic) is set; with no key, live analysis behaves

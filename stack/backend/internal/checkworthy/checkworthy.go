@@ -20,8 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
@@ -65,15 +63,18 @@ const systemPromptFR = "Tu evalues si un seul enonce parle est une affirmation f
 	"\"mon vol etait en retard\"), d'une opinion, d'une question, d'une salutation, d'une formule prudente, ou d'un fragment de phrase. " +
 	"En cas de doute, enregistre-le comme non verifiable. Enregistre ton verdict avec l'outil record_check_worthiness."
 
-// Config wires a Client. APIKey is required and comes from the environment only;
-// Model defaults to defaultModel when empty. Locale selects the prompt language:
-// the default (English) keeps the English prompt; domain.LocaleFrench reasons in
-// French. The judgment is unchanged across locales - only the prompt language
-// differs.
+// Config wires a Client. Provider selects the LLM backend (default Anthropic);
+// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
+// only; Model defaults to defaultModel when empty. Locale selects the prompt
+// language: the default (English) keeps the English prompt; domain.LocaleFrench
+// reasons in French. The judgment is unchanged across locales - only the prompt
+// language differs.
 type Config struct {
-	APIKey string
-	Model  string
-	Locale domain.Locale
+	Provider     llm.ProviderName
+	APIKey       string
+	GeminiAPIKey string
+	Model        string
+	Locale       domain.Locale
 }
 
 // Client is the Anthropic-backed CheckWorthinessClassifier adapter.
@@ -86,12 +87,17 @@ type Client struct {
 // off upstream when unconfigured, so reaching here without a key is a wiring
 // error). Extra request options (e.g. a test base URL) are forwarded to the
 // shared transport, so a caller can point the client at a fake server.
-func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
+func New(cfg Config, opts ...llm.Option) (*Client, error) {
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
 	}
-	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	client, err := llm.NewClient(llm.Config{
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		GeminiAPIKey: cfg.GeminiAPIKey,
+		Model:        model,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("checkworthy: %w", err)
 	}

@@ -33,6 +33,65 @@ const defaultTranscriptionModel = "u3-rt-pro"
 // clip from, relative to the working directory.
 const defaultDemoMediaDir = "demo"
 
+// LLM provider selection. Every LLM-backed stage (stance, check-worthiness,
+// claim decomposition, claim typing, the credibility verifier, the ingestion
+// fact-checkability gate) reads one shared provider choice from LLM_PROVIDER and,
+// when that choice is Gemini, the key from GEMINI_API_KEY. LLM_PROVIDER defaults
+// to "anthropic", which keeps every stage on Claude Haiku exactly as the codebase
+// shipped; an unknown value fails fast at startup rather than silently falling
+// back. The per-stage model and the Anthropic per-stage key vars are unchanged;
+// only the provider and the Gemini key are global. GEMINI_API_KEY is a secret and
+// is never logged.
+const (
+	// LLMProviderAnthropic keeps every stage on the Anthropic Claude transport,
+	// the default when LLM_PROVIDER is unset.
+	LLMProviderAnthropic = "anthropic"
+	// LLMProviderGemini routes every stage to Google Gemini, keyed on
+	// GEMINI_API_KEY.
+	LLMProviderGemini = "gemini"
+)
+
+// LLMSelection is the shared provider choice and Gemini key threaded into every
+// LLM-backed stage's configuration. Provider is the validated LLM_PROVIDER value
+// (default LLMProviderAnthropic); GeminiAPIKey is read from GEMINI_API_KEY and is
+// required only when Provider is LLMProviderGemini and a stage is active. It is
+// never logged.
+type LLMSelection struct {
+	Provider     string
+	GeminiAPIKey string
+}
+
+// hasKey reports whether the selected provider has the key it needs, given the
+// stage's Anthropic per-stage key. Under Gemini the key is GeminiAPIKey; under
+// Anthropic (the default) it is the per-stage key. Every stage's Active() routes
+// its key-presence check through this so an enabled-but-keyless feature degrades
+// to off under whichever provider is selected - selecting Gemini and supplying
+// only GEMINI_API_KEY keeps the stage active, where checking the Anthropic key
+// alone would silently disable it.
+func (s LLMSelection) hasKey(anthropicKey string) bool {
+	if s.Provider == LLMProviderGemini {
+		return s.GeminiAPIKey != ""
+	}
+	return anthropicKey != ""
+}
+
+// loadLLMSelection reads the shared LLM provider choice from the environment.
+// LLM_PROVIDER defaults to anthropic and is validated against the known set, so
+// an unknown provider crashes the process at startup with a clear message rather
+// than degrading silently. The Gemini key is read but never logged.
+func loadLLMSelection() (LLMSelection, error) {
+	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", LLMProviderAnthropic)))
+	switch provider {
+	case LLMProviderAnthropic, LLMProviderGemini:
+	default:
+		return LLMSelection{}, fmt.Errorf("config: LLM_PROVIDER %q is not a known provider (want %q or %q)", provider, LLMProviderAnthropic, LLMProviderGemini)
+	}
+	return LLMSelection{
+		Provider:     provider,
+		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+	}, nil
+}
+
 // Config holds the runtime configuration for the server.
 type Config struct {
 	Port        string
@@ -470,6 +529,7 @@ const (
 // a secret and comes from the environment only - never logged. Model selects
 // the stance model; TopK and SimilarityFloor tune detection.
 type Consistency struct {
+	LLMSelection
 	Enabled         bool
 	APIKey          string
 	Model           string
@@ -481,7 +541,7 @@ type Consistency struct {
 // and has the API key it needs. Wiring keys off this so an enabled-but-keyless
 // configuration degrades to off rather than failing to start.
 func (c Consistency) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadConsistency reads the intra-speaker consistency configuration from the
@@ -493,7 +553,11 @@ func LoadConsistency() (Consistency, error) {
 		TopK:            defaultConsistencyTopK,
 		SimilarityFloor: defaultConsistencyFloor,
 	}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return Consistency{}, err
+	}
+	c.LLMSelection = llmSel
 	if c.Enabled, err = boolEnv("CONSISTENCY_ENABLED"); err != nil {
 		return Consistency{}, err
 	}
@@ -569,6 +633,7 @@ const (
 // VerifyDeadline bound the two tiers; CacheTTL is the repeated-claim cache window
 // (0 disables it).
 type VerifyPath struct {
+	LLMSelection
 	Enabled          bool
 	APIKey           string
 	Model            string
@@ -594,7 +659,7 @@ type VerifyPath struct {
 // this so an enabled-but-keyless configuration degrades to the legacy path
 // rather than failing to start.
 func (v VerifyPath) Active() bool {
-	return v.Enabled && v.APIKey != ""
+	return v.Enabled && v.hasKey(v.APIKey)
 }
 
 // LoadVerifyPath reads the retrieve-then-verify configuration from the
@@ -615,7 +680,11 @@ func LoadVerifyPath() (VerifyPath, error) {
 		RetrievalThreshold:   defaultVerifyRetrievalThreshold,
 		SpeakerPriorStrength: defaultSpeakerScorePriorStrength,
 	}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return VerifyPath{}, err
+	}
+	v.LLMSelection = llmSel
 	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
 		return VerifyPath{}, err
 	}
@@ -668,6 +737,7 @@ const defaultCheckWorthinessModel = "claude-haiku-4-5-20251001"
 // and comes from the environment only - never logged. Model selects the
 // classifier model.
 type CheckWorthiness struct {
+	LLMSelection
 	Enabled bool
 	APIKey  string
 	Model   string
@@ -678,14 +748,18 @@ type CheckWorthiness struct {
 // configuration degrades to the heuristic-only gate rather than failing to
 // start.
 func (c CheckWorthiness) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadCheckWorthiness reads the model check-worthiness configuration from the
 // environment, applying defaults. The secret is read but never logged.
 func LoadCheckWorthiness() (CheckWorthiness, error) {
 	c := CheckWorthiness{Model: defaultCheckWorthinessModel}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return CheckWorthiness{}, err
+	}
+	c.LLMSelection = llmSel
 	if c.Enabled, err = boolEnv("CHECKWORTHINESS_ENABLED"); err != nil {
 		return CheckWorthiness{}, err
 	}
@@ -1607,6 +1681,7 @@ const (
 // RPM (0 = unpaced) caps the per-producer Anthropic call rate. APIKey is a secret
 // read from CHECKWORTHY_API_KEY and never logged.
 type CrawlCheckworthy struct {
+	LLMSelection
 	Enabled     bool
 	APIKey      string
 	Model       string
@@ -1618,7 +1693,7 @@ type CrawlCheckworthy struct {
 // guarantees an enabled gate carries a key, so this is true exactly when the gate
 // is on; callers pass a nil gate to the producer when it is false.
 func (c CrawlCheckworthy) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadCrawlCheckworthy reads the crawl fact-checkability gate configuration.
@@ -1631,9 +1706,19 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 	if err != nil {
 		return CrawlCheckworthy{}, err
 	}
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return CrawlCheckworthy{}, err
+	}
 	apiKey := getenv("CHECKWORTHY_API_KEY", "")
-	if enabled && apiKey == "" {
-		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but CHECKWORTHY_API_KEY is not set")
+	// The crawl gate needs the selected provider's key when on. Under Gemini the
+	// key is GEMINI_API_KEY; otherwise CHECKWORTHY_API_KEY (the Anthropic key).
+	providerKey := apiKey
+	if llmSel.Provider == LLMProviderGemini {
+		providerKey = llmSel.GeminiAPIKey
+	}
+	if enabled && providerKey == "" {
+		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but no API key is set for provider %q", llmSel.Provider)
 	}
 
 	concurrency, err := intEnv("CRAWL_CHECKWORTHY_CONCURRENCY", defaultCrawlCheckworthyConcurrency, 1, math.MaxInt32)
@@ -1646,11 +1731,12 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 	}
 
 	return CrawlCheckworthy{
-		Enabled:     enabled,
-		APIKey:      apiKey,
-		Model:       getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
-		Concurrency: concurrency,
-		RPM:         rpm,
+		LLMSelection: llmSel,
+		Enabled:      enabled,
+		APIKey:       apiKey,
+		Model:        getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
+		Concurrency:  concurrency,
+		RPM:          rpm,
 	}, nil
 }
 
