@@ -439,6 +439,72 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # scrutinsworker drains self-contained scrutin jobs from the scrutins queue,
+  # parses each scrutin's raw AN open-data JSON into per-deputy voting records,
+  # and upserts them into the voting store (keyed by person+scrutin, idempotent).
+  # It mirrors factcheckworker but writes voting records and never embeds, so it
+  # needs no Voyage key. Scale it like the other fleets:
+  #   docker compose --profile scrutins up -d --scale scrutinsworker=4 rabbitmq scrutinsworker
+  scrutinsworker:
+    profiles: ["scrutins"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scrutinsworker"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Per-replica tuning (the fleet scales by replica count). CONCURRENCY bounds
+      # the scrutins parsed/upserted in parallel; MAX_ATTEMPTS is the per-job
+      # delivery budget before a persistent failure is dropped with a log.
+      SCRUTINS_WORKER_CONCURRENCY: "${SCRUTINS_WORKER_CONCURRENCY:-4}"
+      SCRUTINS_WORKER_MAX_ATTEMPTS: "${SCRUTINS_WORKER_MAX_ATTEMPTS:-5}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # scrutinscrawl conditionally downloads the Assemblee Nationale open-data
+  # Scrutins.json.zip archive (Etalab Licence Ouverte 2.0, attribution "Assemblee
+  # nationale - data.assemblee-nationale.fr"), discovers each scrutin, and
+  # publishes one self-contained job to the scrutins queue, then exits. It needs
+  # no database. A persisted ETag/Last-Modified marker (under the scrutins-state
+  # volume, shared so a re-run sees the last run's validators) makes the download a
+  # conditional GET, so an unchanged archive is a 304 and the run does no redundant
+  # work. On-demand producer (run explicitly), in the "tools" profile:
+  #   docker compose --profile tools run --rm scrutinscrawl   (or: make scrutins-crawl)
+  scrutinscrawl:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scrutinscrawl"]
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # AN legislature to ingest (default 17, the current term) and where the
+      # conditional-GET marker persists between runs (empty disables the skip, so
+      # every run re-downloads). Optional.
+      SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
+      SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
+      # Slack incoming-webhook for ingestion-fleet run alerts (start, finish
+      # summary, failure). Empty -> the notifier is a silent no-op.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - scrutins-state:/state
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in
@@ -694,3 +760,6 @@ volumes:
   minio-data:
   wiki-dump:
   rabbitmq-data:
+  # Persists the scrutins-archive conditional-GET marker (ETag/Last-Modified)
+  # across producer runs, so an unchanged archive is skipped.
+  scrutins-state:
