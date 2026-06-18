@@ -505,6 +505,73 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Always-on ingestion-fleet scheduler. Registers the Wikipedia, fact-check, and
+  # scrutins producers and fires each on its configurable cron (SCHEDULE_*),
+  # replacing the manual `make crawl` / `make factcheck-crawl` / `make
+  # scrutins-crawl` one-shot runs: every enabled run publishes into its queue for
+  # the worker fleet to drain, an overlapping tick of a source still running is
+  # skipped, and each run posts the shared Slack alerts. Every source defaults
+  # DISABLED, so a plain `make up` starts an idle scheduler and never kicks off
+  # paid ingestion - the same cost-safety convention the paid wiki profiles
+  # follow; opt a source in with SCHEDULE_<SOURCE>_ENABLED=true and set its
+  # producer config (CRAWL_* / FACTCHECK_* / SCRUTINS_*). It needs only the broker
+  # and the scrutins-state volume (the conditional-GET marker), no database.
+  # Restarts unless stopped so a crash brings the schedule back; the producers are
+  # idempotent (workers upsert), so a restart cannot double-ingest.
+  scheduler:
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scheduler"]
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Per-source enable flags and cron specs (empty uses the daily defaults).
+      SCHEDULE_WIKIPEDIA_ENABLED: "${SCHEDULE_WIKIPEDIA_ENABLED:-}"
+      SCHEDULE_WIKIPEDIA_CRON: "${SCHEDULE_WIKIPEDIA_CRON:-}"
+      SCHEDULE_FACTCHECK_ENABLED: "${SCHEDULE_FACTCHECK_ENABLED:-}"
+      SCHEDULE_FACTCHECK_CRON: "${SCHEDULE_FACTCHECK_CRON:-}"
+      SCHEDULE_SCRUTINS_ENABLED: "${SCHEDULE_SCRUTINS_ENABLED:-}"
+      SCHEDULE_SCRUTINS_CRON: "${SCHEDULE_SCRUTINS_CRON:-}"
+      SCHEDULE_JITTER: "${SCHEDULE_JITTER:-}"
+      # Wikipedia producer config (mirrors the wikicrawl service). Required when
+      # the Wikipedia source is enabled.
+      CRAWL_CATEGORIES: "${CRAWL_CATEGORIES:-}"
+      CRAWL_PROJECT: "${CRAWL_PROJECT:-}"
+      WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+      CRAWL_CORPUS: "${CRAWL_CORPUS:-}"
+      CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
+      CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
+      CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+      CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
+      CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
+      CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
+      CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
+      CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
+      CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # Fact-check producer config (mirrors the factcheckcrawl service). Required
+      # when the fact-check source is enabled.
+      FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
+      FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
+      FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+      # Scrutins producer config (mirrors the scrutinscrawl service).
+      SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
+      SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
+      # Slack incoming-webhook for ingestion-fleet run alerts. Empty -> silent no-op.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - scrutins-state:/state
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in
