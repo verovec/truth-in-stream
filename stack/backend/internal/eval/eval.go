@@ -31,8 +31,41 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
+
+// Target selects the LLM backend a golden run scores under, so the same French
+// political golden set can be run against Anthropic (Claude Haiku, the shipped
+// default) or Gemini for an apples-to-apples literal/flag accuracy comparison.
+// Provider is the validated llm.ProviderName (empty defaults to Anthropic);
+// Model is the per-run model override (empty falls back to the provider's
+// default). Keys are not held here: they come from the environment in the
+// real-model run and from a fake server in the offline gate, so a Target never
+// carries a secret. The offline CI gate builds a Target per provider and points
+// the verifier at a per-provider fake; the operator's real-model run builds the
+// same Target from LLM_PROVIDER/GEMINI_API_KEY (see PROCEDURE.md).
+type Target struct {
+	Provider llm.ProviderName
+	Model    string
+}
+
+// VerifierConfig renders the target into the verify.Config the political path's
+// verify.New consumes, threading the per-provider key supplied by the caller
+// (the live key from the environment in a real-model run, a fake key in the
+// offline gate) onto the field the selected provider reads. A Gemini target
+// keys on GeminiAPIKey; an Anthropic target keys on APIKey - the same split the
+// rest of the stack uses, so the eval targets a provider exactly as production
+// would.
+func (t Target) VerifierConfig(apiKey string) verify.Config {
+	cfg := verify.Config{Provider: t.Provider, Model: t.Model}
+	if t.Provider == llm.ProviderGemini {
+		cfg.GeminiAPIKey = apiKey
+		return cfg
+	}
+	cfg.APIKey = apiKey
+	return cfg
+}
 
 // Literal verdict labels. They mirror the verify package's political literal
 // labels so a recorded model verdict, an expected label, and the path's output

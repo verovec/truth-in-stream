@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
-
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
 
@@ -24,6 +22,29 @@ const goldenPath = "testdata/golden.json"
 // mirrors the verify package's unexported politicalToolName constant.
 const politicalToolName = "record_assessment"
 
+// recordedVerdict marshals one golden case's recorded two-axis verdict into the
+// flat structured object both providers' tool-call carriers wrap. It is the single
+// source of the replayed answer, so the Anthropic and Gemini fakes cannot drift in
+// what they return for a case.
+func recordedVerdict(mv ModelVerdict) map[string]any {
+	citations := make([]map[string]any, 0, len(mv.Citations))
+	for _, c := range mv.Citations {
+		citations = append(citations, map[string]any{"evidence_id": c.EvidenceID, "quoted_span": c.QuotedSpan})
+	}
+	flags := mv.Flags
+	if flags == nil {
+		flags = []string{}
+	}
+	return map[string]any{
+		"literal":    mv.Literal,
+		"basis":      mv.Basis,
+		"flags":      flags,
+		"confidence": mv.Confidence,
+		"citations":  citations,
+		"rationale":  mv.Rationale,
+	}
+}
+
 // messagesRequest is the slice of the Anthropic Messages request body the fake
 // server reads: just the user message text blocks, enough to recover the claim.
 type messagesRequest struct {
@@ -35,18 +56,14 @@ type messagesRequest struct {
 	} `json:"messages"`
 }
 
-// recordedModelServer is a fake Anthropic Messages server that replays each golden
+// anthropicFakeServer is a fake Anthropic Messages server that replays each golden
 // case's recorded two-axis verifier tool call. It maps an incoming request to a
-// case by finding the case whose statement appears as the "Claim:" line in the
-// user message (verify.buildPrompt renders it there, shared by the political
-// path), so the political path runs end to end against deterministic, per-claim
-// model output with no network.
-func recordedModelServer(t *testing.T, g Golden) *httptest.Server {
+// case by finding the case whose statement appears as the "Claim:" line in the user
+// message (verify.buildPrompt renders it there, shared by the political path), so
+// the political path runs end to end against deterministic, per-claim model output
+// with no network.
+func anthropicFakeServer(t *testing.T, byStatement map[string]Case) *httptest.Server {
 	t.Helper()
-	byStatement := make(map[string]Case, len(g.Cases))
-	for _, c := range g.Cases {
-		byStatement[c.Statement] = c
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -60,15 +77,36 @@ func recordedModelServer(t *testing.T, g Golden) *httptest.Server {
 			http.Error(w, "decode", http.StatusBadRequest)
 			return
 		}
-		user := userText(req)
-		match, ok := matchCase(user, byStatement)
+		match, ok := matchCase(anthropicUserText(req), byStatement)
 		if !ok {
-			t.Errorf("no golden case matched request user message: %q", user)
+			t.Errorf("no golden case matched anthropic request")
 			http.Error(w, "no case", http.StatusBadRequest)
 			return
 		}
+		input, err := json.Marshal(recordedVerdict(match.ModelVerdict))
+		if err != nil {
+			t.Errorf("marshal tool input: %v", err)
+			http.Error(w, "marshal", http.StatusInternalServerError)
+			return
+		}
+		resp, err := json.Marshal(map[string]any{
+			"id":    "msg_eval",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-haiku-4-5-20251001",
+			"content": []map[string]any{
+				{"type": "tool_use", "id": "toolu_eval", "name": politicalToolName, "input": json.RawMessage(input)},
+			},
+			"stop_reason": "tool_use",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+		if err != nil {
+			t.Errorf("marshal response: %v", err)
+			http.Error(w, "marshal", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.WriteString(w, toolUseResponse(t, match.ModelVerdict)); err != nil {
+		if _, err := w.Write(resp); err != nil {
 			t.Errorf("write response: %v", err)
 		}
 	}))
@@ -76,14 +114,102 @@ func recordedModelServer(t *testing.T, g Golden) *httptest.Server {
 	return srv
 }
 
-// userText joins the text blocks of the (single) user message in the request.
-func userText(req messagesRequest) string {
+// geminiRequest is the slice of the Gemini GenerateContent request body the fake
+// reads: the user-content text parts (to recover the claim) and the tool-calling
+// config (to assert the forced single function call).
+type geminiRequest struct {
+	Contents []struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	} `json:"contents"`
+	ToolConfig struct {
+		FunctionCallingConfig struct {
+			Mode                 string   `json:"mode"`
+			AllowedFunctionNames []string `json:"allowedFunctionNames"`
+		} `json:"functionCallingConfig"`
+	} `json:"toolConfig"`
+}
+
+// geminiFakeServer is a fake Gemini GenerateContent server that replays each golden
+// case's recorded verdict as a forced function call, the Gemini wire twin of the
+// Anthropic fake. It recovers the claim from the request's user-content parts, then
+// asserts the request actually forced the single named function (mode ANY with the
+// one allowed name) before answering, so the test proves the eval drives Gemini
+// under the same forced-call regime production uses rather than a free-form reply.
+func geminiFakeServer(t *testing.T, byStatement map[string]Case) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		var req geminiRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "decode", http.StatusBadRequest)
+			return
+		}
+		fc := req.ToolConfig.FunctionCallingConfig
+		if fc.Mode != "ANY" || len(fc.AllowedFunctionNames) != 1 || fc.AllowedFunctionNames[0] != politicalToolName {
+			t.Errorf("gemini request did not force the single %q function call: mode=%q allowed=%v",
+				politicalToolName, fc.Mode, fc.AllowedFunctionNames)
+			http.Error(w, "not forced", http.StatusBadRequest)
+			return
+		}
+		match, ok := matchCase(geminiUserText(req), byStatement)
+		if !ok {
+			t.Errorf("no golden case matched gemini request")
+			http.Error(w, "no case", http.StatusBadRequest)
+			return
+		}
+		resp, err := json.Marshal(map[string]any{
+			"candidates": []map[string]any{{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []map[string]any{{"functionCall": map[string]any{"name": politicalToolName, "args": recordedVerdict(match.ModelVerdict)}}},
+				},
+				"finishReason": "STOP",
+			}},
+		})
+		if err != nil {
+			t.Errorf("marshal response: %v", err)
+			http.Error(w, "marshal", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write(resp); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// anthropicUserText joins the text blocks of the (single) user message in the
+// Anthropic request.
+func anthropicUserText(req messagesRequest) string {
 	var b strings.Builder
 	for _, m := range req.Messages {
 		for _, c := range m.Content {
 			if c.Type == "text" {
 				b.WriteString(c.Text)
 			}
+		}
+	}
+	return b.String()
+}
+
+// geminiUserText joins the text parts of the request's user contents. The system
+// frame is carried separately (systemInstruction), so this is the rendered claim
+// prompt the matcher keys on.
+func geminiUserText(req geminiRequest) string {
+	var b strings.Builder
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			b.WriteString(p.Text)
 		}
 	}
 	return b.String()
@@ -107,58 +233,51 @@ func matchCase(user string, byStatement map[string]Case) (Case, bool) {
 	return best, found
 }
 
-// toolUseResponse builds a minimal valid Messages response carrying one forced
-// record_assessment tool call with the recorded two-axis verdict, matching the
-// shape the verify package's own political tests use.
-func toolUseResponse(t *testing.T, mv ModelVerdict) string {
-	t.Helper()
-	citations := make([]map[string]any, 0, len(mv.Citations))
-	for _, c := range mv.Citations {
-		citations = append(citations, map[string]any{"evidence_id": c.EvidenceID, "quoted_span": c.QuotedSpan})
+// indexByStatement indexes the golden set by claim, the key both fakes match a
+// request against.
+func indexByStatement(g Golden) map[string]Case {
+	m := make(map[string]Case, len(g.Cases))
+	for _, c := range g.Cases {
+		m[c.Statement] = c
 	}
-	flags := mv.Flags
-	if flags == nil {
-		flags = []string{}
-	}
-	input, err := json.Marshal(map[string]any{
-		"literal":    mv.Literal,
-		"basis":      mv.Basis,
-		"flags":      flags,
-		"confidence": mv.Confidence,
-		"citations":  citations,
-		"rationale":  mv.Rationale,
-	})
-	if err != nil {
-		t.Fatalf("marshal tool input: %v", err)
-	}
-	body, err := json.Marshal(map[string]any{
-		"id":    "msg_eval",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "claude-haiku-4-5-20251001",
-		"content": []map[string]any{
-			{"type": "tool_use", "id": "toolu_eval", "name": politicalToolName, "input": json.RawMessage(input)},
-		},
-		"stop_reason": "tool_use",
-		"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
-	})
-	if err != nil {
-		t.Fatalf("marshal response: %v", err)
-	}
-	return string(body)
+	return m
 }
 
-// newVerifier points a real verify.Client at the fake recorded-model server, so
-// the political path is exercised end to end (request shaping, forced tool call,
-// decode, citation and flag guard) without the network.
-func newVerifier(t *testing.T, g Golden) *verify.Client {
+// newVerifier builds a real verify.Client for the target's provider, pointed at a
+// per-provider fake server that replays the golden set's recorded verdicts. The
+// political path is exercised end to end (request shaping, forced tool/function
+// call, decode, citation and flag guard) against the selected provider's wire
+// format without the network, so the same golden set scores identically under
+// either backend - the offline shape of the real-model comparison.
+func newVerifier(t *testing.T, g Golden, target Target) *verify.Client {
 	t.Helper()
-	srv := recordedModelServer(t, g)
-	v, err := verify.New(verify.Config{APIKey: "test-key"}, llm.WithBaseURL(srv.URL), llm.WithMaxRetries(0))
+	index := indexByStatement(g)
+	const fakeKey = "test-key"
+
+	var srv *httptest.Server
+	if target.Provider == llm.ProviderGemini {
+		srv = geminiFakeServer(t, index)
+	} else {
+		srv = anthropicFakeServer(t, index)
+	}
+
+	v, err := verify.New(target.VerifierConfig(fakeKey), llm.WithBaseURL(srv.URL), llm.WithMaxRetries(0))
 	if err != nil {
-		t.Fatalf("verify.New: %v", err)
+		t.Fatalf("verify.New (%s): %v", target.Provider, err)
 	}
 	return v
+}
+
+// goldenTargets is the set of provider selections the offline gate runs the golden
+// set under: the shipped Anthropic default (empty provider) and Gemini. Both are
+// faked; running both proves the harness scores the same golden set under either
+// backend and that provider selection wires end to end.
+var goldenTargets = []struct {
+	name   string
+	target Target
+}{
+	{name: "anthropic-default", target: Target{}},
+	{name: "gemini", target: Target{Provider: llm.ProviderGemini}},
 }
 
 func TestLoadGoldenSet(t *testing.T) {
@@ -227,11 +346,14 @@ const baselineLiteralAccuracy = 1.00
 const baselineFlagAccuracy = 1.00
 
 // TestGoldenEvalAccuracyGate is the regression gate: it runs the two-axis political
-// path over the committed French golden set and asserts both the literal verdict
-// accuracy and the flag accuracy stay at or above the recorded baseline. It is
-// deterministic - the path replays recorded model output through the real client
-// and citation/flag guard - and needs no external API or database, so it runs in CI
-// as an ordinary Go test.
+// path over the committed French golden set under each supported provider and
+// asserts both the literal verdict accuracy and the flag accuracy stay at or above
+// the recorded baseline. It is deterministic - each provider's path replays the same
+// recorded verdict through the real client and citation/flag guard - and needs no
+// external API or database, so it runs in CI as an ordinary Go test. Running it
+// under both the Anthropic default and Gemini proves the same golden set scores
+// identically under either backend, the offline guarantee behind the real-model
+// comparison.
 func TestGoldenEvalAccuracyGate(t *testing.T) {
 	t.Parallel()
 	g, err := LoadGolden(filepath.Clean(goldenPath))
@@ -239,22 +361,77 @@ func TestGoldenEvalAccuracyGate(t *testing.T) {
 		t.Fatalf("LoadGolden: %v", err)
 	}
 
-	v := newVerifier(t, g)
-	rep, err := RunPolitical(context.Background(), v, g)
+	for _, tc := range goldenTargets {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := newVerifier(t, g, tc.target)
+			rep, err := RunPolitical(t.Context(), v, g)
+			if err != nil {
+				t.Fatalf("RunPolitical: %v", err)
+			}
+
+			t.Logf("\n%s", rep.Format("political two-axis path ("+tc.name+")"))
+
+			if got := round2(rep.LiteralAccuracy()); got < baselineLiteralAccuracy {
+				t.Fatalf("literal accuracy %.2f below recorded baseline %.2f: gate failed; %s",
+					got, baselineLiteralAccuracy, rep.Format("political two-axis path"))
+			}
+			if got := round2(rep.FlagAccuracy()); got < baselineFlagAccuracy {
+				t.Fatalf("flag accuracy %.2f below recorded baseline %.2f: gate failed; %s",
+					got, baselineFlagAccuracy, rep.Format("political two-axis path"))
+			}
+		})
+	}
+}
+
+// TestGoldenGateFailsOnInjectedRegression proves the gate has teeth under every
+// provider: it corrupts one golden case's recorded verdict (flipping an accurate
+// literal to inaccurate) so the replayed model now disagrees with the label, runs
+// the same path the gate runs under each provider, and asserts the measured literal
+// accuracy drops below the baseline. A gate that could not catch this is not a gate.
+func TestGoldenGateFailsOnInjectedRegression(t *testing.T) {
+	t.Parallel()
+	g, err := LoadGolden(filepath.Clean(goldenPath))
 	if err != nil {
-		t.Fatalf("RunPolitical: %v", err)
+		t.Fatalf("LoadGolden: %v", err)
 	}
 
-	t.Logf("\n%s", rep.Format("political two-axis path"))
+	corrupted := corruptOneAccurateCase(t, g)
 
-	if got := round2(rep.LiteralAccuracy()); got < baselineLiteralAccuracy {
-		t.Fatalf("literal accuracy %.2f below recorded baseline %.2f: gate failed; %s",
-			got, baselineLiteralAccuracy, rep.Format("political two-axis path"))
+	for _, tc := range goldenTargets {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := newVerifier(t, corrupted, tc.target)
+			rep, err := RunPolitical(t.Context(), v, corrupted)
+			if err != nil {
+				t.Fatalf("RunPolitical: %v", err)
+			}
+			if got := round2(rep.LiteralAccuracy()); got >= baselineLiteralAccuracy {
+				t.Fatalf("injected regression under %s did not drop literal accuracy below baseline: got %.2f >= %.2f; %s",
+					tc.name, got, baselineLiteralAccuracy, rep.Format("injected regression"))
+			}
+		})
 	}
-	if got := round2(rep.FlagAccuracy()); got < baselineFlagAccuracy {
-		t.Fatalf("flag accuracy %.2f below recorded baseline %.2f: gate failed; %s",
-			got, baselineFlagAccuracy, rep.Format("political two-axis path"))
+}
+
+// corruptOneAccurateCase returns a copy of g with the first accurate-literal case's
+// recorded verdict flipped to inaccurate, simulating a model (or wiring) regression
+// the gate must catch. The expected label is left untouched, so the flipped verdict
+// is now wrong against it. It fails the test if the set has no accurate case to
+// corrupt, since the regression check would otherwise be silently vacuous.
+func corruptOneAccurateCase(t *testing.T, g Golden) Golden {
+	t.Helper()
+	cases := make([]Case, len(g.Cases))
+	copy(cases, g.Cases)
+	for i := range cases {
+		if cases[i].ExpectedLiteral != LiteralAccurate || cases[i].ModelVerdict.Literal != LiteralAccurate {
+			continue
+		}
+		cases[i].ModelVerdict.Literal = LiteralInaccurate
+		return Golden{About: g.About, Cases: cases}
 	}
+	t.Fatalf("golden set has no accurate case to corrupt; cannot exercise the regression gate")
+	return Golden{}
 }
 
 // round2 rounds an accuracy to two decimals so the recorded baseline constant can
@@ -340,6 +517,51 @@ func TestValidateRecordedCitations(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("validateRecordedCitations(%s) = %v, want nil", tc.c.ID, err)
+			}
+		})
+	}
+}
+
+// TestTargetVerifierConfig asserts the Target threads the supplied key onto the
+// field the selected provider reads - GeminiAPIKey under Gemini, APIKey otherwise -
+// and carries the model through, so a real-model run keys the right provider from
+// the environment.
+func TestTargetVerifierConfig(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		target       Target
+		wantAPIKey   string
+		wantGemKey   string
+		wantProvider llm.ProviderName
+	}{
+		{
+			name:       "default targets anthropic and keys APIKey",
+			target:     Target{Model: "claude-haiku-4-5-20251001"},
+			wantAPIKey: "secret",
+		},
+		{
+			name:         "gemini keys GeminiAPIKey",
+			target:       Target{Provider: llm.ProviderGemini, Model: "gemini-2.5-flash"},
+			wantGemKey:   "secret",
+			wantProvider: llm.ProviderGemini,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tc.target.VerifierConfig("secret")
+			if cfg.Provider != tc.wantProvider {
+				t.Errorf("Provider = %q, want %q", cfg.Provider, tc.wantProvider)
+			}
+			if cfg.APIKey != tc.wantAPIKey {
+				t.Errorf("APIKey = %q, want %q", cfg.APIKey, tc.wantAPIKey)
+			}
+			if cfg.GeminiAPIKey != tc.wantGemKey {
+				t.Errorf("GeminiAPIKey = %q, want %q", cfg.GeminiAPIKey, tc.wantGemKey)
+			}
+			if cfg.Model != tc.target.Model {
+				t.Errorf("Model = %q, want %q", cfg.Model, tc.target.Model)
 			}
 		})
 	}
