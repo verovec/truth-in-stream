@@ -259,9 +259,9 @@ describe("LiveFactCheckPanel", () => {
     });
 
     const factChecks = screen.getByRole("region", { name: "Fact checks" });
-    expect(within(factChecks).getByText(/credible/i)).toBeInTheDocument();
+    expect(within(factChecks).getByText(/fiable/i)).toBeInTheDocument();
     expect(
-      within(factChecks).getByText(/checked against evidence/i),
+      within(factChecks).getByText(/vérifié sur preuves/i),
     ).toBeInTheDocument();
     // The empty hint is gone once a verdict resolves.
     expect(

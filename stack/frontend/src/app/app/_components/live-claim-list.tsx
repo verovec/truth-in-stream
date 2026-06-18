@@ -14,7 +14,7 @@ export function LiveClaimList({ claims }: { claims: LiveClaim[] }) {
     return null;
   }
   return (
-    <ul aria-label="Atomic claims" className="flex flex-col gap-1.5 pb-1">
+    <ul aria-label="Affirmations atomiques" className="flex flex-col gap-1.5 pb-1">
       {claims.map((claim) => (
         <ClaimRow key={claim.claimId} claim={claim} />
       ))}
@@ -48,7 +48,7 @@ function ClaimState({ claim }: { claim: LiveClaim }) {
           aria-hidden="true"
           className="size-1.5 animate-pulse rounded-full bg-sky-500"
         />
-        {claim.status === "pending" ? "Queued for checking…" : "Checking…"}
+        {claim.status === "pending" ? "En attente de vérification…" : "Vérification…"}
       </p>
     );
   }
@@ -56,7 +56,7 @@ function ClaimState({ claim }: { claim: LiveClaim }) {
   if (claim.status === "unchecked") {
     return (
       <p className="mt-1 text-[11px] italic text-zinc-400 dark:text-zinc-500">
-        Not checked - the verifier was at capacity.
+        Non vérifiée — le vérificateur était à pleine capacité.
       </p>
     );
   }
@@ -64,7 +64,7 @@ function ClaimState({ claim }: { claim: LiveClaim }) {
   if (claim.status === "error") {
     return (
       <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
-        This claim could not be checked.
+        Cette affirmation n&apos;a pas pu être vérifiée.
       </p>
     );
   }

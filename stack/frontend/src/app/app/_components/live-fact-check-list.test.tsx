@@ -103,20 +103,26 @@ describe("LiveFactCheckList", () => {
       />,
     );
 
-    // The verdict shows at once; the rationale and citations are hidden until tapped.
-    expect(screen.getByText(/disputed/i)).toBeInTheDocument();
+    // The verdict and the primary-source span show at once; the rationale is
+    // hidden until tapped.
+    expect(screen.getByText(/contesté/i)).toBeInTheDocument();
     expect(screen.getByText("0:45")).toBeInTheDocument();
+    expect(
+      screen.getByText(/construction finished in 1937/i),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/the source gives a different year/i),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /show reasoning/i }));
+    await user.click(screen.getByRole("button", { name: /voir le détail/i }));
     expect(
       screen.getByText(/the source gives a different year/i),
     ).toBeInTheDocument();
+    // The excerpt now appears in both the primary-source preview and the
+    // expanded citation list.
     expect(
-      screen.getByText(/construction finished in 1937/i),
-    ).toBeInTheDocument();
+      screen.getAllByText(/construction finished in 1937/i).length,
+    ).toBeGreaterThanOrEqual(2);
   });
 
   test("selecting an entry reports its originating statement id", async () => {

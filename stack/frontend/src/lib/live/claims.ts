@@ -13,6 +13,8 @@ import type {
   ClaimsFrame,
   ClaimStatus,
   ClaimVerdict,
+  LiteralVerdict,
+  ManipulationFlag,
   VerdictBasis,
   VerdictSource,
 } from "./frames";
@@ -29,6 +31,8 @@ export type LiveClaim = {
   status: ClaimStatus;
   source?: VerdictSource;
   verdict?: ClaimVerdict;
+  literal?: LiteralVerdict;
+  flags?: ManipulationFlag[];
   basis?: VerdictBasis;
   confidence?: number;
   rationale?: string;
@@ -112,6 +116,8 @@ export function applyClaimResultFrame(
     status: frame.status,
     source: frame.source,
     verdict: frame.verdict,
+    literal: frame.literal,
+    flags: frame.flags,
     basis: frame.basis,
     confidence: frame.confidence,
     rationale: frame.rationale,

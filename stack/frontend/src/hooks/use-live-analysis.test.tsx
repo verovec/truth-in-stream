@@ -330,8 +330,22 @@ describe("useLiveAnalysis", () => {
     act(() => h.sockets[0].handlers.onFrame(speakerScoreFrame("A", 0.55, 2, 1, 0)));
 
     expect(h.analysis().speakers).toEqual([
-      { speaker: "A", score: 0.55, credible: 2, disputed: 1, unverifiable: 0 },
-      { speaker: "B", score: 0.4, credible: 0, disputed: 1, unverifiable: 0 },
+      {
+        speaker: "A",
+        score: 0.55,
+        credible: 2,
+        disputed: 1,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
+      {
+        speaker: "B",
+        score: 0.4,
+        credible: 0,
+        disputed: 1,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
     ]);
   });
 

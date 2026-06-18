@@ -6,7 +6,7 @@ import {
   type ClaimsState,
   emptyClaims,
 } from "./claims";
-import type { ClaimStatus, ClaimVerdict } from "./frames";
+import type { ClaimStatus, ClaimVerdict, ManipulationFlag } from "./frames";
 import type { LiveStatement } from "./statements";
 import { emptySummary, summarizeStatements } from "./summary";
 
@@ -52,7 +52,11 @@ const evidence = (): SegmentMatch => ({
 // rather than a hand-built map.
 function unitClaims(
   unitId: string,
-  claims: { status: ClaimStatus; verdict?: ClaimVerdict }[],
+  claims: {
+    status: ClaimStatus;
+    verdict?: ClaimVerdict;
+    flags?: ManipulationFlag[];
+  }[],
 ): ClaimsState {
   const ids = claims.map((_, i) => `${unitId}-${i}`);
   let state = applyClaimsFrame(emptyClaims(), {
@@ -71,6 +75,7 @@ function unitClaims(
       claimId: ids[i],
       status: c.status,
       verdict: c.verdict,
+      flags: c.flags,
     });
   });
   return state;
@@ -95,6 +100,7 @@ describe("summarizeStatements", () => {
       unclear: 1,
       unverifiable: 0,
       evidence: 1,
+      misleadingFraming: 0,
       skipped: 0,
       analysing: 0,
     });
@@ -129,6 +135,7 @@ describe("summarizeStatements", () => {
       unclear: 0,
       unverifiable: 0,
       evidence: 0,
+      misleadingFraming: 0,
       skipped: 3,
       analysing: 0,
     });
@@ -191,6 +198,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       unclear: 0,
       unverifiable: 1,
       evidence: 0,
+      misleadingFraming: 0,
       skipped: 0,
       analysing: 0,
     });
@@ -221,6 +229,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       unclear: 0,
       unverifiable: 0,
       evidence: 0,
+      misleadingFraming: 0,
       skipped: 1,
       analysing: 0,
     });
@@ -255,6 +264,7 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       unclear: 0,
       unverifiable: 0,
       evidence: 0,
+      misleadingFraming: 0,
       skipped: 0,
       analysing: 1,
     });
@@ -271,6 +281,26 @@ describe("summarizeStatements on the verify path (claims-aware)", () => {
       corroborates: 1,
       contradicts: 1,
       analysing: 0,
+    });
+  });
+
+  test("tallies a flagged verified claim on the misleading-framing axis alongside its verdict", () => {
+    // A literally accurate but cherry-picked claim counts both as corroborates
+    // (its verdict) and on the orthogonal misleading-framing axis; a flagless
+    // disputed claim moves only the verdict count.
+    const summary = summarizeStatements(
+      [analysing("u1", 0)],
+      unitClaims("u1", [
+        { status: "verified", verdict: "credible", flags: ["cherry-picked"] },
+        { status: "verified", verdict: "disputed" },
+      ]),
+    );
+
+    expect(summary).toMatchObject({
+      checked: 1,
+      corroborates: 1,
+      contradicts: 1,
+      misleadingFraming: 1,
     });
   });
 });

@@ -26,14 +26,14 @@ describe("LiveClaimList", () => {
 
   test("a pending claim shows it is queued", () => {
     render(<LiveClaimList claims={[claim({ claimId: "c0" })]} />);
-    expect(screen.getByText(/queued for checking/i)).toBeInTheDocument();
+    expect(screen.getByText(/en attente de vérification/i)).toBeInTheDocument();
   });
 
   test("a checking claim shows a checking placeholder", () => {
     render(
       <LiveClaimList claims={[claim({ claimId: "c0", status: "checking" })]} />,
     );
-    expect(screen.getByText(/^checking…$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^vérification…$/i)).toBeInTheDocument();
   });
 
   test("a verified verdict reveals its rationale and citations only on tap", async () => {
@@ -53,17 +53,23 @@ describe("LiveClaimList", () => {
       />,
     );
 
-    // The verdict is visible at once; the reasoning is hidden until tapped.
-    expect(screen.getByText(/disputed/i)).toBeInTheDocument();
+    // The verdict and the primary-source span are visible at once; the rationale
+    // is hidden until tapped.
+    expect(screen.getByText(/contesté/i)).toBeInTheDocument();
+    expect(screen.getByText(/Construction finished in 1937/i)).toBeInTheDocument();
     expect(
       screen.queryByText(/the source gives a different year/i),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /show reasoning/i }));
+    await user.click(screen.getByRole("button", { name: /voir le détail/i }));
     expect(
       screen.getByText(/the source gives a different year/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Construction finished in 1937/i)).toBeInTheDocument();
+    // The excerpt now appears in both the primary-source preview and the
+    // expanded citation list.
+    expect(
+      screen.getAllByText(/Construction finished in 1937/i).length,
+    ).toBeGreaterThanOrEqual(2);
   });
 
   test("distinguishes a curated verdict from a verified one", () => {
@@ -75,8 +81,8 @@ describe("LiveClaimList", () => {
         ]}
       />,
     );
-    expect(screen.getByText(/from a curated source/i)).toBeInTheDocument();
-    expect(screen.getByText(/checked against evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/source vérifiée/i)).toBeInTheDocument();
+    expect(screen.getByText(/vérifié sur preuves/i)).toBeInTheDocument();
   });
 
   test("renders unverifiable as an honest verdict, not an error", () => {
@@ -92,8 +98,8 @@ describe("LiveClaimList", () => {
         ]}
       />,
     );
-    expect(screen.getByText(/unverifiable/i)).toBeInTheDocument();
-    expect(screen.queryByText(/could not be checked/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/invérifiable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/n'a pas pu être vérifiée/i)).not.toBeInTheDocument();
   });
 
   test("marks a knowledge-basis verdict as having no direct sources", () => {
@@ -110,7 +116,7 @@ describe("LiveClaimList", () => {
         ]}
       />,
     );
-    expect(screen.getByText(/no direct sources/i)).toBeInTheDocument();
+    expect(screen.getByText(/sans source directe/i)).toBeInTheDocument();
   });
 
   test("renders an unchecked claim as a capacity terminal state", () => {
@@ -119,7 +125,7 @@ describe("LiveClaimList", () => {
         claims={[claim({ claimId: "c0", status: "unchecked", skipReason: "not_checked" })]}
       />,
     );
-    expect(screen.getByText(/at capacity/i)).toBeInTheDocument();
+    expect(screen.getByText(/capacité/i)).toBeInTheDocument();
   });
 
   test("renders an errored claim as an honest terminal state, not a blank row", () => {
@@ -128,7 +134,7 @@ describe("LiveClaimList", () => {
         claims={[claim({ claimId: "c0", status: "error", error: "verification failed" })]}
       />,
     );
-    expect(screen.getByText(/could not be checked/i)).toBeInTheDocument();
+    expect(screen.getByText(/n'a pas pu être vérifiée/i)).toBeInTheDocument();
   });
 
   test("a verified verdict with no rationale or citations offers no disclosure", () => {
@@ -137,9 +143,9 @@ describe("LiveClaimList", () => {
         claims={[claim({ claimId: "c0", status: "verified", verdict: "credible" })]}
       />,
     );
-    expect(screen.getByText(/credible/i)).toBeInTheDocument();
+    expect(screen.getByText(/fiable/i)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /show reasoning/i }),
+      screen.queryByRole("button", { name: /voir le détail/i }),
     ).not.toBeInTheDocument();
   });
 });

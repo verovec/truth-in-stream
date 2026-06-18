@@ -9,12 +9,16 @@ import type { SpeakerScoreFrame } from "./frames";
 // SpeakerCredibility is one speaker's current credibility snapshot: the score in
 // [0,1] and the verdict tallies behind it, so the widget can de-emphasize a thin
 // sample. unverifiable claims are tracked but excluded from the score.
+// misleadingFraming is the orthogonal count of the speaker's claims that carried at
+// least one manipulation flag, so the widget can show honest-but-misleading framing
+// apart from outright falsehood; it is zero on the credibility-only path.
 export type SpeakerCredibility = {
   speaker: string;
   score: number;
   credible: number;
   disputed: number;
   unverifiable: number;
+  misleadingFraming: number;
 };
 
 export type SpeakersState = ReadonlyMap<string, SpeakerCredibility>;
@@ -54,6 +58,7 @@ export function applySpeakerScoreFrame(
     credible: frame.credible,
     disputed: frame.disputed,
     unverifiable: frame.unverifiable,
+    misleadingFraming: frame.misleadingFraming,
   });
   return next;
 }

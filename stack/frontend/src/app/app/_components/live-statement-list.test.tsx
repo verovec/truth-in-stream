@@ -55,8 +55,8 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/credible/i)).toBeInTheDocument();
-    expect(screen.getByText(/checked against evidence/i)).toBeInTheDocument();
+    expect(screen.getByText(/fiable/i)).toBeInTheDocument();
+    expect(screen.getByText(/vérifié sur preuves/i)).toBeInTheDocument();
     // The per-statement "Checking this statement" marker yields to the claim list.
     expect(
       screen.queryByText(/checking this statement/i),
