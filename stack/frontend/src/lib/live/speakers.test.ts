@@ -13,6 +13,7 @@ const frame = (
   credible: number,
   disputed: number,
   unverifiable: number,
+  misleadingFraming = 0,
 ): SpeakerScoreFrame => ({
   type: "speaker_score",
   speaker,
@@ -20,6 +21,7 @@ const frame = (
   credible,
   disputed,
   unverifiable,
+  misleadingFraming,
 });
 
 describe("applySpeakerScoreFrame", () => {
@@ -29,8 +31,22 @@ describe("applySpeakerScoreFrame", () => {
     state = applySpeakerScoreFrame(state, frame("B", 0.4, 0, 1, 0));
 
     expect(listSpeakers(state)).toEqual([
-      { speaker: "A", score: 0.6, credible: 1, disputed: 0, unverifiable: 0 },
-      { speaker: "B", score: 0.4, credible: 0, disputed: 1, unverifiable: 0 },
+      {
+        speaker: "A",
+        score: 0.6,
+        credible: 1,
+        disputed: 0,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
+      {
+        speaker: "B",
+        score: 0.4,
+        credible: 0,
+        disputed: 1,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
     ]);
   });
 
@@ -40,7 +56,14 @@ describe("applySpeakerScoreFrame", () => {
     state = applySpeakerScoreFrame(state, frame("A", 0.55, 2, 1, 0));
 
     expect(listSpeakers(state)).toEqual([
-      { speaker: "A", score: 0.55, credible: 2, disputed: 1, unverifiable: 0 },
+      {
+        speaker: "A",
+        score: 0.55,
+        credible: 2,
+        disputed: 1,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
     ]);
   });
 
@@ -52,8 +75,27 @@ describe("applySpeakerScoreFrame", () => {
     state = applySpeakerScoreFrame(state, frame("A", 0.6, 1, 0, 0));
 
     expect(listSpeakers(state)).toEqual([
-      { speaker: "A", score: 0.55, credible: 2, disputed: 1, unverifiable: 0 },
+      {
+        speaker: "A",
+        score: 0.55,
+        credible: 2,
+        disputed: 1,
+        unverifiable: 0,
+        misleadingFraming: 0,
+      },
     ]);
+  });
+
+  test("carries the misleading-framing tally through, orthogonal to the score", () => {
+    let state: SpeakersState = emptySpeakers();
+    state = applySpeakerScoreFrame(state, frame("A", 0.7, 4, 1, 0, 2));
+
+    expect(listSpeakers(state)[0]).toMatchObject({
+      score: 0.7,
+      credible: 4,
+      disputed: 1,
+      misleadingFraming: 2,
+    });
   });
 
   test("an equal-sample snapshot is applied (ties favour the newer frame)", () => {

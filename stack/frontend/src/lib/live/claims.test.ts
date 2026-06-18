@@ -109,6 +109,26 @@ describe("claims store", () => {
     expect(claims[1]).toMatchObject({ source: "verified", verdict: "credible" });
   });
 
+  test("a verified claim carries its two-axis literal verdict and flags in place", () => {
+    let state = applyClaimsFrame(emptyClaims(), claimsFrame("u0", ["u0-0", "c"]));
+    state = applyClaimResultFrame(state, result("u0", "u0-0", "checking"));
+    state = applyClaimResultFrame(
+      state,
+      result("u0", "u0-0", "verified", {
+        source: "verified",
+        verdict: "credible",
+        literal: "accurate",
+        flags: ["cherry-picked"],
+      }),
+    );
+    expect(claimsForUnit(state, "u0")[0]).toMatchObject({
+      status: "verified",
+      verdict: "credible",
+      literal: "accurate",
+      flags: ["cherry-picked"],
+    });
+  });
+
   test("not_enough_info is a terminal verified verdict, not an error", () => {
     let state = applyClaimsFrame(emptyClaims(), claimsFrame("u0", ["u0-0", "c"]));
     state = applyClaimResultFrame(

@@ -378,6 +378,7 @@ describe("parseLiveFrame", () => {
       credible: 1,
       disputed: 0,
       unverifiable: 2,
+      misleadingFraming: 0,
     });
   });
 
@@ -398,6 +399,118 @@ describe("parseLiveFrame", () => {
       credible: 0,
       disputed: 0,
       unverifiable: 0,
+      misleadingFraming: 0,
     });
+  });
+
+  test("parses the speaker_score misleading_framing tally", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "speaker_score",
+        speaker: "C",
+        score: 0.7,
+        credible: 4,
+        disputed: 1,
+        unverifiable: 0,
+        misleading_framing: 2,
+      }),
+    );
+    expect(frame).toEqual({
+      type: "speaker_score",
+      speaker: "C",
+      score: 0.7,
+      credible: 4,
+      disputed: 1,
+      unverifiable: 0,
+      misleadingFraming: 2,
+    });
+  });
+
+  test("parses the two-axis literal verdict and flags on a claim_result", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        source: "verified",
+        verdict: "credible",
+        literal: "accurate",
+        flags: ["cherry-picked", "missing-context"],
+        basis: "evidence",
+      }),
+    );
+    expect(frame).toMatchObject({
+      type: "claim_result",
+      claimId: "u0-0",
+      verdict: "credible",
+      literal: "accurate",
+      flags: ["cherry-picked", "missing-context"],
+    });
+  });
+
+  test("drops unrecognised flags but keeps the valid ones", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "disputed",
+        literal: "inaccurate",
+        flags: ["outdated", "fabricated", "misattributed"],
+      }),
+    );
+    expect((frame as { flags: string[] }).flags).toEqual([
+      "outdated",
+      "misattributed",
+    ]);
+  });
+
+  test("drops an empty flags array so a flagless claim carries no flags field", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        literal: "accurate",
+        flags: [],
+      }),
+    );
+    expect(frame).not.toHaveProperty("flags");
+    expect(frame).toMatchObject({ literal: "accurate" });
+  });
+
+  test("drops an unrecognised literal verdict rather than rendering it", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        literal: "probably",
+      }),
+    );
+    expect(frame).not.toHaveProperty("literal");
+    expect(frame).toMatchObject({ verdict: "credible" });
+  });
+
+  test("parses a legacy claim_result with neither literal nor flags", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        basis: "knowledge",
+      }),
+    );
+    expect(frame).not.toHaveProperty("literal");
+    expect(frame).not.toHaveProperty("flags");
+    expect(frame).toMatchObject({ verdict: "credible", basis: "knowledge" });
   });
 });

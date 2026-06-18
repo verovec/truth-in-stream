@@ -32,6 +32,11 @@ export type LiveSummary = {
   // Supporting Wikipedia evidence matches across checked statements, kept
   // distinct from claim verdicts.
   evidence: number;
+  // Verified claims (verify path) that carried at least one manipulation flag,
+  // orthogonal to the verdict counts: a claim can be literally accurate yet
+  // cherry-picked, so a flagged claim is tallied here in addition to its verdict.
+  // It stays zero on the legacy and credibility-only paths, which never flag.
+  misleadingFraming: number;
   // Statements transcribed but never given a verdict: skipped by the
   // check-worthiness gate, left unscored under load, or errored.
   skipped: number;
@@ -47,6 +52,7 @@ export function emptySummary(): LiveSummary {
     unclear: 0,
     unverifiable: 0,
     evidence: 0,
+    misleadingFraming: 0,
     skipped: 0,
     analysing: 0,
   };
@@ -136,5 +142,12 @@ function tallyClaimUnit(summary: LiveSummary, unitClaims: LiveClaim[]): void {
       continue;
     }
     summary[VERIFY_VERDICT_BUCKET[claim.verdict ?? "unverifiable"]] += 1;
+    // A flagged claim is counted on the orthogonal misleading-framing axis in
+    // addition to its verdict bucket: literally accurate yet cherry-picked still
+    // moves this tally, so the strip can surface dishonest framing apart from
+    // outright falsehood.
+    if ((claim.flags?.length ?? 0) > 0) {
+      summary.misleadingFraming += 1;
+    }
   }
 }

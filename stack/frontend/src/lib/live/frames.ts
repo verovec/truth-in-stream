@@ -90,6 +90,24 @@ export type VerdictBasis = "evidence" | "knowledge";
 // UI distinguishes a borrowed verdict from a reasoned one by this tag.
 export type VerdictSource = "curated" | "verified";
 
+// LiteralVerdict is the political path's face-value axis (FACTCHECK_POLITICAL on):
+// is the claim, taken literally, accurate against the supplied evidence? It is
+// orthogonal to ManipulationFlag - a claim can be literally accurate yet
+// cherry-picked. The credibility ClaimVerdict is derived from it on the backend, so
+// a flag-off frame carries the credibility verdict and no literal axis.
+export type LiteralVerdict = "accurate" | "inaccurate" | "unverifiable";
+
+// ManipulationFlag is one entry of the closed framing-honesty vocabulary the
+// verifier may attach to a claim (FACTCHECK_POLITICAL on), orthogonal to the
+// literal verdict. The set is fixed: a value outside it is dropped on parse so a
+// future or hallucinated flag never mis-renders.
+export type ManipulationFlag =
+  | "missing-context"
+  | "cherry-picked"
+  | "outdated"
+  | "misattributed"
+  | "misleading-causation";
+
 // AtomicClaim is one self-contained claim a unit decomposed into, announced on a
 // claims frame with its stable per-claim id (shared across that claim's
 // pending/checking/verified results so the client replaces it in place) and its
@@ -117,6 +135,12 @@ export type ClaimsFrame = {
 // verdict/confidence/rationale/matches carry the grounded judgment and its cited
 // evidence. For an unchecked claim, skipReason is the capacity reason; for an
 // errored claim, error is the failure reason.
+//
+// literal and flags are the political path's two orthogonal axes
+// (FACTCHECK_POLITICAL on): literal is the face-value verdict and flags the subset
+// of the manipulation vocabulary that applies. Both are absent on the
+// credibility-only path, so a flag-off frame keeps the legacy shape; verdict
+// (derived from literal on the backend) is present on both paths.
 export type ClaimResultFrame = {
   type: "claim_result";
   id: string;
@@ -124,6 +148,8 @@ export type ClaimResultFrame = {
   status: ClaimStatus;
   source?: VerdictSource;
   verdict?: ClaimVerdict;
+  literal?: LiteralVerdict;
+  flags?: ManipulationFlag[];
   basis?: VerdictBasis;
   confidence?: number;
   rationale?: string;
@@ -138,6 +164,12 @@ export type ClaimResultFrame = {
 // disputed, and unverifiable are the lifetime verdict tallies, so the widget can
 // show the score with its sample size and de-emphasize a thin one. It is additive:
 // a client that ignores it renders everything else unchanged.
+//
+// misleadingFraming is the political path's separate tally of the speaker's claims
+// that carried at least one manipulation flag, orthogonal to the credibility
+// tallies, so the widget can distinguish an outright falsehood from honest-but-
+// misleading framing. The wire field (misleading_framing) is omitted when zero; an
+// absent value reads as zero.
 export type SpeakerScoreFrame = {
   type: "speaker_score";
   speaker: string;
@@ -145,6 +177,7 @@ export type SpeakerScoreFrame = {
   credible: number;
   disputed: number;
   unverifiable: number;
+  misleadingFraming: number;
 };
 
 export type LiveFrame =
@@ -171,6 +204,20 @@ const CLAIM_VERDICTS: ReadonlySet<string> = new Set([
 ]);
 
 const VERDICT_BASES: ReadonlySet<string> = new Set(["evidence", "knowledge"]);
+
+const LITERAL_VERDICTS: ReadonlySet<string> = new Set([
+  "accurate",
+  "inaccurate",
+  "unverifiable",
+]);
+
+const MANIPULATION_FLAGS: ReadonlySet<string> = new Set([
+  "missing-context",
+  "cherry-picked",
+  "outdated",
+  "misattributed",
+  "misleading-causation",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -296,6 +343,23 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     if (typeof value.verdict === "string" && CLAIM_VERDICTS.has(value.verdict)) {
       frame.verdict = value.verdict as ClaimVerdict;
     }
+    if (typeof value.literal === "string" && LITERAL_VERDICTS.has(value.literal)) {
+      // An unrecognised literal verdict is dropped rather than rendered, so a
+      // future axis value cannot mis-style the badge; verdict still carries the row.
+      frame.literal = value.literal as LiteralVerdict;
+    }
+    if (Array.isArray(value.flags)) {
+      // Keep only the closed-vocabulary flags, preserving order and discarding any
+      // hallucinated or future value. An empty result leaves flags absent so a
+      // flagless claim is byte-for-byte the legacy shape.
+      const flags = value.flags.filter(
+        (flag): flag is ManipulationFlag =>
+          typeof flag === "string" && MANIPULATION_FLAGS.has(flag),
+      );
+      if (flags.length > 0) {
+        frame.flags = flags;
+      }
+    }
     if (typeof value.basis === "string" && VERDICT_BASES.has(value.basis)) {
       frame.basis = value.basis as VerdictBasis;
     }
@@ -332,6 +396,9 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
       credible: isFiniteNumber(value.credible) ? value.credible : 0,
       disputed: isFiniteNumber(value.disputed) ? value.disputed : 0,
       unverifiable: isFiniteNumber(value.unverifiable) ? value.unverifiable : 0,
+      misleadingFraming: isFiniteNumber(value.misleading_framing)
+        ? value.misleading_framing
+        : 0,
     };
   }
 
