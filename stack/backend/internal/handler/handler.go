@@ -18,7 +18,7 @@ import (
 // routes are the explicit registrations on the outer mux: /healthz for load
 // balancer checks, login, and logout (reachable without a valid session so an
 // expired one can still clear its cookie).
-func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeService, live LiveAnalyzer, liveAllowedOrigins []string, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeService, live LiveAnalyzer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). See videos.go.
 	api.HandleFunc("POST /api/videos/uploads", requestUploadHandler(videos))
@@ -27,7 +27,7 @@ func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeS
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
 	// Live fact-check stream (WebSocket). See live.go.
-	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, liveAllowedOrigins, logger))
+	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, liveAllowedOrigins, debugFactCheck, logger))
 	// Developer wiki-search probe (WebSocket), dev only. Registered solely when a
 	// searcher is supplied (the debug flag is on), so the route does not exist in
 	// production. It shares the live socket's origin allow-list. See debug_search.go.

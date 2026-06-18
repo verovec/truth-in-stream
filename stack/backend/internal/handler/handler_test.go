@@ -23,7 +23,7 @@ func newTestServer(storeErr error) http.Handler {
 func newAuthedTestServer(auth AuthConfig, storeErr error) http.Handler {
 	health := service.NewHealthChecker(fakePinger{err: storeErr})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, nil, "", auth, logger)
+	return NewMux(health, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, false, nil, "", auth, logger)
 }
 
 func TestHealthz(t *testing.T) {

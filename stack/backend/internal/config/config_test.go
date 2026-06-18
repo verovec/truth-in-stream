@@ -538,6 +538,40 @@ func TestLoadDebugSearch(t *testing.T) {
 	}
 }
 
+func TestLoadDebugFactCheck(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    bool
+		wantErr bool
+	}{
+		{name: "disabled by default", env: map[string]string{}, want: false},
+		{name: "enabled when opted in", env: map[string]string{"DEBUG_FACT_CHECK": "true"}, want: true},
+		{name: "explicitly disabled", env: map[string]string{"DEBUG_FACT_CHECK": "false"}, want: false},
+		{name: "non-boolean fails", env: map[string]string{"DEBUG_FACT_CHECK": "maybe"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got, err := LoadDebugFactCheck()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadPrecheck(t *testing.T) {
 	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46}
 	tests := []struct {

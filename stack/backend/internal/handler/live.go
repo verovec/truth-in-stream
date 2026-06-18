@@ -138,7 +138,15 @@ const claimResultType = "claim_result"
 // lifecycle state; Source tags a verified verdict's origin (curated|verified);
 // Verdict, Confidence, Citations, and Rationale are present once verified. The
 // embedded matches carry the cited evidence (with evidence_id) so the grounding
-// round-trips to the UI.
+// round-trips to the UI; they are the operator detail payload, emitted only when
+// DEBUG_FACT_CHECK is on (see toClaimResultFrame).
+//
+// SourceLabel is the French publisher label of the verdict's winning citation
+// (Assemblée nationale, INSEE, Wikipédia, ...), distinct from Source (which tags
+// the verdict's curated|verified origin). SourceURL is that citation's canonical
+// link, so the chip links the source. Both are omitted for a knowledge-only or
+// curated-borrow verdict that names no provider, so the chip is then absent
+// rather than empty.
 //
 // Literal and Flags are the political path's two orthogonal axes (FACTCHECK_POLITICAL
 // on): Literal is the face-value verdict (accurate|inaccurate|unverifiable) and
@@ -147,20 +155,22 @@ const claimResultType = "claim_result"
 // byte-for-byte the legacy shape; the frontend (VER-104) keys its two-axis display
 // on them.
 type claimResultFrame struct {
-	Type       string                `json:"type"`
-	ID         string                `json:"id"`
-	ClaimID    string                `json:"claim_id"`
-	Status     string                `json:"status"`
-	Source     string                `json:"source,omitempty"`
-	Verdict    string                `json:"verdict,omitempty"`
-	Basis      string                `json:"basis,omitempty"`
-	Literal    string                `json:"literal,omitempty"`
-	Flags      []string              `json:"flags,omitempty"`
-	Confidence *float64              `json:"confidence,omitempty"`
-	Rationale  string                `json:"rationale,omitempty"`
-	Matches    []domain.SegmentMatch `json:"matches,omitempty"`
-	SkipReason string                `json:"skip_reason,omitempty"`
-	Error      string                `json:"error,omitempty"`
+	Type        string                `json:"type"`
+	ID          string                `json:"id"`
+	ClaimID     string                `json:"claim_id"`
+	Status      string                `json:"status"`
+	Source      string                `json:"source,omitempty"`
+	SourceLabel string                `json:"source_label,omitempty"`
+	SourceURL   string                `json:"source_url,omitempty"`
+	Verdict     string                `json:"verdict,omitempty"`
+	Basis       string                `json:"basis,omitempty"`
+	Literal     string                `json:"literal,omitempty"`
+	Flags       []string              `json:"flags,omitempty"`
+	Confidence  *float64              `json:"confidence,omitempty"`
+	Rationale   string                `json:"rationale,omitempty"`
+	Matches     []domain.SegmentMatch `json:"matches,omitempty"`
+	SkipReason  string                `json:"skip_reason,omitempty"`
+	Error       string                `json:"error,omitempty"`
 }
 
 // speakerScoreFrame is the wire form of a speaker-score event (retrieve-then-verify
@@ -189,7 +199,10 @@ type speakerScoreFrame struct {
 // analyzer: a reader pumps inbound audio frames to the analyzer while the main
 // goroutine writes the analyzer's events back. allowedOrigins are the browser
 // origins permitted to connect cross-origin; empty enforces same-origin.
-func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, logger *slog.Logger) http.HandlerFunc {
+// debugFactCheck, when true, emits the per-claim evidence detail payload (the
+// cited matches with their passages and scores); when false only the source
+// label is sent, so the detail is never exposed in production.
+func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheck bool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: allowedOrigins})
 		if err != nil {
@@ -214,7 +227,7 @@ func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, logger *slog.Lo
 			return
 		}
 
-		writeEvents(ctx, cancel, conn, events, logger, videoID)
+		writeEvents(ctx, cancel, conn, events, debugFactCheck, logger, videoID)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}
 }
@@ -270,9 +283,9 @@ func pingLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Co
 // liveWriteTimeout, so a failure - including an interim that the client could not
 // accept within the deadline - means the connection is broken or wedged and the
 // session is torn down at once rather than burning a per-frame timeout on it.
-func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, events <-chan service.LiveEvent, logger *slog.Logger, videoID string) {
+func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, events <-chan service.LiveEvent, debugFactCheck bool, logger *slog.Logger, videoID string) {
 	for ev := range events {
-		if err := writeEvent(ctx, conn, ev); err != nil {
+		if err := writeEvent(ctx, conn, ev, debugFactCheck); err != nil {
 			if ctx.Err() == nil {
 				logger.ErrorContext(ctx, "live event write failed", slog.String("video_id", videoID), slog.Any("err", err))
 			}
@@ -283,7 +296,7 @@ func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket
 }
 
 // writeEvent writes one event under a bounded deadline, shaping it by kind.
-func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent) error {
+func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent, debugFactCheck bool) error {
 	ctx, cancel := context.WithTimeout(ctx, liveWriteTimeout)
 	defer cancel()
 	if ev.Kind == service.LiveEventInterim {
@@ -333,7 +346,7 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 	// retrieve-then-verify path; it shapes differently from the legacy per-segment
 	// result, keyed on claim_id so the client replaces the claim's row in place.
 	if ev.Kind == service.LiveEventResult && ev.ClaimID != "" {
-		return wsjson.Write(ctx, conn, toClaimResultFrame(ev))
+		return wsjson.Write(ctx, conn, toClaimResultFrame(ev, debugFactCheck))
 	}
 	if ev.Kind == service.LiveEventConsistency {
 		// The service always sets Consistency for this kind; the guard keeps a
@@ -362,8 +375,11 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent)
 // toClaimResultFrame shapes one per-claim result event into its wire frame. The
 // verdict fields are present only once verified; a checking or unchecked result
 // carries just its status (and, for unchecked, the capacity skip reason). The
-// cited evidence travels as the embedded matches so the grounding round-trips.
-func toClaimResultFrame(ev service.LiveEvent) claimResultFrame {
+// winning citation's source label and link are always surfaced so a normal
+// viewer sees the clean provenance; the full cited evidence (the detail payload)
+// rides along only when debugFactCheck is on, so the per-passage detail is never
+// emitted in production.
+func toClaimResultFrame(ev service.LiveEvent, debugFactCheck bool) claimResultFrame {
 	f := claimResultFrame{
 		Type:       claimResultType,
 		ID:         ev.ID,
@@ -379,7 +395,12 @@ func toClaimResultFrame(ev service.LiveEvent) claimResultFrame {
 		confidence := ev.Verdict.Confidence
 		f.Confidence = &confidence
 		f.Rationale = ev.Verdict.Rationale
-		f.Matches = ev.Verdict.Citations
+		provenance := domain.WinningSource(ev.Verdict.Citations)
+		f.SourceLabel = provenance.Label
+		f.SourceURL = provenance.URL
+		if debugFactCheck {
+			f.Matches = ev.Verdict.Citations
+		}
 		// The two-axis fields are populated only on the political path; on the
 		// credibility-only path they are zero and omitted, keeping the wire shape
 		// unchanged.

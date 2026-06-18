@@ -62,6 +62,12 @@ function primarySourceOf(matches: readonly SegmentMatch[]): PrimarySource | null
   }
   for (const match of matches) {
     if (match.kind === "evidence") {
+      // A routed source-pack passage carries its real publisher in sources; only
+      // a Wikipedia passage falls back to the article attribution.
+      const source = match.sources?.[0];
+      if (source) {
+        return { title: source.title, url: source.url, span: match.excerpt };
+      }
       return {
         title: match.article.title,
         url: match.article.url,
@@ -119,6 +125,9 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
             {SOURCE_LABELS[claim.source]}
           </span>
         ) : null}
+        {claim.sourceLabel ? (
+          <SourceLabelChip label={claim.sourceLabel} url={claim.sourceUrl} />
+        ) : null}
         {typeof claim.confidence === "number" ? (
           <span className="font-mono text-[10px] tabular-nums text-zinc-400 dark:text-zinc-500">
             {Math.round(claim.confidence * 100)}%
@@ -155,6 +164,34 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+// SourceLabelChip names the authoritative provider that backed the verdict
+// (INSEE, Wikipédia, Assemblée nationale, ...), the clean provenance a normal
+// viewer sees without the operator detail. It links the source when a url is
+// present and is otherwise a plain chip; it is rendered only when a label
+// exists, so a knowledge-only verdict shows no empty chip.
+function SourceLabelChip({ label, url }: { label: string; url?: string }) {
+  const base =
+    "inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:bg-slate-500/15 dark:text-slate-300";
+  if (url) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`Source : ${label}`}
+        className={`${base} underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-sky-500`}
+      >
+        {label}
+      </a>
+    );
+  }
+  return (
+    <span aria-label={`Source : ${label}`} className={base}>
+      {label}
+    </span>
   );
 }
 

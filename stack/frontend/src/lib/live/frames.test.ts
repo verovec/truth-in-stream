@@ -240,6 +240,7 @@ describe("parseLiveFrame", () => {
             sources: [],
             similarity: 0.7,
             evidence_id: "claim:42:0",
+            contribution: 0.7,
           },
         ],
       }),
@@ -255,7 +256,61 @@ describe("parseLiveFrame", () => {
       confidence: 0.8,
       rationale: "the passage confirms it",
     });
-    expect((frame as { matches: unknown[] }).matches).toHaveLength(1);
+    const matches = (frame as { matches: { evidenceId?: string; contribution?: number }[] }).matches;
+    expect(matches).toHaveLength(1);
+    expect(matches[0].evidenceId).toBe("claim:42:0");
+    expect(matches[0].contribution).toBe(0.7);
+  });
+
+  test("parses the source label and url, distinct from the verdict source tag", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        source: "verified",
+        verdict: "credible",
+        source_label: "INSEE",
+        source_url: "https://insee.fr/x",
+      }),
+    );
+    expect(frame).toMatchObject({
+      source: "verified",
+      sourceLabel: "INSEE",
+      sourceUrl: "https://insee.fr/x",
+    });
+  });
+
+  test("drops a non-http source_url rather than rendering it in a link", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "credible",
+        source_label: "INSEE",
+        source_url: "javascript:alert(1)",
+      }),
+    );
+    expect(frame).toMatchObject({ sourceLabel: "INSEE" });
+    expect(frame).not.toHaveProperty("sourceUrl");
+  });
+
+  test("omits the source label and url when the verdict names no provider", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claim_result",
+        id: "u0",
+        claim_id: "u0-0",
+        status: "verified",
+        verdict: "unverifiable",
+        basis: "knowledge",
+      }),
+    );
+    expect(frame).not.toHaveProperty("sourceLabel");
+    expect(frame).not.toHaveProperty("sourceUrl");
   });
 
   test("drops an unrecognised basis tag rather than rendering it", () => {

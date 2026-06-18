@@ -30,6 +30,8 @@ export type LiveClaim = {
   text: string;
   status: ClaimStatus;
   source?: VerdictSource;
+  sourceLabel?: string;
+  sourceUrl?: string;
   verdict?: ClaimVerdict;
   literal?: LiteralVerdict;
   flags?: ManipulationFlag[];
@@ -115,6 +117,8 @@ export function applyClaimResultFrame(
     text: existing?.text ?? "",
     status: frame.status,
     source: frame.source,
+    sourceLabel: frame.sourceLabel,
+    sourceUrl: frame.sourceUrl,
     verdict: frame.verdict,
     literal: frame.literal,
     flags: frame.flags,

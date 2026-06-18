@@ -96,14 +96,16 @@ type wireFrame struct {
 		Text    string `json:"text"`
 		Status  string `json:"status"`
 	} `json:"claims"`
-	ClaimID    string   `json:"claim_id"`
-	Status     string   `json:"status"`
-	Source     string   `json:"source"`
-	Verdict    string   `json:"verdict"`
-	Basis      string   `json:"basis"`
-	Literal    string   `json:"literal"`
-	Flags      []string `json:"flags"`
-	Confidence *float64 `json:"confidence"`
+	ClaimID     string   `json:"claim_id"`
+	Status      string   `json:"status"`
+	Source      string   `json:"source"`
+	SourceLabel string   `json:"source_label"`
+	SourceURL   string   `json:"source_url"`
+	Verdict     string   `json:"verdict"`
+	Basis       string   `json:"basis"`
+	Literal     string   `json:"literal"`
+	Flags       []string `json:"flags"`
+	Confidence  *float64 `json:"confidence"`
 	// Speaker-score frame fields.
 	Score             float64 `json:"score"`
 	Credible          int     `json:"credible"`
@@ -112,11 +114,11 @@ type wireFrame struct {
 	MisleadingFraming int     `json:"misleading_framing"`
 }
 
-func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string) string {
+func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debugFactCheck bool) string {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/videos/{id}/live", liveHandler(analyzer, origins, logger))
+	mux.HandleFunc("GET /api/videos/{id}/live", liveHandler(analyzer, origins, debugFactCheck, logger))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
@@ -137,7 +139,7 @@ func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
 		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, Matches: claim},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -186,7 +188,7 @@ func TestLiveHandlerForwardsInterimCaption(t *testing.T) {
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventInterim, Segment: seg},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -231,7 +233,7 @@ func TestLiveHandlerForwardsConsistencyFlag(t *testing.T) {
 			},
 		},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -275,7 +277,9 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictDisputed, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"},
 		},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	// Debug on, so the per-passage evidence detail (the cited matches) rides the
+	// frame and its round-trip can be asserted.
+	wsURL := liveTestServer(t, fake, nil, true)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -314,6 +318,50 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	if len(verified.Matches) != 1 || verified.Matches[0].EvidenceID != "evidence:42:0" {
 		t.Errorf("citations did not round-trip: %+v", verified.Matches)
 	}
+	if verified.SourceLabel != domain.SourceLabelWikipedia {
+		t.Errorf("source_label = %q, want %q", verified.SourceLabel, domain.SourceLabelWikipedia)
+	}
+}
+
+func TestLiveHandlerOmitsEvidenceDetailWhenDebugOff(t *testing.T) {
+	t.Parallel()
+	// With DEBUG_FACT_CHECK off, a verified per-claim result surfaces the source
+	// label and link but never the per-passage evidence detail, so the detailed
+	// payload is not emitted in production.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "le chômage a baissé", Speaker: "A"}
+	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "taux", Similarity: 1, EvidenceID: "insee:CHOM:0", Sources: []domain.Source{{Title: "INSEE", URL: "https://insee.fr/x"}}}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{
+			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictCredible, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "ok"},
+		},
+	}}
+	wsURL := liveTestServer(t, fake, nil, false)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	verified := readFrame(ctx, t, conn)
+	if verified.Type != "claim_result" || verified.Status != "verified" {
+		t.Fatalf("frame = %+v, want verified claim_result", verified)
+	}
+	if verified.SourceLabel != domain.SourceLabelINSEE || verified.SourceURL != "https://insee.fr/x" {
+		t.Errorf("source label/url = %q/%q, want INSEE link", verified.SourceLabel, verified.SourceURL)
+	}
+	if len(verified.Matches) != 0 {
+		t.Errorf("matches = %+v, want none emitted with debug off", verified.Matches)
+	}
 }
 
 func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
@@ -323,7 +371,7 @@ func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, Disputed: 0, Unverifiable: 2}},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -368,7 +416,7 @@ func TestLiveHandlerForwardsPoliticalTwoAxisVerdict(t *testing.T) {
 			},
 		},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -397,6 +445,17 @@ func TestLiveHandlerForwardsPoliticalTwoAxisVerdict(t *testing.T) {
 	if frame.Verdict != "credible" {
 		t.Errorf("verdict = %q, want credible (credibility axis)", frame.Verdict)
 	}
+	// The source label and link are surfaced even with debug off, so a normal
+	// viewer sees the provenance; the detailed matches payload stays absent.
+	if frame.SourceLabel != domain.SourceLabelINSEE {
+		t.Errorf("source_label = %q, want %q", frame.SourceLabel, domain.SourceLabelINSEE)
+	}
+	if frame.SourceURL != "https://insee.fr/x" {
+		t.Errorf("source_url = %q, want the INSEE citation url", frame.SourceURL)
+	}
+	if len(frame.Matches) != 0 {
+		t.Errorf("matches = %+v, want none emitted with debug off", frame.Matches)
+	}
 }
 
 func TestLiveHandlerForwardsMisleadingFramingTally(t *testing.T) {
@@ -406,7 +465,7 @@ func TestLiveHandlerForwardsMisleadingFramingTally(t *testing.T) {
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 2, MisleadingFraming: 1}},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -437,7 +496,7 @@ func TestLiveHandlerSerializesClaimErrorTerminal(t *testing.T) {
 	fake := &recordingLive{events: []service.LiveEvent{
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusError, Err: "verification failed"},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -474,7 +533,7 @@ func TestLiveHandlerSkipsMalformedConsistencyEvent(t *testing.T) {
 		{Kind: service.LiveEventConsistency, ID: "1"}, // Consistency is nil
 		{Kind: service.LiveEventSubtitle, ID: "2", Segment: seg},
 	}}
-	wsURL := liveTestServer(t, fake, nil)
+	wsURL := liveTestServer(t, fake, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -505,7 +564,7 @@ func TestLiveHandlerAcceptsAllowlistedCrossOrigin(t *testing.T) {
 	// from the backend Host, so the upgrade is cross-origin to the server. An
 	// allow-listed origin must still be accepted - this is the handshake dev's
 	// CORS_ALLOWED_ORIGIN enables, distinct from the same-Host happy path.
-	wsURL := liveTestServer(t, stubLiveAnalyzer{}, []string{"localhost:3000"})
+	wsURL := liveTestServer(t, stubLiveAnalyzer{}, []string{"localhost:3000"}, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -524,7 +583,7 @@ func TestLiveHandlerAcceptsAllowlistedCrossOrigin(t *testing.T) {
 func TestLiveHandlerRejectsDisallowedOrigin(t *testing.T) {
 	t.Parallel()
 
-	wsURL := liveTestServer(t, stubLiveAnalyzer{}, nil)
+	wsURL := liveTestServer(t, stubLiveAnalyzer{}, nil, false)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

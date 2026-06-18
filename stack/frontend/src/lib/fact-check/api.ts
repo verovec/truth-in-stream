@@ -17,13 +17,18 @@ export type ArticleRef = {
   url: string;
 };
 
-// A curated claim match carries a verdict and citation sources.
+// A curated claim match carries a verdict and citation sources. evidenceId and
+// contribution are the operator detail (the cited passage's stable id and its
+// stance-bearing weight); they ride a result only when DEBUG_FACT_CHECK is on,
+// so they are absent for a normal viewer.
 export type ClaimMatch = {
   kind: "claim";
   claim: string;
   verdict: Verdict;
   sources: ClaimSource[];
   similarity: number;
+  evidenceId?: string;
+  contribution?: number;
 };
 
 // SkipReason is why a segment was not fact-checked. It is distinct from a
@@ -40,7 +45,14 @@ export type EvidenceMatch = {
   kind: "evidence";
   excerpt: string;
   article: ArticleRef;
+  // Authoritative provenance for a routed (non-Wikipedia) evidence passage -
+  // INSEE, a voting record, the press. Wikipedia matches leave it empty and use
+  // article; a source-pack match carries its publisher here and is rendered from
+  // it rather than the generic article credit.
+  sources?: ClaimSource[];
   similarity: number;
+  evidenceId?: string;
+  contribution?: number;
 };
 
 export type SegmentMatch = ClaimMatch | EvidenceMatch;
@@ -79,6 +91,8 @@ export type MatchWire = {
   sources?: ClaimSource[];
   similarity: number;
   article?: ArticleRef;
+  evidence_id?: string;
+  contribution?: number;
 };
 
 // ConfidenceWire is the corroboration score's wire shape (snake_case
@@ -114,7 +128,12 @@ export function normalizeMatch(wire: MatchWire): SegmentMatch {
         title: "Wikipedia",
         url: "https://www.wikipedia.org",
       },
+      // Carried only when the passage names a real publisher (a routed
+      // source-pack hit); a Wikipedia match leaves it absent and uses article.
+      sources: wire.sources?.length ? wire.sources : undefined,
       similarity: wire.similarity,
+      evidenceId: wire.evidence_id,
+      contribution: wire.contribution,
     };
   }
   return {
@@ -123,6 +142,8 @@ export function normalizeMatch(wire: MatchWire): SegmentMatch {
     verdict: wire.verdict ?? "unclear",
     sources: wire.sources ?? [],
     similarity: wire.similarity,
+    evidenceId: wire.evidence_id,
+    contribution: wire.contribution,
   };
 }
 
