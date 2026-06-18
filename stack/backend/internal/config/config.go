@@ -857,6 +857,72 @@ func LoadCrawlAlerts() CrawlAlerts {
 	return CrawlAlerts{WebhookURL: os.Getenv("SLACK_WEBHOOK_URL")}
 }
 
+// Scheduler defaults. Each source defaults DISABLED with a daily off-peak cron, so
+// the always-on scheduler service idles on a plain `docker compose up` and never
+// starts paid ingestion until an operator opts a source in with
+// SCHEDULE_<SOURCE>_ENABLED=true - the same cost-safety convention the paid wiki
+// profiles follow. The jitter spreads concurrently-due sources to avoid a
+// thundering herd on the shared broker and upstream APIs.
+const (
+	defaultWikipediaCron  = "0 3 * * *"  // 03:00 daily
+	defaultFactcheckCron  = "0 4 * * *"  // 04:00 daily
+	defaultScrutinsCron   = "30 4 * * *" // 04:30 daily
+	defaultScheduleJitter = 30 * time.Second
+	maxScheduleJitter     = time.Hour
+)
+
+// ScheduleSource is one source's scheduling configuration: whether it is enabled
+// and the cron spec it fires on. The cron spec is validated by the scheduler at
+// startup, so a malformed spec fails fast.
+type ScheduleSource struct {
+	Enabled bool
+	Cron    string
+}
+
+// Schedule holds the ingestion fleet's per-source scheduling configuration plus the
+// shared jitter. It is read from the environment only; an invalid cron spec is
+// rejected when the scheduler parses it at startup, and an invalid jitter is
+// rejected here.
+type Schedule struct {
+	Wikipedia ScheduleSource
+	Factcheck ScheduleSource
+	Scrutins  ScheduleSource
+	Jitter    time.Duration
+}
+
+// LoadSchedule reads the scheduler configuration from the environment. Each source
+// defaults disabled; SCHEDULE_<SOURCE>_ENABLED=true opts it in and
+// SCHEDULE_<SOURCE>_CRON overrides its daily-default cadence. SCHEDULE_JITTER bounds
+// the random per-run spread (default 30s, capped at 1h). A bad boolean or jitter
+// fails fast; a bad cron spec is caught by the scheduler when it parses the
+// registry.
+func LoadSchedule() (Schedule, error) {
+	wikiEnabled, err := boolEnv("SCHEDULE_WIKIPEDIA_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+	factcheckEnabled, err := boolEnv("SCHEDULE_FACTCHECK_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+	scrutinsEnabled, err := boolEnv("SCHEDULE_SCRUTINS_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+
+	jitter, err := boundedDurationEnv("SCHEDULE_JITTER", defaultScheduleJitter, maxScheduleJitter)
+	if err != nil {
+		return Schedule{}, err
+	}
+
+	return Schedule{
+		Wikipedia: ScheduleSource{Enabled: wikiEnabled, Cron: getenv("SCHEDULE_WIKIPEDIA_CRON", defaultWikipediaCron)},
+		Factcheck: ScheduleSource{Enabled: factcheckEnabled, Cron: getenv("SCHEDULE_FACTCHECK_CRON", defaultFactcheckCron)},
+		Scrutins:  ScheduleSource{Enabled: scrutinsEnabled, Cron: getenv("SCHEDULE_SCRUTINS_CRON", defaultScrutinsCron)},
+		Jitter:    jitter,
+	}, nil
+}
+
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
 // rejecting values (including NaN) outside [-1, 1].
 func thresholdEnv(key string, fallback float64) (float64, error) {
