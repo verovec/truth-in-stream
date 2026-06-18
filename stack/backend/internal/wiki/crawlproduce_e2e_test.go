@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 
 	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
 )
@@ -45,7 +45,7 @@ func TestRunCrawlEndToEndWithRealGate(t *testing.T) {
 
 	gate, err := evidencegate.New(
 		evidencegate.Config{APIKey: "test-key"},
-		option.WithBaseURL(anthropic.URL), option.WithMaxRetries(0),
+		llm.WithBaseURL(anthropic.URL), llm.WithMaxRetries(0),
 	)
 	if err != nil {
 		t.Fatalf("evidencegate.New: %v", err)

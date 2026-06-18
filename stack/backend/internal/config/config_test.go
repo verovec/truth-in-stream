@@ -1067,7 +1067,7 @@ func TestLoadLive(t *testing.T) {
 }
 
 func TestLoadConsistency(t *testing.T) {
-	defaults := Consistency{Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6}
+	defaults := Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1088,8 +1088,17 @@ func TestLoadConsistency(t *testing.T) {
 				"CONSISTENCY_TOP_K":            "5",
 				"CONSISTENCY_SIMILARITY_FLOOR": "0.72",
 			},
-			want: Consistency{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", TopK: 5, SimilarityFloor: 0.72},
+			want: Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", TopK: 5, SimilarityFloor: 0.72},
 		},
+		{
+			name: "gemini provider reads gemini key",
+			env: map[string]string{
+				"LLM_PROVIDER":   "gemini",
+				"GEMINI_API_KEY": "g-test",
+			},
+			want: Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6},
+		},
+		{name: "unknown provider rejected", env: map[string]string{"LLM_PROVIDER": "mistral"}, wantErr: true},
 		{name: "non-bool enabled rejected", env: map[string]string{"CONSISTENCY_ENABLED": "maybe"}, wantErr: true},
 		{name: "zero top-k rejected", env: map[string]string{"CONSISTENCY_TOP_K": "0"}, wantErr: true},
 		{name: "non-numeric top-k rejected", env: map[string]string{"CONSISTENCY_TOP_K": "many"}, wantErr: true},
@@ -1128,6 +1137,8 @@ func TestConsistencyActive(t *testing.T) {
 		{"enabled with key", Consistency{Enabled: true, APIKey: "k"}, true},
 		{"enabled without key degrades to off", Consistency{Enabled: true, APIKey: ""}, false},
 		{"disabled with key stays off", Consistency{Enabled: false, APIKey: "k"}, false},
+		{"gemini with gemini key and no anthropic key stays active", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
+		{"gemini without gemini key degrades to off", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1139,7 +1150,7 @@ func TestConsistencyActive(t *testing.T) {
 }
 
 func TestLoadCheckWorthiness(t *testing.T) {
-	defaults := CheckWorthiness{Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"}
+	defaults := CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1158,8 +1169,17 @@ func TestLoadCheckWorthiness(t *testing.T) {
 				"CHECKWORTHINESS_API_KEY": "sk-test",
 				"CHECKWORTHINESS_MODEL":   "claude-haiku-4-5",
 			},
-			want: CheckWorthiness{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5"},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5"},
 		},
+		{
+			name: "gemini provider reads gemini key",
+			env: map[string]string{
+				"LLM_PROVIDER":   "gemini",
+				"GEMINI_API_KEY": "g-test",
+			},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"},
+		},
+		{name: "unknown provider rejected", env: map[string]string{"LLM_PROVIDER": "mistral"}, wantErr: true},
 		{name: "non-bool enabled rejected", env: map[string]string{"CHECKWORTHINESS_ENABLED": "maybe"}, wantErr: true},
 	}
 	for _, tc := range tests {
@@ -1193,6 +1213,8 @@ func TestCheckWorthinessActive(t *testing.T) {
 		{"enabled with key", CheckWorthiness{Enabled: true, APIKey: "k"}, true},
 		{"enabled without key degrades to off", CheckWorthiness{Enabled: true, APIKey: ""}, false},
 		{"disabled with key stays off", CheckWorthiness{Enabled: false, APIKey: "k"}, false},
+		{"gemini with gemini key and no anthropic key stays active", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
+		{"gemini without gemini key degrades to off", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1326,7 +1348,17 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 			// CRAWL_CHECKWORTHY left empty so the default (true) is exercised; the
 			// empty value also neutralizes any ambient export so the test is hermetic.
 			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "CHECKWORTHY_API_KEY": "sk-test"},
-			want: CrawlCheckworthy{Enabled: true, APIKey: "sk-test", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+		},
+		{
+			name: "gemini on with a gemini key, no anthropic key",
+			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "g-test"},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: true, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+		},
+		{
+			name:    "gemini on without a gemini key fails fast",
+			env:     map[string]string{"CRAWL_CHECKWORTHY": "", "LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "", "CHECKWORTHY_API_KEY": "sk-test"},
+			wantErr: true,
 		},
 		{
 			name: "enabled without a key fails fast",
@@ -1339,7 +1371,7 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 		{
 			name: "disabled needs no key",
 			env:  map[string]string{"CRAWL_CHECKWORTHY": "false"},
-			want: CrawlCheckworthy{Enabled: false, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
 		},
 		{
 			name: "overrides applied",
@@ -1350,7 +1382,7 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 				"CRAWL_CHECKWORTHY_CONCURRENCY": "16",
 				"CRAWL_CHECKWORTHY_RPM":         "120",
 			},
-			want: CrawlCheckworthy{Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", Concurrency: 16, RPM: 120},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", Concurrency: 16, RPM: 120},
 		},
 		{name: "non-bool enabled rejected", env: map[string]string{"CRAWL_CHECKWORTHY": "maybe"}, wantErr: true},
 		{name: "zero concurrency rejected", env: map[string]string{"CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_CONCURRENCY": "0"}, wantErr: true},
@@ -1387,6 +1419,8 @@ func TestCrawlCheckworthyActive(t *testing.T) {
 		{"enabled with key", CrawlCheckworthy{Enabled: true, APIKey: "k"}, true},
 		{"enabled without key", CrawlCheckworthy{Enabled: true, APIKey: ""}, false},
 		{"disabled with key", CrawlCheckworthy{Enabled: false, APIKey: "k"}, false},
+		{"gemini with gemini key and no anthropic key stays active", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
+		{"gemini without gemini key degrades to off", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1460,6 +1494,51 @@ func TestLoadVerifyPathDefaultsOff(t *testing.T) {
 		got.CacheTTL != defaultVerifyCacheTTL || got.RetrievalThreshold != defaultVerifyRetrievalThreshold ||
 		got.SpeakerPriorStrength != defaultSpeakerScorePriorStrength {
 		t.Errorf("defaults wrong: %+v", got)
+	}
+	if got.Provider != LLMProviderAnthropic {
+		t.Errorf("provider = %q, want default %q", got.Provider, LLMProviderAnthropic)
+	}
+}
+
+func TestLoadVerifyPathReadsGeminiSelection(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "gemini")
+	t.Setenv("GEMINI_API_KEY", "g-test")
+	got, err := LoadVerifyPath()
+	if err != nil {
+		t.Fatalf("LoadVerifyPath: %v", err)
+	}
+	if got.Provider != LLMProviderGemini {
+		t.Errorf("provider = %q, want %q", got.Provider, LLMProviderGemini)
+	}
+	if got.GeminiAPIKey != "g-test" {
+		t.Errorf("gemini key = %q, want g-test", got.GeminiAPIKey)
+	}
+}
+
+func TestLoadVerifyPathRejectsUnknownProvider(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "mistral")
+	if _, err := LoadVerifyPath(); err == nil {
+		t.Fatal("expected an error for an unknown LLM_PROVIDER")
+	}
+}
+
+func TestVerifyPathActive(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  VerifyPath
+		want bool
+	}{
+		{"enabled with anthropic key", VerifyPath{Enabled: true, APIKey: "k"}, true},
+		{"enabled without key degrades to off", VerifyPath{Enabled: true, APIKey: ""}, false},
+		{"gemini with gemini key and no anthropic key stays active", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
+		{"gemini without gemini key degrades to off", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.Active(); got != tc.want {
+				t.Errorf("Active() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1704,6 +1783,35 @@ func TestLoadFactCheckArchive(t *testing.T) {
 			}
 			if got.MaxPages != tc.wantPages {
 				t.Errorf("max pages = %d, want %d", got.MaxPages, tc.wantPages)
+			}
+		})
+	}
+}
+
+func TestLoadCrawlAlerts(t *testing.T) {
+	tests := []struct {
+		name       string
+		webhook    string
+		wantURL    string
+		wantActive bool
+	}{
+		{name: "unset is inactive noop", webhook: "", wantURL: "", wantActive: false},
+		{
+			name:       "set is active",
+			webhook:    "https://hooks.slack.com/services/T/B/X",
+			wantURL:    "https://hooks.slack.com/services/T/B/X",
+			wantActive: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SLACK_WEBHOOK_URL", tc.webhook)
+			got := LoadCrawlAlerts()
+			if got.WebhookURL != tc.wantURL {
+				t.Errorf("WebhookURL = %q, want %q", got.WebhookURL, tc.wantURL)
+			}
+			if got.Active() != tc.wantActive {
+				t.Errorf("Active() = %v, want %v", got.Active(), tc.wantActive)
 			}
 		})
 	}

@@ -351,6 +351,10 @@ services:
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
       CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
       CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
+      # LLM provider for the fact-checkability gate (default anthropic). Set
+      # LLM_PROVIDER=gemini + GEMINI_API_KEY to route the gate to Google Gemini.
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
@@ -431,6 +435,139 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # scrutinsworker drains self-contained scrutin jobs from the scrutins queue,
+  # parses each scrutin's raw AN open-data JSON into per-deputy voting records,
+  # and upserts them into the voting store (keyed by person+scrutin, idempotent).
+  # It mirrors factcheckworker but writes voting records and never embeds, so it
+  # needs no Voyage key. Scale it like the other fleets:
+  #   docker compose --profile scrutins up -d --scale scrutinsworker=4 rabbitmq scrutinsworker
+  scrutinsworker:
+    profiles: ["scrutins"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scrutinsworker"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Per-replica tuning (the fleet scales by replica count). CONCURRENCY bounds
+      # the scrutins parsed/upserted in parallel; MAX_ATTEMPTS is the per-job
+      # delivery budget before a persistent failure is dropped with a log.
+      SCRUTINS_WORKER_CONCURRENCY: "${SCRUTINS_WORKER_CONCURRENCY:-4}"
+      SCRUTINS_WORKER_MAX_ATTEMPTS: "${SCRUTINS_WORKER_MAX_ATTEMPTS:-5}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # scrutinscrawl conditionally downloads the Assemblee Nationale open-data
+  # Scrutins.json.zip archive (Etalab Licence Ouverte 2.0, attribution "Assemblee
+  # nationale - data.assemblee-nationale.fr"), discovers each scrutin, and
+  # publishes one self-contained job to the scrutins queue, then exits. It needs
+  # no database. A persisted ETag/Last-Modified marker (under the scrutins-state
+  # volume, shared so a re-run sees the last run's validators) makes the download a
+  # conditional GET, so an unchanged archive is a 304 and the run does no redundant
+  # work. On-demand producer (run explicitly), in the "tools" profile:
+  #   docker compose --profile tools run --rm scrutinscrawl   (or: make scrutins-crawl)
+  scrutinscrawl:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scrutinscrawl"]
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # AN legislature to ingest (default 17, the current term) and where the
+      # conditional-GET marker persists between runs (empty disables the skip, so
+      # every run re-downloads). Optional.
+      SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
+      SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
+      # Slack incoming-webhook for ingestion-fleet run alerts (start, finish
+      # summary, failure). Empty -> the notifier is a silent no-op.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - scrutins-state:/state
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # Always-on ingestion-fleet scheduler. Registers the Wikipedia, fact-check, and
+  # scrutins producers and fires each on its configurable cron (SCHEDULE_*),
+  # replacing the manual `make crawl` / `make factcheck-crawl` / `make
+  # scrutins-crawl` one-shot runs: every enabled run publishes into its queue for
+  # the worker fleet to drain, an overlapping tick of a source still running is
+  # skipped, and each run posts the shared Slack alerts. Every source defaults
+  # DISABLED, so a plain `make up` starts an idle scheduler and never kicks off
+  # paid ingestion - the same cost-safety convention the paid wiki profiles
+  # follow; opt a source in with SCHEDULE_<SOURCE>_ENABLED=true and set its
+  # producer config (CRAWL_* / FACTCHECK_* / SCRUTINS_*). It needs only the broker
+  # and the scrutins-state volume (the conditional-GET marker), no database.
+  # Restarts unless stopped so a crash brings the schedule back; the producers are
+  # idempotent (workers upsert), so a restart cannot double-ingest.
+  scheduler:
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/scheduler"]
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Per-source enable flags and cron specs (empty uses the daily defaults).
+      SCHEDULE_WIKIPEDIA_ENABLED: "${SCHEDULE_WIKIPEDIA_ENABLED:-}"
+      SCHEDULE_WIKIPEDIA_CRON: "${SCHEDULE_WIKIPEDIA_CRON:-}"
+      SCHEDULE_FACTCHECK_ENABLED: "${SCHEDULE_FACTCHECK_ENABLED:-}"
+      SCHEDULE_FACTCHECK_CRON: "${SCHEDULE_FACTCHECK_CRON:-}"
+      SCHEDULE_SCRUTINS_ENABLED: "${SCHEDULE_SCRUTINS_ENABLED:-}"
+      SCHEDULE_SCRUTINS_CRON: "${SCHEDULE_SCRUTINS_CRON:-}"
+      SCHEDULE_JITTER: "${SCHEDULE_JITTER:-}"
+      # Wikipedia producer config (mirrors the wikicrawl service). Required when
+      # the Wikipedia source is enabled.
+      CRAWL_CATEGORIES: "${CRAWL_CATEGORIES:-}"
+      CRAWL_PROJECT: "${CRAWL_PROJECT:-}"
+      WIKI_CORPUS: "${WIKI_CORPUS:-simplewiki}"
+      CRAWL_CORPUS: "${CRAWL_CORPUS:-}"
+      CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
+      CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
+      CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+      CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
+      CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
+      CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
+      CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
+      CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
+      CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # Fact-check producer config (mirrors the factcheckcrawl service). Required
+      # when the fact-check source is enabled.
+      FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
+      FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
+      FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+      # Scrutins producer config (mirrors the scrutinscrawl service).
+      SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
+      SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
+      # Slack incoming-webhook for ingestion-fleet run alerts. Empty -> silent no-op.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - scrutins-state:/state
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -540,6 +677,13 @@ services:
       # model, and note the committed seed cache is keyed under the default - a
       # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # LLM provider for every LLM-backed stage (consistency, check-worthiness,
+      # claim decomposition, claim typing, the credibility verifier). Defaults to
+      # anthropic (Claude Haiku, unchanged). Set LLM_PROVIDER=gemini + GEMINI_API_KEY
+      # to route the same forced-tool calls to Google Gemini; an unknown value fails
+      # fast at startup. The per-stage *_MODEL and Anthropic *_API_KEY vars still apply.
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       # Live intra-speaker consistency: flag when a speaker contradicts their own
       # earlier statement. Off unless CONSISTENCY_ENABLED is true AND
       # CONSISTENCY_API_KEY (Anthropic) is set; with no key, live analysis behaves
@@ -683,3 +827,6 @@ volumes:
   minio-data:
   wiki-dump:
   rabbitmq-data:
+  # Persists the scrutins-archive conditional-GET marker (ETag/Last-Modified)
+  # across producer runs, so an unchanged archive is skipped.
+  scrutins-state:

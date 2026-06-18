@@ -33,6 +33,65 @@ const defaultTranscriptionModel = "u3-rt-pro"
 // clip from, relative to the working directory.
 const defaultDemoMediaDir = "demo"
 
+// LLM provider selection. Every LLM-backed stage (stance, check-worthiness,
+// claim decomposition, claim typing, the credibility verifier, the ingestion
+// fact-checkability gate) reads one shared provider choice from LLM_PROVIDER and,
+// when that choice is Gemini, the key from GEMINI_API_KEY. LLM_PROVIDER defaults
+// to "anthropic", which keeps every stage on Claude Haiku exactly as the codebase
+// shipped; an unknown value fails fast at startup rather than silently falling
+// back. The per-stage model and the Anthropic per-stage key vars are unchanged;
+// only the provider and the Gemini key are global. GEMINI_API_KEY is a secret and
+// is never logged.
+const (
+	// LLMProviderAnthropic keeps every stage on the Anthropic Claude transport,
+	// the default when LLM_PROVIDER is unset.
+	LLMProviderAnthropic = "anthropic"
+	// LLMProviderGemini routes every stage to Google Gemini, keyed on
+	// GEMINI_API_KEY.
+	LLMProviderGemini = "gemini"
+)
+
+// LLMSelection is the shared provider choice and Gemini key threaded into every
+// LLM-backed stage's configuration. Provider is the validated LLM_PROVIDER value
+// (default LLMProviderAnthropic); GeminiAPIKey is read from GEMINI_API_KEY and is
+// required only when Provider is LLMProviderGemini and a stage is active. It is
+// never logged.
+type LLMSelection struct {
+	Provider     string
+	GeminiAPIKey string
+}
+
+// hasKey reports whether the selected provider has the key it needs, given the
+// stage's Anthropic per-stage key. Under Gemini the key is GeminiAPIKey; under
+// Anthropic (the default) it is the per-stage key. Every stage's Active() routes
+// its key-presence check through this so an enabled-but-keyless feature degrades
+// to off under whichever provider is selected - selecting Gemini and supplying
+// only GEMINI_API_KEY keeps the stage active, where checking the Anthropic key
+// alone would silently disable it.
+func (s LLMSelection) hasKey(anthropicKey string) bool {
+	if s.Provider == LLMProviderGemini {
+		return s.GeminiAPIKey != ""
+	}
+	return anthropicKey != ""
+}
+
+// loadLLMSelection reads the shared LLM provider choice from the environment.
+// LLM_PROVIDER defaults to anthropic and is validated against the known set, so
+// an unknown provider crashes the process at startup with a clear message rather
+// than degrading silently. The Gemini key is read but never logged.
+func loadLLMSelection() (LLMSelection, error) {
+	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", LLMProviderAnthropic)))
+	switch provider {
+	case LLMProviderAnthropic, LLMProviderGemini:
+	default:
+		return LLMSelection{}, fmt.Errorf("config: LLM_PROVIDER %q is not a known provider (want %q or %q)", provider, LLMProviderAnthropic, LLMProviderGemini)
+	}
+	return LLMSelection{
+		Provider:     provider,
+		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+	}, nil
+}
+
 // Config holds the runtime configuration for the server.
 type Config struct {
 	Port        string
@@ -470,6 +529,7 @@ const (
 // a secret and comes from the environment only - never logged. Model selects
 // the stance model; TopK and SimilarityFloor tune detection.
 type Consistency struct {
+	LLMSelection
 	Enabled         bool
 	APIKey          string
 	Model           string
@@ -481,7 +541,7 @@ type Consistency struct {
 // and has the API key it needs. Wiring keys off this so an enabled-but-keyless
 // configuration degrades to off rather than failing to start.
 func (c Consistency) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadConsistency reads the intra-speaker consistency configuration from the
@@ -493,7 +553,11 @@ func LoadConsistency() (Consistency, error) {
 		TopK:            defaultConsistencyTopK,
 		SimilarityFloor: defaultConsistencyFloor,
 	}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return Consistency{}, err
+	}
+	c.LLMSelection = llmSel
 	if c.Enabled, err = boolEnv("CONSISTENCY_ENABLED"); err != nil {
 		return Consistency{}, err
 	}
@@ -569,6 +633,7 @@ const (
 // VerifyDeadline bound the two tiers; CacheTTL is the repeated-claim cache window
 // (0 disables it).
 type VerifyPath struct {
+	LLMSelection
 	Enabled          bool
 	APIKey           string
 	Model            string
@@ -594,7 +659,7 @@ type VerifyPath struct {
 // this so an enabled-but-keyless configuration degrades to the legacy path
 // rather than failing to start.
 func (v VerifyPath) Active() bool {
-	return v.Enabled && v.APIKey != ""
+	return v.Enabled && v.hasKey(v.APIKey)
 }
 
 // LoadVerifyPath reads the retrieve-then-verify configuration from the
@@ -615,7 +680,11 @@ func LoadVerifyPath() (VerifyPath, error) {
 		RetrievalThreshold:   defaultVerifyRetrievalThreshold,
 		SpeakerPriorStrength: defaultSpeakerScorePriorStrength,
 	}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return VerifyPath{}, err
+	}
+	v.LLMSelection = llmSel
 	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
 		return VerifyPath{}, err
 	}
@@ -668,6 +737,7 @@ const defaultCheckWorthinessModel = "claude-haiku-4-5-20251001"
 // and comes from the environment only - never logged. Model selects the
 // classifier model.
 type CheckWorthiness struct {
+	LLMSelection
 	Enabled bool
 	APIKey  string
 	Model   string
@@ -678,14 +748,18 @@ type CheckWorthiness struct {
 // configuration degrades to the heuristic-only gate rather than failing to
 // start.
 func (c CheckWorthiness) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadCheckWorthiness reads the model check-worthiness configuration from the
 // environment, applying defaults. The secret is read but never logged.
 func LoadCheckWorthiness() (CheckWorthiness, error) {
 	c := CheckWorthiness{Model: defaultCheckWorthinessModel}
-	var err error
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return CheckWorthiness{}, err
+	}
+	c.LLMSelection = llmSel
 	if c.Enabled, err = boolEnv("CHECKWORTHINESS_ENABLED"); err != nil {
 		return CheckWorthiness{}, err
 	}
@@ -759,6 +833,94 @@ func LoadPolitical() (Political, error) {
 		return Political{}, err
 	}
 	return Political{Enabled: enabled, RouterMinResults: minResults}, nil
+}
+
+// CrawlAlerts holds the ingestion-fleet Slack alerting configuration. WebhookURL
+// is the Slack incoming-webhook crawl runs announce themselves to; it is a secret
+// sourced from the environment only and never logged. Empty disables alerting, so
+// local runs without Slack are unaffected.
+type CrawlAlerts struct {
+	WebhookURL string
+}
+
+// Active reports whether crawl alerts should post to Slack: it has a webhook URL.
+// The notifier wiring keys off this so an unset URL degrades to a silent no-op
+// rather than failing to start.
+func (c CrawlAlerts) Active() bool {
+	return c.WebhookURL != ""
+}
+
+// LoadCrawlAlerts reads the ingestion-fleet Slack alerting configuration from the
+// environment. SLACK_WEBHOOK_URL is optional: when unset, alerting is a silent
+// no-op. It carries the webhook secret, so it is never logged.
+func LoadCrawlAlerts() CrawlAlerts {
+	return CrawlAlerts{WebhookURL: os.Getenv("SLACK_WEBHOOK_URL")}
+}
+
+// Scheduler defaults. Each source defaults DISABLED with a daily off-peak cron, so
+// the always-on scheduler service idles on a plain `docker compose up` and never
+// starts paid ingestion until an operator opts a source in with
+// SCHEDULE_<SOURCE>_ENABLED=true - the same cost-safety convention the paid wiki
+// profiles follow. The jitter spreads concurrently-due sources to avoid a
+// thundering herd on the shared broker and upstream APIs.
+const (
+	defaultWikipediaCron  = "0 3 * * *"  // 03:00 daily
+	defaultFactcheckCron  = "0 4 * * *"  // 04:00 daily
+	defaultScrutinsCron   = "30 4 * * *" // 04:30 daily
+	defaultScheduleJitter = 30 * time.Second
+	maxScheduleJitter     = time.Hour
+)
+
+// ScheduleSource is one source's scheduling configuration: whether it is enabled
+// and the cron spec it fires on. The cron spec is validated by the scheduler at
+// startup, so a malformed spec fails fast.
+type ScheduleSource struct {
+	Enabled bool
+	Cron    string
+}
+
+// Schedule holds the ingestion fleet's per-source scheduling configuration plus the
+// shared jitter. It is read from the environment only; an invalid cron spec is
+// rejected when the scheduler parses it at startup, and an invalid jitter is
+// rejected here.
+type Schedule struct {
+	Wikipedia ScheduleSource
+	Factcheck ScheduleSource
+	Scrutins  ScheduleSource
+	Jitter    time.Duration
+}
+
+// LoadSchedule reads the scheduler configuration from the environment. Each source
+// defaults disabled; SCHEDULE_<SOURCE>_ENABLED=true opts it in and
+// SCHEDULE_<SOURCE>_CRON overrides its daily-default cadence. SCHEDULE_JITTER bounds
+// the random per-run spread (default 30s, capped at 1h). A bad boolean or jitter
+// fails fast; a bad cron spec is caught by the scheduler when it parses the
+// registry.
+func LoadSchedule() (Schedule, error) {
+	wikiEnabled, err := boolEnv("SCHEDULE_WIKIPEDIA_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+	factcheckEnabled, err := boolEnv("SCHEDULE_FACTCHECK_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+	scrutinsEnabled, err := boolEnv("SCHEDULE_SCRUTINS_ENABLED")
+	if err != nil {
+		return Schedule{}, err
+	}
+
+	jitter, err := boundedDurationEnv("SCHEDULE_JITTER", defaultScheduleJitter, maxScheduleJitter)
+	if err != nil {
+		return Schedule{}, err
+	}
+
+	return Schedule{
+		Wikipedia: ScheduleSource{Enabled: wikiEnabled, Cron: getenv("SCHEDULE_WIKIPEDIA_CRON", defaultWikipediaCron)},
+		Factcheck: ScheduleSource{Enabled: factcheckEnabled, Cron: getenv("SCHEDULE_FACTCHECK_CRON", defaultFactcheckCron)},
+		Scrutins:  ScheduleSource{Enabled: scrutinsEnabled, Cron: getenv("SCHEDULE_SCRUTINS_CRON", defaultScrutinsCron)},
+		Jitter:    jitter,
+	}, nil
 }
 
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
@@ -1163,6 +1325,10 @@ const (
 	// publishes curated-claim jobs to, kept separate from the wiki crawl and
 	// embedding queues so the fact-check worker never consumes a wiki chunk.
 	defaultFactCheckQueueName = "factcheck.claims"
+	// defaultScrutinsQueueName is the base queue the scrutins-archive producer
+	// publishes per-scrutin jobs to, kept separate from every other queue so the
+	// scrutins worker never consumes a wiki chunk or curated claim.
+	defaultScrutinsQueueName = "scrutins.votes"
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -1220,6 +1386,15 @@ func LoadCrawlQueue() (Queue, error) {
 // with the wiki crawl or dump-pipeline fleets.
 func LoadFactCheckQueue() (Queue, error) {
 	return loadQueue("RABBITMQ_FACTCHECK_QUEUE", defaultFactCheckQueueName)
+}
+
+// LoadScrutinsQueue reads the scrutins-archive broker configuration. It shares
+// the broker URL, priority, prefetch, and version machinery with LoadQueue but
+// binds to its own base queue name (RABBITMQ_SCRUTINS_QUEUE, default
+// scrutins.votes), so the scrutins producer and worker never share a queue with
+// the wiki crawl, fact-check, or dump-pipeline fleets.
+func LoadScrutinsQueue() (Queue, error) {
+	return loadQueue("RABBITMQ_SCRUTINS_QUEUE", defaultScrutinsQueueName)
 }
 
 // loadQueue reads the broker configuration, taking the base queue name from
@@ -1356,6 +1531,16 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 // defaults. Only the env prefix differs from LoadEmbedWorker.
 func LoadCrawlWorker() (EmbedWorker, error) {
 	return loadWorkerCommon("CRAWL_WORKER", defaultWorker())
+}
+
+// LoadScrutinsWorker reads the scrutins-worker configuration (SCRUTINS_WORKER_*).
+// It reuses the EmbedWorker shape and shared defaults for concurrency, attempts,
+// and pacing; the scrutins worker parses and upserts a scrutin per job and never
+// embeds, so it reads only Concurrency and MaxAttempts (the HTTP-timeout and
+// embed-retry fields keep their defaults and are unused). Only the env prefix
+// differs from LoadEmbedWorker.
+func LoadScrutinsWorker() (EmbedWorker, error) {
+	return loadWorkerCommon("SCRUTINS_WORKER", defaultWorker())
 }
 
 // defaultWorker is the worker configuration before any environment override.
@@ -1585,6 +1770,7 @@ const (
 // RPM (0 = unpaced) caps the per-producer Anthropic call rate. APIKey is a secret
 // read from CHECKWORTHY_API_KEY and never logged.
 type CrawlCheckworthy struct {
+	LLMSelection
 	Enabled     bool
 	APIKey      string
 	Model       string
@@ -1596,7 +1782,7 @@ type CrawlCheckworthy struct {
 // guarantees an enabled gate carries a key, so this is true exactly when the gate
 // is on; callers pass a nil gate to the producer when it is false.
 func (c CrawlCheckworthy) Active() bool {
-	return c.Enabled && c.APIKey != ""
+	return c.Enabled && c.hasKey(c.APIKey)
 }
 
 // LoadCrawlCheckworthy reads the crawl fact-checkability gate configuration.
@@ -1609,9 +1795,19 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 	if err != nil {
 		return CrawlCheckworthy{}, err
 	}
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return CrawlCheckworthy{}, err
+	}
 	apiKey := getenv("CHECKWORTHY_API_KEY", "")
-	if enabled && apiKey == "" {
-		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but CHECKWORTHY_API_KEY is not set")
+	// The crawl gate needs the selected provider's key when on. Under Gemini the
+	// key is GEMINI_API_KEY; otherwise CHECKWORTHY_API_KEY (the Anthropic key).
+	providerKey := apiKey
+	if llmSel.Provider == LLMProviderGemini {
+		providerKey = llmSel.GeminiAPIKey
+	}
+	if enabled && providerKey == "" {
+		return CrawlCheckworthy{}, fmt.Errorf("config: CRAWL_CHECKWORTHY is on but no API key is set for provider %q", llmSel.Provider)
 	}
 
 	concurrency, err := intEnv("CRAWL_CHECKWORTHY_CONCURRENCY", defaultCrawlCheckworthyConcurrency, 1, math.MaxInt32)
@@ -1624,11 +1820,12 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 	}
 
 	return CrawlCheckworthy{
-		Enabled:     enabled,
-		APIKey:      apiKey,
-		Model:       getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
-		Concurrency: concurrency,
-		RPM:         rpm,
+		LLMSelection: llmSel,
+		Enabled:      enabled,
+		APIKey:       apiKey,
+		Model:        getenv("CRAWL_CHECKWORTHY_MODEL", defaultCrawlCheckworthyModel),
+		Concurrency:  concurrency,
+		RPM:          rpm,
 	}, nil
 }
 
@@ -1680,6 +1877,52 @@ func LoadFactCheckArchive() (FactCheckArchive, error) {
 		Queries:  queries,
 		Language: getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
 		MaxPages: maxPages,
+	}, nil
+}
+
+// scrutins-archive defaults. Legislature 17 is the current National Assembly
+// term; the marker file persists the conditional-GET validators between runs so
+// an unchanged archive is skipped, defaulting under a state dir the operator can
+// mount as a volume to survive container restarts.
+const (
+	defaultScrutinsLegislature = "17"
+	defaultScrutinsMarkerPath  = "/state/scrutins-marker.json"
+)
+
+// scrutinsLegislatureRe matches an AN legislature number, interpolated into the
+// archive URL. Only a bare positive integer is valid: anything else would build
+// a dead download URL or, worse, a path-traversal segment.
+var scrutinsLegislatureRe = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// ScrutinsArchive configures the scrutins-archive producer that conditionally
+// downloads the AN open-data Scrutins.json.zip and publishes one job per scrutin.
+// Legislature is the AN legislature number interpolated into the archive URL;
+// MarkerPath is where the conditional-GET validators (ETag/Last-Modified) persist
+// between runs so an unchanged archive does no redundant work (empty disables the
+// skip). It carries no secret: the archive is public open data and the broker URL
+// loads from LoadScrutinsQueue.
+type ScrutinsArchive struct {
+	Legislature string
+	MarkerPath  string
+}
+
+// LoadScrutinsArchive reads the scrutins-archive producer configuration from the
+// environment. SCRUTINS_LEGISLATURE defaults to 17 and must be a bare positive
+// integer (it is interpolated into the download URL); SCRUTINS_MARKER_PATH
+// defaults to a state file and may be set empty to disable the unchanged-archive
+// skip. Bad values fail fast at startup rather than building a dead URL.
+func LoadScrutinsArchive() (ScrutinsArchive, error) {
+	legislature := getenv("SCRUTINS_LEGISLATURE", defaultScrutinsLegislature)
+	if !scrutinsLegislatureRe.MatchString(legislature) {
+		return ScrutinsArchive{}, fmt.Errorf("config: SCRUTINS_LEGISLATURE %q must be a positive integer", legislature)
+	}
+	markerPath := defaultScrutinsMarkerPath
+	if raw, ok := os.LookupEnv("SCRUTINS_MARKER_PATH"); ok {
+		markerPath = raw
+	}
+	return ScrutinsArchive{
+		Legislature: legislature,
+		MarkerPath:  markerPath,
 	}, nil
 }
 

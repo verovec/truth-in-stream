@@ -41,16 +41,10 @@ CRAWL_SHARDS ?= 1
 # Worker count for the fact-check-archive consumer fleet (`make factcheck-workers`).
 FACTCHECKWORKER_REPLICAS ?= 2
 
-# Knobs for `make digest`. MODE empty (default) posts the Block Kit digest to
-# SLACK_DIGEST_WEBHOOK_URL; MODE=terminal prints the full untruncated report to
-# stdout; MODE=dry-run prints the Slack JSON without posting. EPIC=VER-93 recaps
-# a finished epic instead of the daily window. Both map to the cmd/digest flags
-# of the same name, e.g. `make digest EPIC=VER-93 MODE=dry-run`.
-MODE ?=
-EPIC ?=
-DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
+# Worker count for the scrutins-archive consumer fleet (`make scrutins-workers`).
+SCRUTINSWORKER_REPLICAS ?= 2
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers prime migrate logs ps digest
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -161,6 +155,14 @@ factcheck-workers: ## Start N fact-check-archive consumers that drain the fact-c
 factcheck-crawl: ## Run the fact-check-archive producer: read already-checked French claims from the Google Fact Check Tools API for FACTCHECK_QUERIES and publish curated-claim jobs, then exit (DB-free). Requires FACTCHECK_API_KEY and FACTCHECK_QUERIES (e.g. `make factcheck-crawl FACTCHECK_QUERIES="retraites,chômage"`); the factcheckworker fleet embeds and upserts them. Reuses a fleet from `make factcheck-workers`, or brings up the broker and one worker
 	@$(COMPOSE) --profile factcheck ps -q rabbitmq | grep -q . || $(COMPOSE) --profile factcheck up rabbitmq factcheckworker
 	$(COMPOSE) --profile tools run --rm --no-deps factcheckcrawl
+
+scrutins-workers: ## Start N scrutins consumers that drain the scrutins queue into the voting store (SCRUTINSWORKER_REPLICAS=2, overridable). Run `make scrutins-crawl` afterwards to fill the queue; the running fleet drains it. No API key (parse + upsert only), opt-in (scrutins profile)
+	$(COMPOSE) --profile scrutins up --scale scrutinsworker=$(SCRUTINSWORKER_REPLICAS) rabbitmq scrutinsworker
+	@echo "scrutins fleet up: rabbitmq + $(SCRUTINSWORKER_REPLICAS) scrutinsworker(s) running; run 'make scrutins-crawl' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
+
+scrutins-crawl: ## Run the scrutins-archive producer: conditionally download the Assemblee Nationale Scrutins.json.zip (skipped when unchanged via a persisted ETag/Last-Modified marker), discover each scrutin, and publish one job per scrutin, then exit (DB-free). No required env (SCRUTINS_LEGISLATURE defaults to 17); the scrutinsworker fleet parses and upserts them. Reuses a fleet from `make scrutins-workers`, or brings up the broker and one worker
+	@$(COMPOSE) --profile scrutins ps -q rabbitmq | grep -q . || $(COMPOSE) --profile scrutins up rabbitmq scrutinsworker
+	$(COMPOSE) --profile tools run --rm --no-deps scrutinscrawl
 
 # Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
 # the producer does not reconcile (shrink) it; otherwise bring up the broker and

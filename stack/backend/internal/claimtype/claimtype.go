@@ -24,8 +24,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
@@ -109,11 +107,14 @@ const systemPrompt = "Tu classes une affirmation politique française dans exact
 	"Une promesse ou une opinion ne doit jamais être classée comme un type vérifiable. " +
 	"Enregistre ta décision avec l'outil record_claim_type."
 
-// Config wires a Client. APIKey is required and comes from the environment only;
-// Model defaults to defaultModel when empty.
+// Config wires a Client. Provider selects the LLM backend (default Anthropic);
+// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
+// only; Model defaults to defaultModel when empty.
 type Config struct {
-	APIKey string
-	Model  string
+	Provider     llm.ProviderName
+	APIKey       string
+	GeminiAPIKey string
+	Model        string
 }
 
 // Client is the Anthropic-backed claim-type classifier adapter.
@@ -125,12 +126,17 @@ type Client struct {
 // off upstream when unconfigured, so reaching here without a key is a wiring
 // error). Extra request options (e.g. a test base URL) are forwarded to the
 // shared transport, so a caller can point the client at a fake server.
-func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
+func New(cfg Config, opts ...llm.Option) (*Client, error) {
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
 	}
-	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	client, err := llm.NewClient(llm.Config{
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		GeminiAPIKey: cfg.GeminiAPIKey,
+		Model:        model,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("claimtype: %w", err)
 	}

@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
 // modelGateToolResponse fakes the Anthropic Messages response the real
@@ -53,7 +53,7 @@ func modelGate(t *testing.T, verdict bool) *Gate {
 
 	model, err := checkworthy.New(
 		checkworthy.Config{APIKey: "test-key"},
-		option.WithBaseURL(server.URL), option.WithMaxRetries(0),
+		llm.WithBaseURL(server.URL), llm.WithMaxRetries(0),
 	)
 	if err != nil {
 		t.Fatalf("checkworthy.New: %v", err)
