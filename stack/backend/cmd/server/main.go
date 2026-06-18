@@ -94,6 +94,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	debugFactCheck, err := config.LoadDebugFactCheck()
+	if err != nil {
+		return err
+	}
 	authCfg, err := config.LoadAuth()
 	if err != nil {
 		return err
@@ -240,7 +244,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugSearch, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, auth, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

@@ -141,12 +141,21 @@ export type ClaimsFrame = {
 // of the manipulation vocabulary that applies. Both are absent on the
 // credibility-only path, so a flag-off frame keeps the legacy shape; verdict
 // (derived from literal on the backend) is present on both paths.
+//
+// sourceLabel is the French publisher of the verdict's winning citation (INSEE,
+// Wikipédia, Assemblée nationale, ...), distinct from source (the verdict's
+// curated|verified origin); sourceUrl links it. Both are absent for a
+// knowledge-only or curated-borrow verdict that names no provider, so the chip
+// is then omitted. matches is the operator evidence detail, present only when
+// DEBUG_FACT_CHECK is on.
 export type ClaimResultFrame = {
   type: "claim_result";
   id: string;
   claimId: string;
   status: ClaimStatus;
   source?: VerdictSource;
+  sourceLabel?: string;
+  sourceUrl?: string;
   verdict?: ClaimVerdict;
   literal?: LiteralVerdict;
   flags?: ManipulationFlag[];
@@ -225,6 +234,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+// isHttpUrl reports whether value is a non-empty http(s) URL, the only schemes
+// safe to place in a rendered href; it rejects anything else so a malformed
+// frame cannot smuggle a javascript:/data: link into the source chip.
+function isHttpUrl(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (value.startsWith("https://") || value.startsWith("http://"))
+  );
 }
 
 /**
@@ -368,6 +387,14 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     }
     if (typeof value.rationale === "string" && value.rationale.length > 0) {
       frame.rationale = value.rationale;
+    }
+    if (typeof value.source_label === "string" && value.source_label.length > 0) {
+      frame.sourceLabel = value.source_label;
+    }
+    if (isHttpUrl(value.source_url)) {
+      // The label links this url, so only an http(s) source is accepted; a
+      // javascript:/data: scheme on a malformed frame is dropped, not rendered.
+      frame.sourceUrl = value.source_url;
     }
     if (Array.isArray(value.matches)) {
       frame.matches = (value.matches as MatchWire[]).map(normalizeMatch);

@@ -79,6 +79,36 @@ describe("normalizeSegment", () => {
     ]);
   });
 
+  test("carries the real publisher on a routed source-pack evidence match", () => {
+    const segment = normalizeSegment({
+      start: 0,
+      end: 4,
+      text: "le chômage a baissé",
+      matches: [
+        {
+          kind: "evidence",
+          claim: "taux de chômage 7,5 %",
+          sources: [{ title: "INSEE", url: "https://insee.fr/x" }],
+          similarity: 1,
+          evidence_id: "insee:CHOM:0",
+          contribution: 0.5,
+        },
+      ],
+    });
+
+    expect(segment.matches).toEqual([
+      {
+        kind: "evidence",
+        excerpt: "taux de chômage 7,5 %",
+        article: { title: "Wikipedia", url: "https://www.wikipedia.org" },
+        sources: [{ title: "INSEE", url: "https://insee.fr/x" }],
+        similarity: 1,
+        evidenceId: "insee:CHOM:0",
+        contribution: 0.5,
+      },
+    ]);
+  });
+
   test("keeps a malformed evidence match as evidence, never a fabricated verdict", () => {
     const segment = normalizeSegment({
       start: 0,

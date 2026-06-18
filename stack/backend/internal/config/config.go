@@ -370,6 +370,19 @@ type DebugSearch struct {
 	Timeout time.Duration
 }
 
+// LoadDebugFactCheck reports whether the operator fact-check detail view is
+// enabled, gated by DEBUG_FACT_CHECK (default off), mirroring how
+// DEBUG_WIKI_SEARCH gates the wiki-search probe. When off, the live per-claim
+// result frame carries only the source label and omits the per-passage evidence
+// detail, so the detailed payload is never emitted in production.
+func LoadDebugFactCheck() (bool, error) {
+	enabled, err := boolEnv("DEBUG_FACT_CHECK")
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
 // LoadDebugSearch reads the developer wiki-search configuration from the
 // environment. DEBUG_WIKI_SEARCH gates the whole feature (default off);
 // DEBUG_WIKI_SEARCH_TOP_K and DEBUG_WIKI_SEARCH_TIMEOUT tune it when enabled.

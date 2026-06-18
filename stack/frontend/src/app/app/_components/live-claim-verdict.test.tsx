@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import type { SegmentMatch } from "@/lib/fact-check/api";
 import type { LiveClaim } from "@/lib/live/claims";
@@ -20,6 +20,19 @@ const evidenceMatch = (): SegmentMatch => ({
   excerpt: "un extrait de contexte",
   article: { title: "Chômage en France", url: "https://fr.wikipedia.org/wiki/x" },
   similarity: 0.7,
+});
+
+// A routed source-pack passage: kind "evidence" but with a real publisher and
+// no genuine article, as the political path emits for INSEE / voting / press.
+const sourcePackMatch = (
+  overrides: Partial<Extract<SegmentMatch, { kind: "evidence" }>> = {},
+): SegmentMatch => ({
+  kind: "evidence",
+  excerpt: "taux de chômage 7,5 %",
+  article: { title: "Wikipedia", url: "https://www.wikipedia.org" },
+  sources: [{ title: "INSEE", url: "https://insee.fr/chomage" }],
+  similarity: 1,
+  ...overrides,
 });
 
 const verified = (overrides: Partial<LiveClaim> = {}): LiveClaim => ({
@@ -129,5 +142,94 @@ describe("VerifiedClaim primary source", () => {
     const source = screen.getByLabelText("Source principale");
     expect(within(source).getByRole("link", { name: /INSEE/ })).toBeInTheDocument();
     expect(within(source).getByText(/le chômage est à 7,5 %/)).toBeInTheDocument();
+  });
+});
+
+describe("VerifiedClaim source label chip", () => {
+  test("renders the provider label and links the source url", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({
+          verdict: "credible",
+          sourceLabel: "INSEE",
+          sourceUrl: "https://insee.fr/x",
+        })}
+      />,
+    );
+    const chip = screen.getByLabelText("Source : INSEE");
+    expect(chip).toHaveAttribute("href", "https://insee.fr/x");
+  });
+
+  test("renders the label as plain text when no url is present", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({ verdict: "credible", sourceLabel: "Wikipédia" })}
+      />,
+    );
+    const chip = screen.getByLabelText("Source : Wikipédia");
+    expect(chip).toBeInTheDocument();
+    expect(chip).not.toHaveAttribute("href");
+  });
+
+  test("renders no source chip for a knowledge-only verdict with no label", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({ verdict: "unverifiable", basis: "knowledge" })}
+      />,
+    );
+    expect(screen.queryByLabelText(/^Source : /)).not.toBeInTheDocument();
+  });
+
+  test("keeps the provider chip distinct from the curated/verified origin tag", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({
+          verdict: "credible",
+          source: "verified",
+          sourceLabel: "INSEE",
+          sourceUrl: "https://insee.fr/x",
+        })}
+      />,
+    );
+    expect(screen.getByText("vérifié sur preuves")).toBeInTheDocument();
+    expect(screen.getByLabelText("Source : INSEE")).toBeInTheDocument();
+  });
+
+  test("shows the evidence id and contribution in the operator detail panel", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({
+          verdict: "credible",
+          sourceLabel: "INSEE",
+          matches: [
+            claimMatch({ evidenceId: "insee:CHOM:0", contribution: 0.42 }),
+          ],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Voir le détail" }));
+    expect(screen.getByText("insee:CHOM:0")).toBeInTheDocument();
+    expect(screen.getByText(/contribution 0\.42/)).toBeInTheDocument();
+  });
+
+  test("credits the real publisher for a routed source-pack citation, not Wikipedia", () => {
+    render(
+      <VerifiedClaim
+        claim={verified({
+          verdict: "credible",
+          sourceLabel: "INSEE",
+          matches: [sourcePackMatch({ evidenceId: "insee:CHOM:0" })],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Voir le détail" }));
+    const links = screen.getAllByRole("link", { name: "INSEE" });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "https://insee.fr/chomage");
+    }
+    expect(
+      screen.queryByRole("link", { name: /Wikipedia/ }),
+    ).not.toBeInTheDocument();
   });
 });
