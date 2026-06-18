@@ -15,16 +15,14 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
 
-// goldenPath is the committed eval set the harness and the gate run over.
+// goldenPath is the committed French political eval set the harness and the gate
+// run over.
 const goldenPath = "testdata/golden.json"
 
-// legacyFloor is the corroboration similarity floor the legacy path used to
-// decide a statement had enough support to surface. Every adversarial case is
-// authored above it, which is the point: the old path surfaced those strong
-// topical hits as support though the evidence refuted or did not bear on the
-// claim. It is deliberately permissive so the baseline is the real old-path
-// behavior, not a strawman.
-const legacyFloor = 0.5
+// politicalToolName is the tool the two-axis verifier forces; the fake server must
+// answer under this name or the shared llm transport rejects the response. It
+// mirrors the verify package's unexported politicalToolName constant.
+const politicalToolName = "record_assessment"
 
 // messagesRequest is the slice of the Anthropic Messages request body the fake
 // server reads: just the user message text blocks, enough to recover the claim.
@@ -37,11 +35,12 @@ type messagesRequest struct {
 	} `json:"messages"`
 }
 
-// recordedModelServer is a fake Anthropic Messages server that replays each
-// golden case's recorded verifier tool call. It maps an incoming request to a
+// recordedModelServer is a fake Anthropic Messages server that replays each golden
+// case's recorded two-axis verifier tool call. It maps an incoming request to a
 // case by finding the case whose statement appears as the "Claim:" line in the
-// user message (verify.buildPrompt renders it there), so the verify path runs
-// end to end against deterministic, per-claim model output with no network.
+// user message (verify.buildPrompt renders it there, shared by the political
+// path), so the political path runs end to end against deterministic, per-claim
+// model output with no network.
 func recordedModelServer(t *testing.T, g Golden) *httptest.Server {
 	t.Helper()
 	byStatement := make(map[string]Case, len(g.Cases))
@@ -109,17 +108,22 @@ func matchCase(user string, byStatement map[string]Case) (Case, bool) {
 }
 
 // toolUseResponse builds a minimal valid Messages response carrying one forced
-// record_verdict tool call with the recorded verdict, matching the shape the
-// verify package's own tests use.
+// record_assessment tool call with the recorded two-axis verdict, matching the
+// shape the verify package's own political tests use.
 func toolUseResponse(t *testing.T, mv ModelVerdict) string {
 	t.Helper()
 	citations := make([]map[string]any, 0, len(mv.Citations))
 	for _, c := range mv.Citations {
 		citations = append(citations, map[string]any{"evidence_id": c.EvidenceID, "quoted_span": c.QuotedSpan})
 	}
+	flags := mv.Flags
+	if flags == nil {
+		flags = []string{}
+	}
 	input, err := json.Marshal(map[string]any{
-		"verdict":    mv.Verdict,
+		"literal":    mv.Literal,
 		"basis":      mv.Basis,
+		"flags":      flags,
 		"confidence": mv.Confidence,
 		"citations":  citations,
 		"rationale":  mv.Rationale,
@@ -133,7 +137,7 @@ func toolUseResponse(t *testing.T, mv ModelVerdict) string {
 		"role":  "assistant",
 		"model": "claude-haiku-4-5-20251001",
 		"content": []map[string]any{
-			{"type": "tool_use", "id": "toolu_eval", "name": "record_verdict", "input": json.RawMessage(input)},
+			{"type": "tool_use", "id": "toolu_eval", "name": politicalToolName, "input": json.RawMessage(input)},
 		},
 		"stop_reason": "tool_use",
 		"usage":       map[string]any{"input_tokens": 10, "output_tokens": 5},
@@ -145,8 +149,8 @@ func toolUseResponse(t *testing.T, mv ModelVerdict) string {
 }
 
 // newVerifier points a real verify.Client at the fake recorded-model server, so
-// the verify path is exercised end to end (request shaping, forced tool call,
-// decode, citation guard) without the network.
+// the political path is exercised end to end (request shaping, forced tool call,
+// decode, citation and flag guard) without the network.
 func newVerifier(t *testing.T, g Golden) *verify.Client {
 	t.Helper()
 	srv := recordedModelServer(t, g)
@@ -166,22 +170,43 @@ func TestLoadGoldenSet(t *testing.T) {
 	if len(g.Cases) < 30 {
 		t.Fatalf("golden set has %d cases, want at least 30", len(g.Cases))
 	}
-	// The set must exercise all three labels and carry adversarial
-	// same-topic-opposite-truth cases, the regression's whole point.
-	labels := map[string]int{}
+
+	// The set must exercise all three literal labels, every claim type, every
+	// manipulation flag at least once, and carry the adversarial true-but-misleading
+	// and same-topic-opposite-truth cases, the regression's whole point.
+	literals := map[string]int{}
+	flagSeen := map[string]int{}
+	typeSeen := map[string]int{}
 	adversarial := 0
 	for _, c := range g.Cases {
-		labels[c.Expected]++
+		literals[c.ExpectedLiteral]++
+		typeSeen[c.ClaimType]++
+		for _, f := range c.ExpectedFlags {
+			flagSeen[f]++
+		}
 		if c.Adversarial {
 			adversarial++
 		}
 		if strings.TrimSpace(c.Provenance) == "" {
-			t.Errorf("case %q has no provenance for its label", c.ID)
+			t.Errorf("case %q has no provenance for its labels", c.ID)
+		}
+		if strings.TrimSpace(c.ClaimType) == "" {
+			t.Errorf("case %q has no claim_type", c.ID)
 		}
 	}
-	for _, label := range []string{VerdictCredible, VerdictDisputed, VerdictUnverifiable} {
-		if labels[label] == 0 {
+	for _, label := range []string{LiteralAccurate, LiteralInaccurate, LiteralUnverifiable} {
+		if literals[label] == 0 {
 			t.Errorf("golden set carries no %q case", label)
+		}
+	}
+	for _, flag := range []string{FlagMissingContext, FlagCherryPicked, FlagOutdated, FlagMisattributed, FlagMisleadingCausation} {
+		if flagSeen[flag] == 0 {
+			t.Errorf("golden set never exercises the %q flag", flag)
+		}
+	}
+	for _, ct := range []string{"statistic", "voting-record", "attribution", "causal", "comparative", "opinion"} {
+		if typeSeen[ct] == 0 {
+			t.Errorf("golden set never exercises the %q claim type", ct)
 		}
 	}
 	if adversarial < 5 {
@@ -189,21 +214,24 @@ func TestLoadGoldenSet(t *testing.T) {
 	}
 }
 
-// baselineAccuracy is the recorded legacy similarity-only accuracy over the
-// committed golden set (16/38 = 0.42), the gate the verify path must meet or
-// beat. The legacy path scores every credible case right (a strong hit reads as
-// credible), every disputed/unverifiable case with a strong topical hit wrong (it
-// still reads similarity as credible), and the one case with no retrievable
-// evidence right (nothing clears the floor, so it reports unverifiable). Recorded
-// here so a fixture change that shifts the baseline is a visible, reviewed diff
-// rather than a silent gate move.
-const baselineAccuracy = 0.42
+// baselineLiteralAccuracy is the recorded two-axis literal accuracy of the
+// political verify path over the committed golden set, replaying the recorded
+// model output through the real verify.Client and its real citation/flag guard. It
+// is the regression floor: the gate fails if a wiring or guard change drops literal
+// accuracy below it. Recorded here so a fixture change that shifts the baseline is a
+// visible, reviewed diff rather than a silent gate move.
+const baselineLiteralAccuracy = 1.00
 
-// TestGoldenEvalAccuracyGate is the regression gate: it runs both paths over the
-// committed golden set and asserts the verify path is at least as accurate as the
-// recorded legacy baseline. It is deterministic - the verify path replays
-// recorded model output through the real client and citation guard - and needs no
-// external API or database, so it runs in CI as an ordinary Go test.
+// baselineFlagAccuracy is the recorded fraction of cases whose surviving flag set
+// exactly matched the expected flag set, the regression floor on the second axis.
+const baselineFlagAccuracy = 1.00
+
+// TestGoldenEvalAccuracyGate is the regression gate: it runs the two-axis political
+// path over the committed French golden set and asserts both the literal verdict
+// accuracy and the flag accuracy stay at or above the recorded baseline. It is
+// deterministic - the path replays recorded model output through the real client
+// and citation/flag guard - and needs no external API or database, so it runs in CI
+// as an ordinary Go test.
 func TestGoldenEvalAccuracyGate(t *testing.T) {
 	t.Parallel()
 	g, err := LoadGolden(filepath.Clean(goldenPath))
@@ -211,34 +239,108 @@ func TestGoldenEvalAccuracyGate(t *testing.T) {
 		t.Fatalf("LoadGolden: %v", err)
 	}
 
-	legacy := RunLegacy(g, legacyFloor)
 	v := newVerifier(t, g)
-	verifyRep, err := RunVerify(context.Background(), v, g)
+	rep, err := RunPolitical(context.Background(), v, g)
 	if err != nil {
-		t.Fatalf("RunVerify: %v", err)
+		t.Fatalf("RunPolitical: %v", err)
 	}
 
-	t.Logf("\n%s\n%s", legacy.Format("legacy similarity path"), verifyRep.Format("retrieve-then-verify path"))
+	t.Logf("\n%s", rep.Format("political two-axis path"))
 
-	// The recorded baseline must match the legacy path's measured accuracy, so the
-	// gate cannot silently drift if the fixture changes.
-	if got := round2(legacy.Accuracy()); got != baselineAccuracy {
-		t.Fatalf("legacy baseline accuracy = %.2f, recorded baselineAccuracy = %.2f; update the constant in the same reviewed change as the fixture", got, baselineAccuracy)
+	if got := round2(rep.LiteralAccuracy()); got < baselineLiteralAccuracy {
+		t.Fatalf("literal accuracy %.2f below recorded baseline %.2f: gate failed; %s",
+			got, baselineLiteralAccuracy, rep.Format("political two-axis path"))
 	}
-
-	if verifyRep.Accuracy() < legacy.Accuracy() {
-		t.Fatalf("verify path accuracy %.2f below legacy baseline %.2f: gate failed", verifyRep.Accuracy(), legacy.Accuracy())
-	}
-
-	// The verify path must clear the adversarial cases the baseline gets wrong, the
-	// concrete evidence the redesign fixed the similarity-is-not-entailment bug.
-	if verifyRep.Accuracy() <= legacy.Accuracy() {
-		t.Fatalf("verify path accuracy %.2f only ties the baseline %.2f: the eval set is not exercising the improvement", verifyRep.Accuracy(), legacy.Accuracy())
+	if got := round2(rep.FlagAccuracy()); got < baselineFlagAccuracy {
+		t.Fatalf("flag accuracy %.2f below recorded baseline %.2f: gate failed; %s",
+			got, baselineFlagAccuracy, rep.Format("political two-axis path"))
 	}
 }
 
 // round2 rounds an accuracy to two decimals so the recorded baseline constant can
-// be compared exactly against the measured value without float noise.
+// be compared against the measured value without float noise.
 func round2(f float64) float64 {
 	return float64(int(f*100+0.5)) / 100
+}
+
+// TestValidateRecordedCitations asserts the load-time fixture guard rejects a
+// recorded verdict whose citations could not survive the production citation guard
+// - an unknown evidence_id, a span that is not a substring of its passage, or an
+// unverifiable verdict that records a citation - so an authoring slip is a hard
+// load error rather than a fixture that silently passes the gate on the wrong code
+// path.
+func TestValidateRecordedCitations(t *testing.T) {
+	t.Parallel()
+
+	passage := Passage{ID: "ev:0", Text: "Le taux de chômage est de 7,3%."}
+	tests := []struct {
+		name    string
+		c       Case
+		wantErr bool
+	}{
+		{
+			name: "evidence verdict with a grounding span is accepted",
+			c: Case{
+				ID:           "ok-evidence",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralAccurate, Basis: "evidence", Citations: []Citation{{EvidenceID: "ev:0", QuotedSpan: "taux de chômage est de 7,3%"}}},
+			},
+		},
+		{
+			name: "unknown evidence_id is rejected",
+			c: Case{
+				ID:           "bad-id",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralAccurate, Basis: "evidence", Citations: []Citation{{EvidenceID: "ev:missing", QuotedSpan: "taux de chômage"}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "span not a substring is rejected",
+			c: Case{
+				ID:           "bad-span",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralAccurate, Basis: "evidence", Citations: []Citation{{EvidenceID: "ev:0", QuotedSpan: "inflation à 6%"}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unverifiable with a citation is rejected",
+			c: Case{
+				ID:           "bad-unverif",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralUnverifiable, Basis: "knowledge", Citations: []Citation{{EvidenceID: "ev:0", QuotedSpan: "taux de chômage"}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unverifiable with evidence basis is rejected",
+			c: Case{
+				ID:           "bad-unverif-basis",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralUnverifiable, Basis: "evidence"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unverifiable on knowledge with no citation is accepted",
+			c: Case{
+				ID:           "ok-unverif",
+				Passages:     []Passage{passage},
+				ModelVerdict: ModelVerdict{Literal: LiteralUnverifiable, Basis: "knowledge"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateRecordedCitations(tc.c)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateRecordedCitations(%s) = nil, want error", tc.c.ID)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateRecordedCitations(%s) = %v, want nil", tc.c.ID, err)
+			}
+		})
+	}
 }

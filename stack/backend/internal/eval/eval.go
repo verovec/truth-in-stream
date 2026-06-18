@@ -1,17 +1,25 @@
-// Package eval is the offline golden-eval harness for the speaker-credibility
-// fact-check path. It turns "the verify path feels more accurate" into a number:
-// it runs a committed set of labeled statements through both the legacy
-// similarity-only path and the grounded credibility-verify path and reports
-// per-verdict accuracy, so a regression test can assert the verify path is at
+// Package eval is the offline golden-eval harness for the French political
+// two-axis fact-check path (FACTCHECK_POLITICAL). It turns "the political verify
+// path feels right" into a number: it runs a committed set of labeled French
+// political claims through the grounded two-axis verifier and reports per-literal
+// accuracy and flag accuracy, so a regression test can assert the path stays at
 // least as accurate as the recorded baseline before the flag flips on.
 //
 // The harness is deterministic and self-contained: it depends on no external
-// model API and no database. Each golden case carries the evidence passages
-// retrieval would surface and a recorded verifier tool-call, so the verify path
-// runs the real verify.Client (and its real citation guard) against a fake
-// Anthropic server keyed by claim, exercising the actual verdict-mapping wiring
-// rather than a stub. This makes the test a regression guard on that wiring and
-// on the citation/verdict logic, not on live model quality.
+// model API and no database. Each golden case carries the evidence retrieval
+// would surface and a recorded two-axis verifier tool-call, so the political
+// path runs the real verify.Client (VerifyPolitical, with its real citation and
+// flag guard) against a fake Anthropic server keyed by claim, exercising the
+// actual literal-verdict + flag wiring rather than a stub. This makes the test a
+// regression guard on that wiring and on the citation/flag logic, not on live
+// model quality.
+//
+// The production default is NOT flipped here. The offline gate measures the
+// wiring; flipping FACTCHECK_POLITICAL on the strength of a faked run alone would
+// be dishonest, because it does not measure whether live retrieval plus the live
+// Claude verifier hit the baseline on a real corpus. The real-model eval and
+// flag-flip procedure are documented in PROCEDURE.md; the default stays off until
+// that bar is met.
 package eval
 
 import (
@@ -19,61 +27,80 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
 )
 
-// Verdict labels. They mirror the verify package's credibility labels so a
-// recorded model verdict, an expected label, and a path's output all live in one
-// vocabulary.
+// Literal verdict labels. They mirror the verify package's political literal
+// labels so a recorded model verdict, an expected label, and the path's output
+// all live in one vocabulary.
 const (
-	VerdictCredible     = verify.VerdictCredible
-	VerdictDisputed     = verify.VerdictDisputed
-	VerdictUnverifiable = verify.VerdictUnverifiable
+	LiteralAccurate     = verify.LiteralAccurate
+	LiteralInaccurate   = verify.LiteralInaccurate
+	LiteralUnverifiable = verify.LiteralUnverifiable
+)
+
+// Manipulation flags. They mirror the verify package's closed flag vocabulary so
+// an expected flag set and a recorded model flag set cannot drift from the labels
+// the guard accepts.
+const (
+	FlagMissingContext      = verify.FlagMissingContext
+	FlagCherryPicked        = verify.FlagCherryPicked
+	FlagOutdated            = verify.FlagOutdated
+	FlagMisattributed       = verify.FlagMisattributed
+	FlagMisleadingCausation = verify.FlagMisleadingCausation
 )
 
 // Passage is one retrieved evidence passage for a golden case: the stable
 // evidence id a citation round-trips against, the passage text the verifier
-// reads, the cosine similarity retrieval reported for it (the legacy baseline
-// path's only signal), and Kind, the corpus the hit came from (claim or
-// evidence), recorded as fixture provenance so a reviewer can see what retrieval
-// surfaced. The verify path uses id and text; the legacy path uses similarity.
+// reads, and Kind, the corpus the hit came from (claim or evidence), recorded as
+// fixture provenance so a reviewer can see what retrieval surfaced.
 type Passage struct {
-	ID         string  `json:"id"`
-	Text       string  `json:"text"`
-	Similarity float64 `json:"similarity"`
-	Kind       string  `json:"kind"`
+	ID   string `json:"id"`
+	Text string `json:"text"`
+	Kind string `json:"kind"`
 }
 
-// ModelVerdict is the recorded verifier tool-call for a golden case: the exact
-// structured input the model would return for this claim and these passages. The
-// fake Anthropic server replays it so the verify path is deterministic; the real
-// citation guard still runs over it, so a recorded verdict whose citation does
-// not ground is downgraded by the guard exactly as in production.
+// Citation is one recorded grounding the model returned.
+type Citation struct {
+	EvidenceID string `json:"evidence_id"`
+	QuotedSpan string `json:"quoted_span"`
+}
+
+// ModelVerdict is the recorded two-axis verifier tool-call for a golden case: the
+// exact structured input the model would return for this claim and these
+// passages. The fake Anthropic server replays it so the political path is
+// deterministic; the real citation and flag guard still runs over it, so a
+// recorded verdict whose citation does not ground, or whose flag is out of
+// vocabulary, is corrected by the guard exactly as in production.
 type ModelVerdict struct {
-	Verdict    string  `json:"verdict"`
-	Basis      string  `json:"basis"`
-	Confidence float64 `json:"confidence"`
-	Citations  []struct {
-		EvidenceID string `json:"evidence_id"`
-		QuotedSpan string `json:"quoted_span"`
-	} `json:"citations"`
-	Rationale string `json:"rationale"`
+	Literal    string     `json:"literal"`
+	Basis      string     `json:"basis"`
+	Flags      []string   `json:"flags"`
+	Confidence float64    `json:"confidence"`
+	Citations  []Citation `json:"citations"`
+	Rationale  string     `json:"rationale"`
 }
 
-// Case is one labeled golden statement: the claim, the verdict the evidence
-// actually warrants (Expected), a provenance note justifying that label, the
-// retrieved passages, and the recorded model verdict. Adversarial marks the
-// same-topic-opposite-truth cases that expose the legacy similarity bug.
+// Case is one labeled French political golden statement: the claim, the literal
+// verdict the evidence actually warrants (ExpectedLiteral), the manipulation
+// flags the framing actually warrants (ExpectedFlags), the claim type the case
+// exercises, a provenance note justifying the labels, the retrieved passages, and
+// the recorded model verdict. Adversarial marks the true-but-misleading and
+// same-topic-opposite-truth cases that are the redesign's whole point.
 type Case struct {
-	ID           string       `json:"id"`
-	Statement    string       `json:"statement"`
-	Expected     string       `json:"expected"`
-	Provenance   string       `json:"provenance"`
-	Adversarial  bool         `json:"adversarial"`
-	Passages     []Passage    `json:"passages"`
-	ModelVerdict ModelVerdict `json:"model_verdict"`
+	ID              string       `json:"id"`
+	Statement       string       `json:"statement"`
+	ClaimType       string       `json:"claim_type"`
+	ExpectedLiteral string       `json:"expected_literal"`
+	ExpectedFlags   []string     `json:"expected_flags"`
+	Provenance      string       `json:"provenance"`
+	Adversarial     bool         `json:"adversarial"`
+	Passages        []Passage    `json:"passages"`
+	ModelVerdict    ModelVerdict `json:"model_verdict"`
 }
 
 // Golden is the committed eval set: a free-text note and the labeled cases.
@@ -83,9 +110,10 @@ type Golden struct {
 }
 
 // LoadGolden reads and validates the committed golden set. It fails on a missing
-// file, malformed JSON, an empty set, a duplicate id, an unknown expected label,
-// or a recorded verdict carrying an unknown label, so a fixture authoring slip is
-// a hard error rather than a silently skewed accuracy number.
+// file, malformed JSON, an empty set, a duplicate id, an unknown expected literal
+// label, an unknown expected flag, an unknown recorded literal label, or an
+// unknown recorded flag, so a fixture authoring slip is a hard error rather than a
+// silently skewed accuracy number.
 func LoadGolden(path string) (Golden, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -107,141 +135,210 @@ func LoadGolden(path string) (Golden, error) {
 			return Golden{}, fmt.Errorf("eval: duplicate case id %q", c.ID)
 		}
 		seen[c.ID] = struct{}{}
-		if !validLabel(c.Expected) {
-			return Golden{}, fmt.Errorf("eval: case %q has unknown expected verdict %q", c.ID, c.Expected)
+		if !validLiteral(c.ExpectedLiteral) {
+			return Golden{}, fmt.Errorf("eval: case %q has unknown expected literal %q", c.ID, c.ExpectedLiteral)
 		}
-		if !validLabel(c.ModelVerdict.Verdict) {
-			return Golden{}, fmt.Errorf("eval: case %q recorded verdict has unknown label %q", c.ID, c.ModelVerdict.Verdict)
+		if !validLiteral(c.ModelVerdict.Literal) {
+			return Golden{}, fmt.Errorf("eval: case %q recorded verdict has unknown literal %q", c.ID, c.ModelVerdict.Literal)
+		}
+		if err := validateFlags(c.ID, "expected", c.ExpectedFlags); err != nil {
+			return Golden{}, err
+		}
+		if err := validateFlags(c.ID, "recorded", c.ModelVerdict.Flags); err != nil {
+			return Golden{}, err
+		}
+		if err := validateRecordedCitations(c); err != nil {
+			return Golden{}, err
 		}
 	}
 	return g, nil
 }
 
-// validLabel reports whether v is one of the three first-class credibility labels.
-func validLabel(v string) bool {
-	return v == VerdictCredible || v == VerdictDisputed || v == VerdictUnverifiable
-}
-
-// LegacyVerdict is the legacy similarity-only path's verdict for one case,
-// modeled on the inputs the old path actually had: ranked matches and their
-// similarities, with no entailment step. The old path surfaced the strongest
-// match above a corroboration floor as a corroboration and otherwise reported
-// nothing settled it. It cannot tell a passage that affirms the claim from one
-// that disputes it or merely shares its topic - that is the "similarity is not
-// entailment" bug this eval exists to measure - so a strong topical hit always
-// reads as credible. With no passage clearing the floor it returns unverifiable.
-// legacyFloor is the corroboration similarity floor.
-func LegacyVerdict(c Case, legacyFloor float64) string {
-	best := -1.0
+// validateRecordedCitations rejects a recorded verdict whose citations could not
+// survive the production citation guard, so an authoring slip is a hard load error
+// rather than a fixture that silently exercises the wrong code path at the gate. It
+// enforces that every recorded citation's evidence_id resolves to a passage in the
+// same case and its quoted_span is a non-empty substring of that passage, and that
+// an unverifiable verdict carries basis knowledge with no citations (the state the
+// guard forces) so the recorded fixture matches what production would emit.
+func validateRecordedCitations(c Case) error {
+	if c.ModelVerdict.Literal == LiteralUnverifiable {
+		if c.ModelVerdict.Basis != verify.BasisKnowledge || len(c.ModelVerdict.Citations) != 0 {
+			return fmt.Errorf("eval: case %q records an unverifiable verdict that is not basis %q with no citations", c.ID, verify.BasisKnowledge)
+		}
+		return nil
+	}
+	byID := make(map[string]string, len(c.Passages))
 	for _, p := range c.Passages {
-		if p.Similarity > best {
-			best = p.Similarity
+		byID[p.ID] = p.Text
+	}
+	for _, cit := range c.ModelVerdict.Citations {
+		text, ok := byID[cit.EvidenceID]
+		if !ok {
+			return fmt.Errorf("eval: case %q cites unknown evidence_id %q", c.ID, cit.EvidenceID)
+		}
+		if cit.QuotedSpan == "" || !strings.Contains(text, cit.QuotedSpan) {
+			return fmt.Errorf("eval: case %q citation span %q is not a substring of passage %q", c.ID, cit.QuotedSpan, cit.EvidenceID)
 		}
 	}
-	if best >= legacyFloor {
-		return VerdictCredible
-	}
-	return VerdictUnverifiable
+	return nil
 }
 
-// VerifyVerdict is the credibility-verify path's verdict for one case. It mirrors
-// the live path's verifyClaim wiring: with no passages it returns unverifiable
-// without a model call (there is nothing to check against); otherwise it calls the
-// real verify.Client, which forces the recorded tool call through the fake server
-// and runs the real citation guard, so the label that comes back is exactly the
-// one the production path would emit for these passages and this recorded model
-// output.
-func VerifyVerdict(ctx context.Context, v *verify.Client, c Case) (string, error) {
+// validLiteral reports whether v is one of the three first-class literal labels.
+func validLiteral(v string) bool {
+	return v == LiteralAccurate || v == LiteralInaccurate || v == LiteralUnverifiable
+}
+
+// knownFlags is the closed manipulation-flag vocabulary, mirrored from the verify
+// package so an authoring slip in the golden set is caught at load time.
+var knownFlags = map[string]struct{}{
+	FlagMissingContext:      {},
+	FlagCherryPicked:        {},
+	FlagOutdated:            {},
+	FlagMisattributed:       {},
+	FlagMisleadingCausation: {},
+}
+
+// validateFlags reports an error if any flag is outside the closed vocabulary.
+func validateFlags(caseID, which string, flags []string) error {
+	for _, f := range flags {
+		if _, ok := knownFlags[f]; !ok {
+			return fmt.Errorf("eval: case %q %s flags carry unknown flag %q", caseID, which, f)
+		}
+	}
+	return nil
+}
+
+// Outcome is the political path's two-axis judgment of one case, reduced to the
+// two graded axes: the literal verdict and the (sorted) set of surviving
+// manipulation flags. It is what the harness scores against the case's expected
+// labels.
+type Outcome struct {
+	Literal string
+	Flags   []string
+}
+
+// PoliticalVerdict is the political verify path's outcome for one case. It mirrors
+// the live path's wiring: with no passages there is nothing to check against, so
+// it returns an unverifiable, unflagged outcome without a model call; otherwise it
+// calls the real verify.Client (VerifyPolitical), which forces the recorded tool
+// call through the fake server and runs the real citation and flag guard, so the
+// literal verdict and flags that come back are exactly the ones the production
+// path would emit for these passages and this recorded model output.
+func PoliticalVerdict(ctx context.Context, v *verify.Client, c Case) (Outcome, error) {
 	if len(c.Passages) == 0 {
-		return VerdictUnverifiable, nil
+		return Outcome{Literal: LiteralUnverifiable}, nil
 	}
 	passages := make([]verify.Passage, 0, len(c.Passages))
 	for _, p := range c.Passages {
 		passages = append(passages, verify.Passage{ID: p.ID, Text: p.Text})
 	}
-	res, err := v.Verify(ctx, c.Statement, passages)
+	res, err := v.VerifyPolitical(ctx, c.Statement, passages)
 	if err != nil {
-		return "", fmt.Errorf("eval: verify case %q: %w", c.ID, err)
+		return Outcome{}, fmt.Errorf("eval: verify case %q: %w", c.ID, err)
 	}
-	return res.Verdict, nil
+	return Outcome{Literal: res.Literal, Flags: sortedFlags(res.Flags)}, nil
 }
 
-// Report is one path's accuracy over the golden set: the overall correct count
-// and a per-label breakdown keyed by the expected label, so a regression can see
-// not just the headline number but which verdict class moved.
+// Report is the political path's accuracy over the golden set on both axes:
+// overall literal-correct and flag-correct counts plus a per-literal-label
+// breakdown, so a regression can see not just the headline numbers but which
+// verdict class moved. A case counts as flag-correct only when its surviving flag
+// set exactly equals its expected flag set, so a dropped or spurious flag is a
+// miss.
 type Report struct {
-	Total      int
-	Correct    int
-	ByExpected map[string]LabelStat
+	Total          int
+	LiteralCorrect int
+	FlagCorrect    int
+	ByLiteral      map[string]LabelStat
 }
 
-// LabelStat is the accuracy for one expected label: how many cases carried it and
-// how many the path got right.
+// LabelStat is the accuracy for one expected literal label: how many cases
+// carried it and how many the path got right on the literal axis.
 type LabelStat struct {
 	Total   int
 	Correct int
 }
 
-// Accuracy is the overall fraction correct in [0, 1]; an empty report is 0.
-func (r Report) Accuracy() float64 {
+// LiteralAccuracy is the overall fraction of cases whose literal verdict matched,
+// in [0, 1]; an empty report is 0.
+func (r Report) LiteralAccuracy() float64 {
 	if r.Total == 0 {
 		return 0
 	}
-	return float64(r.Correct) / float64(r.Total)
+	return float64(r.LiteralCorrect) / float64(r.Total)
 }
 
-// score tallies a verdict against the expected label into a report, allocating
-// the per-label map on first use.
-func (r *Report) score(expected, got string) {
-	if r.ByExpected == nil {
-		r.ByExpected = make(map[string]LabelStat)
+// FlagAccuracy is the overall fraction of cases whose surviving flag set exactly
+// matched the expected flag set, in [0, 1]; an empty report is 0.
+func (r Report) FlagAccuracy() float64 {
+	if r.Total == 0 {
+		return 0
+	}
+	return float64(r.FlagCorrect) / float64(r.Total)
+}
+
+// score tallies one case's outcome against its expected labels into the report,
+// allocating the per-label map on first use.
+func (r *Report) score(c Case, got Outcome) {
+	if r.ByLiteral == nil {
+		r.ByLiteral = make(map[string]LabelStat)
 	}
 	r.Total++
-	stat := r.ByExpected[expected]
+	stat := r.ByLiteral[c.ExpectedLiteral]
 	stat.Total++
-	if got == expected {
-		r.Correct++
+	if got.Literal == c.ExpectedLiteral {
+		r.LiteralCorrect++
 		stat.Correct++
 	}
-	r.ByExpected[expected] = stat
-}
-
-// RunLegacy scores the legacy similarity-only path over the whole set.
-func RunLegacy(g Golden, legacyFloor float64) Report {
-	var r Report
-	for _, c := range g.Cases {
-		r.score(c.Expected, LegacyVerdict(c, legacyFloor))
+	r.ByLiteral[c.ExpectedLiteral] = stat
+	if slices.Equal(got.Flags, sortedFlags(c.ExpectedFlags)) {
+		r.FlagCorrect++
 	}
-	return r
 }
 
-// RunVerify scores the retrieve-then-verify path over the whole set, driving the
+// RunPolitical scores the two-axis political path over the whole set, driving the
 // real verify.Client. It returns the first verify error so a transport or wiring
 // regression fails the eval loudly rather than counting as a wrong answer.
-func RunVerify(ctx context.Context, v *verify.Client, g Golden) (Report, error) {
+func RunPolitical(ctx context.Context, v *verify.Client, g Golden) (Report, error) {
 	var r Report
 	for _, c := range g.Cases {
-		got, err := VerifyVerdict(ctx, v, c)
+		got, err := PoliticalVerdict(ctx, v, c)
 		if err != nil {
 			return Report{}, err
 		}
-		r.score(c.Expected, got)
+		r.score(c, got)
 	}
 	return r, nil
 }
 
+// sortedFlags returns a sorted copy of the flags so two flag sets can be compared
+// order-independently. A nil or empty input yields nil, matching the verify
+// guard's honest-framing representation.
+func sortedFlags(flags []string) []string {
+	if len(flags) == 0 {
+		return nil
+	}
+	out := slices.Clone(flags)
+	slices.Sort(out)
+	return out
+}
+
 // Format renders a report as a short, stable multi-line summary for test logs:
-// the overall accuracy then each label in sorted order, so two runs diff cleanly.
+// the overall literal and flag accuracy, then each literal label in sorted order,
+// so two runs diff cleanly.
 func (r Report) Format(name string) string {
-	out := fmt.Sprintf("%s: %d/%d correct (%.1f%%)", name, r.Correct, r.Total, r.Accuracy()*100)
-	labels := make([]string, 0, len(r.ByExpected))
-	for label := range r.ByExpected {
+	out := fmt.Sprintf("%s: literal %d/%d (%.1f%%), flags %d/%d (%.1f%%)",
+		name, r.LiteralCorrect, r.Total, r.LiteralAccuracy()*100,
+		r.FlagCorrect, r.Total, r.FlagAccuracy()*100)
+	labels := make([]string, 0, len(r.ByLiteral))
+	for label := range r.ByLiteral {
 		labels = append(labels, label)
 	}
 	sort.Strings(labels)
 	for _, label := range labels {
-		s := r.ByExpected[label]
-		out += fmt.Sprintf("\n  %-16s %d/%d", label, s.Correct, s.Total)
+		s := r.ByLiteral[label]
+		out += fmt.Sprintf("\n  %-14s %d/%d", label, s.Correct, s.Total)
 	}
 	return out
 }
