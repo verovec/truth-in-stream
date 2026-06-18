@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckarchive"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 )
@@ -70,21 +71,22 @@ func run(logger *slog.Logger) error {
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("max_pages", archiveCfg.MaxPages))
 
-	var total factcheckarchive.Stats
-	for _, query := range archiveCfg.Queries {
-		stats, err := producer.Run(ctx, logger, qPublisher{client: client}, factcheckarchive.RunConfig{
-			Query:    query,
-			MaxPages: archiveCfg.MaxPages,
-		})
-		if err != nil {
-			return err
-		}
-		total.Published += stats.Published
-		total.Skipped += stats.Skipped
+	p := factcheckProducer{
+		client:   producer,
+		logger:   logger,
+		pub:      qPublisher{client: client},
+		queries:  archiveCfg.Queries,
+		maxPages: archiveCfg.MaxPages,
+	}
+
+	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	total, err := crawlnotify.RunWithAlerts(ctx, notifier, p)
+	if err != nil {
+		return err
 	}
 
 	logger.InfoContext(ctx, "fact-check crawl finished",
-		slog.Int("published_claims", total.Published),
+		slog.Int("published_claims", total.New),
 		slog.Int("skipped_claims", total.Skipped))
 	return nil
 }
