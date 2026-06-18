@@ -1,11 +1,13 @@
-// Command digest assembles a daily development digest from git history, Linear
-// card activity, and GitHub pull requests, and either posts it to Slack (the
-// default) or prints it. It runs independently of the API server, as a cron job
-// or on demand.
+// Command digest assembles a development digest from git history, Linear card
+// activity, and GitHub pull requests, and either posts it to Slack (the default)
+// or prints it. It runs independently of the API server, as a cron job or on
+// demand. Without --epic it reports the daily window; with --epic it recaps a
+// finished epic.
 //
-//	digest              post the Block Kit digest to SLACK_DIGEST_WEBHOOK_URL
-//	digest --terminal   print the full, untruncated report to stdout
-//	digest --dry-run    print the Slack Block Kit JSON without posting
+//	digest                  post the Block Kit digest to SLACK_DIGEST_WEBHOOK_URL
+//	digest --terminal       print the full, untruncated report to stdout
+//	digest --dry-run        print the Slack Block Kit JSON without posting
+//	digest --epic VER-93    recap a finished epic instead of the daily window
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/verovec/truth-in-stream/backend/internal/digestsummary"
 	"github.com/verovec/truth-in-stream/backend/internal/report"
 )
 
@@ -34,12 +37,13 @@ func main() {
 func run() error {
 	terminal := flag.Bool("terminal", false, "print the detailed report to stdout instead of posting to Slack")
 	dryRun := flag.Bool("dry-run", false, "print the Slack Block Kit JSON without posting")
+	epic := flag.String("epic", "", "recap a finished epic (e.g. VER-93) instead of the daily window")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	payload := buildCollector().Collect(ctx)
+	payload := buildCollector(*epic).Collect(ctx)
 
 	switch {
 	case *terminal:
@@ -67,8 +71,10 @@ func run() error {
 
 // buildCollector wires the data sources from the environment. The git source is
 // always available; Linear is enabled only when LINEAR_API_KEY is set, and the
-// collector degrades any missing source to a note in the report.
-func buildCollector() *report.Collector {
+// card summarizer only when DIGEST_SUMMARY_API_KEY is set. The collector
+// degrades any missing source to a note (and missing summaries to card titles).
+// A non-empty epicID puts the collector in epic-recap mode.
+func buildCollector(epicID string) *report.Collector {
 	commits := report.NewGitCommitSource(".")
 
 	var linear report.LinearSource
@@ -78,7 +84,20 @@ func buildCollector() *report.Collector {
 
 	github := report.NewGitHubClient(getenv("GITHUB_REPO", defaultRepo), os.Getenv("GITHUB_TOKEN"))
 
-	return report.NewCollector(commits, linear, github)
+	opts := []report.CollectorOption{}
+	if epicID != "" {
+		opts = append(opts, report.WithEpic(epicID))
+	}
+	if key := os.Getenv("DIGEST_SUMMARY_API_KEY"); key != "" {
+		summarizer, err := digestsummary.New(digestsummary.Config{APIKey: key, Model: os.Getenv("DIGEST_SUMMARY_MODEL")})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "digest: card summaries disabled:", err)
+		} else {
+			opts = append(opts, report.WithSummarizer(summarizer))
+		}
+	}
+
+	return report.NewCollector(commits, linear, github, opts...)
 }
 
 func getenv(key, fallback string) string {

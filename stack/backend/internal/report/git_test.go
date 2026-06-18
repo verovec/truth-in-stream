@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// fakeGit returns canned output keyed by the git subcommand (args[2] after
-// "git -C <dir>").
+// newGitSource returns a GitCommitSource whose runner replies with canned output
+// keyed by the git subcommand (args[2], after "git -C <dir>").
 func newGitSource(t *testing.T, now time.Time, outputs map[string]string) *GitCommitSource {
 	t.Helper()
 	return &GitCommitSource{
@@ -29,43 +29,70 @@ func newGitSource(t *testing.T, now time.Time, outputs map[string]string) *GitCo
 	}
 }
 
-func TestParseCommits(t *testing.T) {
+func TestSubjectsForCards(t *testing.T) {
 	t.Parallel()
-	m := commitMarker
-	out := m + "abc1234\tAlice\tFix the parser\n" +
-		"3\t1\tinternal/a.go\n" +
-		"0\t5\tinternal/b.go\n" +
-		m + "def5678\tBob\tAdd a feature\n" +
-		"10\t0\tcmd/main.go\n"
+	out := "feat(live): two-axis verdict UI (VER-104)\n" +
+		"test(eval): golden eval (VER-105)\n" +
+		"feat(live): more verdict polish (VER-104)\n" +
+		"chore: unrelated card (VER-200)\n"
 
 	src := newGitSource(t, time.Now(), map[string]string{"log": out})
-	commits, err := src.Commits(context.Background(), 24*time.Hour)
+	subjects, err := src.SubjectsForCards(context.Background(), []string{"VER-104", "VER-105"})
 	if err != nil {
-		t.Fatalf("Commits: %v", err)
+		t.Fatalf("SubjectsForCards: %v", err)
 	}
-	if len(commits) != 2 {
-		t.Fatalf("got %d commits, want 2", len(commits))
+	if len(subjects["VER-104"]) != 2 {
+		t.Errorf("VER-104 subjects = %v, want 2", subjects["VER-104"])
 	}
-	if commits[0].Hash != "abc1234" || commits[0].Author != "Alice" || commits[0].Subject != "Fix the parser" {
-		t.Errorf("commit0 = %+v", commits[0])
+	if len(subjects["VER-105"]) != 1 {
+		t.Errorf("VER-105 subjects = %v, want 1", subjects["VER-105"])
 	}
-	if commits[0].Files != 2 {
-		t.Errorf("commit0 files = %d, want 2", commits[0].Files)
-	}
-	if commits[1].Files != 1 {
-		t.Errorf("commit1 files = %d, want 1", commits[1].Files)
+	if _, ok := subjects["VER-200"]; ok {
+		t.Errorf("VER-200 was not requested, must not appear: %v", subjects)
 	}
 }
 
-func TestParseCommitsEmpty(t *testing.T) {
+func TestSubjectsForCardsEmptyIDs(t *testing.T) {
 	t.Parallel()
-	src := newGitSource(t, time.Now(), map[string]string{"log": ""})
-	commits, err := src.Commits(context.Background(), 24*time.Hour)
+	// No IDs requested means no git call at all; the runner would fail the test
+	// if invoked because it has no canned output.
+	src := newGitSource(t, time.Now(), map[string]string{})
+	subjects, err := src.SubjectsForCards(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("Commits: %v", err)
+		t.Fatalf("SubjectsForCards: %v", err)
 	}
-	if len(commits) != 0 {
-		t.Errorf("got %d commits, want 0", len(commits))
+	if len(subjects) != 0 {
+		t.Errorf("want empty result for no IDs, got %v", subjects)
+	}
+}
+
+func TestSubjectsForCardsPassesGrepArgs(t *testing.T) {
+	t.Parallel()
+	var gotArgs []string
+	src := &GitCommitSource{
+		dir: ".",
+		now: time.Now,
+		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			gotArgs = args
+			return nil, nil
+		},
+	}
+	if _, err := src.SubjectsForCards(context.Background(), []string{"VER-1"}); err != nil {
+		t.Fatalf("SubjectsForCards: %v", err)
+	}
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{"log", "--no-merges", "--grep", "--pretty=format:%s"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q: %v", want, gotArgs)
+		}
+	}
+	// The grep pattern must be POSIX-compatible: git's extended-regexp engine
+	// does not understand \d, so a \d pattern would silently match nothing.
+	if !strings.Contains(joined, "VER-[0-9]") {
+		t.Errorf("grep pattern is not POSIX [0-9]: %v", gotArgs)
+	}
+	if strings.Contains(joined, `\d`) {
+		t.Errorf(`grep pattern uses \d, which git extended-regexp does not support: %v`, gotArgs)
 	}
 }
 
@@ -92,44 +119,5 @@ func TestActiveCardIDs(t *testing.T) {
 	}
 	if len(active) != 2 {
 		t.Errorf("active set = %v, want exactly VER-29 and VER-30", active)
-	}
-}
-
-func TestCommitsPassesExpectedArgs(t *testing.T) {
-	t.Parallel()
-	var gotArgs []string
-	src := &GitCommitSource{
-		dir: ".",
-		now: time.Now,
-		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			gotArgs = args
-			return nil, nil
-		},
-	}
-	if _, err := src.Commits(context.Background(), 24*time.Hour); err != nil {
-		t.Fatalf("Commits: %v", err)
-	}
-	joined := strings.Join(gotArgs, " ")
-	for _, want := range []string{"log", "--no-merges", "--since=24 hours ago", "--numstat"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("args missing %q: %v", want, gotArgs)
-		}
-	}
-}
-
-func TestSinceArg(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		window time.Duration
-		want   string
-	}{
-		{24 * time.Hour, "24 hours ago"},
-		{72 * time.Hour, "72 hours ago"},
-		{30 * time.Minute, "1 hours ago"},
-	}
-	for _, tc := range tests {
-		if got := sinceArg(tc.window); got != tc.want {
-			t.Errorf("sinceArg(%v) = %q, want %q", tc.window, got, tc.want)
-		}
 	}
 }

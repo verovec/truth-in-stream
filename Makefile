@@ -196,3 +196,7 @@ logs: ## Tail logs for all services
 
 ps: ## Show service status
 	$(COMPOSE) ps
+
+digest: ## Post the dev digest (cards shipped in the last 24h, the project's remaining work, open PRs, stalled cards) to SLACK_DIGEST_WEBHOOK_URL. `make digest EPIC=VER-93` recaps a finished epic instead; `make digest MODE=terminal` prints the full report to stdout; `make digest MODE=dry-run` prints the Slack JSON without posting. Reads SLACK_DIGEST_WEBHOOK_URL, LINEAR_API_KEY, LINEAR_PROJECT, GITHUB_TOKEN, GITHUB_REPO, DIGEST_SUMMARY_API_KEY, DIGEST_SUMMARY_MODEL from .env; any missing one degrades that section to a note (or shipped cards to their titles)
+	@set -a; [ -f .env ] && eval "$$(grep -E '^(SLACK_DIGEST_WEBHOOK_URL|LINEAR_API_KEY|LINEAR_PROJECT|GITHUB_TOKEN|GITHUB_REPO|DIGEST_SUMMARY_API_KEY|DIGEST_SUMMARY_MODEL)=' .env)"; set +a; \
+	  $(GO) -C stack/backend run ./cmd/digest $(DIGEST_FLAG)

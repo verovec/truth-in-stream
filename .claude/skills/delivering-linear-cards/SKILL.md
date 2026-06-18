@@ -28,6 +28,7 @@ You own the work end to end: card -> implementation -> e2e verification -> PR ->
 8. **Check the card's boxes** you completed (edit the description, `- [ ]` to `- [X]`).
 9. **Rebase on `main`, then open the PR.** Rebase the branch onto latest `origin/main` (independent card) or its dependency branch (stacked card) so the merge is conflict-free, then open the PR with a summary and a test plan that references the card and the e2e evidence. Set the card to In Review and link the PR in a comment. The push and PR are the delivery hand-off; they do not need separate approval.
 10. **Auto-merge on green CI, then Done.** See "Auto-merge on green CI" below: watch the PR's checks, merge to `main` when they pass, and move the card to Done. Then stop, or continue to a dependent card (see below).
+11. **Post the epic recap if this was the epic's last card.** After the card is Done, check whether it completed its parent epic; if so, post the epic digest (see "Epic close-out digest" below).
 
 ## Auto-merge on green CI
 
@@ -40,6 +41,25 @@ Once the PR is open, the merge is automatic and gated only on the PR's CI. No hu
 5. **Clean up the worktree** after the branch merges and is deleted (`ExitWorktree`, or remove `.claude/worktrees/<branch>`).
 
 This requires the harness to allow `gh pr merge` and `gh pr checks` for this repo (a one-time user-granted permission; an agent cannot grant itself merge rights). Without it the merge step prompts the user - an acceptable manual fallback, but the flow assumes the rules are in place. See the `/pick` command's "One-time permission" note for the exact rules.
+
+## Epic close-out digest
+
+When the card you just moved to Done has a parent epic, check whether that completes the epic and,
+if so, post its recap. This is the automatic trigger for the epic digest - it rides the merge-to-Done
+step you already perform, so there is no separate cron.
+
+1. **Find the parent.** Fetch the card's parent issue. No parent -> skip; nothing to do.
+2. **Is the epic complete?** List the epic's children with their states. The epic is complete when
+   every child is `Done` or `Canceled`. If any child is still open, skip - a later delivery will be
+   the one that closes it.
+3. **Post the recap once.** `make digest EPIC=<epic-id>` (e.g. `make digest EPIC=VER-93`). It posts
+   the epic's shipped cards (each with a one-line description) and the project's remaining work to
+   Slack. Needs `SLACK_DIGEST_WEBHOOK_URL`; with `DIGEST_SUMMARY_API_KEY` set each card gets a
+   synthesized description, otherwise it falls back to the card titles. If the webhook is unset, run
+   `make digest EPIC=<epic-id> MODE=terminal` and paste the recap into a closing comment instead.
+4. **Exactly one session posts it.** The all-children-Done check is true for only the delivery that
+   lands the final card, so parallel sessions do not double-post. If unsure whether it already ran,
+   confirm no prior recap exists before posting.
 
 ## Continue to a dependent card (optional, stacked)
 

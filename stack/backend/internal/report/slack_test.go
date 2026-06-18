@@ -15,8 +15,8 @@ func samplePayload() Payload {
 	return Payload{
 		GeneratedAt: time.Date(2026, 6, 11, 8, 0, 0, 0, time.UTC),
 		Window:      24 * time.Hour,
-		Commits:     []Commit{{Hash: "abc1234", Author: "Alice", Subject: "Fix <thing> & stuff", Files: 2}},
-		CardMoves:   []CardMove{{ID: "VER-1", Title: "A card", State: "Done"}},
+		Shipped:     []CardSummary{{ID: "VER-1", Title: "A card", Summary: "Shipped <thing> & stuff"}},
+		Remaining:   []CardMove{{ID: "VER-3", Title: "Next up", State: "Todo", StateType: "unstarted"}},
 		OpenPRs:     []PullRequest{{Number: 7, Title: "A PR", Author: "Bob", URL: "https://gh/7", Draft: true}},
 		Blockers:    []Blocker{{ID: "VER-2", Title: "stalled"}},
 	}
@@ -52,14 +52,39 @@ func TestSlackPostSendsBlockKit(t *testing.T) {
 		t.Errorf("first block = %q, want header", msg.Blocks[0].Type)
 	}
 	joined := blocksText(msg.Blocks)
-	for _, want := range []string{"Commits", "Linear activity", "Open pull requests", "Blockers", "VER-1", "VER-2", "#7"} {
+	for _, want := range []string{"Shipped", "Remaining", "Open pull requests", "Blockers", "VER-1", "VER-3", "VER-2", "#7"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("blocks missing %q", want)
 		}
 	}
-	// mrkdwn special characters in the subject must be escaped.
-	if !strings.Contains(joined, "&lt;thing&gt; &amp; stuff") {
-		t.Errorf("subject not mrkdwn-escaped in: %s", joined)
+	// A shipped card renders its summary, and mrkdwn specials are escaped.
+	if !strings.Contains(joined, "Shipped &lt;thing&gt; &amp; stuff") {
+		t.Errorf("summary not rendered/escaped in: %s", joined)
+	}
+}
+
+func TestSlackShippedFallsBackToTitle(t *testing.T) {
+	t.Parallel()
+	p := Payload{GeneratedAt: time.Now(), Shipped: []CardSummary{{ID: "VER-1", Title: "Bare title, no summary"}}}
+	out, err := NewSlackRenderer("").RenderJSON(p)
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if !strings.Contains(string(out), "Bare title, no summary") {
+		t.Errorf("shipped card without a summary must fall back to its title: %s", out)
+	}
+}
+
+func TestSlackEpicModeHeader(t *testing.T) {
+	t.Parallel()
+	p := Payload{
+		GeneratedAt: time.Now(),
+		Mode:        ModeEpic,
+		Epic:        &EpicSummary{ID: "VER-93", Title: "Political fact-check"},
+	}
+	msg := NewSlackRenderer("").buildMessage(p)
+	if !strings.Contains(msg.Text, "Epic recap: VER-93 - Political fact-check") {
+		t.Errorf("epic header = %q", msg.Text)
 	}
 }
 
@@ -86,7 +111,7 @@ func TestSlackRenderJSONCapsLongSections(t *testing.T) {
 	t.Parallel()
 	p := Payload{GeneratedAt: time.Now()}
 	for i := 0; i < slackSectionCap+5; i++ {
-		p.Commits = append(p.Commits, Commit{Hash: "h", Subject: "s", Author: "a"})
+		p.Shipped = append(p.Shipped, CardSummary{ID: "VER-1", Title: "t", Summary: "s"})
 	}
 	out, err := NewSlackRenderer("").RenderJSON(p)
 	if err != nil {
@@ -104,7 +129,7 @@ func TestSlackSectionRespectsByteBudget(t *testing.T) {
 	long := strings.Repeat("x", 1000)
 	p := Payload{GeneratedAt: time.Now()}
 	for i := 0; i < 5; i++ {
-		p.CardMoves = append(p.CardMoves, CardMove{ID: "VER-1", Title: long, State: "Done"})
+		p.Remaining = append(p.Remaining, CardMove{ID: "VER-1", Title: long, State: "Done"})
 	}
 	msg := NewSlackRenderer("").buildMessage(p)
 	for _, bl := range msg.Blocks {
@@ -126,8 +151,8 @@ func TestSlackEmptySectionsRenderPlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
-	if !strings.Contains(string(out), "No commits in the window.") {
-		t.Errorf("empty commits section missing placeholder: %s", out)
+	if !strings.Contains(string(out), "No cards shipped in the window.") {
+		t.Errorf("empty shipped section missing placeholder: %s", out)
 	}
 }
 
