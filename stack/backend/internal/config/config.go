@@ -761,6 +761,28 @@ func LoadPolitical() (Political, error) {
 	return Political{Enabled: enabled, RouterMinResults: minResults}, nil
 }
 
+// CrawlAlerts holds the ingestion-fleet Slack alerting configuration. WebhookURL
+// is the Slack incoming-webhook crawl runs announce themselves to; it is a secret
+// sourced from the environment only and never logged. Empty disables alerting, so
+// local runs without Slack are unaffected.
+type CrawlAlerts struct {
+	WebhookURL string
+}
+
+// Active reports whether crawl alerts should post to Slack: it has a webhook URL.
+// The notifier wiring keys off this so an unset URL degrades to a silent no-op
+// rather than failing to start.
+func (c CrawlAlerts) Active() bool {
+	return c.WebhookURL != ""
+}
+
+// LoadCrawlAlerts reads the ingestion-fleet Slack alerting configuration from the
+// environment. SLACK_WEBHOOK_URL is optional: when unset, alerting is a silent
+// no-op. It carries the webhook secret, so it is never logged.
+func LoadCrawlAlerts() CrawlAlerts {
+	return CrawlAlerts{WebhookURL: os.Getenv("SLACK_WEBHOOK_URL")}
+}
+
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
 // rejecting values (including NaN) outside [-1, 1].
 func thresholdEnv(key string, fallback float64) (float64, error) {
