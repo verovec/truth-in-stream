@@ -1708,3 +1708,32 @@ func TestLoadFactCheckArchive(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCrawlAlerts(t *testing.T) {
+	tests := []struct {
+		name       string
+		webhook    string
+		wantURL    string
+		wantActive bool
+	}{
+		{name: "unset is inactive noop", webhook: "", wantURL: "", wantActive: false},
+		{
+			name:       "set is active",
+			webhook:    "https://hooks.slack.com/services/T/B/X",
+			wantURL:    "https://hooks.slack.com/services/T/B/X",
+			wantActive: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SLACK_WEBHOOK_URL", tc.webhook)
+			got := LoadCrawlAlerts()
+			if got.WebhookURL != tc.wantURL {
+				t.Errorf("WebhookURL = %q, want %q", got.WebhookURL, tc.wantURL)
+			}
+			if got.Active() != tc.wantActive {
+				t.Errorf("Active() = %v, want %v", got.Active(), tc.wantActive)
+			}
+		})
+	}
+}
