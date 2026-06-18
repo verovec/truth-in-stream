@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/verovec/truth-in-stream/backend/internal/digestsummary"
+	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/report"
 )
 
@@ -88,16 +90,43 @@ func buildCollector(epicID string) *report.Collector {
 	if epicID != "" {
 		opts = append(opts, report.WithEpic(epicID))
 	}
-	if key := os.Getenv("DIGEST_SUMMARY_API_KEY"); key != "" {
-		summarizer, err := digestsummary.New(digestsummary.Config{APIKey: key, Model: os.Getenv("DIGEST_SUMMARY_MODEL")})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "digest: card summaries disabled:", err)
-		} else {
-			opts = append(opts, report.WithSummarizer(summarizer))
-		}
+	if summarizer := buildSummarizer(); summarizer != nil {
+		opts = append(opts, report.WithSummarizer(summarizer))
 	}
 
 	return report.NewCollector(commits, linear, github, opts...)
+}
+
+// buildSummarizer wires the per-card summarizer, honoring the global
+// LLM_PROVIDER like every other LLM-backed stage. Under Anthropic (the default)
+// the key is DIGEST_SUMMARY_API_KEY; under Gemini it is GEMINI_API_KEY. With no
+// key for the selected provider the summarizer is off and shipped cards fall
+// back to their titles. A construction error degrades the same way rather than
+// failing the digest.
+func buildSummarizer() report.CardSummarizer {
+	provider := strings.ToLower(strings.TrimSpace(getenv("LLM_PROVIDER", string(llm.ProviderAnthropic))))
+	anthropicKey := os.Getenv("DIGEST_SUMMARY_API_KEY")
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+
+	keyPresent := anthropicKey != ""
+	if provider == string(llm.ProviderGemini) {
+		keyPresent = geminiKey != ""
+	}
+	if !keyPresent {
+		return nil
+	}
+
+	summarizer, err := digestsummary.New(digestsummary.Config{
+		Provider:     llm.ProviderName(provider),
+		APIKey:       anthropicKey,
+		GeminiAPIKey: geminiKey,
+		Model:        os.Getenv("DIGEST_SUMMARY_MODEL"),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "digest: card summaries disabled:", err)
+		return nil
+	}
+	return summarizer
 }
 
 func getenv(key, fallback string) string {

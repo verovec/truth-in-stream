@@ -13,15 +13,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/report"
 )
 
 // defaultModel is the cheapest, fastest current Claude model. Summarizing a
 // short card title plus a few commit subjects is a light generation, so the
-// small model is the right default; the config layer mirrors it.
+// small model is the right default; an empty model otherwise falls back to the
+// selected provider's own default.
 const defaultModel = "claude-haiku-4-5-20251001"
 
 // maxTokens bounds the structured reply: one short sentence per card across a
@@ -42,27 +41,36 @@ const systemPrompt = "You summarize completed engineering cards for a developmen
 	"Be concrete and specific. Do not restate the identifier, do not add praise or filler, do not invent work the inputs do not support. " +
 	"Record a summary for every card with the record_card_summaries tool, keyed by identifier."
 
-// Config wires a Client. APIKey is required and comes from the environment only;
-// Model defaults to defaultModel when empty.
+// Config wires a Client. Provider selects the LLM backend (default Anthropic);
+// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
+// only. Model defaults to defaultModel when empty.
 type Config struct {
-	APIKey string
-	Model  string
+	Provider     llm.ProviderName
+	APIKey       string
+	GeminiAPIKey string
+	Model        string
 }
 
-// Client is the Anthropic-backed report.CardSummarizer adapter.
+// Client is the LLM-backed report.CardSummarizer adapter.
 type Client struct {
 	llm *llm.Client
 }
 
-// New builds a Client, failing when no API key is supplied (the summarizer is
-// opt-in upstream, so reaching here without a key is a wiring error). Extra
-// request options (e.g. a test base URL) are forwarded to the shared transport.
-func New(cfg Config, opts ...option.RequestOption) (*Client, error) {
+// New builds a Client, failing when the selected provider has no key (the
+// summarizer is opt-in upstream, so reaching here without a key is a wiring
+// error). Extra options (e.g. a test base URL) are forwarded to the shared
+// transport.
+func New(cfg Config, opts ...llm.Option) (*Client, error) {
 	model := cfg.Model
 	if model == "" {
 		model = defaultModel
 	}
-	client, err := llm.NewClient(cfg.APIKey, model, opts...)
+	client, err := llm.NewClient(llm.Config{
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		GeminiAPIKey: cfg.GeminiAPIKey,
+		Model:        model,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("digestsummary: %w", err)
 	}

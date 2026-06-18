@@ -34,8 +34,10 @@ merge and runs `make digest EPIC=<parent>` when they are all Done.
 | `LINEAR_PROJECT` | No | Linear project name (default `Truth in Stream`). |
 | `GITHUB_TOKEN` | No | Raises the GitHub rate limit. The public repo works without it. |
 | `GITHUB_REPO` | No | `owner/name` (default `verovec/truth-in-stream`). |
-| `DIGEST_SUMMARY_API_KEY` | No | Anthropic key for the per-card "what was implemented" descriptions. Absent -> shipped cards fall back to their titles. |
-| `DIGEST_SUMMARY_MODEL` | No | Summary model (default `claude-haiku-4-5-20251001`). |
+| `DIGEST_SUMMARY_API_KEY` | No | Anthropic key for the per-card "what was implemented" descriptions (the key under the default provider). Absent -> shipped cards fall back to their titles. |
+| `DIGEST_SUMMARY_MODEL` | No | Summary model (default `claude-haiku-4-5-20251001` under Anthropic; the provider default otherwise). |
+| `LLM_PROVIDER` | No | Shared LLM backend selector: `anthropic` (default) or `gemini`. Under `gemini` the summarizer keys on `GEMINI_API_KEY` instead of `DIGEST_SUMMARY_API_KEY`. |
+| `GEMINI_API_KEY` | No | Gemini key for the summaries when `LLM_PROVIDER=gemini`. |
 
 A missing source never fails the digest: it degrades to a note in the report so
 the remaining sections still render. All outbound HTTP calls use a 10-second
