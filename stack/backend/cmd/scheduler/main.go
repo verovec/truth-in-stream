@@ -150,8 +150,8 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 		gateClient, gateErr := evidencegate.New(evidencegate.Config{
 			Provider:     llm.ProviderName(gateCfg.Provider),
 			APIKey:       gateCfg.APIKey,
-			GeminiAPIKey: gateCfg.GeminiAPIKey,
-			Model:        gateCfg.Model,
+			GeminiAPIKey: gateCfg.GeminiAPIKey, DeepSeekAPIKey: gateCfg.DeepSeekAPIKey,
+			Model: gateCfg.Model,
 		})
 		if gateErr != nil {
 			closer()

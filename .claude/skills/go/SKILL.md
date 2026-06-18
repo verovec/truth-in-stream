@@ -149,15 +149,26 @@ The forced-tool transport is shared and provider-agnostic, not copied per adapte
 (`llm.NewClient(llm.Config{...}, opts...)` + `llm.Classify[T](ctx, client, llm.Request{...})`)
 owns a `Provider` interface capturing the forced-tool/structured-output contract (one forced
 tool call at temperature zero, decode the tool arguments into a caller-supplied `T`), an
-Anthropic adapter, and a Gemini adapter, selected by the `LLM_PROVIDER` env var (default
-`anthropic`, keeping Claude Haiku behaviour byte-identical) plus `GEMINI_API_KEY`. The six
-callers (`internal/stance`, `internal/checkworthy`, `internal/claimdecomp`, `internal/claimtype`,
-`internal/verify`, `internal/evidencegate`) are thin: they supply only their prompt, tool schema,
-and verdict type and never name a provider. Add a classifier as a new caller here; never
-duplicate a provider client. The Google Gen AI Go SDK is `google.golang.org/genai` (verified
-latest stable **v1.61.0** via Context7 + the registry on 2026-06-18); the Gemini adapter forces a
-single function call via `FunctionCallingConfigModeAny` with the one allowed name at temperature
-zero, the structural twin of the Anthropic forced tool call. A stage stays active under Gemini on
+Anthropic adapter, a Gemini adapter, and a DeepSeek adapter, selected by the `LLM_PROVIDER` env
+var (default `deepseek` since VER-115, keyed on `DEEPSEEK_API_KEY`; `anthropic` keeps Claude Haiku,
+`gemini` keys on `GEMINI_API_KEY`). The seven callers (`internal/stance`, `internal/checkworthy`,
+`internal/claimdecomp`, `internal/claimtype`, `internal/verify`, `internal/evidencegate`,
+`internal/digestsummary`) are thin: they supply only their prompt, tool schema, and verdict type
+and never name a provider. Add a classifier as a new caller here; never duplicate a provider
+client. The Google Gen AI Go SDK is `google.golang.org/genai` (verified latest stable **v1.61.0**
+via Context7 + the registry on 2026-06-18); the Gemini adapter forces a single function call via
+`FunctionCallingConfigModeAny` with the one allowed name at temperature zero, the structural twin
+of the Anthropic forced tool call. The DeepSeek adapter uses the official OpenAI Go SDK
+`github.com/openai/openai-go/v3` (verified latest stable **v3.41.0** via Context7 on 2026-06-19;
+current major is **v3**, so the import path is versioned `/v3`) pointed at
+`option.WithBaseURL("https://api.deepseek.com")` with an explicit `option.WithAPIKey` (never the
+SDK's implicit `OPENAI_API_KEY` lookup); it forces the call via a named-function `tool_choice`
+object (NOT `"auto"`, which DeepSeek may skip), passes the caller's JSON schema straight onto the
+function `parameters`, sets `temperature` 0 and `max_tokens` (NOT `max_completion_tokens`, which
+DeepSeek ignores), and sends NO `frequency_penalty`/`presence_penalty` (DeepSeek rejects them). The
+default model is `deepseek-v4-flash` (the cheap chat model with tool calling, NOT the
+reasoner/thinking variant; the legacy `deepseek-chat` alias maps to it and is being retired
+2026-07-24). A stage stays active under DeepSeek on `DEEPSEEK_API_KEY` alone, under Gemini on
 `GEMINI_API_KEY` alone - `config`'s `Active()` checks the selected provider's key, not the
 Anthropic key.
 

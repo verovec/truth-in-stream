@@ -11,10 +11,9 @@
 //
 // The transport is provider-agnostic: a Provider captures the forced-tool /
 // structured-output contract, and NewClient selects an implementation from
-// configuration. Anthropic (Claude Haiku) is the default and preserves the
-// behavior the codebase shipped with; Gemini is an alternative selected by
-// LLM_PROVIDER so the project can run on Google trial credit. Callers route
-// through NewClient and never name a provider.
+// configuration. DeepSeek (a cheap OpenAI-compatible chat model) is the default;
+// Anthropic (Claude Haiku) and Gemini are alternatives selected by LLM_PROVIDER.
+// Callers route through NewClient and never name a provider.
 package llm
 
 import (

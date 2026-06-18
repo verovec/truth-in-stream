@@ -12,9 +12,14 @@ import (
 type ProviderName string
 
 const (
-	// ProviderAnthropic is the default backend: Claude Haiku over the official
-	// Anthropic SDK. With LLM_PROVIDER unset or "anthropic", behavior is exactly
-	// as the codebase shipped.
+	// ProviderDeepSeek is the default backend: DeepSeek's cheap chat model over the
+	// official OpenAI Go SDK pointed at DeepSeek's OpenAI-compatible endpoint,
+	// keyed on DEEPSEEK_API_KEY. With LLM_PROVIDER unset or "deepseek", every
+	// forced-tool stage runs on DeepSeek.
+	ProviderDeepSeek ProviderName = "deepseek"
+	// ProviderAnthropic routes the same forced-tool calls to Claude Haiku over the
+	// official Anthropic SDK, selected by LLM_PROVIDER=anthropic and keyed on each
+	// stage's Anthropic key.
 	ProviderAnthropic ProviderName = "anthropic"
 	// ProviderGemini routes the same forced-tool calls to Google Gemini over the
 	// official Google Gen AI SDK, selected by LLM_PROVIDER=gemini and keyed on
@@ -22,16 +27,18 @@ const (
 	ProviderGemini ProviderName = "gemini"
 )
 
-// Config selects and keys a provider. Provider defaults to ProviderAnthropic
-// when empty. APIKey is the Anthropic key; GeminiAPIKey is the Gemini key - the
-// two are separate secrets and only the selected provider's key is required.
-// Model is the per-stage model override; an empty model falls back to the
-// selected provider's default. No field is ever logged.
+// Config selects and keys a provider. Provider defaults to ProviderDeepSeek when
+// empty. APIKey is the Anthropic key; GeminiAPIKey is the Gemini key;
+// DeepSeekAPIKey is the DeepSeek key - the three are separate secrets and only
+// the selected provider's key is required. Model is the per-stage model override;
+// an empty model falls back to the selected provider's default. No field is ever
+// logged.
 type Config struct {
-	Provider     ProviderName
-	APIKey       string
-	GeminiAPIKey string
-	Model        string
+	Provider       ProviderName
+	APIKey         string
+	GeminiAPIKey   string
+	DeepSeekAPIKey string
+	Model          string
 }
 
 // options is the provider-agnostic transport configuration a caller can tweak,
@@ -82,10 +89,16 @@ func NewClient(cfg Config, opts ...Option) (*Client, error) {
 
 	provider := cfg.Provider
 	if provider == "" {
-		provider = ProviderAnthropic
+		provider = ProviderDeepSeek
 	}
 
 	switch provider {
+	case ProviderDeepSeek:
+		p, err := newDeepSeekProvider(cfg.DeepSeekAPIKey, cfg.Model, o)
+		if err != nil {
+			return nil, err
+		}
+		return &Client{provider: p}, nil
 	case ProviderAnthropic:
 		p, err := newAnthropicProvider(cfg.APIKey, cfg.Model, o)
 		if err != nil {

@@ -75,7 +75,7 @@ func run(logger *slog.Logger) error {
 	// than a typed-nil that RunCrawl would mistake for a live gate.
 	var gate wiki.Gate
 	if gateCfg.Active() {
-		client, err := evidencegate.New(evidencegate.Config{Provider: llm.ProviderName(gateCfg.Provider), APIKey: gateCfg.APIKey, GeminiAPIKey: gateCfg.GeminiAPIKey, Model: gateCfg.Model})
+		client, err := evidencegate.New(evidencegate.Config{Provider: llm.ProviderName(gateCfg.Provider), APIKey: gateCfg.APIKey, GeminiAPIKey: gateCfg.GeminiAPIKey, DeepSeekAPIKey: gateCfg.DeepSeekAPIKey, Model: gateCfg.Model})
 		if err != nil {
 			return err
 		}

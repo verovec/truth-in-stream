@@ -127,13 +127,14 @@ type Result struct {
 }
 
 // Config wires a Client. Provider selects the LLM backend (default Anthropic);
-// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
-// only; Model defaults to defaultModel when empty.
+// APIKey/GeminiAPIKey/DeepSeekAPIKey are the per-provider secrets and come from the environment
+// only; an empty Model lets the selected provider apply its own default model.
 type Config struct {
-	Provider     llm.ProviderName
-	APIKey       string
-	GeminiAPIKey string
-	Model        string
+	Provider       llm.ProviderName
+	APIKey         string
+	GeminiAPIKey   string
+	DeepSeekAPIKey string
+	Model          string
 }
 
 // Client is the Anthropic-backed credibility verifier.
@@ -146,15 +147,12 @@ type Client struct {
 // error). Extra request options (e.g. a test base URL) are forwarded to the
 // shared transport, so a caller can point the client at a fake server.
 func New(cfg Config, opts ...llm.Option) (*Client, error) {
-	model := cfg.Model
-	if model == "" {
-		model = defaultModel
-	}
 	client, err := llm.NewClient(llm.Config{
-		Provider:     cfg.Provider,
-		APIKey:       cfg.APIKey,
-		GeminiAPIKey: cfg.GeminiAPIKey,
-		Model:        model,
+		Provider:       cfg.Provider,
+		APIKey:         cfg.APIKey,
+		GeminiAPIKey:   cfg.GeminiAPIKey,
+		DeepSeekAPIKey: cfg.DeepSeekAPIKey,
+		Model:          cfg.Model,
 	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("verify: %w", err)

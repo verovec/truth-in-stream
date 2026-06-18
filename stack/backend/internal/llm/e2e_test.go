@@ -136,7 +136,51 @@ func TestProviderParityAcrossStageSchemas(t *testing.T) {
 		}
 	}
 
-	t.Run("anthropic default routes and decodes every stage", func(t *testing.T) {
+	t.Run("deepseek default routes and decodes every stage", func(t *testing.T) {
+		t.Parallel()
+		var sawModel string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Model string `json:"model"`
+				Tools []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tools"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			sawModel = body.Model
+			name := body.Tools[0].Function.Name
+			argsJSON, _ := json.Marshal(args(name))
+			resp, _ := json.Marshal(map[string]any{
+				"id": "c", "object": "chat.completion", "created": 1, "model": body.Model,
+				"choices": []map[string]any{{
+					"index": 0,
+					"message": map[string]any{
+						"role":       "assistant",
+						"tool_calls": []map[string]any{{"id": "t", "type": "function", "function": map[string]any{"name": name, "arguments": string(argsJSON)}}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp)
+		}))
+		t.Cleanup(server.Close)
+
+		// Empty provider must default to deepseek across every stage schema.
+		c, err := NewClient(Config{DeepSeekAPIKey: "k"}, WithBaseURL(server.URL), WithMaxRetries(0))
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		runStages(t, c)
+		if sawModel != defaultDeepSeekModel {
+			t.Errorf("deepseek default model = %q, want %q", sawModel, defaultDeepSeekModel)
+		}
+	})
+
+	t.Run("anthropic routes and decodes every stage", func(t *testing.T) {
 		t.Parallel()
 		var sawModel string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,14 +206,15 @@ func TestProviderParityAcrossStageSchemas(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		// Empty provider must default to anthropic, byte-for-byte the shipped path.
-		c, err := NewClient(Config{APIKey: "k"}, WithBaseURL(server.URL), WithMaxRetries(0))
+		// Explicit anthropic must route to the Claude path, byte-for-byte the shipped
+		// behavior, and key off the same DefaultModel.
+		c, err := NewClient(Config{Provider: ProviderAnthropic, APIKey: "k"}, WithBaseURL(server.URL), WithMaxRetries(0))
 		if err != nil {
 			t.Fatalf("NewClient: %v", err)
 		}
 		runStages(t, c)
 		if sawModel != DefaultModel {
-			t.Errorf("anthropic default model = %q, want %q (unchanged from shipped behavior)", sawModel, DefaultModel)
+			t.Errorf("anthropic model = %q, want %q (unchanged from shipped behavior)", sawModel, DefaultModel)
 		}
 	})
 

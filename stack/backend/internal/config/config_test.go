@@ -1101,7 +1101,7 @@ func TestLoadLive(t *testing.T) {
 }
 
 func TestLoadConsistency(t *testing.T) {
-	defaults := Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6}
+	defaults := Consistency{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: false, APIKey: "", Model: "", TopK: 3, SimilarityFloor: 0.6}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1109,13 +1109,14 @@ func TestLoadConsistency(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "off by default",
+			name: "off by default (deepseek)",
 			env:  map[string]string{},
 			want: defaults,
 		},
 		{
-			name: "enabled with key and overrides",
+			name: "enabled with key and overrides under explicit anthropic",
 			env: map[string]string{
+				"LLM_PROVIDER":                 "anthropic",
 				"CONSISTENCY_ENABLED":          "true",
 				"CONSISTENCY_API_KEY":          "sk-test",
 				"CONSISTENCY_MODEL":            "claude-haiku-4-5",
@@ -1130,7 +1131,14 @@ func TestLoadConsistency(t *testing.T) {
 				"LLM_PROVIDER":   "gemini",
 				"GEMINI_API_KEY": "g-test",
 			},
-			want: Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001", TopK: 3, SimilarityFloor: 0.6},
+			want: Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: "", TopK: 3, SimilarityFloor: 0.6},
+		},
+		{
+			name: "deepseek provider reads deepseek key",
+			env: map[string]string{
+				"DEEPSEEK_API_KEY": "d-test",
+			},
+			want: Consistency{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d-test"}, Enabled: false, APIKey: "", Model: "", TopK: 3, SimilarityFloor: 0.6},
 		},
 		{name: "unknown provider rejected", env: map[string]string{"LLM_PROVIDER": "mistral"}, wantErr: true},
 		{name: "non-bool enabled rejected", env: map[string]string{"CONSISTENCY_ENABLED": "maybe"}, wantErr: true},
@@ -1168,11 +1176,13 @@ func TestConsistencyActive(t *testing.T) {
 		cfg  Consistency
 		want bool
 	}{
-		{"enabled with key", Consistency{Enabled: true, APIKey: "k"}, true},
-		{"enabled without key degrades to off", Consistency{Enabled: true, APIKey: ""}, false},
-		{"disabled with key stays off", Consistency{Enabled: false, APIKey: "k"}, false},
+		{"anthropic enabled with key", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "k"}, true},
+		{"anthropic enabled without key degrades to off", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: ""}, false},
+		{"anthropic disabled with key stays off", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "k"}, false},
 		{"gemini with gemini key and no anthropic key stays active", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
 		{"gemini without gemini key degrades to off", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
+		{"deepseek with deepseek key and no anthropic key stays active", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d"}, Enabled: true, APIKey: ""}, true},
+		{"deepseek without deepseek key degrades to off", Consistency{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1184,7 +1194,7 @@ func TestConsistencyActive(t *testing.T) {
 }
 
 func TestLoadCheckWorthiness(t *testing.T) {
-	defaults := CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"}
+	defaults := CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: false, APIKey: "", Model: ""}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1192,13 +1202,14 @@ func TestLoadCheckWorthiness(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "off by default",
+			name: "off by default (deepseek)",
 			env:  map[string]string{},
 			want: defaults,
 		},
 		{
-			name: "enabled with key and model override",
+			name: "enabled with key and model override under explicit anthropic",
 			env: map[string]string{
+				"LLM_PROVIDER":            "anthropic",
 				"CHECKWORTHINESS_ENABLED": "true",
 				"CHECKWORTHINESS_API_KEY": "sk-test",
 				"CHECKWORTHINESS_MODEL":   "claude-haiku-4-5",
@@ -1211,7 +1222,14 @@ func TestLoadCheckWorthiness(t *testing.T) {
 				"LLM_PROVIDER":   "gemini",
 				"GEMINI_API_KEY": "g-test",
 			},
-			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: "claude-haiku-4-5-20251001"},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: ""},
+		},
+		{
+			name: "deepseek provider reads deepseek key",
+			env: map[string]string{
+				"DEEPSEEK_API_KEY": "d-test",
+			},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d-test"}, Enabled: false, APIKey: "", Model: ""},
 		},
 		{name: "unknown provider rejected", env: map[string]string{"LLM_PROVIDER": "mistral"}, wantErr: true},
 		{name: "non-bool enabled rejected", env: map[string]string{"CHECKWORTHINESS_ENABLED": "maybe"}, wantErr: true},
@@ -1244,11 +1262,13 @@ func TestCheckWorthinessActive(t *testing.T) {
 		cfg  CheckWorthiness
 		want bool
 	}{
-		{"enabled with key", CheckWorthiness{Enabled: true, APIKey: "k"}, true},
-		{"enabled without key degrades to off", CheckWorthiness{Enabled: true, APIKey: ""}, false},
-		{"disabled with key stays off", CheckWorthiness{Enabled: false, APIKey: "k"}, false},
+		{"anthropic enabled with key", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "k"}, true},
+		{"anthropic enabled without key degrades to off", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: ""}, false},
+		{"anthropic disabled with key stays off", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "k"}, false},
 		{"gemini with gemini key and no anthropic key stays active", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
 		{"gemini without gemini key degrades to off", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
+		{"deepseek with deepseek key and no anthropic key stays active", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d"}, Enabled: true, APIKey: ""}, true},
+		{"deepseek without deepseek key degrades to off", CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1378,16 +1398,22 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "on by default with a key",
-			// CRAWL_CHECKWORTHY left empty so the default (true) is exercised; the
-			// empty value also neutralizes any ambient export so the test is hermetic.
-			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "CHECKWORTHY_API_KEY": "sk-test"},
-			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+			name: "deepseek on by default with a deepseek key",
+			// CRAWL_CHECKWORTHY left empty so the default (true) is exercised; with no
+			// LLM_PROVIDER the default provider is DeepSeek, keyed on DEEPSEEK_API_KEY.
+			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "DEEPSEEK_API_KEY": "d-test"},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d-test"}, Enabled: true, APIKey: "", Model: "", Concurrency: 8, RPM: 0},
+		},
+		{
+			name: "anthropic on with an anthropic key",
+			// The empty value also neutralizes any ambient export so the test is hermetic.
+			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "LLM_PROVIDER": "anthropic", "CHECKWORTHY_API_KEY": "sk-test"},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: defaultStageModel, Concurrency: 8, RPM: 0},
 		},
 		{
 			name: "gemini on with a gemini key, no anthropic key",
 			env:  map[string]string{"CRAWL_CHECKWORTHY": "", "LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "g-test"},
-			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: true, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: true, APIKey: "", Model: "", Concurrency: 8, RPM: 0},
 		},
 		{
 			name:    "gemini on without a gemini key fails fast",
@@ -1395,22 +1421,22 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "enabled without a key fails fast",
-			// CRAWL_CHECKWORTHY defaults to true, so a missing key is a hard error.
-			// Both vars are pinned (gate on, no key) to stay hermetic under any
-			// ambient environment.
-			env:     map[string]string{"CRAWL_CHECKWORTHY": "", "CHECKWORTHY_API_KEY": ""},
+			name: "deepseek default without a deepseek key fails fast",
+			// CRAWL_CHECKWORTHY defaults to true, so a missing provider key is a hard
+			// error. Both vars are pinned (gate on, no key) to stay hermetic.
+			env:     map[string]string{"CRAWL_CHECKWORTHY": "", "DEEPSEEK_API_KEY": ""},
 			wantErr: true,
 		},
 		{
 			name: "disabled needs no key",
 			env:  map[string]string{"CRAWL_CHECKWORTHY": "false"},
-			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "", Model: defaultCrawlCheckworthyModel, Concurrency: 8, RPM: 0},
+			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: false, APIKey: "", Model: "", Concurrency: 8, RPM: 0},
 		},
 		{
-			name: "overrides applied",
+			name: "overrides applied under explicit anthropic",
 			env: map[string]string{
 				"CRAWL_CHECKWORTHY":             "",
+				"LLM_PROVIDER":                  "anthropic",
 				"CHECKWORTHY_API_KEY":           "sk-test",
 				"CRAWL_CHECKWORTHY_MODEL":       "claude-haiku-4-5",
 				"CRAWL_CHECKWORTHY_CONCURRENCY": "16",
@@ -1419,8 +1445,8 @@ func TestLoadCrawlCheckworthy(t *testing.T) {
 			want: CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "sk-test", Model: "claude-haiku-4-5", Concurrency: 16, RPM: 120},
 		},
 		{name: "non-bool enabled rejected", env: map[string]string{"CRAWL_CHECKWORTHY": "maybe"}, wantErr: true},
-		{name: "zero concurrency rejected", env: map[string]string{"CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_CONCURRENCY": "0"}, wantErr: true},
-		{name: "negative rpm rejected", env: map[string]string{"CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_RPM": "-1"}, wantErr: true},
+		{name: "zero concurrency rejected", env: map[string]string{"LLM_PROVIDER": "anthropic", "CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_CONCURRENCY": "0"}, wantErr: true},
+		{name: "negative rpm rejected", env: map[string]string{"LLM_PROVIDER": "anthropic", "CHECKWORTHY_API_KEY": "sk-test", "CRAWL_CHECKWORTHY_RPM": "-1"}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1450,11 +1476,13 @@ func TestCrawlCheckworthyActive(t *testing.T) {
 		cfg  CrawlCheckworthy
 		want bool
 	}{
-		{"enabled with key", CrawlCheckworthy{Enabled: true, APIKey: "k"}, true},
-		{"enabled without key", CrawlCheckworthy{Enabled: true, APIKey: ""}, false},
-		{"disabled with key", CrawlCheckworthy{Enabled: false, APIKey: "k"}, false},
+		{"anthropic enabled with key", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "k"}, true},
+		{"anthropic enabled without key", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: ""}, false},
+		{"anthropic disabled with key", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: false, APIKey: "k"}, false},
 		{"gemini with gemini key and no anthropic key stays active", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
 		{"gemini without gemini key degrades to off", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
+		{"deepseek with deepseek key and no anthropic key stays active", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d"}, Enabled: true, APIKey: ""}, true},
+		{"deepseek without deepseek key degrades to off", CrawlCheckworthy{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1529,8 +1557,8 @@ func TestLoadVerifyPathDefaultsOff(t *testing.T) {
 		got.SpeakerPriorStrength != defaultSpeakerScorePriorStrength {
 		t.Errorf("defaults wrong: %+v", got)
 	}
-	if got.Provider != LLMProviderAnthropic {
-		t.Errorf("provider = %q, want default %q", got.Provider, LLMProviderAnthropic)
+	if got.Provider != LLMProviderDeepSeek {
+		t.Errorf("provider = %q, want default %q", got.Provider, LLMProviderDeepSeek)
 	}
 }
 
@@ -1562,10 +1590,12 @@ func TestVerifyPathActive(t *testing.T) {
 		cfg  VerifyPath
 		want bool
 	}{
-		{"enabled with anthropic key", VerifyPath{Enabled: true, APIKey: "k"}, true},
-		{"enabled without key degrades to off", VerifyPath{Enabled: true, APIKey: ""}, false},
+		{"anthropic enabled with anthropic key", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: "k"}, true},
+		{"anthropic enabled without key degrades to off", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderAnthropic}, Enabled: true, APIKey: ""}, false},
 		{"gemini with gemini key and no anthropic key stays active", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g"}, Enabled: true, APIKey: ""}, true},
 		{"gemini without gemini key degrades to off", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderGemini}, Enabled: true, APIKey: "k"}, false},
+		{"deepseek with deepseek key and no anthropic key stays active", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d"}, Enabled: true, APIKey: ""}, true},
+		{"deepseek without deepseek key degrades to off", VerifyPath{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: true, APIKey: "k"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1577,6 +1607,7 @@ func TestVerifyPathActive(t *testing.T) {
 }
 
 func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "anthropic")
 	t.Setenv("FACTCHECK_VERIFY_PATH", "true")
 	t.Setenv("FACTCHECK_VERIFY_API_KEY", "sk-test")
 	t.Setenv("FACTCHECK_VERIFY_CONCURRENCY", "3")

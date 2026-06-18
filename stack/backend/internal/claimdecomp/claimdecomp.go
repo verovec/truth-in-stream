@@ -80,8 +80,8 @@ const systemPromptFR = "Tu decomposes un seul enonce parle en ses affirmations f
 	"Enregistre les affirmations avec l'outil record_claims."
 
 // Config wires a Client. Provider selects the LLM backend (default Anthropic);
-// APIKey/GeminiAPIKey are the per-provider secrets and come from the environment
-// only; Model defaults to defaultModel when empty; MaxClaimsPerUnit defaults to
+// APIKey/GeminiAPIKey/DeepSeekAPIKey are the per-provider secrets and come from the environment
+// only; an empty Model lets the selected provider apply its own default model; MaxClaimsPerUnit defaults to
 // defaultMaxClaims when not positive. Locale selects the prompt language: the
 // default (English) keeps the English prompt and labels; domain.LocaleFrench
 // prompts and emits claims in French.
@@ -89,6 +89,7 @@ type Config struct {
 	Provider         llm.ProviderName
 	APIKey           string
 	GeminiAPIKey     string
+	DeepSeekAPIKey   string
 	Model            string
 	MaxClaimsPerUnit int
 	Locale           domain.Locale
@@ -117,19 +118,16 @@ type Client struct {
 // error). Extra request options (e.g. a test base URL) are forwarded to the
 // shared transport, so a caller can point the client at a fake server.
 func New(cfg Config, opts ...llm.Option) (*Client, error) {
-	model := cfg.Model
-	if model == "" {
-		model = defaultModel
-	}
 	maxClaims := cfg.MaxClaimsPerUnit
 	if maxClaims <= 0 {
 		maxClaims = defaultMaxClaims
 	}
 	client, err := llm.NewClient(llm.Config{
-		Provider:     cfg.Provider,
-		APIKey:       cfg.APIKey,
-		GeminiAPIKey: cfg.GeminiAPIKey,
-		Model:        model,
+		Provider:       cfg.Provider,
+		APIKey:         cfg.APIKey,
+		GeminiAPIKey:   cfg.GeminiAPIKey,
+		DeepSeekAPIKey: cfg.DeepSeekAPIKey,
+		Model:          cfg.Model,
 	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("claimdecomp: %w", err)

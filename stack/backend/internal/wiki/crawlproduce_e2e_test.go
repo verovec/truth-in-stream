@@ -44,7 +44,7 @@ func TestRunCrawlEndToEndWithRealGate(t *testing.T) {
 	t.Cleanup(anthropic.Close)
 
 	gate, err := evidencegate.New(
-		evidencegate.Config{APIKey: "test-key"},
+		evidencegate.Config{Provider: llm.ProviderAnthropic, APIKey: "test-key"},
 		llm.WithBaseURL(anthropic.URL), llm.WithMaxRetries(0),
 	)
 	if err != nil {

@@ -188,6 +188,87 @@ func geminiFakeServer(t *testing.T, byStatement map[string]Case) *httptest.Serve
 	return srv
 }
 
+// deepseekRequest is the slice of the OpenAI-compatible Chat Completions request
+// body the DeepSeek fake reads: the message texts (to recover the claim) and the
+// tool_choice (to assert the forced single named function call).
+type deepseekRequest struct {
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+	ToolChoice struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	} `json:"tool_choice"`
+}
+
+// deepseekFakeServer is a fake OpenAI-compatible Chat Completions server that
+// replays each golden case's recorded verdict as a forced tool call, the DeepSeek
+// wire twin of the Anthropic and Gemini fakes. It recovers the claim from the
+// request's message texts, then asserts the request actually forced the single
+// named function (a tool_choice function object naming politicalToolName) before
+// answering, so the test proves the eval drives DeepSeek under the same
+// forced-call regime production uses rather than a free-form reply.
+func deepseekFakeServer(t *testing.T, byStatement map[string]Case) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		var req deepseekRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "decode", http.StatusBadRequest)
+			return
+		}
+		if req.ToolChoice.Type != "function" || req.ToolChoice.Function.Name != politicalToolName {
+			t.Errorf("deepseek request did not force the single %q tool call: type=%q name=%q",
+				politicalToolName, req.ToolChoice.Type, req.ToolChoice.Function.Name)
+			http.Error(w, "not forced", http.StatusBadRequest)
+			return
+		}
+		match, ok := matchCase(deepseekUserText(req), byStatement)
+		if !ok {
+			t.Errorf("no golden case matched deepseek request")
+			http.Error(w, "no case", http.StatusBadRequest)
+			return
+		}
+		args, err := json.Marshal(recordedVerdict(match.ModelVerdict))
+		if err != nil {
+			t.Errorf("marshal tool args: %v", err)
+			http.Error(w, "marshal", http.StatusInternalServerError)
+			return
+		}
+		resp, err := json.Marshal(map[string]any{
+			"id": "chatcmpl_eval", "object": "chat.completion", "created": 1, "model": "deepseek-v4-flash",
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role":       "assistant",
+					"tool_calls": []map[string]any{{"id": "call_eval", "type": "function", "function": map[string]any{"name": politicalToolName, "arguments": string(args)}}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+		})
+		if err != nil {
+			t.Errorf("marshal response: %v", err)
+			http.Error(w, "marshal", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write(resp); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // anthropicUserText joins the text blocks of the (single) user message in the
 // Anthropic request.
 func anthropicUserText(req messagesRequest) string {
@@ -210,6 +291,19 @@ func geminiUserText(req geminiRequest) string {
 	for _, c := range req.Contents {
 		for _, p := range c.Parts {
 			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// deepseekUserText joins the content of the request's user messages. The system
+// frame is a separate message (role "system"), so only the user content carries
+// the rendered claim prompt the matcher keys on.
+func deepseekUserText(req deepseekRequest) string {
+	var b strings.Builder
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			b.WriteString(m.Content)
 		}
 	}
 	return b.String()
@@ -255,10 +349,14 @@ func newVerifier(t *testing.T, g Golden, target Target) *verify.Client {
 	const fakeKey = "test-key"
 
 	var srv *httptest.Server
-	if target.Provider == llm.ProviderGemini {
+	switch target.Provider {
+	case llm.ProviderGemini:
 		srv = geminiFakeServer(t, index)
-	} else {
+	case llm.ProviderAnthropic:
 		srv = anthropicFakeServer(t, index)
+	default:
+		// Empty provider defaults to DeepSeek, matching llm.NewClient.
+		srv = deepseekFakeServer(t, index)
 	}
 
 	v, err := verify.New(target.VerifierConfig(fakeKey), llm.WithBaseURL(srv.URL), llm.WithMaxRetries(0))
@@ -269,14 +367,15 @@ func newVerifier(t *testing.T, g Golden, target Target) *verify.Client {
 }
 
 // goldenTargets is the set of provider selections the offline gate runs the golden
-// set under: the shipped Anthropic default (empty provider) and Gemini. Both are
-// faked; running both proves the harness scores the same golden set under either
-// backend and that provider selection wires end to end.
+// set under: the DeepSeek default (empty provider), Anthropic, and Gemini. All are
+// faked; running every backend proves the harness scores the same golden set
+// identically regardless of provider and that provider selection wires end to end.
 var goldenTargets = []struct {
 	name   string
 	target Target
 }{
-	{name: "anthropic-default", target: Target{}},
+	{name: "deepseek-default", target: Target{}},
+	{name: "anthropic", target: Target{Provider: llm.ProviderAnthropic}},
 	{name: "gemini", target: Target{Provider: llm.ProviderGemini}},
 }
 
@@ -533,12 +632,19 @@ func TestTargetVerifierConfig(t *testing.T) {
 		target       Target
 		wantAPIKey   string
 		wantGemKey   string
+		wantDeepKey  string
 		wantProvider llm.ProviderName
 	}{
 		{
-			name:       "default targets anthropic and keys APIKey",
-			target:     Target{Model: "claude-haiku-4-5-20251001"},
-			wantAPIKey: "secret",
+			name:        "default targets deepseek and keys DeepSeekAPIKey",
+			target:      Target{Model: "deepseek-v4-flash"},
+			wantDeepKey: "secret",
+		},
+		{
+			name:         "anthropic keys APIKey",
+			target:       Target{Provider: llm.ProviderAnthropic, Model: "claude-haiku-4-5-20251001"},
+			wantAPIKey:   "secret",
+			wantProvider: llm.ProviderAnthropic,
 		},
 		{
 			name:         "gemini keys GeminiAPIKey",
@@ -559,6 +665,9 @@ func TestTargetVerifierConfig(t *testing.T) {
 			}
 			if cfg.GeminiAPIKey != tc.wantGemKey {
 				t.Errorf("GeminiAPIKey = %q, want %q", cfg.GeminiAPIKey, tc.wantGemKey)
+			}
+			if cfg.DeepSeekAPIKey != tc.wantDeepKey {
+				t.Errorf("DeepSeekAPIKey = %q, want %q", cfg.DeepSeekAPIKey, tc.wantDeepKey)
 			}
 			if cfg.Model != tc.target.Model {
 				t.Errorf("Model = %q, want %q", cfg.Model, tc.target.Model)

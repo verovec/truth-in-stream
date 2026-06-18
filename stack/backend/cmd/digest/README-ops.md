@@ -34,9 +34,10 @@ merge and runs `make digest EPIC=<parent>` when they are all Done.
 | `LINEAR_PROJECT` | No | Linear project name (default `Truth in Stream`). |
 | `GITHUB_TOKEN` | No | Raises the GitHub rate limit. The public repo works without it. |
 | `GITHUB_REPO` | No | `owner/name` (default `verovec/truth-in-stream`). |
-| `DIGEST_SUMMARY_API_KEY` | No | Anthropic key for the per-card "what was implemented" descriptions (the key under the default provider). Absent -> shipped cards fall back to their titles. |
-| `DIGEST_SUMMARY_MODEL` | No | Summary model (default `claude-haiku-4-5-20251001` under Anthropic; the provider default otherwise). |
-| `LLM_PROVIDER` | No | Shared LLM backend selector: `anthropic` (default) or `gemini`. Under `gemini` the summarizer keys on `GEMINI_API_KEY` instead of `DIGEST_SUMMARY_API_KEY`. |
+| `DIGEST_SUMMARY_API_KEY` | No | Anthropic key for the per-card "what was implemented" descriptions, used when `LLM_PROVIDER=anthropic`. Absent (under the selected provider) -> shipped cards fall back to their titles. |
+| `DIGEST_SUMMARY_MODEL` | No | Summary model (the selected provider's default when unset). |
+| `LLM_PROVIDER` | No | Shared LLM backend selector: `deepseek` (default), `anthropic`, or `gemini`. Under `deepseek` the summarizer keys on `DEEPSEEK_API_KEY`, under `gemini` on `GEMINI_API_KEY`, under `anthropic` on `DIGEST_SUMMARY_API_KEY`. |
+| `DEEPSEEK_API_KEY` | No | DeepSeek key for the summaries under the default provider (`LLM_PROVIDER` unset or `deepseek`). |
 | `GEMINI_API_KEY` | No | Gemini key for the summaries when `LLM_PROVIDER=gemini`. |
 
 A missing source never fails the digest: it degrades to a note in the report so

@@ -45,7 +45,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	c, err := New(Config{APIKey: "test-key"}, llm.WithBaseURL(server.URL), llm.WithMaxRetries(0))
+	c, err := New(Config{Provider: llm.ProviderAnthropic, APIKey: "test-key"}, llm.WithBaseURL(server.URL), llm.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
