@@ -12,13 +12,9 @@ import (
 	"time"
 )
 
-// commitMarker prefixes each commit header line in the git log format so the
-// numstat lines that follow can be attributed to the right commit. It is the
-// ASCII record-separator control character, which cannot appear in a subject.
-const commitMarker = "\x1e"
-
 // cardIDPattern matches a workspace card identifier (the Linear team prefix
-// VER plus a number) inside a branch name such as VER-29-upload_ui.
+// VER plus a number) inside a branch name such as VER-29-upload_ui or a commit
+// subject such as "feat: do a thing (VER-29)".
 var cardIDPattern = regexp.MustCompile(`VER-\d+`)
 
 // Runner executes a command and returns its stdout. Injected so tests can stand
@@ -45,49 +41,39 @@ func NewGitCommitSource(dir string) *GitCommitSource {
 	return &GitCommitSource{run: execRunner, dir: dir, now: time.Now}
 }
 
-// Commits returns commits within window, newest first. Merge commits are
-// excluded so the digest reflects authored work.
-func (g *GitCommitSource) Commits(ctx context.Context, window time.Duration) ([]Commit, error) {
-	out, err := g.run(ctx, "git", "-C", g.dir, "log",
-		"--since="+sinceArg(window), "--no-merges",
-		"--pretty=format:"+commitMarker+"%h%x09%an%x09%s", "--numstat")
+// SubjectsForCards returns, per requested card ID, the subjects of the commits
+// that reference it. It scans every card-referencing commit in history (via
+// --grep), not just the digest window, so an epic recap of older cards still has
+// real input. Subjects are grouped by the card ID they name and arrive newest
+// first; requested IDs with no matching commit are absent from the result.
+func (g *GitCommitSource) SubjectsForCards(ctx context.Context, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out, err := g.run(ctx, "git", "-C", g.dir, "log", "--no-merges",
+		"--extended-regexp", "--grep", cardIDPattern.String(), "--pretty=format:%s")
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
-	return parseCommits(out), nil
-}
-
-// parseCommits reads the combined --pretty/--numstat stream: a marker-prefixed
-// header line per commit, followed by one numstat line per changed file.
-func parseCommits(out []byte) []Commit {
-	var commits []Commit
-	cur := -1
+	subjects := map[string][]string{}
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+		subject := scanner.Text()
+		if subject == "" {
 			continue
 		}
-		if header, ok := strings.CutPrefix(line, commitMarker); ok {
-			fields := strings.SplitN(header, "\t", 3)
-			c := Commit{Hash: fields[0]}
-			if len(fields) > 1 {
-				c.Author = fields[1]
-			}
-			if len(fields) > 2 {
-				c.Subject = fields[2]
-			}
-			commits = append(commits, c)
-			cur = len(commits) - 1
+		id := cardIDPattern.FindString(subject)
+		if id == "" || !want[id] {
 			continue
 		}
-		// A numstat line ("added\tdeleted\tpath") belongs to the current commit.
-		if cur >= 0 {
-			commits[cur].Files++
-		}
+		subjects[id] = append(subjects[id], subject)
 	}
-	return commits
+	return subjects, nil
 }
 
 // ActiveCardIDs returns the set of card IDs whose local or remote branch has a
@@ -115,9 +101,4 @@ func (g *GitCommitSource) ActiveCardIDs(ctx context.Context, window time.Duratio
 		}
 	}
 	return active, nil
-}
-
-// sinceArg renders window as a git relative date ("24 hours ago").
-func sinceArg(window time.Duration) string {
-	return fmt.Sprintf("%d hours ago", windowHours(window))
 }

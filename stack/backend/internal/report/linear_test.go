@@ -28,8 +28,8 @@ func TestLinearRecentMoves(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[
-			{"identifier":"VER-1","title":"First","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"In Review"}},
-			{"identifier":"VER-2","title":"Second","updatedAt":"2026-06-11T01:00:00.000Z","state":{"name":"Done"}}
+			{"identifier":"VER-1","title":"First","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"In Review","type":"started"}},
+			{"identifier":"VER-2","title":"Second","updatedAt":"2026-06-11T01:00:00.000Z","state":{"name":"Done","type":"completed"}}
 		]}}}`)
 	}))
 	defer srv.Close()
@@ -40,6 +40,9 @@ func TestLinearRecentMoves(t *testing.T) {
 	}
 	if len(moves) != 2 || moves[0].ID != "VER-1" || moves[0].State != "In Review" || moves[1].ID != "VER-2" {
 		t.Fatalf("parsed moves wrong: %+v", moves)
+	}
+	if moves[1].StateType != "completed" {
+		t.Errorf("VER-2 StateType = %q, want completed", moves[1].StateType)
 	}
 	if gotAuth != "lin_secret" {
 		t.Errorf("Authorization = %q, want raw api key", gotAuth)
@@ -57,13 +60,98 @@ func TestLinearRecentMoves(t *testing.T) {
 	}
 }
 
+func TestLinearRemaining(t *testing.T) {
+	t.Parallel()
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[
+			{"identifier":"VER-5","title":"Todo card","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"Todo","type":"unstarted"}}
+		]}}}`)
+	}))
+	defer srv.Close()
+
+	moves, err := newLinearTestClient(srv, "k").Remaining(context.Background())
+	if err != nil {
+		t.Fatalf("Remaining: %v", err)
+	}
+	if len(moves) != 1 || moves[0].ID != "VER-5" || moves[0].StateType != "unstarted" {
+		t.Fatalf("parsed = %+v", moves)
+	}
+	// The filter must exclude finished and canceled cards by state category.
+	for _, want := range []string{"completed", "canceled", "nin"} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("remaining filter missing %q: %s", want, gotBody)
+		}
+	}
+}
+
+func TestLinearEpicChildren(t *testing.T) {
+	t.Parallel()
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[
+			{"identifier":"VER-93","title":"Political fact-check","children":{"nodes":[
+				{"identifier":"VER-94","title":"French STT","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"Done","type":"completed"}},
+				{"identifier":"VER-95","title":"Evidence schema","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"In Progress","type":"started"}}
+			]}}
+		]}}}`)
+	}))
+	defer srv.Close()
+
+	title, children, err := newLinearTestClient(srv, "k").EpicChildren(context.Background(), "VER-93")
+	if err != nil {
+		t.Fatalf("EpicChildren: %v", err)
+	}
+	if title != "Political fact-check" {
+		t.Errorf("epic title = %q", title)
+	}
+	if len(children) != 2 || children[0].ID != "VER-94" || children[1].ID != "VER-95" {
+		t.Fatalf("children = %+v", children)
+	}
+	if children[0].StateType != "completed" {
+		t.Errorf("VER-94 StateType = %q, want completed", children[0].StateType)
+	}
+	// The epic is resolved by team key and number parsed from the identifier.
+	for _, want := range []string{`"key"`, `"VER"`, `"number"`, "93"} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("epic filter missing %q: %s", want, gotBody)
+		}
+	}
+}
+
+func TestLinearEpicChildrenNotFound(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[]}}}`)
+	}))
+	defer srv.Close()
+	if _, _, err := newLinearTestClient(srv, "k").EpicChildren(context.Background(), "VER-404"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("want not-found error, got %v", err)
+	}
+}
+
+func TestLinearEpicChildrenInvalidID(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("server must not be called for an invalid id")
+	}))
+	defer srv.Close()
+	if _, _, err := newLinearTestClient(srv, "k").EpicChildren(context.Background(), "not-a-number"); err == nil {
+		t.Fatal("want error for an unparseable id, got nil")
+	}
+}
+
 func TestLinearInProgress(t *testing.T) {
 	t.Parallel()
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"identifier":"VER-9","title":"WIP","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"In Progress"}}]}}}`)
+		_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"identifier":"VER-9","title":"WIP","updatedAt":"2026-06-11T00:00:00.000Z","state":{"name":"In Progress","type":"started"}}]}}}`)
 	}))
 	defer srv.Close()
 

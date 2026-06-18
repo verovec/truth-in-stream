@@ -94,15 +94,13 @@ func (r *SlackRenderer) RenderJSON(p Payload) ([]byte, error) {
 }
 
 func (r *SlackRenderer) buildMessage(p Payload) slackMessage {
-	date := p.GeneratedAt.Format("Mon 2 Jan 2006")
-	title := "Daily development digest - " + date
+	title := digestTitle(p)
 	blocks := []slackBlock{
 		{Type: "header", Text: &slackText{Type: "plain_text", Text: title}},
-		contextBlock(fmt.Sprintf("Window: last %dh | generated %s",
-			windowHours(p.Window), p.GeneratedAt.Format("15:04 MST"))),
+		contextBlock(digestContext(p)),
 		{Type: "divider"},
-		mrkdwnSection("Commits", slackCommitLines(p.Commits), "No commits in the window."),
-		mrkdwnSection("Linear activity", slackCardLines(p.CardMoves), "No card activity in the window."),
+		mrkdwnSection("Shipped", slackShippedLines(p.Shipped), shippedEmpty(p)),
+		mrkdwnSection("Remaining", slackRemainingLines(p.Remaining), "No cards remaining."),
 		mrkdwnSection("Open pull requests", slackPRLines(p.OpenPRs), "No open pull requests."),
 		mrkdwnSection("Blockers", slackBlockerLines(p.Blockers), "No stalled In Progress cards."),
 	}
@@ -150,19 +148,18 @@ func mrkdwnSection(title string, lines []string, empty string) slackBlock {
 	return slackBlock{Type: "section", Text: &slackText{Type: "mrkdwn", Text: b.String()}}
 }
 
-func slackCommitLines(commits []Commit) []string {
-	lines := make([]string, len(commits))
-	for i, c := range commits {
-		lines[i] = fmt.Sprintf("- `%s` %s - _%s_ (%d %s)",
-			c.Hash, escapeMrkdwn(c.Subject), escapeMrkdwn(c.Author), c.Files, plural(c.Files, "file"))
+func slackShippedLines(cards []CardSummary) []string {
+	lines := make([]string, len(cards))
+	for i, c := range cards {
+		lines[i] = fmt.Sprintf("- *%s* %s", escapeMrkdwn(c.ID), escapeMrkdwn(shippedDescription(c)))
 	}
 	return lines
 }
 
-func slackCardLines(cards []CardMove) []string {
+func slackRemainingLines(cards []CardMove) []string {
 	lines := make([]string, len(cards))
 	for i, c := range cards {
-		lines[i] = fmt.Sprintf("- *%s* %s -> _%s_", escapeMrkdwn(c.ID), escapeMrkdwn(c.Title), escapeMrkdwn(c.State))
+		lines[i] = fmt.Sprintf("- *%s* %s _(%s)_", escapeMrkdwn(c.ID), escapeMrkdwn(c.Title), escapeMrkdwn(c.State))
 	}
 	return lines
 }
@@ -187,8 +184,44 @@ func slackBlockerLines(blockers []Blocker) []string {
 	return lines
 }
 
+// digestTitle is the report headline, shared by both renderers: the epic's name
+// in epic mode, the dated daily title otherwise.
+func digestTitle(p Payload) string {
+	if p.Mode == ModeEpic && p.Epic != nil {
+		return fmt.Sprintf("Epic recap: %s - %s", p.Epic.ID, p.Epic.Title)
+	}
+	return "Daily development digest - " + p.GeneratedAt.Format("Mon 2 Jan 2006")
+}
+
+// digestContext is the sub-header line: the window for the daily digest, the
+// epic identifier for an epic recap, plus the generation time.
+func digestContext(p Payload) string {
+	if p.Mode == ModeEpic && p.Epic != nil {
+		return fmt.Sprintf("Epic %s | generated %s", p.Epic.ID, p.GeneratedAt.Format("15:04 MST"))
+	}
+	return fmt.Sprintf("Window: last %dh | generated %s", windowHours(p.Window), p.GeneratedAt.Format("15:04 MST"))
+}
+
+// shippedEmpty is the placeholder for an empty Shipped section, worded for the
+// mode.
+func shippedEmpty(p Payload) string {
+	if p.Mode == ModeEpic {
+		return "No cards shipped in this epic yet."
+	}
+	return "No cards shipped in the window."
+}
+
+// shippedDescription is what a shipped card shows: its synthesized summary, or
+// its title when no summary is available.
+func shippedDescription(c CardSummary) string {
+	if c.Summary != "" {
+		return c.Summary
+	}
+	return c.Title
+}
+
 // escapeMrkdwn escapes the three characters Slack mrkdwn reserves so card titles
-// and commit subjects render literally. Ampersand must be replaced first.
+// and summaries render literally. Ampersand must be replaced first.
 func escapeMrkdwn(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
@@ -202,11 +235,4 @@ func windowHours(d time.Duration) int {
 		h = 1
 	}
 	return h
-}
-
-func plural(n int, word string) string {
-	if n == 1 {
-		return word
-	}
-	return word + "s"
 }

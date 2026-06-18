@@ -41,7 +41,16 @@ CRAWL_SHARDS ?= 1
 # Worker count for the fact-check-archive consumer fleet (`make factcheck-workers`).
 FACTCHECKWORKER_REPLICAS ?= 2
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers prime migrate logs ps
+# Knobs for `make digest`. MODE empty (default) posts the Block Kit digest to
+# SLACK_DIGEST_WEBHOOK_URL; MODE=terminal prints the full untruncated report to
+# stdout; MODE=dry-run prints the Slack JSON without posting. EPIC=VER-93 recaps
+# a finished epic instead of the daily window. Both map to the cmd/digest flags
+# of the same name, e.g. `make digest EPIC=VER-93 MODE=dry-run`.
+MODE ?=
+EPIC ?=
+DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
+
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers prime migrate logs ps digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -185,3 +194,7 @@ logs: ## Tail logs for all services
 
 ps: ## Show service status
 	$(COMPOSE) ps
+
+digest: ## Post the dev digest (cards shipped in the last 24h, the project's remaining work, open PRs, stalled cards) to SLACK_DIGEST_WEBHOOK_URL. `make digest EPIC=VER-93` recaps a finished epic instead; `make digest MODE=terminal` prints the full report to stdout; `make digest MODE=dry-run` prints the Slack JSON without posting. Reads SLACK_DIGEST_WEBHOOK_URL, LINEAR_API_KEY, LINEAR_PROJECT, GITHUB_TOKEN, GITHUB_REPO, DIGEST_SUMMARY_API_KEY, DIGEST_SUMMARY_MODEL from .env; any missing one degrades that section to a note (or shipped cards to their titles)
+	@set -a; [ -f .env ] && eval "$$(grep -E '^(SLACK_DIGEST_WEBHOOK_URL|LINEAR_API_KEY|LINEAR_PROJECT|GITHUB_TOKEN|GITHUB_REPO|DIGEST_SUMMARY_API_KEY|DIGEST_SUMMARY_MODEL)=' .env)"; set +a; \
+	  $(GO) -C stack/backend run ./cmd/digest $(DIGEST_FLAG)
