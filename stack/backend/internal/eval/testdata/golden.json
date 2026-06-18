@@ -1,405 +1,473 @@
 {
-  "_about": "Golden eval set for the speaker-credibility fact-check path. Each case is one atomic claim, the evidence passages retrieval would surface for it, the credibility verdict the evidence actually warrants (expected: credible | disputed | unverifiable), a provenance note justifying that label, and a recorded model verdict (the verifier tool-call the real verify.Client would produce, including its grounding basis: evidence | knowledge). The recorded model verdict makes the verify path deterministic and runnable in CI with no external API and no DB. Cases tagged adversarial are the same-topic-opposite-truth (or same-topic-non-bearing) pairs that expose the legacy 'similarity is not entailment' bug: the top retrieved passage is highly similar to the claim yet disputes it or does not bear on it, so a similarity-only path scores them credible while the grounded verifier reads the passage (or falls back to world knowledge) and labels them correctly. A non-bearing passage no longer forces a verdict: the verifier uses general knowledge as a tiebreaker and marks the verdict basis 'knowledge'. Each passage carries a similarity (cosine, as the matcher would report) and a kind (claim|evidence) so the legacy baseline path can be modeled on the identical inputs.",
+  "_about": "French political golden eval set for the two-axis fact-check path (FACTCHECK_POLITICAL). Each case is one atomic French political claim, the evidence passages retrieval would surface for it, the claim_type it exercises (statistic | voting-record | attribution | causal | comparative | opinion), the literal verdict the evidence actually warrants (expected_literal: accurate | inaccurate | unverifiable), the manipulation flags the framing actually warrants (expected_flags, a subset of missing-context | cherry-picked | outdated | misattributed | misleading-causation), a provenance note justifying the labels, and a recorded model verdict (the two-axis record_assessment tool-call the real verify.Client would produce, including its grounding basis: evidence | knowledge). The recorded model verdict makes the political path deterministic and runnable in CI with no external API and no DB. Cases tagged adversarial are the true-but-misleading and same-topic-opposite-truth cases that are the redesign's whole point: a true figure quoted over a cherry-picked timeframe stays literally accurate yet carries a flag; a quote stripped of qualifying context is misattributed or missing-context; a same-topic passage that contradicts the claim makes it inaccurate though a similarity-only path would surface it as support. Each recorded citation's quoted_span is an exact substring of the cited passage so it survives the deterministic citation guard; unverifiable cases carry no surviving citation and rest on knowledge.",
   "cases": [
     {
-      "id": "round-earth",
-      "statement": "The Earth is approximately spherical.",
-      "expected": "credible",
-      "provenance": "Settled science; the lead passage directly affirms the claim, so the verdict is evidence-grounded credible.",
+      "id": "chomage-niveau",
+      "statement": "Le taux de chômage en France est de 7,3% au dernier trimestre.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Source primaire INSEE; le passage affirme exactement le chiffre, verdict accurate appuyé sur la preuve.",
       "passages": [
-        {"id": "evidence:1:0", "text": "The Earth is an oblate spheroid, very nearly spherical, with an equatorial bulge of about 0.3 percent.", "similarity": 0.91, "kind": "evidence"}
+        {"id": "insee:chomage:0", "text": "Selon l'INSEE, le taux de chômage en France s'établit à 7,3% au dernier trimestre, stable sur un an.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.97, "citations": [{"evidence_id": "evidence:1:0", "quoted_span": "The Earth is an oblate spheroid, very nearly spherical"}], "rationale": "The passage states the Earth is very nearly spherical."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.93, "citations": [{"evidence_id": "insee:chomage:0", "quoted_span": "le taux de chômage en France s'établit à 7,3%"}], "rationale": "Le chiffre cité correspond à la donnée de l'INSEE."}
     },
     {
-      "id": "water-boils-100c",
-      "statement": "Water boils at 100 degrees Celsius at sea level.",
-      "expected": "credible",
-      "provenance": "Standard physics; lead passage states the boiling point at one atmosphere, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:2:0", "text": "At standard atmospheric pressure (one atmosphere), water boils at 100 degrees Celsius.", "similarity": 0.93, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.96, "citations": [{"evidence_id": "evidence:2:0", "quoted_span": "water boils at 100 degrees Celsius"}], "rationale": "The passage gives the boiling point at one atmosphere."}
-    },
-    {
-      "id": "speed-of-light",
-      "statement": "The speed of light in a vacuum is about 300,000 kilometres per second.",
-      "expected": "credible",
-      "provenance": "Physical constant; passage states the value, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:3:0", "text": "The speed of light in a vacuum is exactly 299,792,458 metres per second, roughly 300,000 kilometres per second.", "similarity": 0.9, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:3:0", "quoted_span": "roughly 300,000 kilometres per second"}], "rationale": "The passage gives the speed of light as roughly 300,000 km/s."}
-    },
-    {
-      "id": "great-wall-space",
-      "statement": "The Great Wall of China is visible to the naked eye from the Moon.",
-      "expected": "disputed",
-      "provenance": "Common myth; the passage explicitly denies it, so disputed is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:4:0", "text": "Contrary to popular belief, the Great Wall of China is not visible to the naked eye from the Moon, nor from low Earth orbit without aid.", "similarity": 0.89, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.94, "citations": [{"evidence_id": "evidence:4:0", "quoted_span": "the Great Wall of China is not visible to the naked eye from the Moon"}], "rationale": "The passage states the wall is not visible from the Moon."}
-    },
-    {
-      "id": "vaccines-autism",
-      "statement": "Vaccines cause autism.",
-      "expected": "disputed",
-      "provenance": "Adversarial: the retrieved passage is on the exact same topic (vaccines and autism) but states the opposite; a similarity-only path scores it credible.",
+      "id": "chomage-12pct",
+      "statement": "Le chômage est à 12% aujourd'hui.",
+      "claim_type": "statistic",
+      "expected_literal": "inaccurate",
+      "expected_flags": [],
+      "provenance": "Adversarial: le passage porte sur le même sujet (taux de chômage) mais donne 7,3%, contredisant le 12% cité; un chemin par similarité le surfacerait comme appui.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:5:0", "text": "Large-scale studies have found no link between vaccines and autism; the original study claiming such a link was retracted as fraudulent.", "similarity": 0.95, "kind": "evidence"}
+        {"id": "insee:chomage:1", "text": "Le taux de chômage est de 7,3% au dernier trimestre selon l'INSEE, loin du niveau avancé dans le débat.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.96, "citations": [{"evidence_id": "evidence:5:0", "quoted_span": "found no link between vaccines and autism"}], "rationale": "The passage states studies found no link between vaccines and autism."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": [], "confidence": 0.92, "citations": [{"evidence_id": "insee:chomage:1", "quoted_span": "Le taux de chômage est de 7,3%"}], "rationale": "Le chiffre cité contredit la donnée de l'INSEE."}
     },
     {
-      "id": "earth-flat",
-      "statement": "The Earth is flat.",
-      "expected": "disputed",
-      "provenance": "Adversarial: the top passage is about the Earth's shape (very high similarity) but disputes the flatness claim.",
+      "id": "delinquance-cherry",
+      "statement": "La délinquance a baissé de 10% l'an dernier.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": ["cherry-picked"],
+      "provenance": "Adversarial true-but-misleading: le chiffre annuel est exact mais la période ignore la hausse des cinq années précédentes que le passage rapporte; accurate + cherry-picked.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:6:0", "text": "The Earth is an oblate spheroid; the flat-Earth model is contradicted by satellite imagery, circumnavigation, and the curvature of the horizon.", "similarity": 0.94, "kind": "evidence"}
+        {"id": "insee:delinquance:0", "text": "La délinquance a baissé de 10% l'an dernier, après une hausse de 35% sur les cinq années précédentes.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:6:0", "quoted_span": "the flat-Earth model is contradicted by satellite imagery"}], "rationale": "The passage states the flat-Earth model is contradicted by evidence."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": ["cherry-picked"], "confidence": 0.82, "citations": [{"evidence_id": "insee:delinquance:0", "quoted_span": "La délinquance a baissé de 10% l'an dernier"}], "rationale": "Le chiffre est exact mais la période choisie ignore la hausse des cinq années précédentes."}
     },
     {
-      "id": "climate-change-natural-only",
-      "statement": "Recent global warming is caused entirely by natural cycles, not human activity.",
-      "expected": "disputed",
-      "provenance": "Adversarial: passage is squarely on climate change (high similarity) but attributes warming to human activity.",
+      "id": "dette-publique",
+      "statement": "La dette publique française dépasse 110% du PIB.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Donnée INSEE/Eurostat; le passage confirme un ratio supérieur à 110%.",
+      "passages": [
+        {"id": "insee:dette:0", "text": "La dette publique de la France atteint environ 112% du produit intérieur brut à la fin de l'exercice.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "insee:dette:0", "quoted_span": "atteint environ 112% du produit intérieur brut"}], "rationale": "Le passage situe la dette au-dessus de 110% du PIB."}
+    },
+    {
+      "id": "inflation-outdated",
+      "statement": "L'inflation en France est de 6%.",
+      "claim_type": "statistic",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["outdated"],
+      "provenance": "Adversarial: 6% correspond à un pic ancien; le passage donne le taux courant (3,1%), donc inaccurate, et le chiffre périmé est présenté comme actuel -> outdated.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:7:0", "text": "The scientific consensus is that recent global warming is primarily caused by human emissions of greenhouse gases, not natural cycles.", "similarity": 0.92, "kind": "evidence"}
+        {"id": "insee:inflation:0", "text": "L'inflation sur un an s'établit désormais à 3,1%, après un pic à 6% observé deux ans plus tôt.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.93, "citations": [{"evidence_id": "evidence:7:0", "quoted_span": "primarily caused by human emissions of greenhouse gases, not natural cycles"}], "rationale": "The passage attributes warming to human emissions, contradicting the natural-only claim."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["outdated"], "confidence": 0.85, "citations": [{"evidence_id": "insee:inflation:0", "quoted_span": "L'inflation sur un an s'établit désormais à 3,1%"}], "rationale": "Le taux actuel est de 3,1%, le chiffre de 6% renvoie à un pic passé."}
     },
     {
-      "id": "five-percent-brain",
-      "statement": "Humans only use 10 percent of their brains.",
-      "expected": "disputed",
-      "provenance": "Adversarial: brain-usage passage (high similarity) disputes the myth.",
+      "id": "smic-montant",
+      "statement": "Le SMIC mensuel net est d'environ 1 400 euros.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Donnée officielle; le passage confirme l'ordre de grandeur du SMIC net mensuel.",
+      "passages": [
+        {"id": "dares:smic:0", "text": "Le SMIC net mensuel s'élève à environ 1 400 euros pour un temps plein au taux horaire en vigueur.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.88, "citations": [{"evidence_id": "dares:smic:0", "quoted_span": "Le SMIC net mensuel s'élève à environ 1 400 euros"}], "rationale": "Le passage confirme le montant net mensuel du SMIC."}
+    },
+    {
+      "id": "immigration-part",
+      "statement": "Les immigrés représentent 50% de la population française.",
+      "claim_type": "statistic",
+      "expected_literal": "inaccurate",
+      "expected_flags": [],
+      "provenance": "Le passage donne environ 10%, contredisant nettement le 50% avancé.",
+      "passages": [
+        {"id": "insee:immigration:0", "text": "Les immigrés représentent environ 10% de la population résidant en France.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": [], "confidence": 0.94, "citations": [{"evidence_id": "insee:immigration:0", "quoted_span": "Les immigrés représentent environ 10% de la population"}], "rationale": "La part réelle est d'environ 10%, loin de 50%."}
+    },
+    {
+      "id": "vote-retraites",
+      "statement": "Ce député a voté pour la réforme des retraites.",
+      "claim_type": "voting-record",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Scrutin AN; le passage relève la position pour, verdict accurate appuyé sur la source officielle.",
+      "passages": [
+        {"id": "an:scrutin:4012", "text": "Scrutin n°4012 sur le projet de loi portant réforme des retraites: le député a voté pour.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.95, "citations": [{"evidence_id": "an:scrutin:4012", "quoted_span": "le député a voté pour"}], "rationale": "Le scrutin de l'Assemblée nationale enregistre un vote pour."}
+    },
+    {
+      "id": "vote-budget-contre",
+      "statement": "Cette députée a voté contre le budget de la Sécurité sociale.",
+      "claim_type": "voting-record",
+      "expected_literal": "inaccurate",
+      "expected_flags": [],
+      "provenance": "Adversarial: le passage du scrutin enregistre une abstention, pas un vote contre; un appariement par sujet le confondrait.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:8:0", "text": "The claim that humans use only 10 percent of their brains is a myth; neuroimaging shows that virtually all of the brain is active over the course of a day.", "similarity": 0.93, "kind": "evidence"}
+        {"id": "an:scrutin:3987", "text": "Scrutin n°3987 sur le projet de loi de financement de la Sécurité sociale: la députée s'est abstenue.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.94, "citations": [{"evidence_id": "evidence:8:0", "quoted_span": "is a myth; neuroimaging shows that virtually all of the brain is active"}], "rationale": "The passage states the 10 percent claim is a myth."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "an:scrutin:3987", "quoted_span": "la députée s'est abstenue"}], "rationale": "Le scrutin enregistre une abstention et non un vote contre."}
     },
     {
-      "id": "goldfish-memory",
-      "statement": "Goldfish have a memory span of only three seconds.",
-      "expected": "disputed",
-      "provenance": "Adversarial: goldfish-memory passage (high similarity) disputes the three-second myth.",
+      "id": "vote-presence-missing",
+      "statement": "Ce sénateur a soutenu la loi sur l'énergie.",
+      "claim_type": "voting-record",
+      "expected_literal": "accurate",
+      "expected_flags": ["missing-context"],
+      "provenance": "Le passage confirme le vote pour mais précise une réserve déposée; le verdict reste accurate avec un drapeau de contexte omis.",
+      "passages": [
+        {"id": "senat:scrutin:221", "text": "Scrutin n°221 sur la loi relative à l'énergie: le sénateur a voté pour, tout en cosignant une réserve sur le calendrier d'application.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": ["missing-context"], "confidence": 0.83, "citations": [{"evidence_id": "senat:scrutin:221", "quoted_span": "le sénateur a voté pour"}], "rationale": "Le vote pour est exact mais la réserve déposée sur le calendrier est passée sous silence."}
+    },
+    {
+      "id": "vote-absence-unverif",
+      "statement": "Ce député a personnellement bloqué la loi en coulisses.",
+      "claim_type": "voting-record",
+      "expected_literal": "unverifiable",
+      "expected_flags": [],
+      "provenance": "Le passage ne porte que sur le résultat public du scrutin et ne dit rien d'un blocage en coulisses; rien ne tranche, unverifiable.",
+      "passages": [
+        {"id": "an:scrutin:4100", "text": "Scrutin n°4100: le texte a été rejeté par 250 voix contre 240.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": [], "confidence": 0.4, "citations": [], "rationale": "Le rôle personnel en coulisses n'est pas établi par le résultat du scrutin."}
+    },
+    {
+      "id": "citation-exacte",
+      "statement": "Le ministre a déclaré que la réforme serait reportée.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage de presse reproduit la déclaration; verdict accurate appuyé sur la citation.",
+      "passages": [
+        {"id": "presse:declaration:0", "text": "Lors de la conférence de presse, le ministre a indiqué que la réforme serait reportée à l'an prochain.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "presse:declaration:0", "quoted_span": "la réforme serait reportée à l'an prochain"}], "rationale": "Le passage de presse reproduit la déclaration attribuée."}
+    },
+    {
+      "id": "citation-misattributed",
+      "statement": "La présidente du groupe a dit qu'il fallait supprimer l'impôt sur le revenu.",
+      "claim_type": "attribution",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["misattributed"],
+      "provenance": "Adversarial: le passage attribue la phrase à un autre orateur; la citation est donc mal attribuée et le verdict littéral inaccurate.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:9:0", "text": "Studies show goldfish can remember things for months, not seconds; the three-second memory claim is a myth.", "similarity": 0.92, "kind": "evidence"}
+        {"id": "presse:attribution:1", "text": "C'est un économiste invité, et non la présidente du groupe, qui a proposé de supprimer l'impôt sur le revenu lors du débat.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.93, "citations": [{"evidence_id": "evidence:9:0", "quoted_span": "goldfish can remember things for months, not seconds"}], "rationale": "The passage states goldfish remember for months, disputing the claim."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["misattributed"], "confidence": 0.88, "citations": [{"evidence_id": "presse:attribution:1", "quoted_span": "et non la présidente du groupe"}], "rationale": "La proposition émane d'un économiste invité, la citation est mal attribuée."}
     },
     {
-      "id": "napoleon-short",
-      "statement": "Napoleon Bonaparte was unusually short.",
-      "expected": "disputed",
-      "provenance": "Adversarial: Napoleon-height passage (high similarity) disputes the shortness myth.",
+      "id": "citation-tronquee",
+      "statement": "Le maire a dit qu'il fallait fermer toutes les écoles.",
+      "claim_type": "attribution",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["missing-context"],
+      "provenance": "Adversarial: le passage montre une citation tronquée; la phrase complète portait une condition; verdict inaccurate avec contexte omis.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:10:0", "text": "Napoleon was about 1.69 metres tall, average for a Frenchman of his era; the myth of his shortness arose from a confusion between French and English units.", "similarity": 0.9, "kind": "evidence"}
+        {"id": "presse:tronque:0", "text": "Le maire a dit qu'il faudrait fermer temporairement les écoles uniquement en cas d'alerte sanitaire majeure, pas de façon générale.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:10:0", "quoted_span": "average for a Frenchman of his era"}], "rationale": "The passage states Napoleon was of average height."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["missing-context"], "confidence": 0.82, "citations": [{"evidence_id": "presse:tronque:0", "quoted_span": "uniquement en cas d'alerte sanitaire majeure"}], "rationale": "La déclaration était conditionnée à une alerte sanitaire, la citation tronquée en change le sens."}
     },
     {
-      "id": "lightning-twice",
-      "statement": "Lightning never strikes the same place twice.",
-      "expected": "disputed",
-      "provenance": "Adversarial: lightning passage (high similarity) disputes the saying.",
+      "id": "causal-emploi",
+      "statement": "La baisse des charges a créé 200 000 emplois l'an dernier.",
+      "claim_type": "causal",
+      "expected_literal": "accurate",
+      "expected_flags": ["misleading-causation"],
+      "provenance": "Adversarial: le chiffre d'emplois créés est exact mais le passage attribue la hausse à plusieurs facteurs, pas à la seule baisse des charges; accurate + causalité trompeuse.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:11:0", "text": "Lightning frequently strikes the same place more than once; tall structures such as the Empire State Building are struck dozens of times a year.", "similarity": 0.91, "kind": "evidence"}
+        {"id": "dares:emploi:0", "text": "Environ 200 000 emplois ont été créés l'an dernier, une hausse que les économistes attribuent à la reprise mondiale, à la consommation et, en partie seulement, à la baisse des charges.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.92, "citations": [{"evidence_id": "evidence:11:0", "quoted_span": "Lightning frequently strikes the same place more than once"}], "rationale": "The passage states lightning strikes the same place repeatedly."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": ["misleading-causation"], "confidence": 0.78, "citations": [{"evidence_id": "dares:emploi:0", "quoted_span": "Environ 200 000 emplois ont été créés l'an dernier"}], "rationale": "Le nombre d'emplois est exact mais la causalité unique avancée n'est pas étayée par les économistes."}
     },
     {
-      "id": "moon-cheese",
-      "statement": "The Moon is made of cheese.",
-      "expected": "disputed",
-      "provenance": "Adversarial: Moon-composition passage (high similarity) disputes the claim.",
+      "id": "causal-energie",
+      "statement": "La fermeture des centrales a fait exploser le prix de l'électricité.",
+      "claim_type": "causal",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["misleading-causation"],
+      "provenance": "Le passage impute la hausse au marché européen du gaz, pas aux fermetures; causalité non étayée et verdict inaccurate.",
+      "passages": [
+        {"id": "presse:energie:0", "text": "La hausse des prix de l'électricité s'explique avant tout par la flambée du marché européen du gaz, et non par les fermetures de centrales.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["misleading-causation"], "confidence": 0.8, "citations": [{"evidence_id": "presse:energie:0", "quoted_span": "et non par les fermetures de centrales"}], "rationale": "La hausse s'explique par le marché du gaz, le lien causal avancé n'est pas étayé."}
+    },
+    {
+      "id": "comparatif-croissance",
+      "statement": "La France a une croissance plus forte que l'Allemagne cette année.",
+      "claim_type": "comparative",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage Eurostat confirme la comparaison; verdict accurate appuyé sur la donnée.",
+      "passages": [
+        {"id": "eurostat:croissance:0", "text": "Cette année, la croissance du PIB français dépasse celle de l'Allemagne, en récession technique.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.86, "citations": [{"evidence_id": "eurostat:croissance:0", "quoted_span": "la croissance du PIB français dépasse celle de l'Allemagne"}], "rationale": "La comparaison de croissance est confirmée par les données européennes."}
+    },
+    {
+      "id": "comparatif-depenses-cherry",
+      "statement": "La France dépense plus pour sa santé que tous ses voisins.",
+      "claim_type": "comparative",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["cherry-picked"],
+      "provenance": "Adversarial: le passage montre qu'en part du PIB plusieurs voisins dépensent autant ou plus; la comparaison en valeur absolue masque le ratio; inaccurate + cherry-picked.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:12:0", "text": "The Moon is composed primarily of silicate rock and metal; samples returned by the Apollo missions confirm it is not made of cheese.", "similarity": 0.88, "kind": "evidence"}
+        {"id": "ocde:sante:0", "text": "Rapportée au PIB, la dépense de santé de la France est comparable à celle de l'Allemagne et inférieure à celle de la Suisse; seule la comparaison en valeur absolue la place en tête.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:12:0", "quoted_span": "composed primarily of silicate rock and metal"}], "rationale": "The passage states the Moon is composed of rock and metal."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["cherry-picked"], "confidence": 0.79, "citations": [{"evidence_id": "ocde:sante:0", "quoted_span": "inférieure à celle de la Suisse"}], "rationale": "Rapportée au PIB la dépense n'est pas la plus élevée, la comparaison choisie isole la valeur absolue."}
     },
     {
-      "id": "everest-tallest",
-      "statement": "Mount Everest is the tallest mountain on Earth measured from sea level.",
-      "expected": "credible",
-      "provenance": "Geography; passage affirms Everest's height above sea level, so credible is evidence-grounded.",
+      "id": "comparatif-fiscalite",
+      "statement": "La France a la fiscalité la plus lourde de la zone euro.",
+      "claim_type": "comparative",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage Eurostat place le taux de prélèvements obligatoires français au plus haut de la zone euro.",
       "passages": [
-        {"id": "evidence:13:0", "text": "Mount Everest, at 8,849 metres above sea level, is the highest mountain on Earth measured from sea level.", "similarity": 0.93, "kind": "evidence"}
+        {"id": "eurostat:fiscalite:0", "text": "Le taux de prélèvements obligatoires de la France est le plus élevé de la zone euro rapporté au PIB.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:13:0", "quoted_span": "is the highest mountain on Earth measured from sea level"}], "rationale": "The passage affirms Everest is the highest above sea level."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.84, "citations": [{"evidence_id": "eurostat:fiscalite:0", "quoted_span": "est le plus élevé de la zone euro"}], "rationale": "Le passage confirme le niveau le plus élevé de prélèvements de la zone euro."}
     },
     {
-      "id": "great-barrier-reef",
-      "statement": "The Great Barrier Reef is the world's largest coral reef system.",
-      "expected": "credible",
-      "provenance": "Geography; passage affirms the claim, so credible is evidence-grounded.",
+      "id": "opinion-meilleur",
+      "statement": "Notre programme est le meilleur pour le pays.",
+      "claim_type": "opinion",
+      "expected_literal": "unverifiable",
+      "expected_flags": [],
+      "provenance": "Affirmation subjective, aucun passage ne peut la trancher; unverifiable sans citation.",
       "passages": [
-        {"id": "evidence:14:0", "text": "The Great Barrier Reef off Australia is the world's largest coral reef system, stretching over 2,300 kilometres.", "similarity": 0.92, "kind": "evidence"}
+        {"id": "presse:programme:0", "text": "Le programme prévoit une baisse d'impôts financée par des coupes dans les dépenses publiques.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.94, "citations": [{"evidence_id": "evidence:14:0", "quoted_span": "is the world's largest coral reef system"}], "rationale": "The passage affirms it is the largest coral reef system."}
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": [], "confidence": 0.3, "citations": [], "rationale": "Le caractère meilleur d'un programme est un jugement de valeur, non vérifiable."}
     },
     {
-      "id": "penicillin-fleming",
-      "statement": "Alexander Fleming discovered penicillin.",
-      "expected": "credible",
-      "provenance": "History of science; passage affirms the discoverer, so credible is evidence-grounded.",
+      "id": "opinion-injuste",
+      "statement": "Cette réforme est profondément injuste.",
+      "claim_type": "opinion",
+      "expected_literal": "unverifiable",
+      "expected_flags": [],
+      "provenance": "Jugement de valeur; le passage décrit le contenu de la réforme mais ne peut établir l'injustice; unverifiable.",
       "passages": [
-        {"id": "evidence:15:0", "text": "Alexander Fleming discovered penicillin in 1928 when he noticed mould inhibiting bacterial growth on a culture plate.", "similarity": 0.91, "kind": "evidence"}
+        {"id": "presse:reforme:0", "text": "La réforme relève l'âge légal de départ et allonge la durée de cotisation requise.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:15:0", "quoted_span": "Alexander Fleming discovered penicillin in 1928"}], "rationale": "The passage affirms Fleming discovered penicillin."}
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": [], "confidence": 0.3, "citations": [], "rationale": "L'injustice d'une réforme relève d'une appréciation subjective."}
     },
     {
-      "id": "berlin-wall-1989",
-      "statement": "The Berlin Wall fell in 1989.",
-      "expected": "credible",
-      "provenance": "History; passage affirms the year, so credible is evidence-grounded.",
+      "id": "opinion-prive-unverif",
+      "statement": "Le candidat est quelqu'un de malhonnête dans sa vie privée.",
+      "claim_type": "opinion",
+      "expected_literal": "unverifiable",
+      "expected_flags": [],
+      "provenance": "Affirmation privée et subjective qu'aucune preuve fournie ne peut trancher; unverifiable.",
       "passages": [
-        {"id": "evidence:16:0", "text": "The Berlin Wall fell on 9 November 1989, an event that symbolised the end of the Cold War.", "similarity": 0.93, "kind": "evidence"}
+        {"id": "presse:candidat:0", "text": "Le candidat a présenté son patrimoine à la Haute Autorité pour la transparence de la vie publique, comme l'exige la loi.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.96, "citations": [{"evidence_id": "evidence:16:0", "quoted_span": "The Berlin Wall fell on 9 November 1989"}], "rationale": "The passage affirms the wall fell in 1989."}
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": [], "confidence": 0.3, "citations": [], "rationale": "Une appréciation sur la vie privée n'est pas établie par la déclaration de patrimoine."}
     },
     {
-      "id": "shakespeare-hamlet",
-      "statement": "William Shakespeare wrote Hamlet.",
-      "expected": "credible",
-      "provenance": "Literary history; passage affirms authorship, so credible is evidence-grounded.",
+      "id": "stat-energie-renouvelable",
+      "statement": "Les énergies renouvelables couvrent un quart de l'électricité française.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage RTE confirme une part proche d'un quart de la production électrique.",
       "passages": [
-        {"id": "evidence:17:0", "text": "Hamlet is a tragedy written by William Shakespeare around 1600.", "similarity": 0.9, "kind": "evidence"}
+        {"id": "rte:renouvelable:0", "text": "Les énergies renouvelables ont couvert environ 25% de la production d'électricité française sur l'année.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:17:0", "quoted_span": "written by William Shakespeare"}], "rationale": "The passage affirms Shakespeare wrote Hamlet."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.87, "citations": [{"evidence_id": "rte:renouvelable:0", "quoted_span": "environ 25% de la production d'électricité"}], "rationale": "Le passage situe la part des renouvelables autour d'un quart."}
     },
     {
-      "id": "columbus-1492",
-      "statement": "Christopher Columbus reached the Americas in 1492.",
-      "expected": "credible",
-      "provenance": "History; passage affirms the year, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:18:0", "text": "Christopher Columbus made his first transatlantic voyage in 1492, reaching islands in the Caribbean.", "similarity": 0.9, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.93, "citations": [{"evidence_id": "evidence:18:0", "quoted_span": "made his first transatlantic voyage in 1492"}], "rationale": "The passage affirms Columbus reached the Americas in 1492."}
-    },
-    {
-      "id": "dna-double-helix",
-      "statement": "DNA has a double-helix structure.",
-      "expected": "credible",
-      "provenance": "Molecular biology; passage affirms the structure, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:19:0", "text": "DNA is structured as a double helix, two strands wound around each other, as described by Watson and Crick in 1953.", "similarity": 0.92, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.96, "citations": [{"evidence_id": "evidence:19:0", "quoted_span": "DNA is structured as a double helix"}], "rationale": "The passage affirms DNA's double-helix structure."}
-    },
-    {
-      "id": "great-wall-only-manmade",
-      "statement": "The Great Wall of China is the only man-made structure visible from space.",
-      "expected": "disputed",
-      "provenance": "Adversarial: Great-Wall visibility passage (high similarity) disputes the 'only' claim.",
+      "id": "stat-pauvrete-outdated",
+      "statement": "Le taux de pauvreté atteint 8% en France.",
+      "claim_type": "statistic",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["outdated"],
+      "provenance": "Adversarial: 8% renvoie à une vieille mesure; le passage donne le taux actuel autour de 14%; inaccurate avec donnée périmée.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:20:0", "text": "No single man-made structure is uniquely visible from space; many human structures such as cities and highways are visible, and the Great Wall is in fact difficult to see.", "similarity": 0.9, "kind": "evidence"}
+        {"id": "insee:pauvrete:0", "text": "Le taux de pauvreté monétaire s'établit à environ 14% selon la dernière enquête, contre des niveaux plus bas il y a plusieurs décennies.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:20:0", "quoted_span": "No single man-made structure is uniquely visible from space"}], "rationale": "The passage denies any structure is uniquely visible, disputing the 'only' claim."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["outdated"], "confidence": 0.83, "citations": [{"evidence_id": "insee:pauvrete:0", "quoted_span": "s'établit à environ 14%"}], "rationale": "Le taux actuel avoisine 14%, le chiffre de 8% renvoie à une mesure ancienne."}
     },
     {
-      "id": "sugar-hyperactivity",
-      "statement": "Eating sugar makes children hyperactive.",
-      "expected": "disputed",
-      "provenance": "Adversarial: sugar-and-behavior passage (high similarity) disputes the belief.",
+      "id": "attribution-promesse",
+      "statement": "Le Premier ministre s'est engagé à plein emploi d'ici la fin du mandat.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage de presse reproduit l'engagement; verdict accurate appuyé sur la déclaration.",
+      "passages": [
+        {"id": "presse:engagement:0", "text": "Le Premier ministre s'est engagé à atteindre le plein emploi d'ici la fin du mandat lors de son discours de politique générale.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.85, "citations": [{"evidence_id": "presse:engagement:0", "quoted_span": "atteindre le plein emploi d'ici la fin du mandat"}], "rationale": "Le discours de politique générale reproduit l'engagement attribué."}
+    },
+    {
+      "id": "causal-secu-knowledge",
+      "statement": "La hausse du tabac a réduit le tabagisme des jeunes.",
+      "claim_type": "causal",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Aucun passage fourni ne porte sur ce lien précis; le verdict se replie sur les connaissances générales (effet documenté), basis knowledge, confiance modérée.",
+      "passages": [
+        {"id": "presse:tabac:0", "text": "Le prix du paquet de cigarettes a augmenté à plusieurs reprises au cours de la dernière décennie.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "knowledge", "flags": [], "confidence": 0.55, "citations": [], "rationale": "La littérature de santé publique associe une hausse des prix à une baisse du tabagisme, sans preuve directe ici."}
+    },
+    {
+      "id": "stat-fonctionnaires",
+      "statement": "Il y a plus de 5 millions d'agents publics en France.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage confirme un effectif de la fonction publique supérieur à 5 millions.",
+      "passages": [
+        {"id": "dgafp:effectif:0", "text": "La fonction publique française compte environ 5,7 millions d'agents tous versants confondus.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "dgafp:effectif:0", "quoted_span": "environ 5,7 millions d'agents"}], "rationale": "L'effectif de la fonction publique dépasse 5 millions d'agents."}
+    },
+    {
+      "id": "comparatif-co2-cherry",
+      "statement": "La France a réduit ses émissions plus vite que l'Allemagne l'an dernier.",
+      "claim_type": "comparative",
+      "expected_literal": "accurate",
+      "expected_flags": ["cherry-picked"],
+      "provenance": "Adversarial: la comparaison annuelle est exacte mais le passage montre qu'à l'échelle de la décennie c'est l'inverse; accurate + cherry-picked.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:21:0", "text": "Controlled studies have repeatedly found no link between sugar consumption and hyperactivity in children.", "similarity": 0.91, "kind": "evidence"}
+        {"id": "eurostat:co2:0", "text": "La France a réduit ses émissions plus vite que l'Allemagne l'an dernier, mais sur dix ans la baisse allemande reste nettement supérieure.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:21:0", "quoted_span": "no link between sugar consumption and hyperactivity in children"}], "rationale": "The passage states there is no link between sugar and hyperactivity."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": ["cherry-picked"], "confidence": 0.77, "citations": [{"evidence_id": "eurostat:co2:0", "quoted_span": "réduit ses émissions plus vite que l'Allemagne l'an dernier"}], "rationale": "La comparaison annuelle est exacte mais la tendance décennale, opposée, est écartée."}
     },
     {
-      "id": "bats-blind",
-      "statement": "Bats are blind.",
-      "expected": "disputed",
-      "provenance": "Adversarial: bat-vision passage (high similarity) disputes the saying.",
+      "id": "vote-europe",
+      "statement": "Ce groupe a voté contre le pacte budgétaire européen.",
+      "claim_type": "voting-record",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage du scrutin confirme la position contre du groupe.",
+      "passages": [
+        {"id": "an:scrutin:2901", "text": "Scrutin n°2901 sur la ratification du pacte budgétaire européen: le groupe a voté contre dans sa majorité.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "an:scrutin:2901", "quoted_span": "le groupe a voté contre dans sa majorité"}], "rationale": "Le scrutin enregistre un vote contre majoritaire du groupe."}
+    },
+    {
+      "id": "attribution-misattributed-parti",
+      "statement": "Le porte-parole du gouvernement a promis la gratuité des transports.",
+      "claim_type": "attribution",
+      "expected_literal": "inaccurate",
+      "expected_flags": ["misattributed"],
+      "provenance": "Adversarial: le passage attribue la promesse à un candidat d'opposition, pas au porte-parole du gouvernement; inaccurate + misattributed.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:22:0", "text": "Bats are not blind; all bat species can see, and many have good vision in addition to echolocation.", "similarity": 0.92, "kind": "evidence"}
+        {"id": "presse:transports:0", "text": "C'est un candidat d'opposition, et non le porte-parole du gouvernement, qui a promis la gratuité des transports dans son programme.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.93, "citations": [{"evidence_id": "evidence:22:0", "quoted_span": "Bats are not blind"}], "rationale": "The passage states bats are not blind."}
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": ["misattributed"], "confidence": 0.86, "citations": [{"evidence_id": "presse:transports:0", "quoted_span": "et non le porte-parole du gouvernement"}], "rationale": "La promesse émane d'un candidat d'opposition, l'attribution est erronée."}
     },
     {
-      "id": "einstein-failed-math",
-      "statement": "Albert Einstein failed mathematics in school.",
-      "expected": "disputed",
-      "provenance": "Adversarial: Einstein-schooling passage (high similarity) disputes the anecdote.",
+      "id": "stat-energie-nucleaire",
+      "statement": "Le nucléaire produit moins de la moitié de l'électricité française.",
+      "claim_type": "statistic",
+      "expected_literal": "inaccurate",
+      "expected_flags": [],
+      "provenance": "Le passage RTE donne une part nucléaire bien au-dessus de la moitié, contredisant la claim.",
+      "passages": [
+        {"id": "rte:nucleaire:0", "text": "Le parc nucléaire a fourni environ 65% de la production d'électricité française sur l'année.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "inaccurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "rte:nucleaire:0", "quoted_span": "environ 65% de la production d'électricité"}], "rationale": "Le nucléaire fournit environ 65%, soit plus de la moitié de la production."}
+    },
+    {
+      "id": "causal-inflation-knowledge",
+      "statement": "La guerre a contribué à la hausse des prix de l'énergie.",
+      "claim_type": "causal",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Aucun passage ne traite directement le lien; repli sur connaissances générales (lien largement documenté), basis knowledge.",
+      "passages": [
+        {"id": "presse:energie:1", "text": "Les prix de l'énergie ont connu une forte volatilité ces dernières années sur les marchés européens.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "knowledge", "flags": [], "confidence": 0.55, "citations": [], "rationale": "Le choc géopolitique sur les marchés énergétiques est largement documenté, sans preuve directe ici."}
+    },
+    {
+      "id": "comparatif-education-unverif",
+      "statement": "La France compte moins d'enseignants par élève que la moyenne de l'OCDE.",
+      "claim_type": "comparative",
+      "expected_literal": "unverifiable",
+      "expected_flags": [],
+      "provenance": "Le passage fourni ne donne pas le ratio comparé et ne permet pas de trancher; unverifiable.",
+      "passages": [
+        {"id": "presse:education:0", "text": "Le débat sur les effectifs enseignants oppose régulièrement la majorité et l'opposition lors des discussions budgétaires.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": [], "confidence": 0.35, "citations": [], "rationale": "Aucune donnée comparée n'est fournie pour trancher le ratio enseignants par élève."}
+    },
+    {
+      "id": "stat-deficit",
+      "statement": "Le déficit public dépasse 5% du PIB.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage confirme un déficit supérieur à 5% du PIB.",
+      "passages": [
+        {"id": "insee:deficit:0", "text": "Le déficit public de la France s'établit à environ 5,5% du produit intérieur brut sur l'exercice.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "insee:deficit:0", "quoted_span": "environ 5,5% du produit intérieur brut"}], "rationale": "Le déficit s'établit autour de 5,5%, au-dessus de 5%."}
+    },
+    {
+      "id": "vote-abstention-missing",
+      "statement": "Ce parti a soutenu la loi immigration.",
+      "claim_type": "voting-record",
+      "expected_literal": "accurate",
+      "expected_flags": ["missing-context"],
+      "provenance": "Le passage confirme le vote pour mais précise qu'il portait sur une version amendée très différente du texte initial; accurate + contexte omis.",
+      "passages": [
+        {"id": "an:scrutin:4205", "text": "Scrutin n°4205: le parti a voté pour la loi immigration, mais seulement après réécriture en commission d'un texte sensiblement différent de la version initiale.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": ["missing-context"], "confidence": 0.8, "citations": [{"evidence_id": "an:scrutin:4205", "quoted_span": "le parti a voté pour la loi immigration"}], "rationale": "Le vote pour est exact mais le passage de la version réécrite est passé sous silence."}
+    },
+    {
+      "id": "causal-chomage-misleading",
+      "statement": "Les aides sociales expliquent le niveau du chômage.",
+      "claim_type": "causal",
+      "expected_literal": "unverifiable",
+      "expected_flags": ["misleading-causation"],
+      "provenance": "Adversarial: le lien causal avancé n'est pas tranché par le passage, qui rappelle la multiplicité des facteurs; unverifiable + causalité trompeuse.",
       "adversarial": true,
       "passages": [
-        {"id": "evidence:23:0", "text": "Einstein excelled at mathematics from a young age; the story that he failed maths is false and he himself dismissed it.", "similarity": 0.9, "kind": "evidence"}
+        {"id": "presse:chomage:0", "text": "Les économistes rappellent que le niveau du chômage dépend de nombreux facteurs et qu'aucune étude ne l'impute aux seules aides sociales.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.92, "citations": [{"evidence_id": "evidence:23:0", "quoted_span": "Einstein excelled at mathematics from a young age"}], "rationale": "The passage states Einstein excelled at maths."}
+      "model_verdict": {"literal": "unverifiable", "basis": "knowledge", "flags": ["misleading-causation"], "confidence": 0.5, "citations": [], "rationale": "Aucune étude n'établit ce lien causal unique, que le passage écarte explicitement."}
     },
     {
-      "id": "tongue-taste-map",
-      "statement": "Different regions of the tongue are responsible for different tastes.",
-      "expected": "disputed",
-      "provenance": "Adversarial: tongue-taste passage (high similarity) disputes the taste-map myth.",
-      "adversarial": true,
+      "id": "stat-logement",
+      "statement": "Plus de deux millions de personnes attendent un logement social.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage confirme un nombre de demandeurs supérieur à deux millions.",
       "passages": [
-        {"id": "evidence:24:0", "text": "The 'tongue map' is a misconception; all taste qualities can be detected across the whole tongue, with only slight differences in sensitivity.", "similarity": 0.89, "kind": "evidence"}
+        {"id": "presse:logement:0", "text": "Plus de 2,4 millions de ménages sont inscrits sur la liste d'attente d'un logement social en France.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:24:0", "quoted_span": "all taste qualities can be detected across the whole tongue"}], "rationale": "The passage states all tastes are detected across the whole tongue."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.85, "citations": [{"evidence_id": "presse:logement:0", "quoted_span": "Plus de 2,4 millions de ménages"}], "rationale": "Le passage confirme plus de deux millions de demandeurs."}
     },
     {
-      "id": "mars-population",
-      "statement": "Mars currently has a permanent human settlement.",
-      "expected": "disputed",
-      "provenance": "Adversarial knowledge tiebreaker: the retrieved passage is about Mars (high topical similarity) but only describes robotic missions, so it does not bear on the claim; a similarity path falsely reads it as credible. With no bearing passage the verifier falls back to general knowledge, which clearly contradicts a permanent human settlement, so the verdict is disputed with basis knowledge.",
-      "adversarial": true,
+      "id": "attribution-quote-exact-2",
+      "statement": "La ministre a annoncé un plan de 10 milliards d'euros.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Le passage reproduit l'annonce; accurate appuyé sur la citation.",
       "passages": [
-        {"id": "evidence:25:0", "text": "Several robotic rovers, including Perseverance and Curiosity, are currently operating on the surface of Mars studying its geology.", "similarity": 0.86, "kind": "evidence"}
+        {"id": "presse:plan:0", "text": "La ministre a annoncé un plan d'investissement de 10 milliards d'euros pour l'industrie verte.", "kind": "evidence"}
       ],
-      "model_verdict": {"verdict": "disputed", "basis": "knowledge", "confidence": 0.6, "citations": [], "rationale": "No passage bears on the claim, but general knowledge is clear that Mars has no permanent human settlement."}
-    },
-    {
-      "id": "coffee-discovered",
-      "statement": "Coffee was first cultivated in Brazil.",
-      "expected": "disputed",
-      "provenance": "Adversarial knowledge tiebreaker: passage is about coffee (high similarity) but discusses production today, not where it was first cultivated. General knowledge places coffee's first cultivation in the Arabian peninsula / Ethiopia, not Brazil, so the verifier disputes it on basis knowledge.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:26:0", "text": "Brazil is today the world's largest producer of coffee, accounting for roughly a third of global output.", "similarity": 0.85, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "knowledge", "confidence": 0.55, "citations": [], "rationale": "The passage covers current production; general knowledge places first cultivation in Arabia/Ethiopia, not Brazil."}
-    },
-    {
-      "id": "antibiotics-virus",
-      "statement": "Antibiotics are effective against viral infections.",
-      "expected": "disputed",
-      "provenance": "Adversarial: antibiotics passage (high similarity) disputes the claim.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:27:0", "text": "Antibiotics kill bacteria and are ineffective against viruses such as those causing the common cold or influenza.", "similarity": 0.91, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.94, "citations": [{"evidence_id": "evidence:27:0", "quoted_span": "ineffective against viruses"}], "rationale": "The passage states antibiotics are ineffective against viruses."}
-    },
-    {
-      "id": "pluto-planet",
-      "statement": "Pluto is classified as a dwarf planet.",
-      "expected": "credible",
-      "provenance": "Astronomy; passage affirms the 2006 reclassification, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:28:0", "text": "In 2006 the International Astronomical Union reclassified Pluto as a dwarf planet.", "similarity": 0.92, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.95, "citations": [{"evidence_id": "evidence:28:0", "quoted_span": "reclassified Pluto as a dwarf planet"}], "rationale": "The passage affirms Pluto's dwarf-planet classification."}
-    },
-    {
-      "id": "amazon-largest-river",
-      "statement": "The Amazon is the largest river by discharge volume.",
-      "expected": "credible",
-      "provenance": "Geography; passage affirms the claim, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:29:0", "text": "The Amazon River has the greatest discharge volume of any river in the world, far exceeding the next largest.", "similarity": 0.9, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.94, "citations": [{"evidence_id": "evidence:29:0", "quoted_span": "the greatest discharge volume of any river in the world"}], "rationale": "The passage affirms the Amazon has the greatest discharge."}
-    },
-    {
-      "id": "stomach-ulcers-stress",
-      "statement": "Most stomach ulcers are caused by stress and spicy food.",
-      "expected": "disputed",
-      "provenance": "Adversarial: ulcer-cause passage (high similarity) attributes most ulcers to H. pylori, disputing the claim.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:30:0", "text": "Most peptic ulcers are caused by Helicobacter pylori infection or by NSAID use, not by stress or spicy food.", "similarity": 0.91, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.92, "citations": [{"evidence_id": "evidence:30:0", "quoted_span": "caused by Helicobacter pylori infection or by NSAID use, not by stress or spicy food"}], "rationale": "The passage attributes most ulcers to H. pylori, not stress or food."}
-    },
-    {
-      "id": "human-five-senses",
-      "statement": "Humans have exactly five senses.",
-      "expected": "disputed",
-      "provenance": "Adversarial: senses passage (high similarity) disputes the 'exactly five' claim.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:31:0", "text": "Beyond the classical five senses, humans also have senses such as balance (equilibrioception), body position (proprioception), and temperature.", "similarity": 0.88, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.88, "citations": [{"evidence_id": "evidence:31:0", "quoted_span": "humans also have senses such as balance"}], "rationale": "The passage lists senses beyond five, disputing the 'exactly five' claim."}
-    },
-    {
-      "id": "eiffel-tower-height",
-      "statement": "The Eiffel Tower changes height with temperature.",
-      "expected": "credible",
-      "provenance": "Physics of thermal expansion; passage affirms the claim, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:32:0", "text": "Because iron expands when heated, the Eiffel Tower can be up to about 15 centimetres taller in summer than in winter.", "similarity": 0.87, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:32:0", "quoted_span": "can be up to about 15 centimetres taller in summer than in winter"}], "rationale": "The passage affirms the tower's height varies with temperature."}
-    },
-    {
-      "id": "honey-spoils",
-      "statement": "Honey never spoils if stored properly.",
-      "expected": "credible",
-      "provenance": "Food science; passage affirms honey's stability, so credible is evidence-grounded.",
-      "passages": [
-        {"id": "evidence:33:0", "text": "Due to its low moisture and acidity, honey stored in a sealed container can remain edible essentially indefinitely.", "similarity": 0.88, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:33:0", "quoted_span": "can remain edible essentially indefinitely"}], "rationale": "The passage affirms honey can remain edible indefinitely."}
-    },
-    {
-      "id": "blood-blue",
-      "statement": "Human blood is blue before it is exposed to oxygen.",
-      "expected": "disputed",
-      "provenance": "Adversarial: blood-colour passage (high similarity) disputes the deoxygenated-blue myth.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:34:0", "text": "Human blood is always red; deoxygenated blood is a darker red, never blue. The blue appearance of veins is an optical effect of skin.", "similarity": 0.91, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.93, "citations": [{"evidence_id": "evidence:34:0", "quoted_span": "Human blood is always red; deoxygenated blood is a darker red, never blue"}], "rationale": "The passage states blood is always red, never blue."}
-    },
-    {
-      "id": "mount-kilimanjaro-country",
-      "statement": "Mount Kilimanjaro is located in Kenya.",
-      "expected": "disputed",
-      "provenance": "Adversarial: Kilimanjaro passage (high similarity) places it in Tanzania, disputing Kenya.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:35:0", "text": "Mount Kilimanjaro, the highest peak in Africa, is located in Tanzania near the border with Kenya.", "similarity": 0.9, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "disputed", "basis": "evidence", "confidence": 0.9, "citations": [{"evidence_id": "evidence:35:0", "quoted_span": "is located in Tanzania near the border with Kenya"}], "rationale": "The passage places Kilimanjaro in Tanzania, not Kenya."}
-    },
-    {
-      "id": "ozone-recovery",
-      "statement": "The ozone layer over Antarctica grew by 40 percent in 2023.",
-      "expected": "unverifiable",
-      "provenance": "Adversarial: ozone passage (high similarity) discusses recovery trends generally but gives no figure for 2023, and no general knowledge can settle a precise year-specific percentage, so the verifier returns unverifiable with basis knowledge.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:36:0", "text": "The Antarctic ozone hole has shown signs of gradual recovery since the Montreal Protocol, though year-to-year size varies with weather.", "similarity": 0.86, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "unverifiable", "basis": "knowledge", "confidence": 0.0, "citations": [], "rationale": "The passage describes gradual recovery but gives no 2023 figure, and no general knowledge settles the specific percentage."}
-    },
-    {
-      "id": "addiction-gradual",
-      "statement": "Most people slip into addiction gradually rather than all at once.",
-      "expected": "credible",
-      "provenance": "Headline knowledge tiebreaker: the retrieved passage is about addiction but does not bear on the gradual-onset claim; the legacy path returns the equivalent of 'not enough info'. General understanding of addiction supports gradual onset, so the verifier returns credible with basis knowledge (no direct sources). This is the case the credibility reframe exists to get right.",
-      "adversarial": true,
-      "passages": [
-        {"id": "evidence:37:0", "text": "Addiction is characterized by compulsive substance use despite harmful consequences and by changes in brain reward circuitry.", "similarity": 0.84, "kind": "evidence"}
-      ],
-      "model_verdict": {"verdict": "credible", "basis": "knowledge", "confidence": 0.55, "citations": [], "rationale": "No passage bears on gradual onset, but it is broadly consistent with the general understanding of how addiction develops."}
-    },
-    {
-      "id": "no-evidence-claim",
-      "statement": "The fictional city of Zelvoria held its annual lantern festival last spring.",
-      "expected": "unverifiable",
-      "provenance": "No relevant evidence is retrievable and no general knowledge can speak to a private, fictional event; the path must return unverifiable rather than guess.",
-      "passages": [],
-      "model_verdict": {"verdict": "unverifiable", "basis": "knowledge", "confidence": 0.0, "citations": [], "rationale": "No evidence passages address this claim and no general knowledge settles it."}
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "presse:plan:0", "quoted_span": "un plan d'investissement de 10 milliards d'euros"}], "rationale": "L'annonce du plan de 10 milliards est reproduite par le passage."}
     }
   ]
 }
