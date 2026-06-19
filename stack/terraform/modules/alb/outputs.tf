@@ -17,3 +17,8 @@ output "arn" {
   value       = aws_lb.main.arn
   description = "Load balancer ARN."
 }
+
+output "arn_suffix" {
+  value       = aws_lb.main.arn_suffix
+  description = "ARN suffix of the load balancer, the LoadBalancer dimension value on AWS/ApplicationELB CloudWatch metrics."
+}

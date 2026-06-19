@@ -318,6 +318,38 @@ locals {
     "cloudwatch:ListDashboards",
   ]
 
+  # Observability monitoring + alerting (modules/observability), always on: the
+  # CloudWatch alarms (ALB 5xx, unhealthy targets, ECS running tasks, RDS/MQ
+  # health, WAF blocked spikes) routed to an SNS topic, the Slack forwarder
+  # lambda that posts to the webhook, and the health dashboard. The forwarder
+  # function lifecycle and dashboard actions are folded in here (this module
+  # always provisions them, independent of the gated metrics-poller lambda), and
+  # this block adds the alarm, SNS, and lambda resource-policy actions those
+  # blocks omit. The forwarder's execution role/policy ride on iam_actions and
+  # its log group on logs_actions. The lambda resource policy is the
+  # aws_lambda_permission that lets SNS invoke the forwarder.
+  observability_actions = [
+    "cloudwatch:PutMetricAlarm",
+    "cloudwatch:DeleteAlarms",
+    "cloudwatch:DescribeAlarms",
+    "cloudwatch:TagResource",
+    "cloudwatch:UntagResource",
+    "cloudwatch:ListTagsForResource",
+    "sns:CreateTopic",
+    "sns:DeleteTopic",
+    "sns:Subscribe",
+    "sns:Unsubscribe",
+    "sns:GetTopicAttributes",
+    "sns:SetTopicAttributes",
+    "sns:ListSubscriptionsByTopic",
+    "sns:GetSubscriptionAttributes",
+    "sns:TagResource",
+    "sns:UntagResource",
+    "sns:ListTagsForResource",
+    "lambda:AddPermission",
+    "lambda:RemovePermission",
+  ]
+
   # Aggregate the enabled areas. Sorted+deduped so the output is stable and the
   # guard reports a clean, ordered list.
   _actions = concat(
@@ -340,6 +372,10 @@ locals {
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],
     var.include_metrics_lambda ? concat(local.metrics_lambda_actions, local.dashboard_actions, local.scheduled_task_actions) : [],
+    # Observability module (modules/observability): the Slack forwarder lambda
+    # (metrics_lambda_actions covers the function lifecycle), the health
+    # dashboard, and the alarm/SNS/lambda-permission actions in observability_actions.
+    var.include_observability ? concat(local.observability_actions, local.metrics_lambda_actions, local.dashboard_actions) : [],
     # Worker-lifecycle lambda: the three handler functions (lambda lifecycle) and
     # their EventBridge Scheduler schedules. Its execution role/policy are covered
     # by iam_actions, its log groups by logs_actions, and its scaling-config

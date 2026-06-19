@@ -45,3 +45,9 @@ variable "include_worker_lifecycle" {
   default     = false
   description = "Include the worker-lifecycle lambda functions and their EventBridge Scheduler actions. Set from the env's enable_worker_lifecycle so the manifest only demands them when the plan provisions the lambda. The lambda's runtime ECS/scaling permissions live on its own execution role (covered by iam_actions), not on the apply role; its scaling-config parameter is covered by ssm_actions."
 }
+
+variable "include_observability" {
+  type        = bool
+  default     = false
+  description = "Include the observability module's actions: CloudWatch alarms, the alerts SNS topic, the Slack forwarder lambda (function lifecycle + resource policy), and the health dashboard. Set true in the env that provisions monitoring + alerting (prod)."
+}
