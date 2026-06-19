@@ -74,7 +74,7 @@ FLEET ?= embedworker
 COUNT ?= 2
 INGEST ?= statsingest
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets worker-up worker-down worker-status ingest-run insee-idempotency-check
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets worker-up worker-down worker-status ingest-run insee-idempotency-check
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -102,9 +102,12 @@ bootstrap: ## Generate .env on a fresh checkout (operator email, argon2id hash, 
 	BOOTSTRAP_EMAIL="$$email" BOOTSTRAP_PASSWORD="$$password" \
 	  $(GO) -C stack/backend run ./cmd/bootstrap -root "$(CURDIR)"
 
-up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend
+up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend, and local Keycloak (imports stack/keycloak/realm.json on :8081)
 	@sh scripts/doctor.sh --quiet
 	$(COMPOSE) up --build
+
+keycloak: ## Bring up only the local Keycloak IdP on :8081, importing stack/keycloak/realm.json (admin/guest roles, guest default, the truth-in-stream-web OIDC client). Part of `make up`; see docs/configuration.md for the issuer and dev credentials
+	$(COMPOSE) up --build keycloak
 
 down: ## Stop the stack, keeping the Postgres volume
 	$(COMPOSE) down --remove-orphans
