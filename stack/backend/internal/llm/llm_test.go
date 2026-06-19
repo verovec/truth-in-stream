@@ -525,6 +525,12 @@ func TestClassifyDeepSeekForcesToolCallAtTempZero(t *testing.T) {
 	if !ok || fn["name"] != testTool {
 		t.Errorf("tool_choice.function = %v, want forced %s", choice["function"], testTool)
 	}
+	// Thinking must be disabled: DeepSeek's hybrid models default to thinking on
+	// and reject a forced tool_choice while it is, returning 400.
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "disabled" {
+		t.Errorf("thinking = %v, want {type: disabled} so the forced tool_choice is accepted", captured["thinking"])
+	}
 }
 
 func TestNewClientDefaultsDeepSeekModelWhenEmpty(t *testing.T) {

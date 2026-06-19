@@ -15,17 +15,25 @@ import (
 // (tests point the client at a fake server instead).
 const deepSeekBaseURL = "https://api.deepseek.com"
 
-// defaultDeepSeekModel is DeepSeek's cheap, fast chat model with function
-// calling - the forward-safe id (the legacy deepseek-chat alias maps to it and is
-// being retired). It is NOT the reasoner/thinking variant, which does not support
-// tool calling or temperature. Callers fall back to it when they pass an empty
-// model under the DeepSeek provider.
+// defaultDeepSeekModel is DeepSeek's cheap, fast hybrid model. It defaults to
+// thinking mode ON, and DeepSeek rejects a forced (named) tool_choice while
+// thinking is enabled, so classify must disable thinking per request (see
+// thinkingDisabled). The legacy deepseek-chat alias was this model with thinking
+// off and is being retired. Callers fall back to it when they pass an empty model
+// under the DeepSeek provider.
 const defaultDeepSeekModel = "deepseek-v4-flash"
 
 // deepSeekTemperature pins the forced call to deterministic decoding, matching the
 // other transports' temperature zero so a provider switch does not change the
 // classification regime.
 const deepSeekTemperature = 0
+
+// thinkingDisabled is the request-body field DeepSeek's hybrid models read to turn
+// thinking mode off. Thinking is on by default, and DeepSeek returns 400
+// "Thinking mode does not support this tool_choice" for a forced (named)
+// tool_choice while it is on; disabling it restores deterministic forced-tool
+// classification and lets temperature zero take effect.
+var thinkingDisabled = map[string]any{"type": "disabled"}
 
 // deepseekProvider is the DeepSeek-backed forced-tool transport over the official
 // OpenAI Go SDK pointed at DeepSeek's OpenAI-compatible endpoint: declare the
@@ -109,7 +117,7 @@ func (p *deepseekProvider) classify(ctx context.Context, req Request) (json.RawM
 				Function: openai.ChatCompletionNamedToolChoiceFunctionParam{Name: req.Tool.Name},
 			},
 		},
-	})
+	}, option.WithJSONSet("thinking", thinkingDisabled))
 	if err != nil {
 		return nil, fmt.Errorf("forced tool call: %w", err)
 	}
