@@ -65,12 +65,25 @@ func fixtureDocumentTexts(t *testing.T, root string) []string {
 		t.Fatalf("LoadWikiChunks: %v", err)
 	}
 
-	texts := make([]string, 0, len(claims)+len(chunks))
+	politicalF, err := os.Open(filepath.Join(root, "political_claims.json"))
+	if err != nil {
+		t.Fatalf("open political claims fixture: %v", err)
+	}
+	defer func() { _ = politicalF.Close() }()
+	political, err := seed.LoadPoliticalClaims(politicalF)
+	if err != nil {
+		t.Fatalf("LoadPoliticalClaims: %v", err)
+	}
+
+	texts := make([]string, 0, len(claims)+len(chunks)+len(political))
 	for _, c := range claims {
 		texts = append(texts, c.Text)
 	}
 	for _, c := range chunks {
 		texts = append(texts, c.Content)
+	}
+	for _, c := range political {
+		texts = append(texts, c.Text)
 	}
 	return texts
 }

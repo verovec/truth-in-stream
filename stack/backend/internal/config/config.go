@@ -905,6 +905,13 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 // open web fills in.
 const defaultPoliticalRouterMinResults = 1
 
+// defaultPoliticalCuratedTau is the cosine similarity at or above which a curated
+// two-axis political claim is borrowed with no LLM call (its literal verdict,
+// manipulation flags, and real source resolve the statement instantly). It mirrors
+// the legacy curated-borrow bar (defaultVerifyFastTau, 0.85): a high bar, since a
+// borrowed verdict bypasses reasoning.
+const defaultPoliticalCuratedTau = 0.85
+
 // Political holds the French/EU political fact-checking mode flag and the routing
 // knob the capstone (VER-103) wires behind it. The whole redesign rides
 // FACTCHECK_POLITICAL (default off) so main stays shippable: with the flag off the
@@ -917,6 +924,10 @@ const defaultPoliticalRouterMinResults = 1
 type Political struct {
 	Enabled          bool
 	RouterMinResults int
+	// CuratedTau is the cosine similarity at or above which the political verify
+	// path borrows a curated two-axis claim (literal verdict + manipulation flags +
+	// real source) without an LLM call. It is a cosine similarity in [-1, 1].
+	CuratedTau float64
 }
 
 // Active reports whether the political verify path should be wired: the political
@@ -963,7 +974,11 @@ func LoadPolitical() (Political, error) {
 	if err != nil {
 		return Political{}, err
 	}
-	return Political{Enabled: enabled, RouterMinResults: minResults}, nil
+	curatedTau, err := thresholdEnv("FACTCHECK_POLITICAL_CURATED_TAU", defaultPoliticalCuratedTau)
+	if err != nil {
+		return Political{}, err
+	}
+	return Political{Enabled: enabled, RouterMinResults: minResults, CuratedTau: curatedTau}, nil
 }
 
 // CrawlAlerts holds the ingestion-fleet Slack alerting configuration. WebhookURL

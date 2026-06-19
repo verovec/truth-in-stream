@@ -1736,6 +1736,7 @@ func TestLoadPolitical(t *testing.T) {
 		wantEnabled    bool
 		wantLocale     domain.Locale
 		wantMinResults int
+		wantCuratedTau float64
 		wantErr        bool
 	}{
 		{
@@ -1744,6 +1745,7 @@ func TestLoadPolitical(t *testing.T) {
 			wantEnabled:    false,
 			wantLocale:     domain.LocaleEnglish,
 			wantMinResults: 1,
+			wantCuratedTau: defaultPoliticalCuratedTau,
 		},
 		{
 			name:           "enabled selects french locale",
@@ -1751,6 +1753,7 @@ func TestLoadPolitical(t *testing.T) {
 			wantEnabled:    true,
 			wantLocale:     domain.LocaleFrench,
 			wantMinResults: 1,
+			wantCuratedTau: defaultPoliticalCuratedTau,
 		},
 		{
 			name:           "explicit false keeps english locale",
@@ -1758,6 +1761,7 @@ func TestLoadPolitical(t *testing.T) {
 			wantEnabled:    false,
 			wantLocale:     domain.LocaleEnglish,
 			wantMinResults: 1,
+			wantCuratedTau: defaultPoliticalCuratedTau,
 		},
 		{
 			name:           "router min results override",
@@ -1765,6 +1769,15 @@ func TestLoadPolitical(t *testing.T) {
 			wantEnabled:    true,
 			wantLocale:     domain.LocaleFrench,
 			wantMinResults: 3,
+			wantCuratedTau: defaultPoliticalCuratedTau,
+		},
+		{
+			name:           "curated tau override",
+			env:            map[string]string{"FACTCHECK_POLITICAL": "true", "FACTCHECK_POLITICAL_CURATED_TAU": "0.7"},
+			wantEnabled:    true,
+			wantLocale:     domain.LocaleFrench,
+			wantMinResults: 1,
+			wantCuratedTau: 0.7,
 		},
 		{
 			name:    "non-boolean fails",
@@ -1774,6 +1787,11 @@ func TestLoadPolitical(t *testing.T) {
 		{
 			name:    "non-positive router min results fails",
 			env:     map[string]string{"FACTCHECK_POLITICAL": "true", "FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "out-of-range curated tau fails",
+			env:     map[string]string{"FACTCHECK_POLITICAL": "true", "FACTCHECK_POLITICAL_CURATED_TAU": "1.5"},
 			wantErr: true,
 		},
 	}
@@ -1800,6 +1818,9 @@ func TestLoadPolitical(t *testing.T) {
 			}
 			if got.RouterMinResults != tc.wantMinResults {
 				t.Errorf("RouterMinResults = %d, want %d", got.RouterMinResults, tc.wantMinResults)
+			}
+			if got.CuratedTau != tc.wantCuratedTau {
+				t.Errorf("CuratedTau = %v, want %v", got.CuratedTau, tc.wantCuratedTau)
 			}
 		})
 	}

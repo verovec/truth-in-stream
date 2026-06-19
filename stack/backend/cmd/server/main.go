@@ -222,7 +222,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, store, locale, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, store, store, locale, logger)
 	if err != nil {
 		return err
 	}
@@ -460,7 +460,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPass config.SecondPass, matcher service.SegmentMatcher, votingStore voting.Store, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPass config.SecondPass, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -472,7 +472,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 	if err != nil {
 		return nil, err
 	}
-	pol, err := buildPoliticalConfig(cfg, political, votingStore, logger)
+	pol, err := buildPoliticalConfig(cfg, political, votingStore, curatedClaims, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +543,7 @@ func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale
 // verifier share the verify path's model and API key; the router is built over the
 // configured source packs with web search as the mandatory open-ended fallback. The
 // API key is never logged.
-func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Political, votingStore voting.Store, logger *slog.Logger) (*service.PoliticalConfig, error) {
+func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Political, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, logger *slog.Logger) (*service.PoliticalConfig, error) {
 	if !political.Active(verifyCfg.Active()) {
 		return nil, nil
 	}
@@ -560,9 +560,11 @@ func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Politica
 		return nil, err
 	}
 	return &service.PoliticalConfig{
-		Classifier: classifier,
-		Retriever:  router,
-		Verifier:   politicalVerifierAdapter{politicalVerifier},
+		Classifier:   classifier,
+		Retriever:    router,
+		Verifier:     politicalVerifierAdapter{politicalVerifier},
+		CuratedStore: curatedClaims,
+		CuratedTau:   political.CuratedTau,
 	}, nil
 }
 

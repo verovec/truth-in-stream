@@ -384,6 +384,23 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		return
 	}
 
+	// Political curated fast-path: a recurring talking point that near-matches a
+	// curated two-axis political claim borrows its full verdict (literal verdict +
+	// manipulation flags + real source) with no LLM call. It runs only on the
+	// political path and ahead of the legacy credibility borrow below, because only
+	// this borrow can carry the manipulation axis (the legacy borrow asserts no flag).
+	// A miss falls through to the legacy fast match and then route+verify, so the
+	// flag-off path is byte-for-byte unchanged.
+	if vp.political() {
+		if verdict, ok := vp.politicalFastMatch(ctx, ret.embedding); ok {
+			vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+			vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
+			vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+			vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+			return
+		}
+	}
+
 	// Fast path: a high-confidence curated near-match borrows its verdict with no
 	// LLM call, tagged curated, and emitted at once. The borrow is shared across the
 	// credibility and political paths; on the political path the curated verdict also

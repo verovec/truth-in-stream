@@ -48,17 +48,19 @@ const (
 	sampleMediaFetchTimeout = 5 * time.Minute
 	claimsFile              = "claims.json"
 	wikiFile                = "wiki_chunks.json"
+	politicalClaimsFile     = "political_claims.json"
 )
 
 // datasets selects which fixtures to seed. When none are requested on the
 // command line, every dataset is seeded.
 type datasets struct {
-	claims bool
-	wiki   bool
-	videos bool
+	claims    bool
+	wiki      bool
+	videos    bool
+	political bool
 }
 
-func (d datasets) any() bool { return d.claims || d.wiki || d.videos }
+func (d datasets) any() bool { return d.claims || d.wiki || d.videos || d.political }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -75,14 +77,15 @@ func run(logger *slog.Logger) error {
 	doClaims := flag.Bool("claims", false, "seed curated claims")
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
 	doVideos := flag.Bool("videos", false, "seed the curated sample videos (records plus best-effort media)")
+	doPolitical := flag.Bool("political", false, "seed the curated two-axis political claims (immigration talking points)")
 	seedDir := flag.String("seed-dir", defaultSeedDir, "directory holding the seed fixtures")
 	cachePath := flag.String("cache", defaultCachePath, "embedding cache file")
 	mediaCacheDir := flag.String("media-cache", defaultMediaCacheDir, "directory caching fetched sample media across reseeds")
 	flag.Parse()
 
-	sel := datasets{claims: *doClaims, wiki: *doWiki, videos: *doVideos}
+	sel := datasets{claims: *doClaims, wiki: *doWiki, videos: *doVideos, political: *doPolitical}
 	if !sel.any() {
-		sel = datasets{claims: true, wiki: true, videos: true}
+		sel = datasets{claims: true, wiki: true, videos: true, political: true}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -164,12 +167,25 @@ func documentTexts(seedDir string) ([]string, error) {
 		return nil, err
 	}
 
-	texts := make([]string, 0, len(claims)+len(chunks))
+	politicalF, err := os.Open(filepath.Join(seedDir, politicalClaimsFile))
+	if err != nil {
+		return nil, fmt.Errorf("seed: open political claims fixture: %w", err)
+	}
+	defer func() { _ = politicalF.Close() }()
+	political, err := seed.LoadPoliticalClaims(politicalF)
+	if err != nil {
+		return nil, err
+	}
+
+	texts := make([]string, 0, len(claims)+len(chunks)+len(political))
 	for _, c := range claims {
 		texts = append(texts, c.Text)
 	}
 	for _, c := range chunks {
 		texts = append(texts, c.Content)
+	}
+	for _, c := range political {
+		texts = append(texts, c.Text)
 	}
 	return texts, nil
 }
@@ -192,7 +208,7 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 	// not require the committed cache to be present, so the cache stays local to
 	// this branch. The model is resolved once so the embedder and any cache-miss
 	// hint name the same value.
-	if sel.claims || sel.wiki {
+	if sel.claims || sel.wiki || sel.political {
 		cache, err := embed.LoadCache(cachePath)
 		if err != nil {
 			return err
@@ -206,6 +222,11 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 		}
 		if sel.wiki {
 			if err := seedWiki(ctx, logger, store, embedder, seedDir); err != nil {
+				return cacheMissHint(err, model)
+			}
+		}
+		if sel.political {
+			if err := seedPolitical(ctx, logger, store, embedder, seedDir); err != nil {
 				return cacheMissHint(err, model)
 			}
 		}
@@ -280,6 +301,28 @@ func seedWiki(ctx context.Context, logger *slog.Logger, store *postgres.Store, e
 		return err
 	}
 	logger.InfoContext(ctx, "seeded wiki chunks", slog.Int("chunks", len(chunks)))
+	return nil
+}
+
+// seedPolitical loads the curated two-axis political claims (immigration talking
+// points) and upserts them, embedded offline from the committed cache, into the
+// political claim DB. The upsert is keyed by id, so reseeding rewrites the same
+// rows and never disturbs curated claims under other ids (such as live-crawled
+// fact-checks).
+func seedPolitical(ctx context.Context, logger *slog.Logger, store *postgres.Store, embedder *embed.Cached, seedDir string) error {
+	f, err := os.Open(filepath.Join(seedDir, politicalClaimsFile))
+	if err != nil {
+		return fmt.Errorf("seed: open political claims fixture: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	claims, err := seed.LoadPoliticalClaims(f)
+	if err != nil {
+		return err
+	}
+	if err := seed.InsertPoliticalClaims(ctx, store, embedder, claims); err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "seeded political claims", slog.Int("claims", len(claims)))
 	return nil
 }
 
