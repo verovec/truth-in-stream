@@ -53,7 +53,7 @@ MODE ?=
 EPIC ?=
 DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -116,6 +116,9 @@ seed-wiki: ## Seed only the Wikipedia evidence subset
 
 seed-videos: ## Seed only the curated sample videos (records + best-effort media); SAMPLE_VIDEO_URL overrides the clip
 	$(COMPOSE) run --rm seed go run ./cmd/seed -videos
+
+stats-ingest: ## Ingest the official statistical sources (Eurostat + interior-ministry open-data CSV + INSEE) into the evidence corpus; renders French passages, embeds, and upserts under one corpus per source. Idempotent (re-run to refresh, no duplicates). Sources need no key; needs EMBEDDING_API_KEY in .env, optional INSEE_API_KEY
+	$(COMPOSE) run --rm seed go run ./cmd/statsingest
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh
