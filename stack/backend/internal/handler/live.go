@@ -23,6 +23,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
@@ -199,11 +200,23 @@ type speakerScoreFrame struct {
 // analyzer: a reader pumps inbound audio frames to the analyzer while the main
 // goroutine writes the analyzer's events back. allowedOrigins are the browser
 // origins permitted to connect cross-origin; empty enforces same-origin.
-// debugFactCheck, when true, emits the per-claim evidence detail payload (the
-// cited matches with their passages and scores); when false only the source
-// label is sent, so the detail is never exposed in production.
-func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheck bool, logger *slog.Logger) http.HandlerFunc {
+// debugFactCheckEnabled is the server-side enable for the per-claim evidence
+// detail payload (the cited matches with their passages and scores). The detail
+// is emitted only when it is on AND the caller carries a verified admin claim,
+// so it is never exposed in production (where the flag is off) and never to a
+// non-admin caller (whose role is read from the request context, not any
+// client-supplied flag); otherwise only the source label is sent.
+//
+// The admin claim is read from the Identity middleware's context value, which is
+// populated from the Authorization Bearer header. The browser WebSocket API
+// cannot set that header, so a browser-initiated live connection is a guest
+// today and never sees the detail; carrying the admin token onto the live socket
+// (a query-param token validated here, or the session cookie bridged to a role)
+// is the frontend's job (VER-138). The gate is correct as a server-side admin
+// check regardless: nothing a client sends can flip the detail on.
+func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		debugFactCheck := debugFactCheckEnabled && middleware.IdentityFrom(r.Context()).IsAdmin()
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: allowedOrigins})
 		if err != nil {
 			// Accept has already written the handshake failure response.

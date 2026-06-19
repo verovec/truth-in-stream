@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/verovec/truth-in-stream/backend/internal/auth"
 	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
@@ -21,12 +22,16 @@ const sessionCookieName = "session"
 // need more than a few hundred bytes.
 const maxLoginBodyBytes = 4 << 10
 
-// AuthConfig carries the wired authentication collaborators into NewMux.
+// AuthConfig carries the wired authentication collaborators into NewMux. The
+// session collaborators gate the whole /api subtree (the broad password/cookie
+// auth); Verifier validates a Keycloak Bearer token to derive the caller's role,
+// which gates admin-only behavior on top of the session gate.
 type AuthConfig struct {
 	Credentials  *service.Credentials
 	Sessions     *service.Sessions
 	SecureCookie bool
 	LoginLimiter *middleware.RateLimiter
+	Verifier     auth.Verifier
 }
 
 type loginRequest struct {

@@ -301,6 +301,52 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
+// Keycloak defaults target the local dev stack (docker-compose.yml publishes
+// Keycloak on :8081 importing stack/keycloak/realm.json). Production overrides
+// the issuer and client id from config/Secrets Manager so the same backend
+// validates against the operator-managed Keycloak. The JWKS path is Keycloak's
+// fixed OIDC certs endpoint under the issuer; it is derived from the issuer
+// rather than configured separately so the two cannot drift, with an explicit
+// override for an unusual topology.
+const (
+	defaultKeycloakIssuer   = "http://localhost:8081/realms/truth-in-stream"
+	defaultKeycloakClientID = "truth-in-stream-web"
+	// keycloakCertsPath is Keycloak's OIDC JWKS endpoint, appended to the issuer
+	// to build the JWKS URL. It is fixed by the OIDC discovery document Keycloak
+	// serves, not configurable per realm.
+	keycloakCertsPath = "/protocol/openid-connect/certs"
+)
+
+// Keycloak holds the OIDC validation configuration for the identity provider.
+// Issuer is the exact issuer string tokens carry and the realm advertises;
+// ClientID is the authorized party the public web client sets; JWKSURL is where
+// the signing keys are fetched and cached from. Issuer and ClientID default to
+// the local dev realm so the stack validates out of the box; production sets
+// them to the operator's Keycloak. The signature/issuer/azp validation logic
+// lives in internal/auth.
+type Keycloak struct {
+	Issuer   string
+	ClientID string
+	JWKSURL  string
+}
+
+// LoadKeycloak reads the Keycloak OIDC configuration from the environment.
+// KEYCLOAK_ISSUER and KEYCLOAK_CLIENT_ID default to the local dev realm;
+// KEYCLOAK_JWKS_URL defaults to the issuer's certs endpoint and is overridable
+// only for an unusual topology (e.g. an internal JWKS host distinct from the
+// public issuer). The defaults are non-empty, so the validator always has an
+// issuer and authorized party to check against and never accepts tokens from
+// anywhere; a trailing slash on the issuer is trimmed so the derived JWKS URL is
+// well formed.
+func LoadKeycloak() Keycloak {
+	issuer := strings.TrimRight(getenv("KEYCLOAK_ISSUER", defaultKeycloakIssuer), "/")
+	return Keycloak{
+		Issuer:   issuer,
+		ClientID: getenv("KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
+		JWKSURL:  getenv("KEYCLOAK_JWKS_URL", issuer+keycloakCertsPath),
+	}
+}
+
 // Match defaults: top-5 keeps responses focused, 0.5 cosine similarity drops
 // unrelated text without hiding genuine paraphrases, 4 concurrent embed calls
 // stay well inside the Voyage rate limits, and 10s bounds a single segment

@@ -572,6 +572,69 @@ func TestLoadDebugFactCheck(t *testing.T) {
 	}
 }
 
+func TestLoadKeycloak(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want Keycloak
+	}{
+		{
+			name: "defaults to local dev realm",
+			env:  map[string]string{},
+			want: Keycloak{
+				Issuer:   "http://localhost:8081/realms/truth-in-stream",
+				ClientID: "truth-in-stream-web",
+				JWKSURL:  "http://localhost:8081/realms/truth-in-stream/protocol/openid-connect/certs",
+			},
+		},
+		{
+			name: "issuer override derives the jwks url",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER": "https://id.example.com/realms/prod",
+			},
+			want: Keycloak{
+				Issuer:   "https://id.example.com/realms/prod",
+				ClientID: "truth-in-stream-web",
+				JWKSURL:  "https://id.example.com/realms/prod/protocol/openid-connect/certs",
+			},
+		},
+		{
+			name: "trailing slash on issuer is trimmed",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER": "https://id.example.com/realms/prod/",
+			},
+			want: Keycloak{
+				Issuer:   "https://id.example.com/realms/prod",
+				ClientID: "truth-in-stream-web",
+				JWKSURL:  "https://id.example.com/realms/prod/protocol/openid-connect/certs",
+			},
+		},
+		{
+			name: "explicit jwks url override and client id",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER":    "https://id.example.com/realms/prod",
+				"KEYCLOAK_CLIENT_ID": "another-client",
+				"KEYCLOAK_JWKS_URL":  "https://internal/certs",
+			},
+			want: Keycloak{
+				Issuer:   "https://id.example.com/realms/prod",
+				ClientID: "another-client",
+				JWKSURL:  "https://internal/certs",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := LoadKeycloak(); got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadPrecheck(t *testing.T) {
 	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46}
 	tests := []struct {

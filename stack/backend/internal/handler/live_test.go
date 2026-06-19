@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
@@ -118,10 +119,23 @@ func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debug
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/videos/{id}/live", liveHandler(analyzer, origins, debugFactCheck, logger))
+	// The live route runs behind the Identity middleware so the handler reads the
+	// caller's verified role from the request context, exactly as in NewMux. A
+	// dial with no Bearer token is a guest (debug detail stays off even when the
+	// server-side flag is on); the admin Bearer the stub verifier knows is what
+	// unlocks the evidence detail.
+	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, origins, debugFactCheck, logger))
+	mux.Handle("GET /api/videos/{id}/live", h)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
+}
+
+// adminDialOptions carries the admin Bearer header the stub verifier recognizes,
+// letting a live-socket dial present as an admin so the debug evidence detail is
+// emitted.
+func adminDialOptions() *websocket.DialOptions {
+	return &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + testAdminToken}}}
 }
 
 func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {
@@ -277,13 +291,13 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictDisputed, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"},
 		},
 	}}
-	// Debug on, so the per-passage evidence detail (the cited matches) rides the
-	// frame and its round-trip can be asserted.
+	// Debug on AND an admin caller, so the per-passage evidence detail (the cited
+	// matches) rides the frame and its round-trip can be asserted.
 	wsURL := liveTestServer(t, fake, nil, true)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	conn, resp, err := websocket.Dial(ctx, wsURL, adminDialOptions())
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
@@ -361,6 +375,45 @@ func TestLiveHandlerOmitsEvidenceDetailWhenDebugOff(t *testing.T) {
 	}
 	if len(verified.Matches) != 0 {
 		t.Errorf("matches = %+v, want none emitted with debug off", verified.Matches)
+	}
+}
+
+func TestLiveHandlerOmitsEvidenceDetailForNonAdminEvenWhenDebugOn(t *testing.T) {
+	t.Parallel()
+	// The server-side debug flag is ON, but the caller is a guest (no Bearer
+	// token, so the Identity middleware attaches the guest role). The evidence
+	// detail must still be withheld: debug behavior rides a verified admin claim,
+	// never a client's ability to reach the endpoint.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
+	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
+	fake := &recordingLive{events: []service.LiveEvent{
+		{
+			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictDisputed, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"},
+		},
+	}}
+	wsURL := liveTestServer(t, fake, nil, true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	verified := readFrame(ctx, t, conn)
+	if verified.Type != "claim_result" || verified.Status != "verified" {
+		t.Fatalf("frame = %+v, want verified claim_result", verified)
+	}
+	if len(verified.Matches) != 0 {
+		t.Errorf("matches = %+v, want none emitted for a non-admin caller", verified.Matches)
 	}
 }
 

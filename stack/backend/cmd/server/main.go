@@ -13,8 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MicahParks/keyfunc/v3"
 	"golang.org/x/time/rate"
 
+	"github.com/verovec/truth-in-stream/backend/internal/auth"
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
 	"github.com/verovec/truth-in-stream/backend/internal/claimtype"
@@ -110,17 +112,25 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	auth := handler.AuthConfig{
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	keycloakCfg := config.LoadKeycloak()
+	verifier, err := buildVerifier(ctx, keycloakCfg, logger)
+	if err != nil {
+		return err
+	}
+
+	authConfig := handler.AuthConfig{
 		Credentials:  credentials,
 		Sessions:     service.NewSessions(authCfg.SessionSecret, authCfg.SessionTTL),
 		SecureCookie: authCfg.SecureCookie,
 		// 5 attempts then one every 30s per client: invisible to the single
 		// operator, glacial for a brute-force run.
 		LoginLimiter: middleware.NewRateLimiter(rate.Every(30*time.Second), 5),
+		Verifier:     verifier,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	storageCfg, err := config.LoadStorage()
 	if err != nil {
@@ -248,7 +258,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, auth, logger)
+	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -313,6 +323,39 @@ func liveStream(cfg config.Transcription, locale domain.Locale, logger *slog.Log
 		Logger:      logger,
 	})
 	return transcribe.NewStreamSegmenter(client, transcribe.Options{Language: locale.LanguageCode()})
+}
+
+// buildVerifier wires the Keycloak access-token verifier over a JWKS keyfunc.
+// The keyfunc fetches and caches the realm's signing keys and launches a refresh
+// goroutine bound to ctx (so it stops on shutdown), refreshing on an unknown kid
+// to ride key rotation. NoErrorReturnFirstHTTPReq lets the server start before
+// Keycloak is reachable (the first verification fetches the set), so a slow or
+// late identity provider does not block boot; tokens simply fail to validate
+// until the JWKS is fetched. The verifier itself adds the issuer and
+// authorized-party checks and the role extraction.
+func buildVerifier(ctx context.Context, cfg config.Keycloak, logger *slog.Logger) (auth.Verifier, error) {
+	allowStart := true
+	kf, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{cfg.JWKSURL}, keyfunc.Override{
+		RefreshInterval:           5 * time.Minute,
+		RefreshUnknownKID:         rate.NewLimiter(rate.Every(time.Minute), 1),
+		NoErrorReturnFirstHTTPReq: &allowStart,
+		// Surface a background JWKS refresh failure so a stale key set after a
+		// Keycloak blip is observable rather than silently degrading validation.
+		RefreshErrorHandlerFunc: func(u string) func(context.Context, error) {
+			return func(ctx context.Context, err error) {
+				logger.WarnContext(ctx, "keycloak jwks refresh failed", slog.String("jwks_url", u), slog.Any("err", err))
+			}
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building keycloak jwks keyfunc: %w", err)
+	}
+	verifier, err := auth.NewVerifier(kf, auth.Config{Issuer: cfg.Issuer, ClientID: cfg.ClientID})
+	if err != nil {
+		return nil, fmt.Errorf("building keycloak verifier: %w", err)
+	}
+	logger.Info("keycloak token validation enabled", slog.String("issuer", cfg.Issuer), slog.String("jwks_url", cfg.JWKSURL))
+	return verifier, nil
 }
 
 // buildDebugSearch assembles the developer wiki-search probe from config. A

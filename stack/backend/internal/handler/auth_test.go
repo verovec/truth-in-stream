@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,10 +10,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/verovec/truth-in-stream/backend/internal/auth"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"golang.org/x/time/rate"
 )
+
+// Bearer tokens the stub verifier recognizes, letting handler tests exercise the
+// role gate without a live Keycloak: "admin" yields an admin identity, "guest" a
+// guest, and anything else fails validation (an invalid token).
+const (
+	testAdminToken = "admin-token"
+	testGuestToken = "guest-token"
+)
+
+// stubVerifier maps a known Bearer token to a canned identity and rejects the
+// rest, standing in for the Keycloak JWKS verifier in handler tests.
+type stubVerifier struct{}
+
+func (stubVerifier) Verify(_ context.Context, raw string) (auth.Identity, error) {
+	switch raw {
+	case testAdminToken:
+		return auth.Identity{Subject: "admin-sub", Username: "admin", Roles: []string{"admin", "guest"}}, nil
+	case testGuestToken:
+		return auth.Identity{Subject: "guest-sub", Username: "guest", Roles: []string{"guest"}}, nil
+	default:
+		return auth.Identity{}, auth.ErrInvalidToken
+	}
+}
+
+// bearer sets the Authorization header to a stub-recognized token.
+func bearer(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+}
 
 const (
 	testOperatorEmail    = "op@example.com"
@@ -43,6 +73,7 @@ var globalTestAuth = func() AuthConfig {
 		Sessions:     testSessions,
 		SecureCookie: true,
 		LoginLimiter: middleware.NewRateLimiter(rate.Every(time.Millisecond), 1000),
+		Verifier:     stubVerifier{},
 	}
 }()
 
