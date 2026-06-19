@@ -212,6 +212,30 @@ locals {
     "cloudfront:ListTagsForResource",
   ]
 
+  # Web ACL (modules/waf): the CLOUDFRONT-scoped WAFv2 web ACL, its logging
+  # configuration, and the CloudWatch log group + resource policy that receive
+  # the decision logs. The log group lifecycle and retention ride on
+  # logs_actions; this block adds the WAFv2 actions and the log resource-policy
+  # actions those omit. The web ACL is taggable, so the read/tag actions are
+  # required for refresh, not just the first apply.
+  waf_actions = [
+    "wafv2:CreateWebACL",
+    "wafv2:UpdateWebACL",
+    "wafv2:DeleteWebACL",
+    "wafv2:GetWebACL",
+    "wafv2:ListWebACLs",
+    "wafv2:PutLoggingConfiguration",
+    "wafv2:DeleteLoggingConfiguration",
+    "wafv2:GetLoggingConfiguration",
+    "wafv2:TagResource",
+    "wafv2:UntagResource",
+    "wafv2:ListTagsForResource",
+    # The logging configuration writes a service-linked log resource policy.
+    "logs:PutResourcePolicy",
+    "logs:DeleteResourcePolicy",
+    "logs:DescribeResourcePolicies",
+  ]
+
   # Message broker (modules/rabbitmq): Amazon MQ for RabbitMQ.
   mq_actions = [
     "mq:CreateBroker",
@@ -311,6 +335,7 @@ locals {
     local.mq_actions,
     var.include_acm ? local.acm_actions : [],
     var.include_cloudfront ? local.cloudfront_actions : [],
+    var.include_waf ? local.waf_actions : [],
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],

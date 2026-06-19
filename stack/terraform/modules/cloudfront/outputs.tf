@@ -1,11 +1,11 @@
 output "distribution_id" {
   value       = aws_cloudfront_distribution.main.id
-  description = "CloudFront distribution id. Consumed by VER-131 to associate the WAFv2 web ACL."
+  description = "CloudFront distribution id."
 }
 
 output "distribution_arn" {
   value       = aws_cloudfront_distribution.main.arn
-  description = "CloudFront distribution ARN. Consumed by VER-131 for the WAFv2 association."
+  description = "CloudFront distribution ARN."
 }
 
 output "domain_name" {

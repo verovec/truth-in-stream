@@ -44,3 +44,9 @@ variable "price_class" {
   default     = "PriceClass_100"
   description = "CloudFront price class. PriceClass_100 (US/Canada/Europe) suits a France-facing app; widen if traffic globalizes."
 }
+
+variable "web_acl_id" {
+  type        = string
+  default     = null
+  description = "ARN of a CLOUDFRONT-scoped WAFv2 web ACL to associate with the distribution. WAFv2 takes the web ACL ARN here (despite the field name); null leaves the distribution unprotected."
+}
