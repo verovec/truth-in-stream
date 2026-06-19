@@ -46,7 +46,7 @@ function ClaimRow({ match }: { match: ClaimMatch }) {
         <VerdictBadge verdict={match.verdict} />
         <SimilarityScore similarity={match.similarity} />
       </div>
-      <p className="text-sm leading-5 text-zinc-700 dark:text-zinc-300">
+      <p className="text-sm leading-5 break-words text-zinc-700 dark:text-zinc-300">
         {match.claim}
       </p>
       <p className="flex flex-wrap gap-x-3 gap-y-1">
@@ -56,7 +56,7 @@ function ClaimRow({ match }: { match: ClaimMatch }) {
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
+            className="min-w-0 break-words text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
           >
             {source.title}
           </a>
@@ -80,7 +80,7 @@ function EvidenceRow({ match }: { match: EvidenceMatch }) {
         </span>
         <SimilarityScore similarity={match.similarity} />
       </div>
-      <p className="text-sm leading-5 text-zinc-700 dark:text-zinc-300">
+      <p className="text-sm leading-5 break-words text-zinc-700 dark:text-zinc-300">
         {match.excerpt}
       </p>
       {sources.length > 0 ? (
@@ -93,7 +93,7 @@ function EvidenceRow({ match }: { match: EvidenceMatch }) {
               href={source.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
+              className="min-w-0 break-words text-xs font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
             >
               {source.title}
             </a>

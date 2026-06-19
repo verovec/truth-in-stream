@@ -29,7 +29,10 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      {/* overflow-x-hidden is the app-wide guard against horizontal scroll: a
+          single long token in a verdict or source title can never push the
+          viewport wider than the screen on mobile. */}
+      <body className="flex min-h-full flex-col overflow-x-hidden">
         {children}
         {auth}
       </body>

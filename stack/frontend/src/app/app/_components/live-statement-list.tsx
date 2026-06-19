@@ -190,7 +190,7 @@ export const LiveStatementList = memo(function LiveStatementList({
                     {formatTime(statement.start)} – {formatTime(statement.end)}
                   </span>
                 </span>
-                <span className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">
+                <span className="text-sm leading-6 break-words text-zinc-800 dark:text-zinc-200">
                   {statement.text}
                 </span>
               </button>
