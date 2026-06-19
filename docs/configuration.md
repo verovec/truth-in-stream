@@ -11,6 +11,8 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `DATABASE_URL` | yes (compose sets a dev value) | Postgres + pgvector connection string |
+| `REDIS_URL` | no (compose wires the local `redis` service) | Analysis-cache connection (`redis://` or `rediss://`). Set and reachable -> completed imported/uploaded videos replay instantly; empty, invalid, or unreachable -> silent no-op (normal live pipeline). May carry credentials, so it is never logged |
+| `ANALYSIS_CACHE_TTL` | no (default `24h`) | Lifetime of a cached completed analysis; on expiry the video re-analyses through the live pipeline |
 | `TRANSCRIPTION_API_KEY` | yes (live only) | AssemblyAI key. `u3-rt-pro` streaming is the single transcriber for live streams and imported videos. Not used by the offline demo |
 | `EMBEDDING_API_KEY` | no for seeding | Voyage `voyage-4-large`. Seeding is offline; needed only for live query embedding, `make refresh-embeddings`, or wiki ingestion |
 | `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Must match between ingest and query (different models = different vector spaces); pinned to 1024 dims. Changing it requires `make refresh-embeddings` |
@@ -20,6 +22,27 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `SESSION_TTL` | no (default `24h`) | Legacy session lifetime (only with `LEGACY_PASSWORD_LOGIN=true`) |
 | `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev |
 | `PORT` | no (default `8080`) | Backend listen port |
+
+## Analysis cache (instant replay)
+
+A completed imported or uploaded video can replay its analysis instantly instead of re-running the
+live pipeline. When `REDIS_URL` points at a reachable Redis or Valkey, the backend caches the full
+transcript and verdicts on clean completion under the key `analysis:v1:<video-id>` with an
+`ANALYSIS_CACHE_TTL` lifetime (default `24h`); reopening that video before the entry expires loads
+everything at once, with no AssemblyAI transcription and no LLM calls.
+
+- **Opt-in, no-op fallback.** The cache is active only when `REDIS_URL` is set and reachable. The
+  backend pings it at startup and silently falls back to a no-op cache when `REDIS_URL` is empty or
+  the server is unreachable, so a missing or down cache never blocks boot and behaviour is identical
+  to having no cache. `make up` runs a local `redis` service (`redis:8-alpine`) and Compose wires
+  `REDIS_URL` to it automatically, so the cache is on by default in local dev.
+- **What is cached.** Only a clean, fully drained completion of an imported or uploaded video is
+  persisted. Live streams and partial or aborted sessions cache nothing.
+- **On a miss or expiry.** A miss, an expired entry, a disabled cache, or an unreachable server all
+  fall through to the normal live pipeline unchanged.
+
+In production the cache is backed by ElastiCache Valkey; see
+[Infrastructure -> Analysis cache](infrastructure.md#analysis-cache).
 
 ## Authentication (Keycloak identity gate)
 

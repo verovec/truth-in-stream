@@ -75,6 +75,17 @@ make db-push    ENV=prod       # in a second shell: load the dump (vectors via t
   `make push-secrets ENV=prod` (no value ever passes through an argv, log, or chat). ECS consumes
   secrets by ARN, so a roll needs no task-definition re-pin.
 
+## Analysis cache
+
+Production backs the analysis cache with an ElastiCache Valkey 8.0 cluster (`enable_valkey`, on by
+default in prod). It is a single-node replication group (`cache.t4g.micro`, no replica) in the
+private subnets, reachable only from the backend task security group on port `6379` with in-transit
+TLS. Terraform injects its endpoint into the backend as `REDIS_URL` (a `rediss://` URL), enabling the
+instant-replay path described in
+[Configuration -> Analysis cache](configuration.md#analysis-cache-instant-replay). The node is an
+ephemeral accelerator with no durable state and no failover: on a node failure the app simply falls
+back to re-analysis. Provisioned in terraform only; `terraform apply` stays human-gated.
+
 ## Observability
 
 Logs, alarms, and Slack alerting are provisioned for prod (`stack/terraform/modules/observability`).
