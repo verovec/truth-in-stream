@@ -228,6 +228,87 @@ func TestInsertSampleVideosListed(t *testing.T) {
 	}
 }
 
+func TestSeedPoliticalClaimsSearchable(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	claims, err := seed.LoadPoliticalClaims(openFixture(t, "political_claims.json"))
+	if err != nil {
+		t.Fatalf("LoadPoliticalClaims: %v", err)
+	}
+	embedder := embed.NewDeterministic(domain.EmbeddingDim)
+	if err := seed.InsertPoliticalClaims(ctx, store, embedder, claims); err != nil {
+		t.Fatalf("InsertPoliticalClaims: %v", err)
+	}
+
+	// The deterministic embedder maps a query to the same vector as the matching
+	// document, so a query for the motivating statement's exact text returns its
+	// curated claim first, carrying both verdict axes and the real source.
+	var target domain.PoliticalClaim
+	for _, c := range claims {
+		if c.Text == "500 000 immigrés entrent chaque année dont seuls 10% travaillent" {
+			target = c
+			break
+		}
+	}
+	if target.ID == "" {
+		t.Fatal("motivating claim not present in fixture")
+	}
+	qvecs, err := embedder.EmbedQueries(ctx, []string{target.Text})
+	if err != nil {
+		t.Fatalf("EmbedQueries: %v", err)
+	}
+	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], 3)
+	if err != nil {
+		t.Fatalf("SearchPoliticalClaims: %v", err)
+	}
+	if len(got) == 0 || got[0].ID != target.ID {
+		t.Fatalf("nearest political claim = %v, want %q", got, target.ID)
+	}
+	if got[0].Distance > 1e-3 {
+		t.Errorf("nearest distance = %v, want ~0", got[0].Distance)
+	}
+	if got[0].LiteralVerdict != domain.LiteralInaccurate {
+		t.Errorf("literal verdict = %q, want inaccurate", got[0].LiteralVerdict)
+	}
+	if len(got[0].Flags) == 0 {
+		t.Error("motivating claim must carry a manipulation flag")
+	}
+	if got[0].SourceURL == "" {
+		t.Error("motivating claim must carry a resolvable source URL")
+	}
+}
+
+func TestSeedPoliticalClaimsIdempotent(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	claims, err := seed.LoadPoliticalClaims(openFixture(t, "political_claims.json"))
+	if err != nil {
+		t.Fatalf("LoadPoliticalClaims: %v", err)
+	}
+	embedder := embed.NewDeterministic(domain.EmbeddingDim)
+	for range 2 {
+		if err := seed.InsertPoliticalClaims(ctx, store, embedder, claims); err != nil {
+			t.Fatalf("InsertPoliticalClaims: %v", err)
+		}
+	}
+
+	// Reseeding must rewrite the same rows, not duplicate them: searching wide
+	// returns exactly the seeded count.
+	qvecs, err := embedder.EmbedQueries(ctx, []string{claims[0].Text})
+	if err != nil {
+		t.Fatalf("EmbedQueries: %v", err)
+	}
+	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], len(claims)+1)
+	if err != nil {
+		t.Fatalf("SearchPoliticalClaims: %v", err)
+	}
+	if len(got) != len(claims) {
+		t.Fatalf("found %d political claims after reseed, want %d (must not duplicate)", len(got), len(claims))
+	}
+}
+
 func TestSeedClaimsSearchable(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

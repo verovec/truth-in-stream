@@ -1,0 +1,122 @@
+[
+  {
+    "id": "imm-500k-entrent-10pct-travaillent",
+    "text": "500 000 immigrés entrent chaque année dont seuls 10% travaillent",
+    "literal_verdict": "inaccurate",
+    "flags": ["cherry-picked", "missing-context", "misleading-causation"],
+    "source_name": "INSEE - Flux migratoires (Insee Première n°2107, mai 2025)",
+    "source_url": "https://www.insee.fr/fr/statistiques/8998082",
+    "quoted_span": "375 000 immigrés sont entrés en France en 2022 (347 000 en 2023), et 62,5% des immigrés de 15 a 64 ans sont en emploi : ni le chiffre de 500 000 ni celui de 10% ne correspondent aux donnees officielles (periode 2022-2023).",
+    "outlet": "insee.fr"
+  },
+  {
+    "id": "imm-un-demi-million-par-an",
+    "text": "On accueille un demi-million d'immigrés par an",
+    "literal_verdict": "inaccurate",
+    "flags": ["missing-context"],
+    "source_name": "INSEE - Flux migratoires (Insee Première n°2107, mai 2025)",
+    "source_url": "https://www.insee.fr/fr/statistiques/8998082",
+    "quoted_span": "Les entrees d'immigres en France se sont elevees a 375 000 en 2022 et 347 000 en 2023, loin du demi-million avance (periode 2022-2023).",
+    "outlet": "insee.fr"
+  },
+  {
+    "id": "imm-stock-population",
+    "text": "Il y a sept millions et demi d'immigrés en France",
+    "literal_verdict": "accurate",
+    "flags": ["missing-context"],
+    "source_name": "INSEE - L'essentiel sur les immigres et les etrangers",
+    "source_url": "https://www.insee.fr/fr/statistiques/3633212",
+    "quoted_span": "En 2024, 7 726 000 immigres vivent en France, soit 11,3% de la population ; a distinguer des 6,0 millions d'etrangers (8,8%) (annee 2024).",
+    "outlet": "insee.fr"
+  },
+  {
+    "id": "imm-90-pct-detenus-etrangers",
+    "text": "90% des détenus en France sont des étrangers",
+    "literal_verdict": "inaccurate",
+    "flags": ["misleading-causation"],
+    "source_name": "Senat - Question ecrite n°0878S sur les etrangers detenus (janvier 2026)",
+    "source_url": "https://www.senat.fr/questions/base/2026/qSEQ26010878S.html",
+    "quoted_span": "Les personnes de nationalite etrangere representent environ 24,5% des detenus (21 155 sur 86 376 au 8 janvier 2026), pas 90% : une surrepresentation reelle mais tres loin du chiffre avance.",
+    "outlet": "senat.fr"
+  },
+  {
+    "id": "imm-titres-sejour-record",
+    "text": "On délivre un nombre record de titres de séjour chaque année",
+    "literal_verdict": "accurate",
+    "flags": ["missing-context"],
+    "source_name": "Ministere de l'Interieur (DGEF) - Les chiffres 2023",
+    "source_url": "https://www.immigration.interieur.gouv.fr/Info-ressources/Actualites/L-actu-immigration/Les-chiffres-2023-publication-annuelle-parue-le-27-juin-2024",
+    "quoted_span": "323 260 premiers titres de sejour ont ete delivres en 2023 (+1,4%), un record ; mais 32% sont des etudiants et 28% du motif familial, 17% economique (annee 2023).",
+    "outlet": "immigration.interieur.gouv.fr"
+  },
+  {
+    "id": "imm-asile-submerge",
+    "text": "La France est submergée par les demandes d'asile",
+    "literal_verdict": "unverifiable",
+    "flags": ["missing-context"],
+    "source_name": "OFPRA - Rapport d'activite 2024",
+    "source_url": "https://www.ofpra.gouv.fr/actualites/rapport-dactivite-2024",
+    "quoted_span": "La France a enregistre 130 029 premieres demandes d'asile en 2024 (157 947 demandes au total) : un volume eleve et en hausse, mais 'submergee' reste une appreciation subjective (annee 2024).",
+    "outlet": "ofpra.gouv.fr"
+  },
+  {
+    "id": "imm-asile-majorite-acceptee",
+    "text": "L'immense majorité des demandeurs d'asile obtiennent une protection",
+    "literal_verdict": "inaccurate",
+    "flags": ["cherry-picked"],
+    "source_name": "OFPRA - Premieres donnees de l'asile 2024",
+    "source_url": "https://www.ofpra.gouv.fr/actualites/publication-des-premieres-donnees-de-lasile-2024-a-lofpra",
+    "quoted_span": "Le taux de protection a l'asile etait d'environ 38,9% en 2024 (32,8% en 2023) : une minorite des demandes aboutit, pas l'immense majorite (annee 2024).",
+    "outlet": "ofpra.gouv.fr"
+  },
+  {
+    "id": "imm-ame-cout",
+    "text": "L'Aide médicale d'État bénéficie à des centaines de milliers d'étrangers et coûte des milliards",
+    "literal_verdict": "inaccurate",
+    "flags": ["missing-context"],
+    "source_name": "Senat - Rapport d'information sur l'AME 2024",
+    "source_url": "https://www.senat.fr/rap/r24-841/r24-8410.html",
+    "quoted_span": "L'AME comptait environ 466 000 beneficiaires fin 2023 pour une depense de 1,14 Md€ (1,386 Md€ en 2024) : des centaines de milliers oui, 'des milliards' non - cela represente moins de 0,5% des depenses d'assurance maladie (periode 2023-2024).",
+    "outlet": "senat.fr"
+  },
+  {
+    "id": "imm-chomage-massif",
+    "text": "Les immigrés sont massivement au chômage et ne travaillent pas",
+    "literal_verdict": "inaccurate",
+    "flags": ["cherry-picked", "missing-context"],
+    "source_name": "Ministere de l'Interieur (DGEF) - Activite, emploi et chomage des immigres",
+    "source_url": "https://www.immigration.interieur.gouv.fr/Info-ressources/Etudes-et-statistiques/Les-chiffres-de-l-immigration-en-France/Activite-emploi-et-chomage-des-immigres",
+    "quoted_span": "Le taux de chomage des immigres est de 11,2% mais leur taux d'emploi atteint 62,5% : la majorite des immigres en age de travailler sont en emploi (annee 2023).",
+    "outlet": "immigration.interieur.gouv.fr"
+  },
+  {
+    "id": "imm-oqtf-7pct-executees",
+    "text": "Seulement 7% des OQTF sont exécutées",
+    "literal_verdict": "accurate",
+    "flags": ["cherry-picked", "missing-context"],
+    "source_name": "Ministere de l'Interieur (DGEF) - Lutte contre l'immigration irreguliere",
+    "source_url": "https://www.immigration.interieur.gouv.fr/Info-ressources/Etudes-et-statistiques/Les-chiffres-de-l-immigration-en-France/Lutte-contre-l-immigration-irreguliere",
+    "quoted_span": "137 730 OQTF ont ete prononcees en 2023 ; le taux d'execution est d'environ 7% pour les seuls eloignements forces, mais ~16,5% toutes modalites confondues (22 704 eloignements) - le taux depend de la definition retenue (annee 2023).",
+    "outlet": "immigration.interieur.gouv.fr"
+  },
+  {
+    "id": "imm-solde-migratoire-record",
+    "text": "Le solde migratoire de la France est au plus haut depuis des décennies",
+    "literal_verdict": "accurate",
+    "flags": ["missing-context"],
+    "source_name": "INSEE - Flux migratoires (Insee Première n°2107, mai 2025)",
+    "source_url": "https://www.insee.fr/fr/statistiques/8998082",
+    "quoted_span": "Le solde migratoire net etait de +271 000 en 2022, le plus haut depuis 1962 ; il s'explique en partie par le rattrapage post-Covid et l'accueil des refugies ukrainiens, et les entrees baissent depuis (annee 2022).",
+    "outlet": "insee.fr"
+  },
+  {
+    "id": "imm-rsa-etrangers",
+    "text": "Les immigrés touchent massivement le RSA et les aides sociales",
+    "literal_verdict": "inaccurate",
+    "flags": ["misleading-causation", "missing-context"],
+    "source_name": "Assemblee nationale - Question ecrite n°5157 (reponse du 20 juin 2023)",
+    "source_url": "https://questions.assemblee-nationale.fr/q16/16-5157QE.htm",
+    "quoted_span": "Les foyers dont l'allocataire est de nationalite non-UE representaient 15,6% des foyers au RSA mi-2022 ; un etranger doit resider legalement depuis 5 ans pour y avoir droit (annee 2022).",
+    "outlet": "assemblee-nationale.fr"
+  }
+]

@@ -71,14 +71,33 @@ type PoliticalVerifier interface {
 	VerifyPolitical(ctx context.Context, claim string, passages []EvidencePassage) (PoliticalVerdict, error)
 }
 
-// PoliticalConfig wires the political verify path's collaborators. All three are
-// required when the path is active; NewVerifyPath validates them. When the Political
-// field of VerifyPathConfig is nil the path runs the credibility-only verify stage
-// unchanged, so FACTCHECK_POLITICAL off is byte-for-byte the legacy behavior.
+// PoliticalClaimSearcher is the slice of the curated political claim store the
+// political fast-path borrows from: approximate nearest-neighbor retrieval over the
+// two-axis political_claims corpus by query embedding, nearest-first. It is the
+// consumer-side port the political path depends on; *postgres.Store satisfies it via
+// SearchPoliticalClaims.
+type PoliticalClaimSearcher interface {
+	SearchPoliticalClaims(ctx context.Context, query []float32, topK int) ([]domain.PoliticalClaimMatch, error)
+}
+
+// PoliticalConfig wires the political verify path's collaborators. Classifier,
+// Retriever, and Verifier are required when the path is active; NewVerifyPath
+// validates them. CuratedStore is optional: when set, a checkable claim that
+// near-matches a curated two-axis political claim borrows its verdict (literal
+// verdict + manipulation flags + real source) at or above CuratedTau with no LLM
+// call, ahead of routing and verification. When the Political field of
+// VerifyPathConfig is nil the path runs the credibility-only verify stage unchanged,
+// so FACTCHECK_POLITICAL off is byte-for-byte the legacy behavior.
 type PoliticalConfig struct {
 	Classifier PoliticalClassifier
 	Retriever  PoliticalRetriever
 	Verifier   PoliticalVerifier
+	// CuratedStore is the curated two-axis claim corpus the fast-path borrows from.
+	// Nil disables the borrow, so the path falls through to route+verify.
+	CuratedStore PoliticalClaimSearcher
+	// CuratedTau is the cosine similarity at or above which a curated near-match is
+	// borrowed. A cosine similarity in [-1, 1].
+	CuratedTau float64
 }
 
 // political reports whether the political path is wired.
@@ -232,6 +251,83 @@ func politicalNoEvidenceVerdict() *VerifiedVerdict {
 		Basis:   BasisKnowledge,
 		Literal: LiteralUnverifiable,
 	}
+}
+
+// politicalFastMatch borrows a two-axis verdict from the curated political_claims
+// store when its nearest hit clears CuratedTau, reusing the already-computed query
+// embedding (no re-embed). It runs ahead of routing and verification, so a recurring
+// talking point resolves instantly with its real literal verdict, manipulation
+// flags, and source. It is a no-op (ok=false) when the store is not wired, the
+// embedding is empty, the search errors (logged, non-fatal), or no hit clears the
+// tau; every miss falls through to the route+verify stage, so the curated fast-path
+// can never make a claim worse than today.
+func (vp *VerifyPath) politicalFastMatch(ctx context.Context, embedding []float32) (*VerifiedVerdict, bool) {
+	if vp.pol.CuratedStore == nil || len(embedding) == 0 {
+		return nil, false
+	}
+	matches, err := vp.pol.CuratedStore.SearchPoliticalClaims(ctx, embedding, 1)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.WarnContext(ctx, "political curated fast-path search failed", slog.Any("err", err))
+		}
+		return nil, false
+	}
+	if len(matches) == 0 {
+		return nil, false
+	}
+	best := matches[0]
+	if similarityFromDistance(best.Distance) < vp.pol.CuratedTau {
+		return nil, false
+	}
+	return politicalCuratedVerdict(best), true
+}
+
+// politicalCuratedVerdict builds a borrowed two-axis verdict from a curated
+// political_claims near-match: the curated literal verdict and manipulation flags
+// carried through verbatim, the credibility axis derived from the literal so the
+// per-speaker score and legacy contract keep working, and a single citation pointing
+// at the real curated source. Basis is evidence (the curated check is the cited
+// source) and Confidence is the near-match similarity, mirroring curatedVerdict. The
+// rationale is the curated quoted span (the published figure and its period). Per the
+// unverifiable invariant, an unverifiable literal grounds nothing and carries no
+// citation.
+func politicalCuratedVerdict(m domain.PoliticalClaimMatch) *VerifiedVerdict {
+	literal := string(m.LiteralVerdict)
+	flags := make([]string, len(m.Flags))
+	for i, f := range m.Flags {
+		flags[i] = string(f)
+	}
+	verdict := &VerifiedVerdict{
+		Verdict:    credibilityFromLiteral(literal),
+		Basis:      BasisEvidence,
+		Confidence: similarityFromDistance(m.Distance),
+		Rationale:  m.QuotedSpan,
+		Literal:    literal,
+		Flags:      flags,
+	}
+	if verdict.Verdict != VerdictUnverifiable {
+		verdict.Citations = []domain.SegmentMatch{politicalCuratedMatch(m)}
+	}
+	return verdict
+}
+
+// politicalCuratedMatch projects a curated political near-match into the wire match
+// shape the UI renders, carrying the curated claim text and its real source
+// provenance (publisher name and url) so the cited source round-trips.
+func politicalCuratedMatch(m domain.PoliticalClaimMatch) domain.SegmentMatch {
+	return domain.SegmentMatch{
+		Kind:       domain.MatchKindClaim,
+		Claim:      m.Text,
+		Similarity: similarityFromDistance(m.Distance),
+		EvidenceID: m.ID,
+		Sources:    []domain.Source{{Title: m.SourceName, URL: m.SourceURL}},
+	}
+}
+
+// similarityFromDistance converts a pgvector cosine distance in [0, 2] to cosine
+// similarity in [-1, 1]: identical vectors (distance 0) map to similarity 1.
+func similarityFromDistance(distance float32) float64 {
+	return 1 - float64(distance)
 }
 
 // literalFromCredibility maps a curated borrow's credibility verdict onto the
