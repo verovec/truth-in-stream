@@ -125,6 +125,15 @@ func deepseekToolResponse(t *testing.T, name string, args map[string]any) string
 	if err != nil {
 		t.Fatalf("marshal tool args: %v", err)
 	}
+	return deepseekRawArgsResponse(t, name, string(raw), "tool_calls")
+}
+
+// deepseekRawArgsResponse builds an OpenAI Chat Completions response carrying one
+// forced tool call whose arguments are the given raw string under the given
+// finish_reason, so a test can fake the empty-arguments and truncated replies
+// DeepSeek occasionally returns for a forced tool call.
+func deepseekRawArgsResponse(t *testing.T, name, args, finishReason string) string {
+	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"id":      "chatcmpl_test",
 		"object":  "chat.completion",
@@ -139,11 +148,11 @@ func deepseekToolResponse(t *testing.T, name string, args map[string]any) string
 						{
 							"id":       "call_test",
 							"type":     "function",
-							"function": map[string]any{"name": name, "arguments": string(raw)},
+							"function": map[string]any{"name": name, "arguments": args},
 						},
 					},
 				},
-				"finish_reason": "tool_calls",
+				"finish_reason": finishReason,
 			},
 		},
 	})
@@ -446,6 +455,16 @@ func TestClassifyDeepSeekResponseHandling(t *testing.T) {
 			name:    "malformed tool arguments errors",
 			body:    deepseekToolResponse(t, testTool, map[string]any{"flag": "not-a-bool", "reason": ""}),
 			wantErr: "decode " + testTool,
+		},
+		{
+			name:    "empty tool arguments errors clearly",
+			body:    deepseekRawArgsResponse(t, testTool, "", "tool_calls"),
+			wantErr: "empty " + testTool,
+		},
+		{
+			name:    "truncated tool call reports max_tokens",
+			body:    deepseekRawArgsResponse(t, testTool, "", "length"),
+			wantErr: "truncated",
 		},
 		{
 			name:    "transport error propagates",
