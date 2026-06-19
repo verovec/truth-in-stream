@@ -264,3 +264,15 @@ variable "db_backup_memory" {
   default     = 1024
   description = "Fargate memory in MiB for the backup task."
 }
+
+variable "enable_valkey" {
+  type        = bool
+  default     = true
+  description = "Provision the managed Valkey cache and inject REDIS_URL into the backend. On by default in prod so the 24h analysis cache is live; turning it off falls the backend back to the no-op cache (empty REDIS_URL)."
+}
+
+variable "valkey_node_type" {
+  type        = string
+  default     = "cache.t4g.micro"
+  description = "ElastiCache node class for the Valkey cache. A single small node suits a 24h ephemeral cache. The engine version and parameter group are coupled and stay on the module defaults (Valkey 8.x)."
+}

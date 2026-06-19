@@ -51,3 +51,9 @@ variable "include_observability" {
   default     = false
   description = "Include the observability module's actions: CloudWatch alarms, the alerts SNS topic, the Slack forwarder lambda (function lifecycle + resource policy), and the health dashboard. Set true in the env that provisions monitoring + alerting (prod)."
 }
+
+variable "include_elasticache" {
+  type        = bool
+  default     = false
+  description = "Include the managed Valkey cache actions (modules/valkey): the ElastiCache replication group and subnet group. Set from the env's enable_valkey so the manifest only demands them when the plan provisions the cache. The cache's own security group rides on networking_actions."
+}

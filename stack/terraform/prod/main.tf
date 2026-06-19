@@ -8,6 +8,13 @@ locals {
   # this: the backend drops the secret and the migration task / embedding worker
   # gate themselves off when it is null. Prod runs RDS by default.
   rds_dsn_secret_arn = one(module.rds[*].dsn_secret_arn)
+
+  # Backend REDIS_URL, or null when the Valkey cache is gated off. The URL is a
+  # rediss://endpoint:6379 with TLS but no auth token, so it carries no secret and
+  # rides on the backend's plain environment_variables (not Secrets Manager); the
+  # card explicitly sanctions an env var here (no auth token). An empty/absent
+  # REDIS_URL makes the backend fall back to its no-op cache.
+  redis_url = one(module.valkey[*].redis_url)
 }
 
 # Public TLS certificate for jeminforme.fr (apex + www), requested in us-east-1
@@ -104,6 +111,27 @@ module "rabbitmq" {
   vpc_id                     = module.vpc.vpc_id
   subnet_ids                 = var.mq_deployment_mode == "CLUSTER_MULTI_AZ" ? slice(module.vpc.private_subnet_ids, 0, 2) : [module.vpc.private_subnet_ids[0]]
   allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+}
+
+# Managed Valkey cache for the 24h analysis-replay cache (VER-145). A single
+# small node in the private subnets, reachable only from the backend task SG on
+# the Redis port. Valkey is wire-compatible with the go-redis client, so the
+# backend needs no change; it reads the endpoint as REDIS_URL below. Gated by
+# enable_valkey (on in prod). A node failure causes only cache misses, never data
+# loss, so a single node with no replica is the right cost/HA trade for an
+# ephemeral cache.
+module "valkey" {
+  source = "../modules/valkey"
+  count  = var.enable_valkey ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  vpc_id                     = module.vpc.vpc_id
+  private_subnet_ids         = module.vpc.private_subnet_ids
+  allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+
+  node_type = var.valkey_node_type
 }
 
 # SSM-only bastion for the one-time embedded-DB load into RDS: an operator opens
@@ -302,13 +330,18 @@ module "backend" {
   memory        = var.backend_memory
   desired_count = var.backend_desired_count
 
-  environment_variables = {
-    PORT = "8080"
-    # Object storage uses the task role for credentials (no endpoint, no static
-    # keys); only the bucket and region are configured here.
-    STORAGE_BUCKET = module.media_storage.bucket_id
-    STORAGE_REGION = var.aws_region
-  }
+  environment_variables = merge(
+    {
+      PORT = "8080"
+      # Object storage uses the task role for credentials (no endpoint, no static
+      # keys); only the bucket and region are configured here.
+      STORAGE_BUCKET = module.media_storage.bucket_id
+      STORAGE_REGION = var.aws_region
+    },
+    # REDIS_URL turns on the 24h analysis cache. No auth token, so it is a plain
+    # env var, not a secret; absent when the Valkey cache is gated off.
+    local.redis_url != null ? { REDIS_URL = local.redis_url } : {},
+  )
   secrets = merge(
     {
       EMBEDDING_API_KEY     = aws_secretsmanager_secret.embedding_api_key.arn
@@ -626,4 +659,5 @@ module "apply_permissions" {
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
   include_bastion         = var.enable_bastion
   include_observability   = true
+  include_elasticache     = var.enable_valkey
 }
