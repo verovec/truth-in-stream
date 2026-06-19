@@ -29,6 +29,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
@@ -95,6 +96,39 @@ const systemPrompt = "You judge whether a single factual claim is credible, disp
 	"Do not treat a passage as bearing on the claim merely because it shares a topic. " +
 	"Record your verdict with the record_verdict tool."
 
+// systemPromptFR is the French counterpart of systemPrompt, used in the French/EU
+// political fact-checking mode so the viewer-facing rationale comes back in French
+// instead of English. It is a faithful translation that keeps the literal tool
+// tokens (the credible/disputed/unverifiable verdicts and the evidence/knowledge
+// bases) in English, since those round-trip as the tool's enum values, and it adds
+// an explicit instruction to write the rationale in French - mirroring the political
+// verifier (political.go), the other viewer-facing rationale producer. It is
+// selected by domain.LocaleFrench; every other locale keeps the English prompt, so
+// English behavior is unchanged when French mode is off.
+const systemPromptFR = "Tu juges si une seule affirmation factuelle est crédible, contestée ou invérifiable, afin d'aider un spectateur à décider s'il peut faire confiance au locuteur. " +
+	"Chaque passage de preuve porte un evidence_id. Juge d'abord contre les preuves fournies : " +
+	"si un passage affirme directement l'affirmation, renvoie \"credible\" avec la base \"evidence\" ; " +
+	"si un passage la contredit directement, renvoie \"disputed\" avec la base \"evidence\". " +
+	"Un verdict appuyé sur une preuve DOIT citer au moins un passage par son evidence_id, en reproduisant la portion exacte sur laquelle tu t'appuies. " +
+	"Si aucun passage fourni ne porte sur l'affirmation, replie-toi sur tes connaissances générales pour trancher, avec la base \"knowledge\" : " +
+	"renvoie \"credible\" lorsque l'affirmation est globalement vraie ou conforme à un consensus bien établi, " +
+	"\"disputed\" lorsqu'elle est manifestement fausse ou contredit un consensus bien établi, " +
+	"et \"unverifiable\" lorsqu'elle est véritablement indéterminée ou qu'il s'agit d'un énoncé privé, anecdotique ou subjectif qu'aucune connaissance générale ne peut trancher. " +
+	"Un verdict de base \"knowledge\" doit garder une confiance modérée, car il ne s'appuie pas sur les preuves fournies. " +
+	"Ne considère pas qu'un passage porte sur l'affirmation au seul motif qu'il partage le même sujet. " +
+	"Rédige le rationale en français, en une phrase. " +
+	"Enregistre ton verdict avec l'outil record_verdict."
+
+// promptFor selects the system prompt for the locale: the French prompt for
+// domain.LocaleFrench, the English prompt for every other locale (including the
+// default), so English behavior is unchanged when French mode is off.
+func promptFor(locale domain.Locale) string {
+	if locale.IsFrench() {
+		return systemPromptFR
+	}
+	return systemPrompt
+}
+
 // Passage is one retrieved evidence passage handed to the verifier. ID is the
 // stable evidence_id the citation round-trips against; Text is the passage body
 // the model reads and that a cited span must be a substring of.
@@ -128,18 +162,23 @@ type Result struct {
 
 // Config wires a Client. Provider selects the LLM backend (default Anthropic);
 // APIKey/GeminiAPIKey/DeepSeekAPIKey are the per-provider secrets and come from the environment
-// only; an empty Model lets the selected provider apply its own default model.
+// only; an empty Model lets the selected provider apply its own default model. Locale
+// selects the prompt language: the default (English) keeps the English prompt;
+// domain.LocaleFrench reasons and writes the rationale in French. The verdict is
+// unchanged across locales - only the prompt language differs.
 type Config struct {
 	Provider       llm.ProviderName
 	APIKey         string
 	GeminiAPIKey   string
 	DeepSeekAPIKey string
 	Model          string
+	Locale         domain.Locale
 }
 
 // Client is the Anthropic-backed credibility verifier.
 type Client struct {
-	llm *llm.Client
+	llm    *llm.Client
+	system string
 }
 
 // New builds a Client, failing when no API key is supplied (the feature is gated
@@ -157,7 +196,7 @@ func New(cfg Config, opts ...llm.Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("verify: %w", err)
 	}
-	return &Client{llm: client}, nil
+	return &Client{llm: client, system: promptFor(cfg.Locale)}, nil
 }
 
 // Verify judges claim against passages and returns a grounded credibility verdict.
@@ -174,7 +213,7 @@ func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (
 	}
 
 	res, err := llm.Classify[Result](ctx, c.llm, llm.Request{
-		System:    systemPrompt,
+		System:    c.system,
 		User:      buildPrompt(claim, passages),
 		MaxTokens: maxTokens,
 		Tool: llm.Tool{

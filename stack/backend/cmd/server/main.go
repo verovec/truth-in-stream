@@ -464,7 +464,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher 
 	if err != nil {
 		return nil, err
 	}
-	verifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, Model: cfg.Model})
+	verifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, Model: cfg.Model, Locale: locale})
 	if err != nil {
 		return nil, err
 	}
