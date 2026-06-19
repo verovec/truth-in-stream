@@ -12,6 +12,7 @@ stack/terraform/
 │   ├── iam/             GitHub OIDC provider, deploy role, ECS task roles
 │   ├── rds/             PostgreSQL 17 (pgvector), credentials + DSN in Secrets Manager (optional, enable_rds)
 │   ├── rabbitmq/        Amazon MQ for RabbitMQ broker + URL secret (embedding-job queue)
+│   ├── acm/             us-east-1 public TLS certificate (DNS validation, cross-account records)
 │   ├── alb/             public ALB; HTTP now, HTTPS once certificate_arn is set
 │   ├── service/         task definition + target group + listener rule + service
 │   ├── worker/          headless ECS worker service (embedding-worker fleet)
@@ -193,6 +194,38 @@ and a full public-access block on every run. Override `STATE_BUCKET`,
 Create a hosted zone + ACM certificate, then set `certificate_arn` on the
 `alb` module call. The HTTP listener switches to a 301 redirect and services
 attach to the HTTPS listener automatically.
+
+## Cross-account ACM validation
+
+The public certificate for `jeminforme.fr` is issued by the **app account**
+(`965638922723`), but the authoritative hosted zone for the domain stays in the
+**main account** (`040265332493`, zone `Z0839748310ZNBMJ0HI90`). The registrar
+already delegates to that zone, so no nameserver change is needed and the app
+account never creates a hosted zone.
+
+The `prod` root requests the certificate in `us-east-1` (required for
+CloudFront) via `modules/acm` and exposes its validation records as outputs —
+but it does **not** create the records, because the zone is in another account:
+
+1. The app account's `terraform apply` requests the certificate. It is created
+   `PENDING_VALIDATION`; this does not block the apply (there is no
+   `aws_acm_certificate_validation` resource that would wait on issuance).
+2. The records to create are published as outputs:
+   - `certificate_arn` — the certificate ARN (also consumed by CloudFront).
+   - `certificate_domain_validation_options` — a map keyed by domain of the
+     `{ name, type, value }` CNAME validation records. Nothing here is secret.
+3. The dedicated **main-account** terraform root (see VER-140) reads those
+   outputs (remote state or tfvars) and creates one CNAME per record in
+   `Z0839748310ZNBMJ0HI90`.
+4. Once the records resolve, ACM validates and the certificate moves to
+   `ISSUED`. Only then can CloudFront serve HTTPS with it.
+
+Read the outputs with:
+
+```sh
+cd prod
+terraform output certificate_domain_validation_options
+```
 
 ## Usage
 
