@@ -68,3 +68,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/doctor.test.sh
+  # Unit-test the Secrets Manager bulk-push helper with a stubbed aws CLI and a
+  # synthetic .env (no AWS account; proves no secret value reaches an argv/log).
+  push-secrets-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/push-secrets.test.sh

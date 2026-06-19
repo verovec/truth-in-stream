@@ -57,7 +57,11 @@ MODE ?=
 EPIC ?=
 DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply
+# Target environment for `make push-secrets`. prod by default (the one-time prod
+# population the card delivers); set ENV=dev to fill the dev secrets instead.
+ENV ?= prod
+
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -204,6 +208,9 @@ crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action
 prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the broker + worker fleet + a one-shot crawl that fills the queue from CRAWL_CATEGORIES (gate on by default - set CHECKWORTHY_API_KEY, or CRAWL_CHECKWORTHY=false, in .env), then the fleet drains it. Plain `make up` stays free (this is the wiki profile). Equivalent to `docker compose --profile wiki up -d` (builds the image if missing).
 	$(COMPOSE) --profile wiki up
 	@echo "wiki stack up: broker + worker fleet + a one-shot prime crawl (CRAWL_CATEGORIES). Watch the queue fill and drain at http://localhost:15672 (app/dev); 'make crawl-workers CRAWLWORKER_REPLICAS=N' scales the drain."
+
+push-secrets: ## Push the allowlisted app secrets from the local .env into AWS Secrets Manager under <project>/<ENV>/app/ (ENV=prod default; ENV=dev for dev). Idempotent (describe-then-create-or-put), reads .env at runtime only, and never echoes a value: each is handed to the CLI as a chmod-600 file:// reference and shredded. Pushes only the runtime app keys (EMBEDDING_API_KEY, TRANSCRIPTION_API_KEY, AUTH_EMAIL, AUTH_PASSWORD_HASH, SESSION_SECRET, DEEPSEEK_API_KEY, GEMINI_API_KEY, SLACK_WEBHOOK_URL); the terraform-owned DATABASE_URL and RABBITMQ_URL are never touched. Run after `terraform apply` creates the empty secret containers; prod asks you to type the env name to confirm.
+	./scripts/push-secrets.sh $(ENV)
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up
