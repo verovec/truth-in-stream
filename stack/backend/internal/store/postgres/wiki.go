@@ -177,10 +177,12 @@ func (s *Store) StoredRevisions(ctx context.Context, pageIDs []int64) (map[int64
 	return out, nil
 }
 
-// CountPages returns the number of distinct pages in the live corpus, the
-// denominator for the delta sync's bulk-recommendation guard.
+// CountPages returns the number of distinct pages in the live encyclopedic
+// corpus, the denominator for the delta sync's bulk-recommendation guard. The
+// statistical corpus shares this table but is excluded so its rows never skew
+// the wiki change-fraction guard.
 func (s *Store) CountPages(ctx context.Context) (int64, error) {
-	n, err := s.queries.CountWikiPages(ctx)
+	n, err := s.queries.CountWikiPages(ctx, domain.StatCorpus)
 	if err != nil {
 		return 0, fmt.Errorf("postgres: count wiki pages: %w", err)
 	}

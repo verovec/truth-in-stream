@@ -51,7 +51,12 @@ WHERE page_id = ANY(sqlc.arg(page_ids)::bigint[])
 GROUP BY page_id;
 
 -- name: CountWikiPages :one
-SELECT count(DISTINCT page_id)::bigint FROM wiki_chunks;
+-- The delta-sync bulk-recommendation denominator counts only the encyclopedic
+-- corpus: statistical evidence (a separate corpus that shares this table) is
+-- excluded so its rows never skew the wiki change-fraction guard.
+SELECT count(DISTINCT page_id)::bigint
+FROM wiki_chunks
+WHERE corpus <> sqlc.arg(exclude_corpus)::text;
 
 -- name: SetWikiChunkEmbedding :batchexec
 -- Delta sync writes embeddings straight into the live table: at delta volume the
@@ -131,10 +136,13 @@ LIMIT sqlc.arg(row_limit);
 -- name: EmbeddedWikiChunks :many
 -- The clustering job reads the embedded live corpus in keyset order to group it
 -- into topic clusters and score importance. The embedding IS NOT NULL filter
--- scopes the scan to the chunks that actually carry a vector to cluster.
+-- scopes the scan to the chunks that actually carry a vector to cluster, and the
+-- corpus filter keeps statistical evidence (a separate corpus sharing this
+-- table) out of the encyclopedic clustering it does not belong to.
 SELECT page_id, chunk_index, embedding
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
+  AND corpus <> sqlc.arg(exclude_corpus)::text
   AND (page_id, chunk_index) > (sqlc.arg(after_page_id)::bigint, sqlc.arg(after_chunk_index)::integer)
 ORDER BY page_id, chunk_index
 LIMIT sqlc.arg(row_limit);

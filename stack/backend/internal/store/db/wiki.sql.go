@@ -49,11 +49,16 @@ func (q *Queries) CountWikiChunksForPage(ctx context.Context, pageID int64) (int
 }
 
 const countWikiPages = `-- name: CountWikiPages :one
-SELECT count(DISTINCT page_id)::bigint FROM wiki_chunks
+SELECT count(DISTINCT page_id)::bigint
+FROM wiki_chunks
+WHERE corpus <> $1::text
 `
 
-func (q *Queries) CountWikiPages(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countWikiPages)
+// The delta-sync bulk-recommendation denominator counts only the encyclopedic
+// corpus: statistical evidence (a separate corpus that shares this table) is
+// excluded so its rows never skew the wiki change-fraction guard.
+func (q *Queries) CountWikiPages(ctx context.Context, excludeCorpus string) (int64, error) {
+	row := q.db.QueryRow(ctx, countWikiPages, excludeCorpus)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -83,12 +88,14 @@ const embeddedWikiChunks = `-- name: EmbeddedWikiChunks :many
 SELECT page_id, chunk_index, embedding
 FROM wiki_chunks
 WHERE embedding IS NOT NULL
-  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
+  AND corpus <> $1::text
+  AND (page_id, chunk_index) > ($2::bigint, $3::integer)
 ORDER BY page_id, chunk_index
-LIMIT $3
+LIMIT $4
 `
 
 type EmbeddedWikiChunksParams struct {
+	ExcludeCorpus   string
 	AfterPageID     int64
 	AfterChunkIndex int32
 	RowLimit        int32
@@ -102,9 +109,16 @@ type EmbeddedWikiChunksRow struct {
 
 // The clustering job reads the embedded live corpus in keyset order to group it
 // into topic clusters and score importance. The embedding IS NOT NULL filter
-// scopes the scan to the chunks that actually carry a vector to cluster.
+// scopes the scan to the chunks that actually carry a vector to cluster, and the
+// corpus filter keeps statistical evidence (a separate corpus sharing this
+// table) out of the encyclopedic clustering it does not belong to.
 func (q *Queries) EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error) {
-	rows, err := q.db.Query(ctx, embeddedWikiChunks, arg.AfterPageID, arg.AfterChunkIndex, arg.RowLimit)
+	rows, err := q.db.Query(ctx, embeddedWikiChunks,
+		arg.ExcludeCorpus,
+		arg.AfterPageID,
+		arg.AfterChunkIndex,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
