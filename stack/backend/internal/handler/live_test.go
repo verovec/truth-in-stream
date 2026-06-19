@@ -126,11 +126,13 @@ func liveTestServerWithRecorder(t *testing.T, analyzer LiveAnalyzer, recorder An
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	// The live route runs behind the Identity middleware so the handler reads the
-	// caller's verified role from the request context, exactly as in NewMux. A
-	// dial with no Bearer token is a guest (debug detail stays off even when the
-	// server-side flag is on); the admin Bearer the stub verifier knows is what
-	// unlocks the evidence detail.
+	// This harness wraps the handler in the permissive Identity middleware to test
+	// the handler's role-reading logic in isolation: a dial with no Bearer token is
+	// a guest (debug detail stays off even when the server-side flag is on), and the
+	// admin Bearer the stub verifier knows unlocks the evidence detail. The real
+	// production gate - RequireIdentity, which rejects a no-token dial with 401 and
+	// reads the access_token query parameter - is exercised separately through
+	// NewMux by TestLiveWSAdminQueryParamUnlocksDebugDetail.
 	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, recorder, nil, origins, debugFactCheck, logger))
 	mux.Handle("GET /api/videos/{id}/live", h)
 	srv := httptest.NewServer(mux)
@@ -1107,14 +1109,103 @@ func TestLiveHandlerRejectsDisallowedOrigin(t *testing.T) {
 
 func TestLiveRouteRequiresAuth(t *testing.T) {
 	t.Parallel()
-	// The live route sits under the /api guard, so an unauthenticated upgrade is
-	// rejected with 401 before any WebSocket handshake.
+	// The live route sits under the /api Keycloak identity gate, so an upgrade with
+	// no verified token is rejected with 401 before any WebSocket handshake.
 	srv := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/vid1/live", nil)
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET live without session = %d, want 401", rec.Code)
+		t.Fatalf("GET live without a token = %d, want 401", rec.Code)
+	}
+}
+
+// liveMuxServer wires the live route through NewMux exactly as production does:
+// behind RequireIdentity, which reads the access_token query parameter the browser
+// WebSocket carries (it cannot set the Authorization header). It returns the base
+// ws URL; tests append the query string.
+func liveMuxServer(t *testing.T, analyzer LiveAnalyzer, debugFactCheck bool) string {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	hc := service.NewHealthChecker(fakePinger{})
+	mux := NewMux(hc, &fakeVideoService{}, &fakeYouTubeService{}, analyzer, nil, nil, nil, debugFactCheck, nil, "", globalTestAuth, logger)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
+}
+
+// TestLiveWSAdminQueryParamUnlocksDebugDetail proves the WS admin-debug gating
+// end to end through NewMux: the browser carries the Keycloak token as the
+// access_token query parameter (it cannot set the Authorization header), and only
+// a verified admin token unlocks the per-passage evidence detail. A guest token
+// connects but never receives the detail, and no token is rejected before the
+// handshake. Server-side enforcement stays authoritative: nothing else a client
+// sends can flip the detail on.
+func TestLiveWSAdminQueryParamUnlocksDebugDetail(t *testing.T) {
+	t.Parallel()
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
+	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
+	events := []service.LiveEvent{
+		{
+			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
+			Verdict: &service.VerifiedVerdict{Verdict: service.VerdictDisputed, Basis: service.BasisEvidence, Confidence: 0.9, Citations: []domain.SegmentMatch{cite}, Rationale: "rock, not cheese"},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		token          string
+		wantDialErr    bool
+		wantDetail     bool
+		wantDetailNote string
+	}{
+		{name: "admin token unlocks the evidence detail", token: testAdminToken, wantDetail: true},
+		{name: "guest token connects without the detail", token: testGuestToken, wantDetail: false},
+		{name: "no token is rejected before the handshake", token: "", wantDialErr: true},
+		{name: "invalid token is rejected before the handshake", token: "bogus", wantDialErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := liveMuxServer(t, &recordingLive{events: events}, true)
+			wsURL := base
+			if tc.token != "" {
+				wsURL = base + "?access_token=" + tc.token
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if tc.wantDialErr {
+				if err == nil {
+					_ = conn.CloseNow()
+					t.Fatal("dial without a verified token must be rejected at the identity gate")
+				}
+				if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("dial rejection status = %v, want 401", resp)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer func() { _ = conn.CloseNow() }()
+			if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+				t.Fatalf("write audio: %v", err)
+			}
+			frame := readFrame(ctx, t, conn)
+			if frame.Type != "claim_result" || frame.Status != "verified" {
+				t.Fatalf("frame = %+v, want verified claim_result", frame)
+			}
+			if tc.wantDetail && len(frame.Matches) != 1 {
+				t.Errorf("admin caller must receive the evidence detail, got matches %+v", frame.Matches)
+			}
+			if !tc.wantDetail && len(frame.Matches) != 0 {
+				t.Errorf("non-admin caller must not receive the evidence detail, got matches %+v", frame.Matches)
+			}
+		})
 	}
 }
 

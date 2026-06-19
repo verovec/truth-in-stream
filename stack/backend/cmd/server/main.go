@@ -106,11 +106,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authCfg, err := config.LoadAuth()
-	if err != nil {
-		return err
-	}
-	credentials, err := service.NewCredentials(authCfg.Email, authCfg.PasswordHash)
+	legacyPasswordLogin, err := config.LoadLegacyPasswordLogin()
 	if err != nil {
 		return err
 	}
@@ -125,13 +121,27 @@ func run(logger *slog.Logger) error {
 	}
 
 	authConfig := handler.AuthConfig{
-		Credentials:  credentials,
-		Sessions:     service.NewSessions(authCfg.SessionSecret, authCfg.SessionTTL),
-		SecureCookie: authCfg.SecureCookie,
+		Verifier:            verifier,
+		LegacyPasswordLogin: legacyPasswordLogin,
+	}
+	// The retired password-session login is wired only when explicitly opted in
+	// for an environment with no Keycloak yet; otherwise its AUTH_* / SESSION_SECRET
+	// env vars are not read and /api is gated solely by the Keycloak identity.
+	if legacyPasswordLogin {
+		authCfg, err := config.LoadAuth()
+		if err != nil {
+			return err
+		}
+		credentials, err := service.NewCredentials(authCfg.Email, authCfg.PasswordHash)
+		if err != nil {
+			return err
+		}
+		authConfig.Credentials = credentials
+		authConfig.Sessions = service.NewSessions(authCfg.SessionSecret, authCfg.SessionTTL)
+		authConfig.SecureCookie = authCfg.SecureCookie
 		// 5 attempts then one every 30s per client: invisible to the single
 		// operator, glacial for a brute-force run.
-		LoginLimiter: middleware.NewRateLimiter(rate.Every(30*time.Second), 5),
-		Verifier:     verifier,
+		authConfig.LoginLimiter = middleware.NewRateLimiter(rate.Every(30*time.Second), 5)
 	}
 
 	storageCfg, err := config.LoadStorage()

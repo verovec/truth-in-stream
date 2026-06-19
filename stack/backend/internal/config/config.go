@@ -301,6 +301,20 @@ func LoadAuth() (Auth, error) {
 	return a, nil
 }
 
+// LoadLegacyPasswordLogin reports whether the retired password-session login is
+// re-enabled, gated by LEGACY_PASSWORD_LOGIN (default off). The /api subtree is
+// gated by the Keycloak identity in every environment; this flag only restores
+// the /api/login and /api/logout password routes for an environment that has no
+// Keycloak yet. When off (the default, including production), the password
+// machinery is never wired and the AUTH_* / SESSION_SECRET env vars are not read.
+func LoadLegacyPasswordLogin() (bool, error) {
+	enabled, err := boolEnv("LEGACY_PASSWORD_LOGIN")
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
 // Keycloak defaults target the local dev stack (docker-compose.yml publishes
 // Keycloak on :8081 importing stack/keycloak/realm.json). Production overrides
 // the issuer and client id from config/Secrets Manager so the same backend

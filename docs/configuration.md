@@ -14,21 +14,45 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `TRANSCRIPTION_API_KEY` | yes (live only) | AssemblyAI key. `u3-rt-pro` streaming is the single transcriber for live streams and imported videos. Not used by the offline demo |
 | `EMBEDDING_API_KEY` | no for seeding | Voyage `voyage-4-large`. Seeding is offline; needed only for live query embedding, `make refresh-embeddings`, or wiki ingestion |
 | `EMBEDDING_MODEL` | no (default `voyage-4-large`) | Must match between ingest and query (different models = different vector spaces); pinned to 1024 dims. Changing it requires `make refresh-embeddings` |
-| `AUTH_EMAIL` / `AUTH_PASSWORD_HASH` / `SESSION_SECRET` | yes | Operator login (single user), argon2id hash, and HMAC session key (>= 32 bytes) |
-| `SESSION_TTL` | no (default `24h`) | Session lifetime |
-| `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev (session cookie is `SameSite=Strict`) |
+| `KEYCLOAK_ISSUER` / `KEYCLOAK_CLIENT_ID` | no (default the local realm) | Keycloak OIDC issuer and authorized party. The `/api` subtree is gated on the verified Keycloak identity in every environment |
+| `LEGACY_PASSWORD_LOGIN` | no (default off) | Re-enables the retired password-session login (`/api/login` + `/api/logout`) for an environment that has no Keycloak yet. Off in dev and production; see [Authentication](#authentication-keycloak-identity-gate) |
+| `AUTH_EMAIL` / `AUTH_PASSWORD_HASH` / `SESSION_SECRET` | only when `LEGACY_PASSWORD_LOGIN=true` | Legacy operator login (single user), argon2id hash, and HMAC session key (>= 32 bytes). Not read when the legacy login is off |
+| `SESSION_TTL` | no (default `24h`) | Legacy session lifetime (only with `LEGACY_PASSWORD_LOGIN=true`) |
+| `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev |
 | `PORT` | no (default `8080`) | Backend listen port |
 
-## Auth secrets
+## Authentication (Keycloak identity gate)
 
-`make bootstrap` generates the three auth values and is the recommended path. It copies
-`.env.example` to `.env` (when absent), fills the three secrets that have no safe default
-(`AUTH_EMAIL`, `AUTH_PASSWORD_HASH`, `SESSION_SECRET`), and writes self-describing placeholders for
-`TRANSCRIPTION_API_KEY` / `EMBEDDING_API_KEY` so a fresh clone boots and plays the offline demo. It is
-idempotent and never writes the plaintext password to disk. Replace the placeholders with real keys
-only when you move on to live analysis.
+Signing in through Keycloak is sufficient end to end: the whole `/api` subtree (every data flow and
+the live WebSocket) is gated on the verified Keycloak identity, and the live admin-debug detail is
+gated on a verified `admin` claim. There is no separate backend login to maintain.
 
-By hand:
+- **`/api` HTTP requests.** The frontend promotes the httpOnly Keycloak access token to an
+  `Authorization: Bearer` header at the proxy boundary; the backend's identity gate validates it and
+  attaches the verified role. A request with no token, or an invalid/expired/wrong-issuer token, is
+  rejected with `401`. A valid token reaches the route; the `admin`-only debug endpoints then require
+  a verified `admin` claim (`403` otherwise).
+- **The live WebSocket.** A browser cannot set the `Authorization` header on a WebSocket handshake,
+  so the token rides the `access_token` query parameter (the name [RFC 6750
+  §2.3](https://www.rfc-editor.org/rfc/rfc6750.html#section-2.3) defines for exactly this case). The
+  backend validates it the same way; the per-passage evidence detail is emitted only when
+  `DEBUG_FACT_CHECK` is on **and** the socket carries a verified `admin` claim. Server-side
+  enforcement is authoritative — nothing a client sends can flip the detail on. The access log records
+  only the request path, never the query string, so the token is not persisted. Use short-lived
+  tokens and `wss://` in production.
+
+### Legacy password login (retired, opt-in)
+
+The original single-operator password-session login (`/api/login` + `/api/logout`, an argon2id hash
+and an HMAC session cookie) has been **retired**: by default it no longer gates `/api`, and the
+`session` cookie is no longer accepted there — a verified Keycloak token is the only credential. It is
+**not deleted** — set `LEGACY_PASSWORD_LOGIN=true` to restore it for an environment that has no
+Keycloak yet. With the flag on, the login/logout routes are registered and the `/api` gate widens to
+admit **either** a valid session cookie **or** a Keycloak token; the `admin` role still rides a
+verified Keycloak claim only, so a session-cookie caller is always a guest. When off (the default,
+including dev and production), the password machinery is never wired and `AUTH_EMAIL` /
+`AUTH_PASSWORD_HASH` / `SESSION_SECRET` are not read. When you opt back in, generate the secrets by
+hand:
 
 ```bash
 cd stack/backend
@@ -36,8 +60,8 @@ printf '%s' "your-password" | go run ./cmd/genhash   # -> AUTH_PASSWORD_HASH (si
 openssl rand -hex 32                                  # -> SESSION_SECRET
 ```
 
-Sessions are stateless HMAC tokens: to revoke every outstanding session, rotate `SESSION_SECRET` and
-restart the backend.
+Legacy sessions are stateless HMAC tokens: to revoke every outstanding one, rotate `SESSION_SECRET`
+and restart the backend.
 
 ## Local Keycloak (identity provider)
 
