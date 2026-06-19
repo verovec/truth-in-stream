@@ -4,8 +4,28 @@ output "account_id" {
 }
 
 output "app_url" {
-  value       = "http://${module.alb.dns_name}"
-  description = "Public application URL (ALB DNS, HTTP until a domain exists)."
+  value       = "https://${var.domain_name}"
+  description = "Public application URL: HTTPS at the apex domain via CloudFront. Resolves once the main-account hosted zone (VER-140) points the apex/www alias records at the distribution."
+}
+
+output "cloudfront_distribution_id" {
+  value       = module.cloudfront.distribution_id
+  description = "CloudFront distribution id. VER-131 reads this to associate the WAFv2 web ACL."
+}
+
+output "cloudfront_distribution_arn" {
+  value       = module.cloudfront.distribution_arn
+  description = "CloudFront distribution ARN, for the WAFv2 association (VER-131)."
+}
+
+output "cloudfront_domain_name" {
+  value       = module.cloudfront.domain_name
+  description = "CloudFront distribution domain name. The main-account hosted zone (VER-140) points the apex/www alias records at this."
+}
+
+output "cloudfront_hosted_zone_id" {
+  value       = module.cloudfront.hosted_zone_id
+  description = "CloudFront's fixed hosted-zone id for Route 53 alias records (VER-140)."
 }
 
 output "ecr_repository_urls" {

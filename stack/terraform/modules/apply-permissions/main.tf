@@ -191,6 +191,27 @@ locals {
     "acm:ListTagsForCertificate",
   ]
 
+  # CDN (modules/cloudfront): the distribution and its VPC origin (PrivateLink to
+  # the internal ALB). The origin-facing prefix list is read via ec2:Describe*
+  # in networking_actions, and the SG ingress against it via the existing SG
+  # authorize actions, so only CloudFront-native actions live here.
+  cloudfront_actions = [
+    "cloudfront:CreateDistribution",
+    "cloudfront:UpdateDistribution",
+    "cloudfront:DeleteDistribution",
+    "cloudfront:GetDistribution",
+    "cloudfront:CreateVpcOrigin",
+    "cloudfront:UpdateVpcOrigin",
+    "cloudfront:DeleteVpcOrigin",
+    "cloudfront:GetVpcOrigin",
+    # The provider's transparent tag interceptor reads tags back on every plan
+    # and writes them on create/update, so the read/tag actions are required
+    # for refresh to succeed, not just for the first apply.
+    "cloudfront:TagResource",
+    "cloudfront:UntagResource",
+    "cloudfront:ListTagsForResource",
+  ]
+
   # Message broker (modules/rabbitmq): Amazon MQ for RabbitMQ.
   mq_actions = [
     "mq:CreateBroker",
@@ -289,6 +310,7 @@ locals {
     local.s3_actions,
     local.mq_actions,
     var.include_acm ? local.acm_actions : [],
+    var.include_cloudfront ? local.cloudfront_actions : [],
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],

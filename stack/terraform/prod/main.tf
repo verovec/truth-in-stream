@@ -141,17 +141,40 @@ module "iam" {
   ]
 }
 
+# Internal ALB: no public DNS, reachable only from CloudFront through the VPC
+# origin below. The module owns a security group restricted to the CloudFront
+# origin-facing prefix list, so nothing else in the VPC can reach it either.
 module "alb" {
   source = "../modules/alb"
 
   project     = local.project
   environment = var.environment
 
-  public_subnet_ids   = module.vpc.public_subnet_ids
-  security_group_id   = module.vpc.alb_security_group_id
+  internal            = true
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
   deletion_protection = true
-  # No domain yet: plain HTTP on the ALB DNS name. Set certificate_arn once a
-  # hosted zone + ACM certificate exist to switch to HTTPS with redirect.
+  # No certificate on the ALB itself: TLS terminates at CloudFront and the
+  # VPC-origin hop to the internal ALB stays on plain HTTP inside the VPC.
+}
+
+# CloudFront in front of the internal ALB. Serves the app over HTTPS at the
+# apex and www using the us-east-1 ACM certificate from the acm module, with a
+# default behavior (frontend) and an /api/* behavior (backend), both dynamic
+# and never cached. Media is served from direct presigned S3 URLs and is not
+# fronted here. WAF association is added by VER-131 (it reads distribution_id);
+# the apex/www alias records are created by the main-account root (VER-140),
+# which reads domain_name and hosted_zone_id.
+module "cloudfront" {
+  source = "../modules/cloudfront"
+
+  project     = local.project
+  environment = var.environment
+
+  alb_arn         = module.alb.arn
+  alb_dns_name    = module.alb.dns_name
+  certificate_arn = module.acm.certificate_arn
+  aliases         = [var.domain_name, "www.${var.domain_name}"]
 }
 
 module "backend" {
@@ -183,7 +206,7 @@ module "backend" {
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
   security_group_id       = module.vpc.ecs_tasks_security_group_id
-  alb_security_group_id   = module.vpc.alb_security_group_id
+  alb_security_group_id   = module.alb.security_group_id
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
@@ -214,7 +237,7 @@ module "frontend" {
   cluster_id              = module.ecs.cluster_id
   subnet_ids              = module.vpc.private_subnet_ids
   security_group_id       = module.vpc.ecs_tasks_security_group_id
-  alb_security_group_id   = module.vpc.alb_security_group_id
+  alb_security_group_id   = module.alb.security_group_id
   task_execution_role_arn = module.iam.task_execution_role_arn
   task_role_arn           = module.iam.task_role_arn
   log_group_name          = module.ecs.log_group_name
@@ -418,6 +441,7 @@ module "apply_permissions" {
   source = "../modules/apply-permissions"
 
   include_acm             = true
+  include_cloudfront      = true
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
 }
