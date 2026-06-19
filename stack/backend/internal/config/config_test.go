@@ -1650,6 +1650,85 @@ func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 	}
 }
 
+func TestLoadSecondPassDefaultsOff(t *testing.T) {
+	t.Parallel()
+	got, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if got.Enabled {
+		t.Error("second pass must default off")
+	}
+	if got.Active() {
+		t.Error("second pass with no key must not be Active")
+	}
+	if got.BandLo != defaultSecondPassBandLo || got.BandHi != defaultSecondPassBandHi || got.Deadline != defaultSecondPassDeadline {
+		t.Errorf("defaults wrong: %+v", got)
+	}
+	if got.Model != defaultSecondPassModel {
+		t.Errorf("model = %q, want default %q under deepseek", got.Model, defaultSecondPassModel)
+	}
+}
+
+func TestLoadSecondPassActiveAndOverrides(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "anthropic")
+	t.Setenv("FACTCHECK_SECOND_PASS", "true")
+	t.Setenv("FACTCHECK_SECOND_PASS_API_KEY", "sk-reason")
+	t.Setenv("FACTCHECK_SECOND_PASS_MODEL", "claude-opus-4-5")
+	t.Setenv("FACTCHECK_SECOND_PASS_BAND_LO", "0.5")
+	t.Setenv("FACTCHECK_SECOND_PASS_BAND_HI", "0.75")
+	t.Setenv("FACTCHECK_SECOND_PASS_DEADLINE", "20s")
+	got, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if !got.Active() {
+		t.Fatal("enabled with a key must be Active")
+	}
+	if got.Model != "claude-opus-4-5" {
+		t.Errorf("model override = %q, want claude-opus-4-5", got.Model)
+	}
+	if got.BandLo != 0.5 || got.BandHi != 0.75 || got.Deadline != 20*time.Second {
+		t.Errorf("overrides wrong: %+v", got)
+	}
+}
+
+func TestLoadSecondPassDeepSeekKeyStaysActive(t *testing.T) {
+	t.Setenv("FACTCHECK_SECOND_PASS", "true")
+	t.Setenv("DEEPSEEK_API_KEY", "d-test")
+	got, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if !got.Active() {
+		t.Fatal("second pass enabled with a deepseek key under the default provider must be Active")
+	}
+}
+
+func TestLoadSecondPassRejectsBadValues(t *testing.T) {
+	tests := map[string]string{
+		"FACTCHECK_SECOND_PASS_BAND_LO":  "1.5",
+		"FACTCHECK_SECOND_PASS_BAND_HI":  "-0.1",
+		"FACTCHECK_SECOND_PASS_DEADLINE": "0s",
+	}
+	for key, val := range tests {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, val)
+			if _, err := LoadSecondPass(); err == nil {
+				t.Fatalf("LoadSecondPass with %s=%s = nil error, want error", key, val)
+			}
+		})
+	}
+}
+
+func TestLoadSecondPassRejectsInvertedBand(t *testing.T) {
+	t.Setenv("FACTCHECK_SECOND_PASS_BAND_LO", "0.8")
+	t.Setenv("FACTCHECK_SECOND_PASS_BAND_HI", "0.4")
+	if _, err := LoadSecondPass(); err == nil {
+		t.Fatal("expected an error for an inverted second-pass band")
+	}
+}
+
 func TestLoadPolitical(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -36,6 +36,14 @@ const deepSeekTemperature = 0
 // classification and lets temperature zero take effect.
 var thinkingDisabled = map[string]any{"type": "disabled"}
 
+// thinkingEnabled is the request-body field that turns DeepSeek's reasoning
+// (thinking) mode on for the deeper-reasoner second pass. Thinking is the model's
+// default, so this is explicit rather than strictly required, and it pairs with
+// an auto (never named) tool_choice - DeepSeek rejects a forced named tool_choice
+// while thinking is on, so the reason path offers a single tool and lets the model
+// choose to call it after deliberating.
+var thinkingEnabled = map[string]any{"type": "enabled"}
+
 // deepseekProvider is the DeepSeek-backed forced-tool transport over the official
 // OpenAI Go SDK pointed at DeepSeek's OpenAI-compatible endpoint: declare the
 // caller's tool as a single function whose parameters are the caller's JSON
@@ -123,11 +131,63 @@ func (p *deepseekProvider) classify(ctx context.Context, req Request) (json.RawM
 		return nil, fmt.Errorf("forced tool call: %w", err)
 	}
 
+	return toolCallArguments(resp, req.Tool.Name)
+}
+
+// reason runs the thinking-enabled second-pass call: the same single tool is
+// offered, but with an auto tool_choice and thinking turned on, so the model may
+// deliberate (its reasoning_content) before emitting the tool call. The named and
+// "required" tool_choice values are deliberately not used here - DeepSeek rejects
+// both while thinking is enabled - so the tool is offered and the model chooses to
+// call it. Temperature and the penalty knobs are omitted because thinking mode
+// ignores them; max_tokens still bounds the (reasoning + answer) output. A
+// thinking model can answer in prose without calling the tool, so a missing tool
+// call surfaces as an error the caller absorbs rather than a forced retry.
+func (p *deepseekProvider) reason(ctx context.Context, req Request) (json.RawMessage, error) {
+	parameters := openai.FunctionParameters{
+		"type":       "object",
+		"properties": req.Tool.Properties,
+	}
+	if len(req.Tool.Required) > 0 {
+		parameters["required"] = req.Tool.Required
+	}
+
+	resp, err := p.api.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(p.model),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(req.System),
+			openai.UserMessage(req.User),
+		},
+		MaxTokens: openai.Int(req.MaxTokens),
+		Tools: []openai.ChatCompletionToolUnionParam{
+			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
+				Name:        req.Tool.Name,
+				Description: openai.String(req.Tool.Description),
+				Parameters:  parameters,
+			}),
+		},
+		ToolChoice: openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.String("auto"),
+		},
+	}, option.WithJSONSet("thinking", thinkingEnabled))
+	if err != nil {
+		return nil, fmt.Errorf("reasoning tool call: %w", err)
+	}
+
+	return toolCallArguments(resp, req.Tool.Name)
+}
+
+// toolCallArguments extracts the named tool call's arguments as raw JSON from a
+// chat completion, shared by the forced-tool classify and the auto-tool reason
+// paths. It errors when the response carries no choice or no call to the named
+// tool (on the reason path the latter also covers a thinking model that answered
+// in prose without calling the offered tool).
+func toolCallArguments(resp *openai.ChatCompletion, toolName string) (json.RawMessage, error) {
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("response carried no %s tool call", req.Tool.Name)
+		return nil, fmt.Errorf("response carried no %s tool call", toolName)
 	}
 	for _, call := range resp.Choices[0].Message.ToolCalls {
-		if call.Function.Name != req.Tool.Name {
+		if call.Function.Name != toolName {
 			continue
 		}
 		// DeepSeek occasionally returns the forced tool call with empty arguments
@@ -137,11 +197,11 @@ func (p *deepseekProvider) classify(ctx context.Context, req Request) (json.RawM
 		// fail-open on the error.
 		if strings.TrimSpace(call.Function.Arguments) == "" {
 			if resp.Choices[0].FinishReason == "length" {
-				return nil, fmt.Errorf("%s tool call truncated at max_tokens", req.Tool.Name)
+				return nil, fmt.Errorf("%s tool call truncated at max_tokens", toolName)
 			}
-			return nil, fmt.Errorf("empty %s tool-call arguments", req.Tool.Name)
+			return nil, fmt.Errorf("empty %s tool-call arguments", toolName)
 		}
 		return json.RawMessage(call.Function.Arguments), nil
 	}
-	return nil, fmt.Errorf("response carried no %s tool call", req.Tool.Name)
+	return nil, fmt.Errorf("response carried no %s tool call", toolName)
 }

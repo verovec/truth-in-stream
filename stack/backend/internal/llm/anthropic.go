@@ -80,12 +80,54 @@ func (p *anthropicProvider) classify(ctx context.Context, req Request) (json.Raw
 		return nil, fmt.Errorf("forced tool call: %w", err)
 	}
 
+	return anthropicToolInput(msg, req.Tool.Name)
+}
+
+// reason runs the second-pass call with an auto tool choice (the tool is offered,
+// not forced by name) so the model may deliberate before calling it. Anthropic has
+// no DeepSeek-style restriction on combining tool use with reasoning, so this path
+// mirrors classify but with ToolChoiceAuto; the shared Provider contract is
+// "structured output without a forced name", which an auto choice satisfies. A
+// response with no tool-use block (the model answered in prose) surfaces as an
+// error the caller absorbs.
+func (p *anthropicProvider) reason(ctx context.Context, req Request) (json.RawMessage, error) {
+	tool := anthropic.ToolParam{
+		Name:        req.Tool.Name,
+		Description: anthropic.String(req.Tool.Description),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: req.Tool.Properties,
+			Required:   req.Tool.Required,
+		},
+	}
+
+	msg, err := p.api.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:       p.model,
+		MaxTokens:   req.MaxTokens,
+		Temperature: anthropic.Float(0),
+		System:      []anthropic.TextBlockParam{{Text: req.System}},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(req.User)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &tool}},
+		ToolChoice: anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reasoning tool call: %w", err)
+	}
+
+	return anthropicToolInput(msg, req.Tool.Name)
+}
+
+// anthropicToolInput returns the named tool-use block's input as raw JSON, shared
+// by the forced classify and the auto reason paths. It errors when the response
+// carries no call to the named tool.
+func anthropicToolInput(msg *anthropic.Message, toolName string) (json.RawMessage, error) {
 	for _, block := range msg.Content {
 		tu, ok := block.AsAny().(anthropic.ToolUseBlock)
-		if !ok || tu.Name != req.Tool.Name {
+		if !ok || tu.Name != toolName {
 			continue
 		}
 		return json.RawMessage(tu.Input), nil
 	}
-	return nil, fmt.Errorf("response carried no %s tool call", req.Tool.Name)
+	return nil, fmt.Errorf("response carried no %s tool call", toolName)
 }

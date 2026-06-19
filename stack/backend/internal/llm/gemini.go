@@ -105,17 +105,63 @@ func (p *geminiProvider) classify(ctx context.Context, req Request) (json.RawMes
 		return nil, fmt.Errorf("forced tool call: %w", err)
 	}
 
+	return geminiFunctionArgs(resp, req.Tool.Name)
+}
+
+// reason runs the second-pass call with an auto function-calling mode (the
+// function is offered, not forced) so the model may deliberate before calling it.
+// Gemini has no DeepSeek-style restriction on combining function calls with
+// reasoning, so this mirrors classify but with FunctionCallingConfigModeAuto; the
+// shared Provider contract is "structured output without a forced name", which the
+// auto mode satisfies. A response with no function call (the model answered in
+// prose) surfaces as an error the caller absorbs.
+func (p *geminiProvider) reason(ctx context.Context, req Request) (json.RawMessage, error) {
+	params, err := schemaFromProperties(req.Tool.Properties, req.Tool.Required)
+	if err != nil {
+		return nil, fmt.Errorf("gemini tool schema: %w", err)
+	}
+
+	config := &genai.GenerateContentConfig{
+		Temperature:       &geminiTemperature,
+		MaxOutputTokens:   int32(req.MaxTokens),
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: req.System}}},
+		Tools: []*genai.Tool{{
+			FunctionDeclarations: []*genai.FunctionDeclaration{{
+				Name:        req.Tool.Name,
+				Description: req.Tool.Description,
+				Parameters:  params,
+			}},
+		}},
+		ToolConfig: &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeAuto,
+			},
+		},
+	}
+
+	resp, err := p.models.GenerateContent(ctx, p.model, genai.Text(req.User), config)
+	if err != nil {
+		return nil, fmt.Errorf("reasoning tool call: %w", err)
+	}
+
+	return geminiFunctionArgs(resp, req.Tool.Name)
+}
+
+// geminiFunctionArgs returns the named function call's arguments as raw JSON,
+// shared by the forced classify and the auto reason paths. It errors when the
+// response carries no call to the named function.
+func geminiFunctionArgs(resp *genai.GenerateContentResponse, toolName string) (json.RawMessage, error) {
 	for _, call := range resp.FunctionCalls() {
-		if call == nil || call.Name != req.Tool.Name {
+		if call == nil || call.Name != toolName {
 			continue
 		}
 		raw, err := json.Marshal(call.Args)
 		if err != nil {
-			return nil, fmt.Errorf("encode %s arguments: %w", req.Tool.Name, err)
+			return nil, fmt.Errorf("encode %s arguments: %w", toolName, err)
 		}
 		return raw, nil
 	}
-	return nil, fmt.Errorf("response carried no %s tool call", req.Tool.Name)
+	return nil, fmt.Errorf("response carried no %s tool call", toolName)
 }
 
 // schemaFromProperties translates the caller's JSON-schema property map into a

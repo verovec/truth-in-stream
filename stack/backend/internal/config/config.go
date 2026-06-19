@@ -109,6 +109,19 @@ func (s LLMSelection) defaultModel() string {
 	return ""
 }
 
+// secondPassModel returns the per-provider default reasoning model for the deeper
+// second pass: the larger DeepSeek reasoning tier under DeepSeek (the default
+// provider), and "" under any other provider so the operator must name a reasoning
+// model the provider knows (Anthropic and Gemini have no second-pass default here,
+// and threading DeepSeek's id would send an unknown model). An explicit
+// FACTCHECK_SECOND_PASS_MODEL override always takes precedence.
+func (s LLMSelection) secondPassModel() string {
+	if s.Provider == LLMProviderDeepSeek {
+		return defaultSecondPassModel
+	}
+	return ""
+}
+
 // loadLLMSelection reads the shared LLM provider choice from the environment.
 // LLM_PROVIDER defaults to deepseek and is validated against the known set, so an
 // unknown provider crashes the process at startup with a clear message rather than
@@ -666,6 +679,26 @@ const (
 	// SPEAKER_SCORE_PRIOR_STRENGTH overrides it; the service package mirrors the
 	// same default for direct construction.
 	defaultSpeakerScorePriorStrength = 4.0
+	// defaultSecondPassModel is the larger DeepSeek reasoning tier the deeper
+	// second pass escalates to. It is materially more expensive per token than the
+	// flash default, which is exactly why the second pass is off the hot path and
+	// flag-gated. It is only the default under DeepSeek; FACTCHECK_SECOND_PASS_MODEL
+	// overrides it, and under another provider the operator must set a model the
+	// provider knows.
+	defaultSecondPassModel = "deepseek-v4-pro"
+	// defaultSecondPassBandLo and defaultSecondPassBandHi bound the fast-verdict
+	// confidence band that qualifies for a deeper second look: above the on-topic
+	// floor a verdict is too uncertain to act on, and below high confidence it is
+	// not yet settled - the genuinely-hard-to-adjudicate middle is where a stronger
+	// reasoner earns its cost. A confident verdict (>= hi) is already trusted and a
+	// weak one (< lo) is better fixed by retrieval than by a bigger model.
+	defaultSecondPassBandLo = 0.45
+	defaultSecondPassBandHi = 0.8
+	// defaultSecondPassDeadline bounds one reasoning reverify call. It is longer
+	// than the fast verify deadline because a thinking model deliberates before
+	// answering, but still bounded so a slow or stuck reasoner can never tie up a
+	// claim's worker indefinitely.
+	defaultSecondPassDeadline = 12 * time.Second
 )
 
 // VerifyPath holds the retrieve-then-verify configuration. The path is wired only
@@ -764,6 +797,67 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	return v, nil
+}
+
+// SecondPass holds the deeper-reasoner second-pass configuration. It is a gated
+// upgrade to the verify path: when off (the default) or keyless, the verify path
+// runs its single fast pass exactly as before. When active, an evidence-grounded
+// fast verdict whose confidence sits in the [BandLo, BandHi] band is re-judged by a
+// stronger reasoning Model out of the live hot path. Enabled gates the feature;
+// APIKey is the reasoner's secret (env only, never logged); Model selects the
+// larger reasoning tier; BandLo/BandHi bound the qualifying confidence band; and
+// Deadline bounds one reverify call.
+type SecondPass struct {
+	LLMSelection
+	Enabled  bool
+	APIKey   string
+	Model    string
+	BandLo   float64
+	BandHi   float64
+	Deadline time.Duration
+}
+
+// Active reports whether the second pass should be wired: it is enabled and has
+// the API key its reasoner needs. Wiring keys off this so an enabled-but-keyless
+// configuration degrades to the single-pass verify path rather than failing to
+// start, matching every other optional LLM stage.
+func (s SecondPass) Active() bool {
+	return s.Enabled && s.hasKey(s.APIKey)
+}
+
+// LoadSecondPass reads the deeper-reasoner second-pass configuration from the
+// environment, applying defaults and failing fast on an out-of-range band (outside
+// [0,1] or inverted) or a non-positive deadline. FACTCHECK_SECOND_PASS gates the
+// whole feature (default off). The secret is read but never logged.
+func LoadSecondPass() (SecondPass, error) {
+	s := SecondPass{
+		BandLo:   defaultSecondPassBandLo,
+		BandHi:   defaultSecondPassBandHi,
+		Deadline: defaultSecondPassDeadline,
+	}
+	llmSel, err := loadLLMSelection()
+	if err != nil {
+		return SecondPass{}, err
+	}
+	s.LLMSelection = llmSel
+	if s.Enabled, err = boolEnv("FACTCHECK_SECOND_PASS"); err != nil {
+		return SecondPass{}, err
+	}
+	s.APIKey = getenv("FACTCHECK_SECOND_PASS_API_KEY", "")
+	s.Model = getenv("FACTCHECK_SECOND_PASS_MODEL", llmSel.secondPassModel())
+	if s.BandLo, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_LO", s.BandLo, 0, 1); err != nil {
+		return SecondPass{}, err
+	}
+	if s.BandHi, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_HI", s.BandHi, 0, 1); err != nil {
+		return SecondPass{}, err
+	}
+	if s.BandLo > s.BandHi {
+		return SecondPass{}, fmt.Errorf("config: FACTCHECK_SECOND_PASS band low %v is above high %v", s.BandLo, s.BandHi)
+	}
+	if s.Deadline, err = positiveDurationEnv("FACTCHECK_SECOND_PASS_DEADLINE", s.Deadline); err != nil {
+		return SecondPass{}, err
+	}
+	return s, nil
 }
 
 // CheckWorthiness holds the model stage of the check-worthiness gate. It is the
