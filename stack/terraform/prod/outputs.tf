@@ -68,6 +68,11 @@ output "db_backup_bucket" {
   description = "Database backup bucket; export as DB_BACKUP_BUCKET for make backup/restore."
 }
 
+output "bastion_instance_id" {
+  value       = one(module.bastion[*].instance_id)
+  description = "SSM port-forward target instance ID for the one-time DB load. Null when enable_bastion is false."
+}
+
 output "certificate_arn" {
   value       = module.acm.certificate_arn
   description = "ARN of the us-east-1 ACM certificate for the domain. Consumed by CloudFront and referenced by the main-account DNS root."

@@ -61,7 +61,7 @@ DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
 # population the card delivers); set ENV=dev to fill the dev secrets instead.
 ENV ?= prod
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -112,6 +112,12 @@ backup: ## Snapshot the database to a timestamped dump under backups/ and upload
 
 restore: ## Restore the database from a local dump (FILE=path) or the latest S3 backup; replaces schema and data, embeddings included
 	./scripts/db-restore.sh $(FILE)
+
+db-tunnel: ## Open an SSM port-forward through the bastion to the private RDS (ENV=prod default; PORT overrides the local port). Keep it running; load with `make db-push` in a second terminal
+	./scripts/db-tunnel.sh $(ENV) $(if $(PORT),--port $(PORT),)
+
+db-push: ## Load the local embedded DB into RDS over an open `make db-tunnel` tunnel (ENV=prod default; PORT must match the tunnel; FILE=dump to reuse a dump). Vectors transfer via text COPY, halfvec-safe
+	./scripts/db-push.sh $(ENV) $(if $(PORT),--port $(PORT),) $(if $(FILE),--file $(FILE),)
 
 seed: ## Seed every dataset (claims, wiki, sample videos) from the committed cache; idempotent
 	$(COMPOSE) run --rm seed

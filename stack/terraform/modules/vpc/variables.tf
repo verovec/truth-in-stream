@@ -29,3 +29,9 @@ variable "nat_gateway_count" {
     error_message = "nat_gateway_count must be between 1 and az_count."
   }
 }
+
+variable "database_client_security_group_ids" {
+  type        = list(string)
+  default     = []
+  description = "Extra security groups allowed to reach RDS on 5432, beyond the ECS tasks (which always have access). The SSM bastion's SG joins this list when provisioned so the operator's one-time DB load tunnel can reach the private database. Added as an inline ingress rule on the postgres SG (vs. a standalone aws_vpc_security_group_ingress_rule, which provider v6 forbids mixing with this SG's inline rules); an empty list adds no rule, so the SG is unchanged when no bastion exists."
+}
