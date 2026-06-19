@@ -44,6 +44,36 @@ func Identity(verifier auth.Verifier) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireIdentity validates a Keycloak access token and attaches the verified
+// caller identity to the request context, rejecting any request that does not
+// present a valid token with 401. It is the broad gate for the /api subtree
+// after the legacy password-session login was retired: presenting no credential
+// is no longer an allowed anonymous guest here (that is 401), and presenting an
+// invalid, expired, or wrong-issuer token is 401 too, so /api data is reachable
+// only by a verified Keycloak identity. The token is taken from the Authorization
+// Bearer header, or - for the browser WebSocket upgrade, which cannot set that
+// header - from the access_token query parameter (RFC 6750 section 2.3). Downstream
+// handlers and RequireAdmin then read the verified role from the context exactly
+// as before; the only change from Identity is that the anonymous case fails closed
+// with 401 instead of degrading to guest.
+func RequireIdentity(verifier auth.Verifier) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, ok := accessToken(r)
+			if !ok {
+				httpx.Error(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			id, err := verifier.Verify(r.Context(), raw)
+			if err != nil {
+				httpx.Error(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+		})
+	}
+}
+
 // RequireAdmin rejects a request whose attached identity is not a verified admin
 // with 403, before the protected handler runs. It reads only the identity the
 // Identity middleware placed on the context, so the admin gate is enforced
@@ -72,6 +102,53 @@ func IdentityFrom(ctx context.Context) auth.Identity {
 		return auth.GuestIdentity()
 	}
 	return id
+}
+
+// accessTokenParam is the query-parameter name a WebSocket upgrade carries its
+// access token in. The browser WebSocket API cannot set request headers, so the
+// Authorization header is unavailable on the handshake; access_token is the name
+// RFC 6750 section 2.3 defines for this case. It is honored only on a WebSocket
+// upgrade (see accessToken), and the access-log middleware logs only the request
+// path, never the query string, so the token is not persisted to logs.
+const accessTokenParam = "access_token"
+
+// accessToken extracts the raw access token from the Authorization Bearer header,
+// falling back to the access_token query parameter only on a WebSocket upgrade
+// request. The header is the only path for an ordinary /api request, so a regular
+// REST client's token can never land in the URL (and thence a proxy/ALB access
+// log); the query parameter is admitted solely for the browser WebSocket upgrade,
+// which cannot set the header. It reports whether a non-empty token was found.
+func accessToken(r *http.Request) (string, bool) {
+	if raw, ok := bearerToken(r); ok {
+		return raw, true
+	}
+	if isWebSocketUpgrade(r) {
+		if raw := strings.TrimSpace(r.URL.Query().Get(accessTokenParam)); raw != "" {
+			return raw, true
+		}
+	}
+	return "", false
+}
+
+// isWebSocketUpgrade reports whether the request is a WebSocket handshake, the
+// only request shape allowed to carry its access token as a query parameter.
+// Both header checks are token-list, case-insensitive matches per RFC 6455: the
+// Connection header is a comma-separated list that must contain "upgrade", and
+// the Upgrade header names the "websocket" protocol.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return tokenListContains(r.Header.Get("Connection"), "upgrade") &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
+}
+
+// tokenListContains reports whether a comma-separated header value contains the
+// given token, matched case-insensitively with surrounding whitespace trimmed.
+func tokenListContains(header, want string) bool {
+	for token := range strings.SplitSeq(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(token), want) {
+			return true
+		}
+	}
+	return false
 }
 
 // bearerToken extracts the raw token from an "Authorization: Bearer <token>"

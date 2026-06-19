@@ -22,16 +22,20 @@ const sessionCookieName = "session"
 // need more than a few hundred bytes.
 const maxLoginBodyBytes = 4 << 10
 
-// AuthConfig carries the wired authentication collaborators into NewMux. The
-// session collaborators gate the whole /api subtree (the broad password/cookie
-// auth); Verifier validates a Keycloak Bearer token to derive the caller's role,
-// which gates admin-only behavior on top of the session gate.
+// AuthConfig carries the wired authentication collaborators into NewMux.
+// Verifier validates a Keycloak access token to derive the caller's verified
+// identity and role; it gates the whole /api subtree. The session collaborators
+// (Credentials, Sessions, SecureCookie, LoginLimiter) drive the legacy
+// password-session login, which is retired by default: they are consulted only
+// when LegacyPasswordLogin is set, an opt-in for an environment that has no
+// Keycloak yet. With the flag off they may be nil.
 type AuthConfig struct {
-	Credentials  *service.Credentials
-	Sessions     *service.Sessions
-	SecureCookie bool
-	LoginLimiter *middleware.RateLimiter
-	Verifier     auth.Verifier
+	Credentials         *service.Credentials
+	Sessions            *service.Sessions
+	SecureCookie        bool
+	LoginLimiter        *middleware.RateLimiter
+	Verifier            auth.Verifier
+	LegacyPasswordLogin bool
 }
 
 type loginRequest struct {

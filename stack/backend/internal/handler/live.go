@@ -246,13 +246,12 @@ type speakerScoreFrame struct {
 // non-admin caller (whose role is read from the request context, not any
 // client-supplied flag); otherwise only the source label is sent.
 //
-// The admin claim is read from the Identity middleware's context value, which is
-// populated from the Authorization Bearer header. The browser WebSocket API
-// cannot set that header, so a browser-initiated live connection is a guest
-// today and never sees the detail; carrying the admin token onto the live socket
-// (a query-param token validated here, or the session cookie bridged to a role)
-// is the frontend's job (VER-138). The gate is correct as a server-side admin
-// check regardless: nothing a client sends can flip the detail on.
+// The admin claim is read from the request context, where the /api identity gate
+// (middleware.RequireIdentity) placed the verified identity. The browser
+// WebSocket API cannot set the Authorization header, so the gate also accepts the
+// Keycloak token on the access_token query parameter; a browser admin carries it
+// there and sees the detail, while a guest does not. The gate is the authoritative
+// server-side admin check: nothing a client sends can flip the detail on.
 func liveHandler(analyzer LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		debugFactCheck := debugFactCheckEnabled && middleware.IdentityFrom(r.Context()).IsAdmin()

@@ -61,19 +61,29 @@ const testOperatorHash = "$argon2id$v=19$m=19456,t=2,p=1$aGdkLE3VqGjWP5xfYazDsg$
 // one issued token is valid against any of them.
 var testSessions = service.NewSessions(testSessionSecret, time.Hour)
 
-// globalTestAuth is the default auth fixture; tests that need a variant copy
-// the value and swap fields.
-var globalTestAuth = func() AuthConfig {
+// globalTestAuth is the default auth fixture: Keycloak-only, with the legacy
+// password-session login retired (its routes are not registered). The /api
+// subtree is gated solely by the stub Keycloak verifier. Tests that need a
+// variant copy the value and swap fields.
+var globalTestAuth = AuthConfig{
+	Verifier: stubVerifier{},
+}
+
+// legacyTestAuth re-enables the retired password-session login so the legacy
+// login/logout flow can still be exercised. It carries the password
+// collaborators the flag-on path wires.
+var legacyTestAuth = func() AuthConfig {
 	creds, err := service.NewCredentials(testOperatorEmail, testOperatorHash)
 	if err != nil {
 		panic(err)
 	}
 	return AuthConfig{
-		Credentials:  creds,
-		Sessions:     testSessions,
-		SecureCookie: true,
-		LoginLimiter: middleware.NewRateLimiter(rate.Every(time.Millisecond), 1000),
-		Verifier:     stubVerifier{},
+		Credentials:         creds,
+		Sessions:            testSessions,
+		SecureCookie:        true,
+		LoginLimiter:        middleware.NewRateLimiter(rate.Every(time.Millisecond), 1000),
+		Verifier:            stubVerifier{},
+		LegacyPasswordLogin: true,
 	}
 }()
 
@@ -88,15 +98,15 @@ func authCookie(t *testing.T) *http.Cookie {
 	return &http.Cookie{Name: sessionCookieName, Value: token}
 }
 
-func loginBody(email, password string) *strings.Reader {
-	b, _ := json.Marshal(map[string]string{"email": email, "password": password})
+func loginBody(password string) *strings.Reader {
+	b, _ := json.Marshal(map[string]string{"email": testOperatorEmail, "password": password})
 	return strings.NewReader(string(b))
 }
 
 func loginSessionCookie(t *testing.T, srv http.Handler) *http.Cookie {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody(testOperatorEmail, testOperatorPassword)))
+	srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody(testOperatorPassword)))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("login = %d, want %d", rec.Code, http.StatusNoContent)
 	}
@@ -146,7 +156,7 @@ func TestLogin(t *testing.T) {
 			wantCode: http.StatusRequestEntityTooLarge,
 		},
 	}
-	srv := newTestServer(nil)
+	srv := newAuthedTestServer(legacyTestAuth, nil)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -167,7 +177,7 @@ func TestLogin(t *testing.T) {
 }
 
 func TestLoginErrorIsGeneric(t *testing.T) {
-	srv := newTestServer(nil)
+	srv := newAuthedTestServer(legacyTestAuth, nil)
 	bodyFor := func(body string) string {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", strings.NewReader(body)))
@@ -187,7 +197,7 @@ func TestLoginErrorIsGeneric(t *testing.T) {
 }
 
 func TestLoginCookieAttributes(t *testing.T) {
-	srv := newTestServer(nil)
+	srv := newAuthedTestServer(legacyTestAuth, nil)
 	cookie := loginSessionCookie(t, srv)
 
 	if cookie.Value == "" {
@@ -211,7 +221,7 @@ func TestLoginCookieAttributes(t *testing.T) {
 }
 
 func TestLoginInsecureCookieFlag(t *testing.T) {
-	auth := globalTestAuth
+	auth := legacyTestAuth
 	auth.SecureCookie = false
 	srv := newAuthedTestServer(auth, nil)
 
@@ -222,14 +232,14 @@ func TestLoginInsecureCookieFlag(t *testing.T) {
 }
 
 func TestLoginRateLimited(t *testing.T) {
-	auth := globalTestAuth
+	auth := legacyTestAuth
 	auth.LoginLimiter = middleware.NewRateLimiter(rate.Every(10*time.Minute), 2)
 	srv := newAuthedTestServer(auth, nil)
 
 	codes := make([]int, 0, 3)
 	for range 3 {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody(testOperatorEmail, "wrong"))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody("wrong"))
 		req.RemoteAddr = "10.0.0.1:12345"
 		srv.ServeHTTP(rec, req)
 		codes = append(codes, rec.Code)
@@ -275,14 +285,14 @@ func TestLoginRateLimitIgnoresForgedForwardedFor(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			auth := globalTestAuth
+			auth := legacyTestAuth
 			auth.LoginLimiter = middleware.NewRateLimiter(rate.Every(10*time.Minute), 2)
 			srv := newAuthedTestServer(auth, nil)
 
 			codes := make([]int, 0, 3)
 			for i := range 3 {
 				rec := httptest.NewRecorder()
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody(testOperatorEmail, "wrong"))
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/login", loginBody("wrong"))
 				req.RemoteAddr = tc.remoteAddr
 				req.Header.Set("X-Forwarded-For", tc.xff(i))
 				srv.ServeHTTP(rec, req)
@@ -299,7 +309,7 @@ func TestLoginRateLimitIgnoresForgedForwardedFor(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
-	srv := newTestServer(nil)
+	srv := newAuthedTestServer(legacyTestAuth, nil)
 	cookie := loginSessionCookie(t, srv)
 
 	rec := httptest.NewRecorder()
@@ -327,7 +337,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestLogoutWithoutCookieIsNoOp(t *testing.T) {
-	srv := newTestServer(nil)
+	srv := newAuthedTestServer(legacyTestAuth, nil)
 
 	// A cross-site forced-logout POST never carries the SameSite=Strict
 	// cookie; it must not receive a clearing Set-Cookie either.
@@ -341,43 +351,120 @@ func TestLogoutWithoutCookieIsNoOp(t *testing.T) {
 	}
 }
 
-func TestProtectedRoutes(t *testing.T) {
+// TestAPIIsGatedOnKeycloakIdentity is the cutover's core acceptance check: every
+// /api data route is gated on a verified Keycloak identity. A valid Keycloak
+// login (admin or guest Bearer token, no legacy password session) reaches the
+// route; an anonymous request, an invalid token, and an expired token are each
+// rejected with 401. The cases mirror what the Identity verifier reports:
+// stubVerifier maps testAdminToken/testGuestToken to identities and rejects
+// everything else (an invalid or expired token both surface as ErrInvalidToken).
+func TestAPIIsGatedOnKeycloakIdentity(t *testing.T) {
 	srv := newTestServer(nil)
-	valid := loginSessionCookie(t, srv)
 
+	// Real registered data routes (see NewMux), so an admitted caller reaches the
+	// handler and a blocked one is stopped at the gate; a non-existent route would
+	// 404 after passing the gate and make the "admitted" assertion vacuous.
 	routes := []struct {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/api/transcripts"},
-		{http.MethodPost, "/api/videos"},
-		{http.MethodGet, "/api/videos/abc/status"},
-		{http.MethodGet, "/api/videos/abc/results"},
+		{http.MethodGet, "/api/videos"},
+		{http.MethodGet, "/api/videos/v1"},
+	}
+	credentials := []struct {
+		name        string
+		bearer      string
+		wantBlocked bool
+	}{
+		{name: "valid admin token reaches the route", bearer: testAdminToken, wantBlocked: false},
+		{name: "valid guest token reaches the route", bearer: testGuestToken, wantBlocked: false},
+		{name: "anonymous is rejected 401", bearer: "", wantBlocked: true},
+		{name: "invalid token is rejected 401", bearer: "garbage", wantBlocked: true},
+		{name: "expired token is rejected 401", bearer: "expired", wantBlocked: true},
 	}
 	for _, rt := range routes {
-		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), rt.method, rt.path, nil))
-			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("without cookie = %d, want 401", rec.Code)
-			}
+		for _, cred := range credentials {
+			t.Run(rt.method+" "+rt.path+"/"+cred.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequestWithContext(t.Context(), rt.method, rt.path, nil)
+				if cred.bearer != "" {
+					bearer(req, cred.bearer)
+				}
+				srv.ServeHTTP(rec, req)
+				if cred.wantBlocked {
+					if rec.Code != http.StatusUnauthorized {
+						t.Fatalf("%s = %d, want 401", cred.name, rec.Code)
+					}
+					return
+				}
+				// The gate let the verified caller through to a real handler: it is
+				// neither rejected by the gate (401) nor missing (404).
+				if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusNotFound {
+					t.Fatalf("%s = %d: a verified identity must reach the data route", cred.name, rec.Code)
+				}
+			})
+		}
+	}
+}
 
-			rec = httptest.NewRecorder()
-			req := httptest.NewRequestWithContext(t.Context(), rt.method, rt.path, nil)
-			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage"})
-			srv.ServeHTTP(rec, req)
-			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("with garbage cookie = %d, want 401", rec.Code)
-			}
+// TestLegacySessionCookieDoesNotGateAPI proves the password-session login is
+// retired by default: a backend `session` cookie no longer satisfies the /api
+// gate, so an environment that did not opt the legacy flag back in accepts only
+// a verified Keycloak token.
+func TestLegacySessionCookieDoesNotGateAPI(t *testing.T) {
+	srv := newTestServer(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos", nil)
+	req.AddCookie(authCookie(t))
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy session cookie = %d, want 401 (the password session no longer gates /api)", rec.Code)
+	}
+}
 
-			rec = httptest.NewRecorder()
-			req = httptest.NewRequestWithContext(t.Context(), rt.method, rt.path, nil)
-			req.AddCookie(valid)
-			srv.ServeHTTP(rec, req)
-			if rec.Code == http.StatusUnauthorized {
-				t.Fatal("with valid cookie the route must not reject as unauthenticated")
-			}
-		})
+// TestLegacyLoginRoutesRetiredByDefault proves the password login and logout
+// routes are not registered when the legacy flag is off: a POST to either is
+// caught by the /api identity gate (401), not served as a login endpoint.
+func TestLegacyLoginRoutesRetiredByDefault(t *testing.T) {
+	srv := newTestServer(nil)
+	for _, path := range []string{"/api/login", "/api/logout"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, loginBody(testOperatorPassword)))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("POST %s with legacy login off = %d, want 401 (route retired)", path, rec.Code)
+		}
+	}
+}
+
+// TestLegacyFlagWidensAPIGateToSessionCookie proves the opt-in: with
+// LEGACY_PASSWORD_LOGIN on, a freshly minted password session reaches /api data
+// (the gate widens to admit the session cookie), and a Keycloak token still works
+// unchanged, while a request with neither credential is still rejected with 401.
+func TestLegacyFlagWidensAPIGateToSessionCookie(t *testing.T) {
+	srv := newAuthedTestServer(legacyTestAuth, nil)
+	cookie := loginSessionCookie(t, srv)
+
+	withSession := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos", nil)
+	withSession.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, withSession)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("legacy session cookie = 401, want the gate to admit it when the flag is on")
+	}
+
+	withToken := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos", nil)
+	bearer(withToken, testGuestToken)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, withToken)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("Keycloak token = 401, want it to keep working with the flag on")
+	}
+
+	anon := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, anon)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no credential with the flag on = %d, want 401", rec.Code)
 	}
 }
 
@@ -392,7 +479,7 @@ func TestUnregisteredAPIRoutesAreDeniedByDefault(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/__unregistered__", nil)
-	req.AddCookie(loginSessionCookie(t, srv))
+	bearer(req, testGuestToken)
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("authenticated unregistered route = %d, want 404", rec.Code)

@@ -50,14 +50,15 @@ func TestDebugEndpointRequiresAdmin(t *testing.T) {
 	}{
 		{name: "admin passes the admin gate", bearer: testAdminToken, wantBlocked: false},
 		{name: "guest is forbidden", bearer: testGuestToken, wantBlocked: true, wantCode: http.StatusForbidden},
-		{name: "anonymous is forbidden", bearer: "", wantBlocked: true, wantCode: http.StatusForbidden},
+		// Anonymous and invalid both fail the outer identity gate (401) before the
+		// admin gate is even consulted; only a verified guest reaches the 403.
+		{name: "anonymous is unauthorized", bearer: "", wantBlocked: true, wantCode: http.StatusUnauthorized},
 		{name: "invalid token is unauthorized", bearer: "bogus", wantBlocked: true, wantCode: http.StatusUnauthorized},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/debug/wiki-search", nil)
-			req.AddCookie(authCookie(t))
 			if tc.bearer != "" {
 				bearer(req, tc.bearer)
 			}

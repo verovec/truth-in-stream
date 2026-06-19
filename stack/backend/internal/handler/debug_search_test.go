@@ -211,7 +211,7 @@ func TestDebugSearchRouteAbsentWhenDisabled(t *testing.T) {
 	srv := newTestServer(nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/debug/wiki-search", nil)
-	req.AddCookie(authCookie(t))
+	bearer(req, testAdminToken)
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET debug search when disabled = %d, want 404", rec.Code)

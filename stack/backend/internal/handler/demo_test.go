@@ -18,16 +18,16 @@ func newDemoServer(dir string) http.Handler {
 	return NewMux(hc, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, nil, nil, false, nil, dir, globalTestAuth, logger)
 }
 
-// demoRequest carries the session cookie; demo media is application content
-// and sits behind the auth gate like the API.
+// demoRequest carries a verified Keycloak Bearer token; demo media is
+// application content and sits behind the identity gate like the API.
 func demoRequest(t *testing.T, path string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
-	req.AddCookie(authCookie(t))
+	bearer(req, testGuestToken)
 	return req
 }
 
-func TestDemoMediaRequiresSession(t *testing.T) {
+func TestDemoMediaRequiresIdentity(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "great-myths.m4a"), []byte("MEDIA-BYTES"), 0o600); err != nil {
 		t.Fatal(err)
