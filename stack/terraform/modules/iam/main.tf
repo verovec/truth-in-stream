@@ -108,6 +108,29 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:ecs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name}-*"]
   }
 
+  # RegisterTaskDefinition re-pins a producer/worker family to the deployed image
+  # (scripts/deploy-ingestion.sh) and rolls the queue message version. The action
+  # operates on the account's task-definition namespace, not an individual
+  # resource: AWS does not support resource-level ARNs or a family/cluster
+  # condition key for RegisterTaskDefinition, so "*" is the only valid resource.
+  # The follow-on RunTask/DescribeTaskDefinition that use the registered revision
+  # stay scoped to the ${local.name}-* family above, bounding what the deploy
+  # role can actually launch.
+  statement {
+    sid       = "EcsRegisterTaskDefinition"
+    actions   = ["ecs:RegisterTaskDefinition"]
+    resources = ["*"]
+  }
+
+  # InvokeFunction rolls the worker fleet through the worker-lifecycle deploy
+  # lambda (scripts/deploy-ingestion.sh), draining in-flight work on the old task
+  # set before retiring it. Scoped to this environment's lambda functions.
+  statement {
+    sid       = "InvokeWorkerLifecycle"
+    actions   = ["lambda:InvokeFunction"]
+    resources = ["arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${local.name}-*"]
+  }
+
   statement {
     sid       = "PassTaskRoles"
     actions   = ["iam:PassRole"]
