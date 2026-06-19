@@ -21,7 +21,10 @@ type Querier interface {
 	// first run. Never overwrites an existing checkpoint.
 	ClaimWikiCorpus(ctx context.Context, corpus string) error
 	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
-	CountWikiPages(ctx context.Context) (int64, error)
+	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
+	// corpus: statistical evidence (a separate corpus that shares this table) is
+	// excluded so its rows never skew the wiki change-fraction guard.
+	CountWikiPages(ctx context.Context, excludeCorpus string) (int64, error)
 	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
 	// Insert a pending YouTube ingest. source_id is the canonical video id; the
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
@@ -33,7 +36,9 @@ type Querier interface {
 	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
 	// The clustering job reads the embedded live corpus in keyset order to group it
 	// into topic clusters and score importance. The embedding IS NOT NULL filter
-	// scopes the scan to the chunks that actually carry a vector to cluster.
+	// scopes the scan to the chunks that actually carry a vector to cluster, and the
+	// corpus filter keeps statistical evidence (a separate corpus sharing this
+	// table) out of the encyclopedic clustering it does not belong to.
 	EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)

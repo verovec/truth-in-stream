@@ -18,6 +18,7 @@ func (s *Store) EmbeddedChunks(ctx context.Context, cur domain.WikiCursor, limit
 		return nil, fmt.Errorf("postgres: embedded chunks: limit %d out of range", limit)
 	}
 	rows, err := s.queries.EmbeddedWikiChunks(ctx, db.EmbeddedWikiChunksParams{
+		ExcludeCorpus:   domain.StatCorpus,
 		AfterPageID:     cur.PageID,
 		AfterChunkIndex: cur.ChunkIndex,
 		RowLimit:        int32(limit),

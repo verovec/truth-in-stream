@@ -16,7 +16,7 @@ WIKI_MAX_DURATION ?= 15m
 # Persisted across runs so a resume reuses the downloaded dump dir.
 WIKI_DUMP_DIR     ?= /tmp/wikisync-dump
 
-.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build lambda-mqmetrics ingest seed scrutins-ingest refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
+.PHONY: help sqlc sqlc-verify migrate-up migrate-down fmt vet test test-integration tidy build lambda-mqmetrics ingest stats-ingest seed scrutins-ingest refresh-embeddings wikisync wiki-populate wiki-cluster wiki-verify digest
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-16s %s\n", $$1, $$2}'
@@ -59,6 +59,9 @@ lambda-workerlifecycle: ## Build the worker-lifecycle lambda bootstrap (provided
 
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest
+
+stats-ingest: ## Fetch the curated Eurostat series, render French passages, embed and upsert into the evidence corpus; idempotent, no API key for the source (needs DATABASE_URL and EMBEDDING_API_KEY)
+	go run ./cmd/statsingest
 
 seed: ## Load the local dataset (claims, wiki, sample videos) offline from the committed cache (DATABASE_URL; no API key)
 	go run ./cmd/seed
