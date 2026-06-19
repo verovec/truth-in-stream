@@ -20,9 +20,17 @@ stack/terraform/
 │   ├── scheduled-task/  EventBridge-scheduled one-shot Fargate task (wiki delta sync)
 │   ├── s3/              media object storage bucket (presigned uploads)
 │   └── s3-backup/       versioned, lifecycle-retained pg_dump backup bucket
-├── dev/       dev root module  (state key: dev/terraform.tfstate)
-└── prod/      prod root module (state key: prod/terraform.tfstate)
+├── dev/          dev root module  (state key: dev/terraform.tfstate)
+├── prod/         prod root module (state key: prod/terraform.tfstate)
+└── main-account/ main-account DNS root (state key: main-account/terraform.tfstate) — manual apply, CI-excluded
 ```
+
+The `main-account/` root is the one exception to "directory-per-environment": it
+is not an app environment but the cross-account DNS publisher. It targets the
+**main account** (`040265332493`) that owns the `jeminforme.fr` hosted zone,
+creating the ACM validation records and apex/`www` CloudFront aliases from the
+prod outputs. It is **applied by hand and excluded from CI** — see
+`main-account/README.md`.
 
 ## Architecture
 
@@ -224,9 +232,11 @@ but it does **not** create the records, because the zone is in another account:
    - `certificate_arn` — the certificate ARN (also consumed by CloudFront).
    - `certificate_domain_validation_options` — a map keyed by domain of the
      `{ name, type, value }` CNAME validation records. Nothing here is secret.
-3. The dedicated **main-account** terraform root (see VER-140) reads those
-   outputs (remote state or tfvars) and creates one CNAME per record in
-   `Z0839748310ZNBMJ0HI90`.
+3. The dedicated **main-account** terraform root (`main-account/`, applied by
+   hand, CI-excluded) reads those outputs (remote state or tfvars) and creates
+   one CNAME per record in `Z0839748310ZNBMJ0HI90`. It also creates the apex/`www`
+   CloudFront alias records. The operator runs `make tf-main-account-apply`; see
+   `main-account/README.md` for the full apply runbook and order.
 4. Once the records resolve, ACM validates and the certificate moves to
    `ISSUED`. Only then can CloudFront serve HTTPS with it.
 
