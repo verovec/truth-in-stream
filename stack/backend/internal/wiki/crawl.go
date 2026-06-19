@@ -3,6 +3,7 @@ package wiki
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 )
@@ -10,6 +11,13 @@ import (
 // cmPageLimit is the categorymembers page size for anonymous clients (the API
 // caps cmlimit at 500); the rest follow via the continuation token.
 const cmPageLimit = 500
+
+// categoryProgressInterval is the default number of articles collected between
+// progress log lines during the category walk. The walk is otherwise silent
+// until it returns, which on a broad, deep crawl is minutes of no output; a
+// bounded heartbeat lets an operator tell a healthy walk from a hung one. Tests
+// override the cadence through APIClient.progressEvery.
+const categoryProgressInterval = 1000
 
 // MediaWiki namespace ids used by the crawler: main-namespace articles and the
 // Category namespace (subcategory members come back tagged ns 14).
@@ -35,6 +43,16 @@ func (c *APIClient) CategoryMembers(ctx context.Context, categories []string, ma
 		title string
 		depth int
 	}
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	interval := c.progressEvery
+	if interval <= 0 {
+		interval = categoryProgressInterval
+	}
+	nextProgressAt := interval
+
 	seenPages := make(map[int64]struct{})
 	seenCats := make(map[string]struct{})
 	var out []CategoryMember
@@ -52,6 +70,11 @@ func (c *APIClient) CategoryMembers(ctx context.Context, categories []string, ma
 		f := queue[0]
 		queue = queue[1:]
 
+		if f.depth == 0 {
+			logger.InfoContext(ctx, "crawl walking seed category",
+				slog.String("project", c.Corpus), slog.String("category", f.title))
+		}
+
 		pages, subcats, err := c.categoryMembersOf(ctx, f.title)
 		if err != nil {
 			return nil, err
@@ -65,6 +88,14 @@ func (c *APIClient) CategoryMembers(ctx context.Context, categories []string, ma
 			}
 			seenPages[p.PageID] = struct{}{}
 			out = append(out, p)
+			if len(out) >= nextProgressAt {
+				logger.InfoContext(ctx, "crawl enumerating category members",
+					slog.String("project", c.Corpus),
+					slog.Int("pages", len(out)),
+					slog.Int("depth", f.depth),
+					slog.Int("frontier", len(queue)))
+				nextProgressAt += interval
+			}
 		}
 		if f.depth < maxDepth {
 			for _, sub := range subcats {

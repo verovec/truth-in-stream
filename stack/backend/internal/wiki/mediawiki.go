@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,14 +64,21 @@ type Extract struct {
 // APIClient calls a Wikipedia MediaWiki Action API endpoint. Corpus selects the
 // language project (e.g. simplewiki -> simple.wikipedia.org); HTTPClient and
 // BaseURL are optional - BaseURL overrides the derived endpoint for tests.
+// Logger, when set, receives the long category walk's progress; a nil Logger
+// disables that progress logging.
 type APIClient struct {
 	Corpus     string
 	BaseURL    string
 	HTTPClient *http.Client
+	Logger     *slog.Logger
 
 	// retryBase overrides the throttling backoff base, for tests; zero uses
 	// apiRetryBase.
 	retryBase time.Duration
+
+	// progressEvery overrides the category-walk progress cadence, for tests; zero
+	// uses categoryProgressInterval.
+	progressEvery int
 }
 
 func (c *APIClient) endpoint() string {
