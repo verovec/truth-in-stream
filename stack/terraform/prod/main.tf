@@ -158,13 +158,29 @@ module "alb" {
   # VPC-origin hop to the internal ALB stays on plain HTTP inside the VPC.
 }
 
+# CLOUDFRONT-scoped WAFv2 web ACL, created in us-east-1 (the region CloudFront
+# web ACLs must live in, same constraint as the cert). Runs AWS managed rule
+# groups plus a per-IP rate throttle and logs every decision to CloudWatch with
+# the Authorization and Cookie headers redacted. Associated with the
+# distribution below via web_acl_id.
+module "waf" {
+  source = "../modules/waf"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project     = local.project
+  environment = var.environment
+}
+
 # CloudFront in front of the internal ALB. Serves the app over HTTPS at the
 # apex and www using the us-east-1 ACM certificate from the acm module, with a
 # default behavior (frontend) and an /api/* behavior (backend), both dynamic
 # and never cached. Media is served from direct presigned S3 URLs and is not
-# fronted here. WAF association is added by VER-131 (it reads distribution_id);
-# the apex/www alias records are created by the main-account root (VER-140),
-# which reads domain_name and hosted_zone_id.
+# fronted here. The WAFv2 web ACL above is associated via web_acl_id; the
+# apex/www alias records are created by the main-account root (VER-140), which
+# reads domain_name and hosted_zone_id.
 module "cloudfront" {
   source = "../modules/cloudfront"
 
@@ -175,6 +191,7 @@ module "cloudfront" {
   alb_dns_name    = module.alb.dns_name
   certificate_arn = module.acm.certificate_arn
   aliases         = [var.domain_name, "www.${var.domain_name}"]
+  web_acl_id      = module.waf.web_acl_arn
 }
 
 module "backend" {
@@ -442,6 +459,7 @@ module "apply_permissions" {
 
   include_acm             = true
   include_cloudfront      = true
+  include_waf             = true
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
 }

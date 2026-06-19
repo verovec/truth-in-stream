@@ -10,6 +10,12 @@ variable "include_cloudfront" {
   description = "Include the CloudFront distribution + VPC origin actions (modules/cloudfront). Set true in the env that fronts the internal ALB with CloudFront (prod)."
 }
 
+variable "include_waf" {
+  type        = bool
+  default     = false
+  description = "Include the CLOUDFRONT-scoped WAFv2 web ACL actions, its logging configuration, and the CloudWatch log resource-policy actions (modules/waf). Set true in the env that fronts CloudFront with a web ACL (prod)."
+}
+
 variable "include_rds" {
   type        = bool
   default     = false

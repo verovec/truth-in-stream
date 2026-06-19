@@ -34,6 +34,9 @@ resource "aws_cloudfront_distribution" "main" {
   aliases         = var.aliases
   price_class     = var.price_class
   comment         = "${local.name} app distribution (internal ALB via VPC origin)"
+  # WAFv2 association: this field takes the web ACL ARN. null leaves it
+  # unassociated.
+  web_acl_id = var.web_acl_id
 
   origin {
     domain_name = var.alb_dns_name

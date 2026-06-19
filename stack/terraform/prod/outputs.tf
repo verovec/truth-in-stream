@@ -10,12 +10,12 @@ output "app_url" {
 
 output "cloudfront_distribution_id" {
   value       = module.cloudfront.distribution_id
-  description = "CloudFront distribution id. VER-131 reads this to associate the WAFv2 web ACL."
+  description = "CloudFront distribution id."
 }
 
 output "cloudfront_distribution_arn" {
   value       = module.cloudfront.distribution_arn
-  description = "CloudFront distribution ARN, for the WAFv2 association (VER-131)."
+  description = "CloudFront distribution ARN."
 }
 
 output "cloudfront_domain_name" {
@@ -26,6 +26,11 @@ output "cloudfront_domain_name" {
 output "cloudfront_hosted_zone_id" {
   value       = module.cloudfront.hosted_zone_id
   description = "CloudFront's fixed hosted-zone id for Route 53 alias records (VER-140)."
+}
+
+output "waf_web_acl_arn" {
+  value       = module.waf.web_acl_arn
+  description = "ARN of the CLOUDFRONT-scoped WAFv2 web ACL associated with the distribution."
 }
 
 output "ecr_repository_urls" {
