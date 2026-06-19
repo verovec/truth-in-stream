@@ -7,11 +7,11 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// StatCorpus is the corpus label stamped on statistical evidence rows. It is
-// distinct from the Wikipedia corpus so the provenance of a retrieved passage
-// is identifiable, while both share the wiki_chunks table and the single
-// SearchWiki retrieval path the fact-check verifier already uses. It aliases
-// domain.StatCorpus, the shared constant the store filters on.
+// StatCorpus is the corpus label stamped on EU (Eurostat) statistical evidence
+// rows. It is distinct from the Wikipedia corpus so the provenance of a
+// retrieved passage is identifiable, while both share the wiki_chunks table and
+// the single SearchWiki retrieval path the fact-check verifier already uses. It
+// aliases domain.StatCorpus, one of the shared constants the store filters on.
 const StatCorpus = domain.StatCorpus
 
 // defaultBatchSize bounds how many datapoints are embedded per request. Voyage
@@ -19,11 +19,17 @@ const StatCorpus = domain.StatCorpus
 // ingest default.
 const defaultBatchSize = 128
 
-// Source yields the statistical datapoints to ingest. The EU SDMX adapter
-// (subpackage eurostat) is the first implementation; the foundation is
-// source-agnostic so further sources reuse it unchanged.
+// Source yields the statistical datapoints to ingest under its own corpus
+// label. The EU SDMX adapter (subpackage eurostat) is the first implementation;
+// the foundation is source-agnostic so further national sources reuse it
+// unchanged, each stamping a distinct corpus (domain.StatCorpora) so a retrieved
+// passage's publisher is identifiable and the wiki-only maintenance reads can
+// exclude every statistical corpus.
 type Source interface {
 	Datapoints(ctx context.Context) ([]domain.Datapoint, error)
+	// Corpus is the wiki_chunks.corpus label every passage from this source is
+	// stamped with; it must be one of domain.StatCorpora.
+	Corpus() string
 }
 
 // Embedder embeds rendered passages for storage (input_type=document), the same
@@ -51,6 +57,11 @@ func Run(ctx context.Context, src Source, embedder Embedder, store Store, batchS
 		batchSize = defaultBatchSize
 	}
 
+	corpus := src.Corpus()
+	if !domain.IsStatCorpus(corpus) {
+		return 0, fmt.Errorf("stats: source corpus %q is not a registered statistical corpus", corpus)
+	}
+
 	datapoints, err := src.Datapoints(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("stats: fetch datapoints: %w", err)
@@ -71,7 +82,7 @@ func Run(ctx context.Context, src Source, embedder Embedder, store Store, batchS
 			Title:      d.Title,
 			URL:        d.SourceURL,
 			RevisionID: 0,
-			Corpus:     StatCorpus,
+			Corpus:     corpus,
 			Content:    RenderFrench(d),
 			Section:    "",
 			Kind:       domain.WikiChunkKindLead,
