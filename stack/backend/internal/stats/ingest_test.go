@@ -19,6 +19,8 @@ func (f fakeSource) Datapoints(context.Context) ([]domain.Datapoint, error) {
 	return f.dps, f.err
 }
 
+func (fakeSource) Corpus() string { return domain.StatCorpus }
+
 // fakeEmbedder returns a deterministic 1024-dim vector per text, so re-running
 // with the same text yields the same vector (idempotency of stored embeddings).
 type fakeEmbedder struct {
@@ -157,6 +159,39 @@ func TestRunWrapsEmbedError(t *testing.T) {
 	_, err := Run(context.Background(), fakeSource{dps: twoPermits()}, &fakeEmbedder{err: sentinel}, newFakeStore(), 0)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("Run error = %v, want wrap of %v", err, sentinel)
+	}
+}
+
+// corpusSource yields fixed datapoints under a chosen corpus label, so a test
+// can assert Run stamps the source's corpus and guards an unregistered one.
+type corpusSource struct {
+	corpus string
+	dps    []domain.Datapoint
+}
+
+func (c corpusSource) Datapoints(context.Context) ([]domain.Datapoint, error) {
+	return c.dps, nil
+}
+func (c corpusSource) Corpus() string { return c.corpus }
+
+func TestRunStampsSourceCorpus(t *testing.T) {
+	store := newFakeStore()
+	src := corpusSource{corpus: domain.InteriorStatCorpus, dps: twoPermits()}
+	if _, err := Run(context.Background(), src, &fakeEmbedder{}, store, 0); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, row := range store.rows {
+		if row.Corpus != domain.InteriorStatCorpus {
+			t.Errorf("row corpus = %q, want %q", row.Corpus, domain.InteriorStatCorpus)
+		}
+	}
+}
+
+func TestRunRejectsUnregisteredCorpus(t *testing.T) {
+	src := corpusSource{corpus: "simplewiki", dps: twoPermits()}
+	_, err := Run(context.Background(), src, &fakeEmbedder{}, newFakeStore(), 0)
+	if err == nil {
+		t.Fatal("Run accepted a non-statistical corpus label")
 	}
 }
 

@@ -50,13 +50,53 @@ type Datapoint struct {
 	Unit string
 }
 
-// StatCorpus is the wiki_chunks.corpus label stamped on statistical evidence
-// rows. Statistics share the wiki_chunks table and the SearchWiki retrieval
-// path with the encyclopedic corpus, but the wiki-maintenance reads (page
-// count for the delta-sync denominator, the clustering scan) must exclude them,
-// so the label is a shared constant the store can filter on without importing
-// the stats service.
+// StatCorpus is the wiki_chunks.corpus label stamped on EU (Eurostat) statistical
+// evidence rows. Statistics share the wiki_chunks table and the SearchWiki
+// retrieval path with the encyclopedic corpus, but the wiki-maintenance reads
+// (page count for the delta-sync denominator, the clustering scan) must exclude
+// them, so the labels are shared constants the store can filter on without
+// importing the stats service.
 const StatCorpus = "eurostat"
+
+// InteriorStatCorpus and INSEEStatCorpus are the wiki_chunks.corpus labels for
+// the two national statistical sources: the interior ministry's open-data
+// residence-permit and asylum CSVs, and the national statistics institute's
+// (INSEE) immigrant labor-market series. Each is a distinct corpus so a
+// retrieved passage's publisher is identifiable, and each is excluded from the
+// wiki-only maintenance reads exactly like StatCorpus.
+const (
+	InteriorStatCorpus = "interieur"
+	INSEEStatCorpus    = "insee"
+)
+
+// statCorpora is every statistical corpus label sharing the wiki_chunks table.
+// The wiki-maintenance reads (CountWikiPages, EmbeddedWikiChunks) exclude all of
+// them so statistical evidence never skews the encyclopedic page-count guard or
+// the clustering scan. Adding a statistical source means adding its label here.
+// It is unexported so callers cannot mutate the exclusion set in place; reach it
+// through StatCorpora or IsStatCorpus.
+var statCorpora = []string{StatCorpus, InteriorStatCorpus, INSEEStatCorpus}
+
+// StatCorpora returns a fresh copy of the statistical corpus labels to exclude
+// from the wiki-only maintenance reads. It copies so a caller (e.g. an append)
+// can never mutate the shared backing array the exclusion invariant relies on.
+func StatCorpora() []string {
+	out := make([]string, len(statCorpora))
+	copy(out, statCorpora)
+	return out
+}
+
+// IsStatCorpus reports whether corpus is one of the registered statistical
+// corpora. The stats ingest guards on it so a passage is never written under a
+// label the wiki-only maintenance reads would not exclude.
+func IsStatCorpus(corpus string) bool {
+	for _, c := range statCorpora {
+		if c == corpus {
+			return true
+		}
+	}
+	return false
+}
 
 // statPageIDMask keeps the FNV-1a hash inside the positive int64 range so the
 // derived page id never collides with a negative value and is safe as a bigint
