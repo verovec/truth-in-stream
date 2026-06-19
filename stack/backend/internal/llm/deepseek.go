@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -128,6 +129,17 @@ func (p *deepseekProvider) classify(ctx context.Context, req Request) (json.RawM
 	for _, call := range resp.Choices[0].Message.ToolCalls {
 		if call.Function.Name != req.Tool.Name {
 			continue
+		}
+		// DeepSeek occasionally returns the forced tool call with empty arguments
+		// (a degenerate passage, or the reply truncated at max_tokens). Passing the
+		// empty string through would surface as a cryptic "unexpected end of JSON
+		// input" on decode, so report the cause directly; the caller still degrades
+		// fail-open on the error.
+		if strings.TrimSpace(call.Function.Arguments) == "" {
+			if resp.Choices[0].FinishReason == "length" {
+				return nil, fmt.Errorf("%s tool call truncated at max_tokens", req.Tool.Name)
+			}
+			return nil, fmt.Errorf("empty %s tool-call arguments", req.Tool.Name)
 		}
 		return json.RawMessage(call.Function.Arguments), nil
 	}
