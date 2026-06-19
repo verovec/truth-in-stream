@@ -64,6 +64,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/deploy-ingestion.test.sh
+  # Unit-test the on-demand worker fleet scale control (up/down/status via
+  # update-service) with a stubbed aws CLI (no AWS account, no real ECS).
+  worker-fleet-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/worker-fleet.test.sh
+  # Unit-test the one-shot ingest runner (run-task with command override, wait,
+  # exit-code report) with a stubbed aws CLI (no AWS account, no real ECS).
+  run-ingest-task-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/run-ingest-task.test.sh
+  # Unit-test the INSEE re-run idempotency checkpoint (count, re-run, assert no
+  # growth) with a stubbed psql/aws (no database, no AWS account, no tunnel).
+  insee-idempotency-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/insee-idempotency-check.test.sh
   # Format-check the main-account DNS terraform root. That root is applied by
   # hand against the main account and is deliberately excluded from the
   # terraform workflow (no plan/apply, no AWS credentials). This job only runs

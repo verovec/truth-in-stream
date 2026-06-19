@@ -568,6 +568,71 @@ separate workloads against an Amazon MQ for RabbitMQ broker; the deploy is human
 (`deploy-workers.yml`, `workflow_dispatch`-only). Same images, different entry points - no separate
 producer or worker image.
 
+### On-demand control: `make` targets (the operator entrypoint)
+
+Nothing ingestion-related runs 24/7 in prod: the worker services sit at desired-count **zero** and the
+one-shot ingests are tasks, not services, so idle cost between runs is zero. The operator drives a run
+with AWS-CLI-backed `make` targets (`scripts/worker-fleet.sh`, `scripts/run-ingest-task.sh`) that source
+the ECS cluster from terraform outputs and the subnets/security-group from the published SSM parameters
+(`/<project>/<env>/deploy/*`) - never hard-coded. Everything is human-triggered; nothing schedules itself.
+
+A typical run (prod is the default `ENV`; pass `ENV=dev` for dev):
+
+```bash
+# 1. start the embedding fleet for the run (worker services are at zero otherwise)
+make worker-up FLEET=embedworker COUNT=4        # aws ecs update-service --desired-count 4
+make worker-status FLEET=embedworker            # desired/running counts (read-only)
+
+# 2. run a one-shot ingest; it launches a Fargate task, waits, and reports the exit code
+make ingest-run INGEST=statsingest              # the INSEE/Eurostat/interior sweep
+make ingest-run INGEST=wiki-populate            # wikisync -mode=bulk
+make ingest-run INGEST=wikisync                 # wikisync -mode=delta (refresh)
+
+# 3. scale the fleet back to ZERO when the queue drains - idle cost returns to zero
+make worker-down FLEET=embedworker
+```
+
+`FLEET` is the ECS service name (`embedworker`, `crawlworker`, and the foundation
+`factcheckworker`/`scrutinsworker` - the worker modules name the service by this bare suffix; only the
+task-definition family carries the `<project>-<env>-` prefix). `INGEST` is `statsingest`, `wikisync`, or
+`wiki-populate`, mapping to its task-definition family and command override (`wiki-populate` is the
+`wikisync` family run with `-mode=bulk`; the command override targets the container by its bare name,
+which is what the task definition uses - a mismatched override name is silently dropped by ECS).
+
+Scaling uses `aws ecs update-service --desired-count` - an explicit operator count up and an explicit
+zero down - exactly as the worker-lifecycle **scale** lambda's own `SetDesiredCount` does, not that
+lambda (a queue-depth autoscaler for a continuously-running fleet, the opposite of this on-demand model).
+The worker services run under an EXTERNAL deployment controller, so the desired count only launches tasks
+once a PRIMARY task set exists; the worker-lifecycle **deploy** lambda creates it via
+`scripts/deploy-ingestion.sh`. Roll the fleet once with that script before the first on-demand scale-up;
+`deploy-ingestion.sh` still owns image rolls thereafter.
+
+**Dry run without infra or credentials.** Every target honours `DRY_RUN=1`, printing the exact AWS call it
+would make and skipping it, with `CLUSTER`/`SUBNETS`/`SECURITY_GROUP` overridable so the config lookups are
+bypassed:
+
+```bash
+DRY_RUN=1 CLUSTER=c SUBNETS=subnet-a SECURITY_GROUP=sg-1 make ingest-run INGEST=statsingest
+```
+
+### INSEE re-run idempotency checkpoint
+
+After a real statsingest ingest into prod RDS, prove a re-run adds no duplicate passages - the validation
+of the VER-123/124 provenance-key scheme (the stable `(series, period)` key behind the
+`wiki_chunks (page_id, chunk_index)` upsert) against real RDS, not only the in-memory integration test.
+Run it over an open `make db-tunnel` tunnel (it `psql`s to `localhost`):
+
+```bash
+make db-tunnel                                  # terminal 1: SSM port-forward to the private RDS
+PGPASSWORD=... make insee-idempotency-check     # terminal 2: count, re-run statsingest, assert no growth
+```
+
+It counts `wiki_chunks` rows whose `corpus` matches the INSEE corpora (`insee`, `insee-chomage`,
+`insee-emploi`, `insee-prix`, `insee-pib`), re-runs the ingest, counts again, and exits non-zero if the
+count grew. `SKIP_INGEST=1` does a back-to-back count without re-ingesting (e.g. to re-check after a
+manual run); `DRY_RUN=1` dry-runs the re-ingest. The credentials ride in `PGPASSWORD`/`PGURL` in the
+environment, never on an argv.
+
 ### Versioned queue
 
 The queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a comma-separated, oldest-first list
@@ -876,4 +941,5 @@ re-embeds unchanged articles. See the design for the rationale and follow-ups:
 - LLM classifiers: `stack/backend/internal/llm` (shared transport), `internal/evidencegate` (crawl gate), `internal/checkworthy` (live)
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
 - Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy-workers.yml` (calls the reusable `_deploy.yml`)
+- On-demand control: `scripts/worker-fleet.sh` (scale up/down/status), `scripts/run-ingest-task.sh` (one-shot ingest), `scripts/insee-idempotency-check.sh`, `scripts/ingestion-common.sh` (shared config), make targets `worker-up`/`worker-down`/`worker-status`/`ingest-run`/`insee-idempotency-check`
 - Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)
