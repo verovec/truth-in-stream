@@ -282,6 +282,49 @@ least-privilege: ECS scale/task-set actions scoped to the one cluster,
 scaling-config parameter read. Its egress-only security group joins the broker's
 `management_allowed_security_group_ids` like the metrics lambda's.
 
+## Monitoring + alerting (`modules/observability`, prod)
+
+Prod wires an always-on `observability` module that closes the production-readiness
+loop: every service already logs to CloudWatch with **finite retention** (the shared
+ECS task log group in `modules/ecs`, the WAF decision log group in `modules/waf`, and
+each lambda's own group, all on `log_retention_days`), so this module adds the
+monitoring and alerting half — CloudWatch alarms routed to an SNS topic and a small
+Slack forwarder.
+
+Alarms (thresholds are all variable-driven to keep paging tuned and avoid spam):
+
+- **ALB 5xx** — `HTTPCode_ELB_5XX_Count` (load-balancer faults) over the window.
+- **Unhealthy targets** — `UnHealthyHostCount` per service target group (backend,
+  frontend), so a failing service pages even while the other stays healthy.
+- **ECS running tasks** — `RunningTaskCount` below the desired floor per service
+  (a crash or restart loop), `treat_missing_data = breaching` so a vanished service
+  fires.
+- **RDS health** — sustained `CPUUtilization` and a `FreeStorageSpace` floor.
+- **Amazon MQ health** — sustained broker `SystemCpuUtilization`.
+- **WAF blocked spike** — `BlockedRequests` above the steady-state block rate.
+
+Each alarm publishes to the regional `<project>-<env>-alerts` SNS topic, whose only
+subscriber is a **Slack forwarder Lambda** (`python3.13`, single source file, no build
+step) that reads the incoming-webhook URL from Secrets Manager
+(`<project>/<env>/app/slack-webhook-url`, the same secret the crawl alerts reuse —
+never committed) and posts the alarm state change to Slack. The CLOUDFRONT-scoped WAF
+publishes its metrics in **us-east-1**, and a CloudWatch alarm can only act on an SNS
+topic in its own region, so the module also stands up a us-east-1 alerts topic and a
+second copy of the forwarder for the WAF alarm. The forwarder's execution role is
+least-privilege: `secretsmanager:GetSecretValue` scoped to the one webhook secret plus
+the managed basic-execution policy for its own logs.
+
+A `<project>-<env>-health` CloudWatch dashboard (toggle with `create_dashboard`)
+summarises the key signals — ALB requests/5xx, unhealthy targets, running tasks per
+service, RDS, MQ, and WAF allowed-vs-blocked.
+
+Set the webhook value out of band before alerts can deliver (the secret container
+exists, the value does not):
+
+```sh
+make push-secrets ENV=prod   # pushes SLACK_WEBHOOK_URL from .env, among others
+```
+
 ## AWS SSO profile
 
 All operator tooling targets the account through one AWS SSO profile, named

@@ -549,6 +549,55 @@ module "crawl_worker" {
   log_group_name          = module.ecs.log_group_name
 }
 
+# Observability: centralized log retention is already finite for every service
+# (the shared ECS log group in module.ecs, the WAF decision log group in
+# module.waf, and every lambda's own group), so this module adds the monitoring
+# and alerting half: CloudWatch alarms for ALB 5xx, unhealthy targets, ECS
+# running-task drops, RDS and Amazon MQ health, and WAF blocked-request spikes,
+# all routed to an SNS topic and a small Slack forwarder Lambda that reads the
+# webhook from Secrets Manager (never committed). The CLOUDFRONT-scoped WAF
+# publishes its metrics in us-east-1, so the module also takes the us_east_1
+# provider for that alarm's same-region SNS + forwarder. Thresholds are all
+# variable-driven to keep paging tuned and avoid alert spam.
+module "observability" {
+  source = "../modules/observability"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project     = local.project
+  environment = var.environment
+
+  slack_webhook_secret_arn = aws_secretsmanager_secret.slack_webhook_url.arn
+  log_retention_days       = var.log_retention_days
+
+  alb_arn_suffix = module.alb.arn_suffix
+  target_group_arn_suffixes = {
+    backend  = module.backend.target_group_arn_suffix
+    frontend = module.frontend.target_group_arn_suffix
+  }
+
+  cluster_name = module.ecs.cluster_name
+  # Only the always-on serving services get a running-task floor alarm. The embed
+  # and crawl worker fleets are scale-to-zero by design (the worker-lifecycle
+  # controller drops desired count to 0 when their queue is idle), so a min-task
+  # floor would false-page an idle-but-healthy worker; they are deliberately
+  # excluded from this alarm.
+  ecs_service_names = [module.backend.service_name, module.frontend.service_name]
+
+  # one() yields the instance id when RDS is provisioned (count = 1) or null when
+  # gated off (count = 0); coalesce maps that null to "" so the module's rds_* alarms
+  # disable cleanly without an RDS instance.
+  rds_instance_id = coalesce(one(module.rds[*].instance_id), "")
+
+  # The AWS/AmazonMQ Broker dimension value is the broker name, which the rabbitmq
+  # module sets to "${project}-${environment}".
+  mq_broker_name = "${local.project}-${var.environment}"
+
+  waf_web_acl_name = module.waf.web_acl_name
+}
+
 # Network config the deploy workflow needs for `aws ecs run-task`.
 resource "aws_ssm_parameter" "private_subnet_ids" {
   name  = "/${local.project}/${var.environment}/deploy/private-subnet-ids"
@@ -576,4 +625,5 @@ module "apply_permissions" {
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
   include_bastion         = var.enable_bastion
+  include_observability   = true
 }

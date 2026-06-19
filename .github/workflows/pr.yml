@@ -117,3 +117,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/push-secrets.test.sh
+  # Unit-test the CloudWatch-alarm-to-Slack forwarder Lambda's message formatting
+  # (pure, no AWS calls; boto3 is stubbed). The handler ships as a single source
+  # file with no build step, so this is its only gate.
+  slack-forwarder-test:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: python -m unittest handler_test -v
+        working-directory: stack/terraform/modules/observability/forwarder

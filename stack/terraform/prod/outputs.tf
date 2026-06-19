@@ -87,3 +87,13 @@ output "apply_required_actions" {
   value       = module.apply_permissions.actions
   description = "IAM actions the apply role must hold to provision this environment. The pre-apply guard reads this from the plan and fails before apply if the role is missing any."
 }
+
+output "alerts_topic_arn" {
+  value       = module.observability.alerts_topic_arn
+  description = "SNS topic CloudWatch alarms publish to; the Slack forwarder Lambda is its subscriber."
+}
+
+output "health_dashboard_name" {
+  value       = module.observability.dashboard_name
+  description = "CloudWatch dashboard summarising the key health signals (ALB, targets, ECS tasks, RDS, MQ, WAF)."
+}
