@@ -47,6 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/deploy-ingestion.test.sh
+  # Format-check the main-account DNS terraform root. That root is applied by
+  # hand against the main account and is deliberately excluded from the
+  # terraform workflow (no plan/apply, no AWS credentials). This job only runs
+  # `terraform fmt -check` so the root stays format-gated; it never inits a
+  # backend, assumes a role, plans, or applies.
+  main-account-terraform-fmt:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+        working-directory: stack/terraform/main-account
   # Unit-test the local-stack preflight (make doctor) with a stubbed docker CLI
   # (no Docker daemon required).
   doctor-script:

@@ -1,0 +1,30 @@
+# Example variables for the main-account DNS root. Copy to terraform.tfvars and
+# edit, OR pass -var on the command line. Nothing here is secret.
+
+# --- Cross-account assume-role path (default) -------------------------------
+# Authenticate with your own credentials, then assume a role in the main account
+# that can read the zone and write Route 53 records. Leave empty to instead run
+# with ambient credentials that already belong to the main account.
+# main_account_role_arn = "arn:aws:iam::040265332493:role/main-account-dns"
+
+# --- Source of the app-account values ---------------------------------------
+# Default (read_remote_state = true) reads the app-account prod state directly;
+# it needs cross-account S3 read on truth-in-stream-tfstate. If you do NOT have
+# that, set read_remote_state = false and paste the prod outputs below.
+#
+#   terraform -chdir=../prod output certificate_domain_validation_options
+#   terraform -chdir=../prod output cloudfront_domain_name
+#   terraform -chdir=../prod output cloudfront_hosted_zone_id
+
+# read_remote_state = false
+#
+# certificate_domain_validation_options_override = {
+#   "jeminforme.fr" = {
+#     name  = "_abc123.jeminforme.fr."
+#     type  = "CNAME"
+#     value = "_def456.acm-validations.aws."
+#   }
+# }
+#
+# cloudfront_domain_name_override    = "d111111abcdef8.cloudfront.net"
+# cloudfront_hosted_zone_id_override = "Z2FDTNDATAQYW2"

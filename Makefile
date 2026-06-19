@@ -11,6 +11,10 @@ COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disabl
 # Override if `go` is not on PATH, e.g. `make bootstrap GO=/usr/local/go/bin/go`.
 GO         ?= go
 
+# Main-account DNS terraform root. Applied manually by the operator against the
+# main account (it owns the jeminforme.fr hosted zone) and excluded from CI.
+TF_MAIN    := stack/terraform/main-account
+
 # Worker count for the ingestion fleet target (`make fleet-up`). A small default
 # keeps a first run cheap; raise it per run as a make argument or shell variable
 # (`make fleet-up EMBEDWORKER_REPLICAS=4`) to drain the queue faster on a higher
@@ -53,7 +57,7 @@ MODE ?=
 EPIC ?=
 DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime migrate logs ps digest tf-main-account-plan tf-main-account-apply
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -213,3 +217,9 @@ ps: ## Show service status
 digest: ## Post the dev digest (cards shipped in the last 24h, the project's remaining work, open PRs, stalled cards) to SLACK_DIGEST_WEBHOOK_URL. `make digest EPIC=VER-93` recaps a finished epic instead; `make digest MODE=terminal` prints the full report to stdout; `make digest MODE=dry-run` prints the Slack JSON without posting. Reads SLACK_DIGEST_WEBHOOK_URL, LINEAR_API_KEY, LINEAR_PROJECT, GITHUB_TOKEN, GITHUB_REPO, DIGEST_SUMMARY_API_KEY, DIGEST_SUMMARY_MODEL, LLM_PROVIDER, DEEPSEEK_API_KEY, GEMINI_API_KEY from .env; any missing one degrades that section to a note (or shipped cards to their titles)
 	@set -a; [ -f .env ] && eval "$$(grep -E '^(SLACK_DIGEST_WEBHOOK_URL|LINEAR_API_KEY|LINEAR_PROJECT|GITHUB_TOKEN|GITHUB_REPO|DIGEST_SUMMARY_API_KEY|DIGEST_SUMMARY_MODEL|LLM_PROVIDER|DEEPSEEK_API_KEY|GEMINI_API_KEY)=' .env)"; set +a; \
 	  $(GO) -C stack/backend run ./cmd/digest $(DIGEST_FLAG)
+
+tf-main-account-plan: ## Plan the main-account DNS root (ACM validation + apex/www CloudFront aliases). Read-only; needs main-account credentials (or main_account_role_arn). See stack/terraform/main-account/README.md
+	cd $(TF_MAIN) && terraform init && terraform plan
+
+tf-main-account-apply: ## Apply the main-account DNS root by hand (operator only; CI never runs this). Publishes the ACM validation records and apex/www CloudFront aliases into the jeminforme.fr zone. See stack/terraform/main-account/README.md
+	cd $(TF_MAIN) && terraform init && terraform apply
