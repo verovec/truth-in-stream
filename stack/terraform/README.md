@@ -107,6 +107,57 @@ they are terraform-owned. To add a new app secret, add the `.env` key to the
 `secrets` — all in the same change, so the allowlist and the task defs never
 drift apart.
 
+### One-time load of the embedded local DB into RDS (`enable_bastion`)
+
+RDS is in private subnets with no public access, so the already-embedded local
+Postgres database (claims vectors + `wiki_chunks` `halfvec` embeddings) is loaded
+into it once over an SSM tunnel through the hardened bastion — no SSH, no public
+IP, no public RDS, Session Manager only. The bastion is gated off by default
+(`enable_bastion = false`): bring it up for the load, then take it back down.
+
+**Vector fidelity.** The load is a `pg_dump --format=custom` dump replayed by
+`pg_restore`, both in **text** format. `pg_dump` emits `COPY … TO` in text
+(`halfvec` serialized as `[v1,…,vN]`) and `pg_restore` replays it via `COPY …
+FROM` in text. The pgx **binary** `CopyFrom` path that corrupts `halfvec`
+(phantom rows) is never used, so embeddings round-trip exactly — the same
+text-COPY guarantee the `stack/backend/internal/dbbackup` round-trip test covers.
+
+Runbook (run from the repo root, with a valid prod SSO session and the local
+`postgres` service up so the dump runs inside it):
+
+```sh
+# 1. Bring the bastion up (human-gated apply).
+cd stack/terraform/prod
+terraform apply -var enable_bastion=true        # adds the SSM bastion + RDS:5432 ingress
+
+# 2. Create the schema in RDS first (the migration task runs golang-migrate).
+#    Dispatch deploy-backend (it builds the migrate image and applies migrations
+#    when enable_rds = true), or run the migrate task directly with aws ecs run-task.
+
+# 3. Open the tunnel (keep this terminal open).
+make db-tunnel ENV=prod                          # localhost:5432 -> private RDS
+
+# 4. In a second terminal, load the local embedded DB over the tunnel.
+make db-push ENV=prod                             # pg_dump (local) | pg_restore (RDS), text COPY
+
+# 5. Verify the load: row counts and a sample vector search against the tunnel.
+PGPASSWORD=… psql "host=localhost port=5432 sslmode=require dbname=truthinstream user=…" \
+  -c 'select count(*) from claims;' \
+  -c 'select count(*) from wiki_chunks;' \
+  -c 'select id from wiki_chunks order by embedding <=> (select embedding from wiki_chunks limit 1) limit 5;'
+
+# 6. Tear the bastion back down once the load is verified.
+terraform apply -var enable_bastion=false
+```
+
+`make db-push` reads the RDS credentials from the `…/prod/rds/dsn` secret at
+runtime and passes the password to the restore container by environment-variable
+**name only** (`-e PGPASSWORD`), so no secret ever appears in an argv or a log;
+nothing is committed. `PORT=` overrides the local port on both `db-tunnel` and
+`db-push` (use the same value for both), and `FILE=` reuses an existing dump. The
+helpers are unit-tested with stubbed `aws`/`docker` CLIs in the `db-tunnel-script`
+and `db-push-script` `pr.yml` jobs.
+
 ### Ingestion monitoring (`enable_metrics_lambda`)
 
 Amazon MQ for RabbitMQ exposes almost nothing per queue, so there is no native

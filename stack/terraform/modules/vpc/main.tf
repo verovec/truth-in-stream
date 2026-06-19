@@ -163,7 +163,7 @@ resource "aws_security_group" "ecs_tasks" {
 
 resource "aws_security_group" "postgres" {
   name        = "${local.name}-postgres"
-  description = "RDS; ingress only from ECS tasks"
+  description = "RDS; ingress only from ECS tasks (and any database_client_security_group_ids, e.g. the bastion)"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -172,6 +172,22 @@ resource "aws_security_group" "postgres" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs_tasks.id]
+  }
+
+  # Extra DB clients (the SSM bastion for the one-time load tunnel) reach RDS on
+  # 5432 too. An empty database_client_security_group_ids adds no rule. Inline
+  # (vs. a standalone aws_vpc_security_group_ingress_rule) because this SG already
+  # declares inline ingress, which the standalone resource must not be mixed with
+  # under provider v6; reusing the dynamic-inline form mirrors the broker SG.
+  dynamic "ingress" {
+    for_each = length(var.database_client_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "PostgreSQL from extra database clients (bastion)"
+      from_port       = 5432
+      to_port         = 5432
+      protocol        = "tcp"
+      security_groups = var.database_client_security_group_ids
+    }
   }
 
   tags = { Name = "${local.name}-postgres" }

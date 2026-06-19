@@ -12,17 +12,18 @@ data "aws_ssm_parameter" "al2023_ami" {
 
 # Egress-only: the bastion has no inbound rules at all. SSM access is an
 # outbound TLS session the agent opens to the Session Manager endpoints (reached
-# over the dev NAT), so no ingress is ever required. Outbound is left open so the
-# port-forward can reach the broker's private IP and the agent can reach SSM,
-# Secrets Manager, and EC2 Messages; scoping egress to the broker SG would create
-# a dependency cycle with the broker (which allows this SG inbound).
+# over the NAT), so no ingress is ever required. Outbound is left open so the
+# port-forward can reach the private target (the broker on AMQPS in dev, RDS on
+# 5432 in prod) and the agent can reach SSM, Secrets Manager, and EC2 Messages;
+# scoping egress to the target SG would create a dependency cycle with a target
+# that allows this SG inbound (e.g. the broker).
 resource "aws_security_group" "bastion" {
   name        = local.name
-  description = "SSM-only bastion: no inbound, outbound only (SSM port-forward to the private broker)"
+  description = "SSM-only bastion: no inbound, outbound only (SSM port-forward to a private target: broker or RDS)"
   vpc_id      = var.vpc_id
 
   egress {
-    description = "All outbound (SSM endpoints over TLS, and the broker on AMQPS)"
+    description = "All outbound (SSM endpoints over TLS, and the private target: broker AMQPS or RDS 5432)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

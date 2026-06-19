@@ -32,6 +32,18 @@ variable "enable_rds" {
   description = "Provision the RDS PostgreSQL instance and wire its DATABASE_URL into the app stack. Defaults true in prod (the production database is managed by RDS). Setting false gates RDS and its DB-dependent consumers (migration task, embedding worker) off."
 }
 
+variable "enable_bastion" {
+  type        = bool
+  default     = false
+  description = "Provision the SSM-only bastion used for the one-time embedded-DB load into RDS (scripts/db-tunnel.sh + scripts/db-push.sh). Default false: it is a running instance with a cost, so enable it only for the duration of the load, then disable it. When true its security group is allowed to reach the private RDS on 5432."
+}
+
+variable "bastion_instance_type" {
+  type        = string
+  default     = "t3.micro"
+  description = "Bastion instance class (x86_64 family; the AMI is x86_64). t3.micro suffices: the host only relays SSM port-forward traffic, it runs no workload."
+}
+
 variable "enable_wiki_sync" {
   type        = bool
   default     = false

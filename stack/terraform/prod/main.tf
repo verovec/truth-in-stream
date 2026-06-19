@@ -34,6 +34,14 @@ module "vpc" {
   environment = var.environment
   # Per-AZ NAT: AZ-redundant egress for production.
   nat_gateway_count = 2
+
+  # The SSM bastion reaches the private RDS on 5432 for the one-time DB load.
+  # Its SG joins the postgres SG's allow-list only when the bastion is
+  # provisioned (an inline rule on the postgres SG, reusing the broker SG's
+  # pattern; a standalone rule would conflict with that SG's inline ingress
+  # under provider v6, and routing the SG back here is acyclic because the
+  # bastion SG depends only on the VPC, not on the postgres SG).
+  database_client_security_group_ids = var.enable_bastion ? [module.bastion[0].security_group_id] : []
 }
 
 module "ecs" {
@@ -81,6 +89,25 @@ module "rabbitmq" {
   vpc_id                     = module.vpc.vpc_id
   subnet_ids                 = [module.vpc.private_subnet_ids[0]]
   allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+}
+
+# SSM-only bastion for the one-time embedded-DB load into RDS: an operator opens
+# a port-forward through it to the private database (`make db-tunnel`, then
+# `make db-push`) and loads the local pg_dump over the tunnel. No public IP, no
+# SSH, no inbound rules; its SG is allowed to reach RDS on 5432 (wired into the
+# vpc module's database_client_security_group_ids above). Gated off by default
+# (it is a running instance with a cost); enable it only for the load, then
+# disable it.
+module "bastion" {
+  source = "../modules/bastion"
+  count  = var.enable_bastion ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  vpc_id        = module.vpc.vpc_id
+  subnet_id     = module.vpc.private_subnet_ids[0]
+  instance_type = var.bastion_instance_type
 }
 
 # Application runtime secrets. Terraform creates the containers only (no values);
@@ -517,4 +544,5 @@ module "apply_permissions" {
   include_waf             = true
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
+  include_bastion         = var.enable_bastion
 }
