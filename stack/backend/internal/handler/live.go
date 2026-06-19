@@ -46,6 +46,26 @@ type AnalysisRecorder interface {
 	Persist(ctx context.Context, videoID string, events []service.LiveEvent) error
 }
 
+// AnalysisReplayer is the read side of the analysis cache the handler consults at
+// session open: it returns a finite video's complete cached analysis so the
+// handler can re-emit it instead of running transcription and the LLMs. found is
+// false on a miss, a disabled cache, an unsupported snapshot version, a corrupt
+// payload, or a backend error - every degraded case collapses to a single
+// fall-through to the live pipeline, and the returned error is reserved for a
+// fault the caller should not absorb (the implementation logs and degrades, so in
+// practice it is always nil). Satisfied by *service.SnapshotReader; the handler
+// owns neither the cache contract nor the snapshot wire format. A nil replayer
+// disables the cache-hit path entirely, so the live route works unchanged when
+// replay is not wired.
+//
+// Only a finite video that previously ran to clean completion ever has a cached
+// snapshot (the recorder persists on no other path), so a live stream never hits
+// here and the "finite videos only" constraint is satisfied by the cache's
+// contents rather than a separate video-kind check.
+type AnalysisReplayer interface {
+	Snapshot(ctx context.Context, videoID string) (events []service.LiveEvent, found bool, err error)
+}
+
 // snapshotPersistTimeout bounds the post-session cache write. The write runs
 // after the socket has closed, on a context detached from the (now-canceled)
 // request, so it needs its own deadline: a slow or wedged cache must not pin the
@@ -233,7 +253,7 @@ type speakerScoreFrame struct {
 // (a query-param token validated here, or the session cookie bridged to a role)
 // is the frontend's job (VER-138). The gate is correct as a server-side admin
 // check regardless: nothing a client sends can flip the detail on.
-func liveHandler(analyzer LiveAnalyzer, recorder AnalysisRecorder, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
+func liveHandler(analyzer LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		debugFactCheck := debugFactCheckEnabled && middleware.IdentityFrom(r.Context()).IsAdmin()
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: allowedOrigins})
@@ -248,6 +268,28 @@ func liveHandler(analyzer LiveAnalyzer, recorder AnalysisRecorder, allowedOrigin
 		defer cancel()
 
 		videoID := r.PathValue("id")
+
+		// Cache-hit fast path: a finite video that previously completed has its whole
+		// analysis cached, so it is replayed instantly here - the full transcript and
+		// every verdict, in capture order, through the same serializer the live path
+		// uses - without ever constructing the transcriber or analyzer. Only a clean
+		// completion is ever cached, so a live stream never has a snapshot and falls
+		// through. A miss, a disabled cache, a version mismatch, or a backend error all
+		// report found=false, so the live pipeline below is the single, unchanged
+		// fallback. The replayed frames carry the same playback timestamps as the live
+		// stream, so the client's active-subtitle highlight keeps working with the whole
+		// session loaded up front.
+		if replayer != nil {
+			events, found, err := replayer.Snapshot(ctx, videoID)
+			if err != nil {
+				logger.ErrorContext(ctx, "analysis cache lookup failed", slog.String("video_id", videoID), slog.Any("err", err))
+			} else if found {
+				replayEvents(ctx, conn, events, debugFactCheck, logger, videoID)
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				return
+			}
+		}
+
 		audio := make(chan []byte, liveAudioBuffer)
 		reader := newAudioReader()
 		go reader.run(ctx, cancel, conn, audio)
@@ -394,6 +436,26 @@ func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket
 		}
 	}
 	return captured, true
+}
+
+// replayEvents re-emits a cached snapshot's events to the client in capture
+// order, through the very same per-kind serializer the live path uses, so a
+// cache-served session is byte-for-byte the live one at the wire. It is the read
+// counterpart of writeEvents' tee: that path captured these events unchanged, and
+// this path replays them unchanged. It stops on the first write failure (a broken
+// or wedged client) - there is nothing to drain or cancel, the session has no
+// upstream pipeline - and logs the failure unless ctx is already done. debugFactCheck
+// gates the per-claim evidence detail exactly as it does live, so a cached frame
+// is shaped identically to its live original for the same caller.
+func replayEvents(ctx context.Context, conn *websocket.Conn, events []service.LiveEvent, debugFactCheck bool, logger *slog.Logger, videoID string) {
+	for _, ev := range events {
+		if err := writeEvent(ctx, conn, ev, debugFactCheck); err != nil {
+			if ctx.Err() == nil {
+				logger.ErrorContext(ctx, "cached event replay write failed", slog.String("video_id", videoID), slog.Any("err", err))
+			}
+			return
+		}
+	}
 }
 
 // writeEvent writes one event under a bounded deadline, shaping it by kind.

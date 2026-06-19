@@ -131,7 +131,7 @@ func liveTestServerWithRecorder(t *testing.T, analyzer LiveAnalyzer, recorder An
 	// dial with no Bearer token is a guest (debug detail stays off even when the
 	// server-side flag is on); the admin Bearer the stub verifier knows is what
 	// unlocks the evidence detail.
-	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, recorder, origins, debugFactCheck, logger))
+	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, recorder, nil, origins, debugFactCheck, logger))
 	mux.Handle("GET /api/videos/{id}/live", h)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -189,6 +189,257 @@ func (p *recordingPersister) awaitPersist(t *testing.T) {
 // emitted.
 func adminDialOptions() *websocket.DialOptions {
 	return &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + testAdminToken}}}
+}
+
+// countingLive records whether Run was invoked so a replay test can prove the
+// live pipeline (transcriber + analyzer) was never constructed on a cache hit. Its
+// event stream is empty and immediately closed, so on the miss/error paths the
+// session completes cleanly.
+type countingLive struct {
+	mu   sync.Mutex
+	runs int
+}
+
+func (c *countingLive) Run(ctx context.Context, audio <-chan []byte) (<-chan service.LiveEvent, error) {
+	c.mu.Lock()
+	c.runs++
+	c.mu.Unlock()
+	// Emit one subtitle as soon as the first audio frame lands, then drain the rest.
+	// The emitted frame lets a test read-synchronize on the live pipeline actually
+	// running (proving the replay path was skipped) before asserting the run count.
+	out := make(chan service.LiveEvent)
+	go func() {
+		defer close(out)
+		sent := false
+		for range audio {
+			if sent {
+				continue
+			}
+			sent = true
+			select {
+			case <-ctx.Done():
+				return
+			case out <- service.LiveEvent{Kind: service.LiveEventSubtitle, ID: "live", Segment: domain.Segment{Text: "live"}}:
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (c *countingLive) runCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.runs
+}
+
+// stubReplayer serves a canned snapshot lookup so the handler's cache-hit replay
+// path can be driven without a real cache. It records each lookup so a test can
+// confirm the cache was consulted at session open.
+type stubReplayer struct {
+	events []service.LiveEvent
+	found  bool
+	err    error
+
+	mu     sync.Mutex
+	calls  int
+	lookup string
+}
+
+func (r *stubReplayer) Snapshot(_ context.Context, videoID string) ([]service.LiveEvent, bool, error) {
+	r.mu.Lock()
+	r.calls++
+	r.lookup = videoID
+	r.mu.Unlock()
+	if r.err != nil {
+		return nil, false, r.err
+	}
+	return r.events, r.found, nil
+}
+
+func (r *stubReplayer) snapshot() (int, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls, r.lookup
+}
+
+func liveTestServerWithReplayer(t *testing.T, analyzer LiveAnalyzer, replayer AnalysisReplayer) string {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, nil, replayer, nil, false, logger))
+	mux.Handle("GET /api/videos/{id}/live", h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
+}
+
+func TestLiveHandlerReplaysCachedSnapshotWithoutPipeline(t *testing.T) {
+	t.Parallel()
+	// A finite video with a complete cached analysis: opening it replays every
+	// stored event to the client in order, through the same serializer the live
+	// path uses, and never constructs the live pipeline (the analyzer's Run is not
+	// called).
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
+	claim := []domain.SegmentMatch{{Kind: domain.MatchKindClaim, Claim: "earth shape", Verdict: domain.Verdict("corroborates"), Sources: []domain.Source{}, Similarity: 0.9}}
+	events := []service.LiveEvent{
+		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, Matches: claim},
+	}
+	live := &countingLive{}
+	replayer := &stubReplayer{events: events, found: true}
+	wsURL := liveTestServerWithReplayer(t, live, replayer)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	subtitle := readFrame(ctx, t, conn)
+	if subtitle.Type != "subtitle" || subtitle.ID != "0" || subtitle.Text != seg.Text {
+		t.Errorf("subtitle frame = %+v", subtitle)
+	}
+	if subtitle.Start != 1 || subtitle.End != 2 || subtitle.Speaker != "A" {
+		t.Errorf("subtitle span/speaker = [%v,%v]/%q", subtitle.Start, subtitle.End, subtitle.Speaker)
+	}
+	result := readFrame(ctx, t, conn)
+	if result.Type != "result" || result.ID != "0" {
+		t.Errorf("result frame = %+v", result)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Claim != claim[0].Claim {
+		t.Errorf("result matches = %+v, want the cached claim hit", result.Matches)
+	}
+
+	// The server closes the socket cleanly once the snapshot is drained; the next
+	// read returns a normal-closure error.
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Errorf("after replay the socket should close normally, got %v", err)
+	}
+
+	if live.runCount() != 0 {
+		t.Errorf("analyzer Run was called %d times on a cache hit, want 0", live.runCount())
+	}
+	if calls, lookup := replayer.snapshot(); calls != 1 || lookup != "vid1" {
+		t.Errorf("replayer lookups = %d for %q, want 1 for vid1", calls, lookup)
+	}
+}
+
+func TestLiveHandlerReplaysFullEventSequence(t *testing.T) {
+	t.Parallel()
+	// The replay emits the exact stored sequence, in order, across the full event
+	// vocabulary - subtitle, interim, claims, per-claim result, consistency, and
+	// speaker score - so a cache-served session reproduces the live one frame for
+	// frame.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
+	events := []service.LiveEvent{
+		{Kind: service.LiveEventInterim, Segment: domain.Segment{Text: "the moon"}},
+		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
+		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
+		{Kind: service.LiveEventConsistency, ID: "1", Segment: seg, Consistency: &service.ConsistencyFlag{EarlierID: "0", EarlierText: "the moon is rock", Speaker: "A", Rationale: "contradiction"}},
+		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, Unverifiable: 2}},
+	}
+	live := &countingLive{}
+	replayer := &stubReplayer{events: events, found: true}
+	wsURL := liveTestServerWithReplayer(t, live, replayer)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	wantTypes := []string{"interim", "subtitle", "claims", "claim_result", "consistency", "speaker_score"}
+	for i, want := range wantTypes {
+		frame := readFrame(ctx, t, conn)
+		if frame.Type != want {
+			t.Fatalf("frame %d type = %q, want %q", i, frame.Type, want)
+		}
+	}
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Errorf("after replay the socket should close normally, got %v", err)
+	}
+	if live.runCount() != 0 {
+		t.Errorf("analyzer Run was called %d times on a cache hit, want 0", live.runCount())
+	}
+}
+
+func TestLiveHandlerCacheMissRunsLivePipeline(t *testing.T) {
+	t.Parallel()
+	// On a cache miss the handler falls through to the live pipeline: the analyzer
+	// is constructed and driven exactly as before, replaying nothing.
+	live := &countingLive{}
+	replayer := &stubReplayer{found: false}
+	wsURL := liveTestServerWithReplayer(t, live, replayer)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	// On a miss the live pipeline runs as usual: it emits its live subtitle, which
+	// the client reads - proving the analyzer was driven and the replay path skipped.
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "subtitle" || frame.ID != "live" {
+		t.Fatalf("frame = %+v, want the live pipeline's subtitle", frame)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("clean close: %v", err)
+	}
+	if live.runCount() != 1 {
+		t.Errorf("analyzer Run was called %d times on a miss, want 1", live.runCount())
+	}
+	if calls, _ := replayer.snapshot(); calls != 1 {
+		t.Errorf("replayer lookups = %d, want 1", calls)
+	}
+}
+
+func TestLiveHandlerNilReplayerRunsLivePipeline(t *testing.T) {
+	t.Parallel()
+	// With no replayer wired, the cache-hit path is disabled and the live route
+	// behaves exactly as before: the analyzer always runs.
+	live := &countingLive{}
+	wsURL := liveTestServerWithReplayer(t, live, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "subtitle" || frame.ID != "live" {
+		t.Fatalf("frame = %+v, want the live pipeline's subtitle", frame)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("clean close: %v", err)
+	}
+	if live.runCount() != 1 {
+		t.Errorf("analyzer Run was called %d times with a nil replayer, want 1", live.runCount())
+	}
 }
 
 func TestLiveHandlerPersistsSnapshotOnCleanCompletion(t *testing.T) {
