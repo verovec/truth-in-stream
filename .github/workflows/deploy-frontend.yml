@@ -1,0 +1,18 @@
+name: deploy-frontend
+# Human-gated rolling deploy of the frontend service. workflow_dispatch only:
+# an auto-merge to main never deploys. Relevant paths (stack/frontend/**,
+# .github/workflows/_deploy.yml, .github/workflows/deploy-frontend.yml) are
+# documented here for the operator who decides when to dispatch; we do not add a
+# push trigger while AWS is operator-gated.
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      service: frontend
+      ecr_repo: frontend
+      context: stack/frontend
+      dockerfile: stack/frontend/Dockerfile
+      deploy_mode: rolling
+      ecs_service: frontend

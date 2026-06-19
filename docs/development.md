@@ -20,9 +20,14 @@ pass under `-race`; the frontend uses Vitest. See the `testing` skill for the fu
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.
 - `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on merge to
   `main` (GitHub OIDC, `AWS_ROLE_ARN`).
-- `deploy.yml` - `workflow_dispatch`-only (human-gated). Builds, Trivy-scans, and pushes images to
-  ECR, runs migrations, rolls the backend/frontend services, and ships the ingestion pipeline. No
-  long-lived AWS credentials; a production deploy is always a deliberate manual dispatch.
+- Per-service deploy workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-workers.yml`,
+  `deploy-backup.yml`), each `workflow_dispatch`-only (human-gated) and calling the reusable
+  `_deploy.yml`. A pipeline builds, Trivy-scans, and pushes one service's image to ECR with an
+  immutable `sha-<short>` tag, then rolls that service alone and waits for stability (backend also
+  builds/scans the migrate image and runs migrations; workers roll the ingestion fleet via the
+  worker-lifecycle lambda; backup is image-only, picked up by the scheduled task on its next run).
+  No long-lived AWS credentials (GitHub OIDC); a production deploy is always a deliberate manual
+  dispatch.
 
 ## Claude workflow
 

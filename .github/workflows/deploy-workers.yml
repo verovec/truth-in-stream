@@ -1,0 +1,29 @@
+name: deploy-workers
+# Human-gated deploy of the ingestion fleet (embedding + crawl workers and their
+# producers), which share the backend image with different entry points and roll
+# via the worker-lifecycle lambda so in-flight messages drain on the old version.
+# workflow_dispatch only: an auto-merge to main never deploys. Relevant paths
+# (stack/backend/**, scripts/deploy-ingestion.sh, .github/workflows/_deploy.yml,
+# .github/workflows/deploy-workers.yml) are documented here for the operator who
+# decides when to dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      queue_versions:
+        description: >-
+          Roll the embedding/crawl-queue message version: the new
+          RABBITMQ_QUEUE_VERSIONS value (comma-separated, oldest-first, newest
+          active, e.g. "1,2"). Leave empty to deploy the image without changing
+          the queue version. Roll back by re-running with the previous list.
+        required: false
+        default: ""
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      service: workers
+      ecr_repo: backend
+      context: stack/backend
+      dockerfile: stack/backend/Dockerfile
+      deploy_mode: ingestion
+      queue_versions: ${{ inputs.queue_versions }}

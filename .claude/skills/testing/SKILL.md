@@ -9,7 +9,7 @@ Core rule: **integrating a feature card means the entire suite is green on BOTH 
 
 ## The gate
 
-Every PR runs four jobs (`.github/workflows/pr.yml`): `frontend-lint`, `frontend-test`, `backend-lint`, `backend-test`. `deploy.yml` re-runs the same four before any image is built, then Trivy-scans images and blocks on HIGH/CRITICAL vulnerabilities.
+Every PR runs four jobs (`.github/workflows/pr.yml`): `frontend-lint`, `frontend-test`, `backend-lint`, `backend-test`. The green PR CI is the merge gate. Deploys are separate, human-gated, per-service workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-workers.yml`, all `workflow_dispatch`-only, calling the reusable `_deploy.yml`); each Trivy-scans its image and blocks on HIGH/CRITICAL vulnerabilities before pushing it. They build one service alone and do not re-run the cross-stack suite, so the PR gate is the test/lint authority - never merge on red CI expecting a deploy to re-check.
 
 A red job means the card is not done. Banned responses to red: merging anyway, `t.Skip`/`it.skip` to get green, deleting or loosening the failing test in the same diff as the feature that broke it, re-running until a flaky test passes. A flaky test is a bug - file a card and fix the root cause (Go: `-race` + `testing/synctest`; frontend: no timing-based assertions).
 
@@ -39,7 +39,7 @@ All eight commands pass or the PR does not open. `make test` alone is not the fu
 
 - `_test.yml`: node -> `npm ci && npm test --if-present` (caveat: `--if-present` silently passes if the `test` script is missing - never remove or rename the `test` script in package.json); go -> `go test -race ./...` with a `pgvector/pgvector:pg16` service and `TEST_DATABASE_URL` injected. So **store integration tests always run in CI**; the env-var skip exists solely so a unit-test run works before `docker compose up` - it is never a sanctioned way to avoid running them before a PR.
 - `_lint.yml`: node -> eslint; go -> gofmt-check + `go vet` + `sqlc diff` (auto-skipped when no `sqlc.yaml`) + golangci-lint.
-- Extending CI: a new stack or check is two `uses:` entries in `pr.yml` reusing `_lint.yml`/`_test.yml` (and mirrored into `deploy.yml`'s gate), never a bespoke one-off workflow. ANY workflow change - new job, new reusable workflow, new gap-fix - is its own card, never a rider on a feature card. Never add `paths:` filters to `pr.yml` - the whole-codebase gate is the point. Pin tool versions (Go, Node, sqlc) identically in CI, Makefile, and local docs; a version drift between them is a finding.
+- Extending CI: a new stack or check is two `uses:` entries in `pr.yml` reusing `_lint.yml`/`_test.yml`, never a bespoke one-off workflow. A new deployable service is a thin per-service caller of the reusable `.github/workflows/_deploy.yml`, never a hand-rolled deploy job. ANY workflow change - new job, new reusable workflow, new gap-fix - is its own card, never a rider on a feature card. Never add `paths:` filters to `pr.yml` - the whole-codebase gate is the point. Pin tool versions (Go, Node, sqlc) identically in CI, Makefile, and local docs; a version drift between them is a finding.
 
 ## What every card ships (test side of Definition of Done)
 

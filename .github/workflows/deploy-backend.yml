@@ -1,0 +1,19 @@
+name: deploy-backend
+# Human-gated rolling deploy of the backend service. workflow_dispatch only:
+# an auto-merge to main never deploys. Relevant paths (stack/backend/**,
+# .github/workflows/_deploy.yml, .github/workflows/deploy-backend.yml) are
+# documented here for the operator who decides when to dispatch; we do not add a
+# push trigger while AWS is operator-gated.
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      service: backend
+      ecr_repo: backend
+      context: stack/backend
+      dockerfile: stack/backend/Dockerfile
+      deploy_mode: rolling
+      ecs_service: backend
+      migrate_dockerfile: stack/backend/Dockerfile.migrate
