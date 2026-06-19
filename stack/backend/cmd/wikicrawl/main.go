@@ -68,6 +68,7 @@ func run(logger *slog.Logger) error {
 	api := &wiki.APIClient{
 		Corpus:     crawlCfg.Project,
 		HTTPClient: &http.Client{Timeout: crawlHTTPTimeout},
+		Logger:     logger,
 	}
 
 	// A nil gate disables fact-checkability filtering (publish everything); only
