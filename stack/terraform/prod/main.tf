@@ -32,8 +32,10 @@ module "vpc" {
 
   project     = local.project
   environment = var.environment
-  # Per-AZ NAT: AZ-redundant egress for production.
-  nat_gateway_count = 2
+  # Cost-baseline: a single NAT gateway (one AZ's NAT is the egress SPOF). Set
+  # nat_gateway_count = 2 to restore per-AZ HA egress. See the cost-baseline note
+  # in stack/terraform/README.md.
+  nat_gateway_count = var.nat_gateway_count
 
   # The SSM bastion reaches the private RDS on 5432 for the one-time DB load.
   # Its SG joins the postgres SG's allow-list only when the bastion is
@@ -49,6 +51,8 @@ module "ecs" {
 
   project     = local.project
   environment = var.environment
+  # Finite log retention so task logs do not accumulate forever (cost baseline).
+  log_retention_days = var.log_retention_days
 }
 
 module "ecr" {
@@ -66,8 +70,12 @@ module "rds" {
   project     = local.project
   environment = var.environment
 
-  instance_class        = "db.t4g.small"
-  multi_az              = true
+  # Cost-baseline: a small single-AZ instance. Backups (21-day retention),
+  # deletion protection, and the final snapshot are independent of Multi-AZ and
+  # stay on; only the standby replica is dropped. Set rds_multi_az = true (and
+  # scale rds_instance_class as needed) to restore failover HA.
+  instance_class        = var.rds_instance_class
+  multi_az              = var.rds_multi_az
   deletion_protection   = true
   skip_final_snapshot   = false
   backup_retention_days = 21
@@ -76,18 +84,25 @@ module "rds" {
   security_group_id  = module.vpc.postgres_security_group_id
 }
 
-# Message broker for the embedding-job queue. The queue carries no consumer yet,
-# so prod ships the single-instance foundation; promoting to CLUSTER_MULTI_AZ on
-# an mq.m5/mq.m7g instance for HA is a deliberate follow-up once the worker fleet
-# drives production traffic (deployment_mode and host_instance_type are inputs).
+# Message broker for the embedding-job queue. Cost-baseline: a single-instance
+# mq.t3.micro broker. Promoting to CLUSTER_MULTI_AZ for HA is a deliberate
+# follow-up once the worker fleet drives production traffic — set
+# mq_deployment_mode = CLUSTER_MULTI_AZ together with an mq.m5/mq.m7g
+# mq_host_instance_type (mq.t3 does not support clustering). A SINGLE_INSTANCE
+# broker takes exactly one subnet; a CLUSTER_MULTI_AZ broker takes exactly two
+# (Amazon MQ rejects any other count), so the cluster path slices the private
+# subnets to the first two regardless of az_count.
 module "rabbitmq" {
   source = "../modules/rabbitmq"
 
   project     = local.project
   environment = var.environment
 
+  deployment_mode    = var.mq_deployment_mode
+  host_instance_type = var.mq_host_instance_type
+
   vpc_id                     = module.vpc.vpc_id
-  subnet_ids                 = [module.vpc.private_subnet_ids[0]]
+  subnet_ids                 = var.mq_deployment_mode == "CLUSTER_MULTI_AZ" ? slice(module.vpc.private_subnet_ids, 0, 2) : [module.vpc.private_subnet_ids[0]]
   allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
 }
 
@@ -279,7 +294,13 @@ module "backend" {
 
   image          = "${module.ecr.repository_urls["backend"]}:latest"
   container_port = 8080
-  desired_count  = 2
+  # Right-sized serving task. The backend terminates live AssemblyAI/transcription
+  # WebSocket sessions, so it stays on on-demand FARGATE (no SPOT) — a SPOT
+  # reclamation would drop in-flight live sessions. Raise backend_desired_count
+  # for serving redundancy.
+  cpu           = var.backend_cpu
+  memory        = var.backend_memory
+  desired_count = var.backend_desired_count
 
   environment_variables = {
     PORT = "8080"
@@ -326,7 +347,17 @@ module "frontend" {
 
   image          = "${module.ecr.repository_urls["frontend"]}:latest"
   container_port = 3000
-  desired_count  = 2
+  # Right-sized stateless frontend. It holds no long-lived connection state, so
+  # it runs on FARGATE_SPOT (cheaper, interruptible) when frontend_use_spot is
+  # true; set it false to pin to on-demand FARGATE.
+  cpu           = var.frontend_cpu
+  memory        = var.frontend_memory
+  desired_count = var.frontend_desired_count
+  capacity_provider_strategy = var.frontend_use_spot ? [{
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+    base              = 0
+  }] : []
 
   environment_variables = {
     PORT                    = "3000"

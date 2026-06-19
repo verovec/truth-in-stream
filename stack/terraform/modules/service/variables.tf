@@ -41,6 +41,24 @@ variable "desired_count" {
   description = "Number of running tasks."
 }
 
+variable "capacity_provider_strategy" {
+  type = list(object({
+    capacity_provider = string
+    weight            = number
+    base              = optional(number, 0)
+  }))
+  default     = []
+  description = "Optional Fargate capacity-provider strategy for the service. Empty (the default) inherits the cluster's default strategy (on-demand FARGATE). Set it to place a service on FARGATE_SPOT (cheaper, interruptible) — suitable only for stateless, interruption-tolerant services; keep long-lived-connection services on FARGATE. capacity_provider_strategy and launch_type are mutually exclusive on aws_ecs_service, so the module sets neither when this is empty and only this when it is set."
+
+  validation {
+    condition = alltrue([
+      for s in var.capacity_provider_strategy :
+      contains(["FARGATE", "FARGATE_SPOT"], s.capacity_provider)
+    ])
+    error_message = "capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
 variable "environment_variables" {
   type        = map(string)
   default     = {}

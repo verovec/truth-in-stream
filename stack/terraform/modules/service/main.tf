@@ -102,8 +102,18 @@ resource "aws_ecs_service" "main" {
   task_definition = aws_ecs_task_definition.main.arn
   desired_count   = var.desired_count
 
-  # No launch_type: inherits the cluster default capacity provider strategy
-  # (FARGATE base, Spot above it).
+  # No launch_type. With no capacity_provider_strategy the service inherits the
+  # cluster default (on-demand FARGATE). A caller can pass a strategy to place a
+  # stateless service on FARGATE_SPOT; launch_type and capacity_provider_strategy
+  # are mutually exclusive, so neither is set in the default case.
+  dynamic "capacity_provider_strategy" {
+    for_each = var.capacity_provider_strategy
+    content {
+      capacity_provider = capacity_provider_strategy.value.capacity_provider
+      weight            = capacity_provider_strategy.value.weight
+      base              = capacity_provider_strategy.value.base
+    }
+  }
 
   network_configuration {
     subnets          = var.subnet_ids
