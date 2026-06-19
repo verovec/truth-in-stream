@@ -1,3 +1,9 @@
+variable "include_acm" {
+  type        = bool
+  default     = false
+  description = "Include the ACM certificate actions (modules/acm). Set true in the env that requests the public TLS certificate (prod); the DNS validation records live in the main account, so no Route53 action is added here."
+}
+
 variable "include_rds" {
   type        = bool
   default     = false

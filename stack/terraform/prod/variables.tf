@@ -14,6 +14,12 @@ variable "environment" {
   }
 }
 
+variable "domain_name" {
+  type        = string
+  default     = "jeminforme.fr"
+  description = "Apex domain the public TLS certificate covers. The authoritative hosted zone lives in the main account; this env only requests the certificate."
+}
+
 variable "media_cors_allowed_origins" {
   type        = list(string)
   default     = ["*"]

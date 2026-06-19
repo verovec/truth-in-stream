@@ -10,6 +10,23 @@ locals {
   rds_dsn_secret_arn = one(module.rds[*].dsn_secret_arn)
 }
 
+# Public TLS certificate for jeminforme.fr (apex + www), requested in us-east-1
+# for CloudFront. DNS validation records are NOT created here: the authoritative
+# hosted zone is in the main account (040265332493), so the main-account
+# terraform root (VER-140) creates the records by reading this module's
+# domain_validation_options output. The certificate is PENDING_VALIDATION until
+# those records exist; that does not block this plan.
+module "acm" {
+  source = "../modules/acm"
+
+  providers = {
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  domain_name               = var.domain_name
+  subject_alternative_names = ["www.${var.domain_name}"]
+}
+
 module "vpc" {
   source = "../modules/vpc"
 
@@ -400,6 +417,7 @@ resource "aws_ssm_parameter" "tasks_security_group_id" {
 module "apply_permissions" {
   source = "../modules/apply-permissions"
 
+  include_acm             = true
   include_rds             = var.enable_rds
   include_scheduled_tasks = var.enable_wiki_sync || var.enable_db_backup
 }

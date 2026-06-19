@@ -43,6 +43,16 @@ output "db_backup_bucket" {
   description = "Database backup bucket; export as DB_BACKUP_BUCKET for make backup/restore."
 }
 
+output "certificate_arn" {
+  value       = module.acm.certificate_arn
+  description = "ARN of the us-east-1 ACM certificate for the domain. Consumed by CloudFront and referenced by the main-account DNS root."
+}
+
+output "certificate_domain_validation_options" {
+  value       = module.acm.domain_validation_options
+  description = "DNS validation records (CNAME name/type/value per domain) the main-account hosted zone must create for the certificate to reach ISSUED. No secret; safe to publish for the main-account root to consume."
+}
+
 output "apply_required_actions" {
   value       = module.apply_permissions.actions
   description = "IAM actions the apply role must hold to provision this environment. The pre-apply guard reads this from the plan and fails before apply if the role is missing any."

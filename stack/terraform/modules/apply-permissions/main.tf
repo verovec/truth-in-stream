@@ -180,6 +180,17 @@ locals {
     "s3:GetBucketPublicAccessBlock",
   ]
 
+  # Public TLS certificate (modules/acm): the certificate fronting CloudFront,
+  # requested in us-east-1 with DNS validation. The DNS records live in the main
+  # account, so no Route53 action is needed here.
+  acm_actions = [
+    "acm:RequestCertificate",
+    "acm:DeleteCertificate",
+    "acm:DescribeCertificate",
+    "acm:AddTagsToCertificate",
+    "acm:ListTagsForCertificate",
+  ]
+
   # Message broker (modules/rabbitmq): Amazon MQ for RabbitMQ.
   mq_actions = [
     "mq:CreateBroker",
@@ -277,6 +288,7 @@ locals {
     local.secrets_actions,
     local.s3_actions,
     local.mq_actions,
+    var.include_acm ? local.acm_actions : [],
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],
