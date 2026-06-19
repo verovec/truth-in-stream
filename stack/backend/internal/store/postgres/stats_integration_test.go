@@ -2,25 +2,68 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embedjob"
 	"github.com/verovec/truth-in-stream/backend/internal/stats"
 )
 
-// statEmbedder is a deterministic stand-in for the document embedder: every
-// text gets the same fixed unit vector, so a stored stat passage is the nearest
-// neighbor of a query embedded the same way. This proves the wiring (ingest ->
-// store -> SearchWiki) without a network embedding call; the rendering and
-// adapter are unit-tested separately.
-type statEmbedder struct{ vec []float32 }
+// capturePublisher records every published embedding-job body so a test can
+// replay them into the store, standing in for the worker fleet without a broker.
+type capturePublisher struct {
+	mu   sync.Mutex
+	jobs []embedjob.Job
+}
 
-func (e statEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	for i := range texts {
-		out[i] = e.vec
+func (p *capturePublisher) Publish(_ context.Context, body []byte, _ uint8) error {
+	var j embedjob.Job
+	if err := json.Unmarshal(body, &j); err != nil {
+		return err
 	}
-	return out, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jobs = append(p.jobs, j)
+	return nil
+}
+
+func (p *capturePublisher) published() []embedjob.Job {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]embedjob.Job(nil), p.jobs...)
+}
+
+// ingestStatsEmbedded runs the stats producer against the store (upsert
+// un-embedded + publish), then writes a fixed vector for every published job
+// through SetLiveChunkEmbeddings - exactly what the embedworker fleet does - so
+// the stat passages become searchable. It returns the number of passages
+// upserted. The fixed vector makes every stat passage the nearest neighbor of a
+// query embedded the same way, which is enough to prove retrieval through the
+// SearchWiki path without a network embedding call.
+func ingestStatsEmbedded(ctx context.Context, t *testing.T, store *Store, src stats.Source, vec []float32) int {
+	t.Helper()
+	pub := &capturePublisher{}
+	st, err := stats.Run(ctx, nil, src, store, pub, stats.Config{MaxPriority: 10, EnqueueBatchSize: 64})
+	if err != nil {
+		t.Fatalf("stats.Run: %v", err)
+	}
+	jobs := pub.published()
+	chunks := make([]domain.WikiChunk, len(jobs))
+	for i, j := range jobs {
+		chunks[i] = domain.WikiChunk{PageID: j.PageID, ChunkIndex: j.ChunkIndex, Content: j.Content, Embedding: vec}
+	}
+	if len(chunks) > 0 {
+		matched, err := store.SetLiveChunkEmbeddings(ctx, chunks)
+		if err != nil {
+			t.Fatalf("SetLiveChunkEmbeddings: %v", err)
+		}
+		if matched != len(chunks) {
+			t.Fatalf("fleet write matched %d of %d published jobs", matched, len(chunks))
+		}
+	}
+	return st.Upserted
 }
 
 func statDatapoints() []domain.Datapoint {
@@ -40,28 +83,24 @@ func statDatapoints() []domain.Datapoint {
 	return []domain.Datapoint{a, b}
 }
 
-// TestStatsRunStoresAndRetrievesThroughWikiPath is the card's end-to-end DB
-// proof: rendered statistical passages land in the evidence corpus, are
-// retrieved through the same SearchWiki path the fact-check verifier uses, and a
-// re-run does not duplicate a datapoint+period.
-func TestStatsRunStoresAndRetrievesThroughWikiPath(t *testing.T) {
+// TestStatsRunStoresAndRetrievesThroughFleet is the card's end-to-end DB proof:
+// the producer upserts rendered statistical passages un-embedded and enqueues one
+// embed job each, the fleet write fills the vectors, the passages are retrieved
+// through the same SearchWiki path the fact-check verifier uses, and a re-run does
+// not duplicate a datapoint+period nor republish an already-embedded passage.
+func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	emb := statEmbedder{vec: fullEmbedding()}
+	vec := fullEmbedding()
 	dps := statDatapoints()
 
-	n, err := stats.Run(ctx, fixedSource{dps}, emb, store, 0)
-	if err != nil {
-		t.Fatalf("stats.Run: %v", err)
-	}
+	n := ingestStatsEmbedded(ctx, t, store, fixedSource{dps}, vec)
 	if n != 2 {
-		t.Fatalf("stats.Run wrote %d, want 2", n)
+		t.Fatalf("producer upserted %d, want 2", n)
 	}
 
-	// Retrieval through the existing evidence path returns the rendered
-	// passages, nearest first (same fixed vector -> distance 0).
-	hits, err := store.SearchWiki(ctx, fullEmbedding(), 5)
+	hits, err := store.SearchWiki(ctx, vec, 5)
 	if err != nil {
 		t.Fatalf("SearchWiki: %v", err)
 	}
@@ -70,8 +109,6 @@ func TestStatsRunStoresAndRetrievesThroughWikiPath(t *testing.T) {
 	}
 	var found2022 bool
 	for _, h := range hits {
-		// A retrieved passage carries figure, period, geography, and a
-		// resolvable source URL.
 		if h.URL == "" {
 			t.Errorf("hit missing source url: %+v", h)
 		}
@@ -83,7 +120,6 @@ func TestStatsRunStoresAndRetrievesThroughWikiPath(t *testing.T) {
 				found2022 = true
 			}
 		}
-		// score = 1 - distance must clear the evidence floor (0.6).
 		if score := 1 - float64(h.Distance); score < 0.6 {
 			t.Errorf("hit score %.3f below evidence floor 0.6", score)
 		}
@@ -92,10 +128,14 @@ func TestStatsRunStoresAndRetrievesThroughWikiPath(t *testing.T) {
 		t.Errorf("did not retrieve the 2022 France permits passage; hits=%v", hits)
 	}
 
-	// Re-run identical data: idempotent, no duplicate rows for the same
-	// datapoint+period.
-	if _, err := stats.Run(ctx, fixedSource{dps}, emb, store, 0); err != nil {
+	// Re-run identical data: idempotent (no duplicate rows) and the producer
+	// republishes nothing already embedded.
+	pub := &capturePublisher{}
+	if _, err := stats.Run(ctx, nil, fixedSource{dps}, store, pub, stats.Config{MaxPriority: 10, EnqueueBatchSize: 64}); err != nil {
 		t.Fatalf("re-run: %v", err)
+	}
+	if got := len(pub.published()); got != 0 {
+		t.Errorf("re-run republished %d already-embedded jobs, want 0", got)
 	}
 	var count int64
 	if err := store.pool.QueryRow(
@@ -107,7 +147,7 @@ func TestStatsRunStoresAndRetrievesThroughWikiPath(t *testing.T) {
 	if count != 1 {
 		t.Errorf("after re-run distinct stat pages = %d, want 1 (one series, no duplicates)", count)
 	}
-	rerunHits, err := store.SearchWiki(ctx, fullEmbedding(), 10)
+	rerunHits, err := store.SearchWiki(ctx, vec, 10)
 	if err != nil {
 		t.Fatalf("SearchWiki after re-run: %v", err)
 	}
@@ -125,7 +165,6 @@ func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	// One genuine Wikipedia chunk and the two statistical passages.
 	wiki := domain.WikiChunk{
 		PageID: 42, ChunkIndex: 0, Title: "Immigration", URL: "https://w/imm",
 		RevisionID: 1, Corpus: "simplewiki", Content: "Immigration is the movement of people.",
@@ -134,11 +173,8 @@ func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 	if err := store.UpsertEmbeddedChunk(ctx, wiki); err != nil {
 		t.Fatalf("seed wiki chunk: %v", err)
 	}
-	if _, err := stats.Run(ctx, fixedSource{statDatapoints()}, statEmbedder{vec: fullEmbedding()}, store, 0); err != nil {
-		t.Fatalf("stats.Run: %v", err)
-	}
+	ingestStatsEmbedded(ctx, t, store, fixedSource{statDatapoints()}, fullEmbedding())
 
-	// CountPages counts the wiki page only, not the statistical series.
 	pages, err := store.CountPages(ctx)
 	if err != nil {
 		t.Fatalf("CountPages: %v", err)
@@ -147,7 +183,6 @@ func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 		t.Errorf("CountPages = %d, want 1 (statistical series excluded)", pages)
 	}
 
-	// The clustering scan returns the wiki chunk only.
 	embedded, err := store.EmbeddedChunks(ctx, domain.WikiCursor{}, 100)
 	if err != nil {
 		t.Fatalf("EmbeddedChunks: %v", err)
@@ -159,7 +194,6 @@ func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 		t.Errorf("clustering scan returned page %d, want the wiki page 42", embedded[0].PageID)
 	}
 
-	// SearchWiki still retrieves the statistics (the feature is intact).
 	hits, err := store.SearchWiki(ctx, fullEmbedding(), 10)
 	if err != nil {
 		t.Fatalf("SearchWiki: %v", err)
@@ -218,13 +252,9 @@ func TestNationalStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 		t.Fatalf("seed wiki chunk: %v", err)
 	}
 
-	emb := statEmbedder{vec: fullEmbedding()}
-	if _, err := stats.Run(ctx, statSource{corpus: domain.InteriorStatCorpus, dps: nationalDatapoints()[:1]}, emb, store, 0); err != nil {
-		t.Fatalf("interior run: %v", err)
-	}
-	if _, err := stats.Run(ctx, statSource{corpus: domain.INSEEStatCorpus, dps: nationalDatapoints()[1:]}, emb, store, 0); err != nil {
-		t.Fatalf("insee run: %v", err)
-	}
+	vec := fullEmbedding()
+	ingestStatsEmbedded(ctx, t, store, statSource{corpus: domain.InteriorStatCorpus, dps: nationalDatapoints()[:1]}, vec)
+	ingestStatsEmbedded(ctx, t, store, statSource{corpus: domain.INSEEStatCorpus, dps: nationalDatapoints()[1:]}, vec)
 
 	pages, err := store.CountPages(ctx)
 	if err != nil {

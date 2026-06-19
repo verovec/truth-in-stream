@@ -171,6 +171,49 @@ services:
       # this one-shot is in "tools". `make wiki-populate` brings up a worker
       # explicitly before publishing; scale it with `make fleet-up EMBEDWORKER_REPLICAS=N`.
 
+  # Opt-in (profile "tools"), not part of `docker compose up`: fetches the curated
+  # statistical series (Eurostat + interior-ministry CSV + INSEE), renders each
+  # observation into a French evidence passage, upserts it un-embedded into the live
+  # wiki_chunks table, and publishes one prioritized embedding job per passage to the
+  # broker. The same embedworker fleet that drains the Wikipedia queue fills these
+  # vectors in place (bulk-into-live, no inline Voyage call), so a broad sweep scales
+  # by worker replica count rather than one synchronous embed burst. It is the
+  # producer half of the pipeline, so it needs the broker and at least one worker
+  # running - `make stats-ingest` brings up a single worker if none is, or reuses a
+  # fleet from `make fleet-up EMBEDWORKER_REPLICAS=N`. Idempotent on the (series,
+  # period) provenance key; a re-run refreshes the figures and republishes only the
+  # still-unembedded passages.
+  stats-ingest:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/statsingest"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      # Embedding now happens in the fleet, so this producer needs no Voyage key -
+      # only the broker. The worker fleet holds the embedding key.
+      RABBITMQ_URL: "amqp://app:dev@rabbitmq:5672/"
+      # Producer tuning (optional; empty uses the binary defaults).
+      # WIKI_ENQUEUE_BATCH_SIZE is the publish page size, shared with wiki-populate.
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+      # Optional INSEE BDM key; the curated INSEE series resolve without it.
+      INSEE_API_KEY: "${INSEE_API_KEY:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      # No depends_on the worker fleet, for the same reason wiki-populate omits it:
+      # the producer publishes to the durable broker and the fleet drains it. `make
+      # stats-ingest` brings up a worker explicitly before publishing.
+
   # Object storage for uploaded video. Local mirror of the production S3 bucket;
   # the backend talks to both through one storage abstraction selected by config
   # (STORAGE_* env). Console on :9001, S3 API on :9000.

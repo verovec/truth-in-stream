@@ -293,6 +293,64 @@ func (s *Store) CountUnembeddedLive(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// CountUnembeddedLiveCorpus counts the un-embedded live chunks of one corpus.
+// The stats bulk-into-live producer reports it as the pending total before
+// publishing; scoping to the corpus keeps a stats run from counting another
+// corpus's pending chunks (the wiki and crawl corpora share wiki_chunks).
+func (s *Store) CountUnembeddedLiveCorpus(ctx context.Context, corpus string) (int64, error) {
+	var n int64
+	if err := s.pool.QueryRow(
+		ctx, "SELECT count(*)::bigint FROM wiki_chunks WHERE embedding IS NULL AND corpus = $1", corpus,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres: count un-embedded live for corpus %q: %w", corpus, err)
+	}
+	return n, nil
+}
+
+// UnembeddedLiveCorpus returns up to limit un-embedded live chunks of one corpus
+// in keyset order after cur, the corpus-scoped twin of UnembeddedLive the stats
+// producer uses so a run enqueues only its own source's pending passages. The
+// statistical corpora carry no clustering importance, so it reads no importance
+// column; the producer falls back to its static kind/length heuristic for
+// priority. The embedding IS NULL filter is the resume cursor: a re-run pages
+// from the start and the fleet has already filled the embedded prefix, so only
+// the still-pending chunks come back.
+func (s *Store) UnembeddedLiveCorpus(ctx context.Context, corpus string, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+	if limit < 1 || limit > math.MaxInt32 {
+		return nil, fmt.Errorf("postgres: unembedded live corpus: limit %d out of range", limit)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind
+		FROM wiki_chunks
+		WHERE embedding IS NULL
+		  AND corpus = $1
+		  AND (page_id, chunk_index) > ($2::bigint, $3::integer)
+		ORDER BY page_id, chunk_index
+		LIMIT $4`, corpus, cur.PageID, cur.ChunkIndex, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: unembedded live corpus %q: %w", corpus, err)
+	}
+	defer rows.Close()
+	out := []domain.WikiChunk{}
+	for rows.Next() {
+		var (
+			c    domain.WikiChunk
+			idx  int32
+			kind string
+		)
+		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind); err != nil {
+			return nil, fmt.Errorf("postgres: scan live corpus chunk: %w", err)
+		}
+		c.ChunkIndex = int(idx)
+		c.Kind = domain.WikiChunkKind(kind)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: read live corpus chunks: %w", err)
+	}
+	return out, nil
+}
+
 // LiveRemaining counts the live chunks still to embed and their content
 // characters, feeding the bulk-into-live dry-run cost estimate. It mirrors
 // StagingRemaining for the live corpus.

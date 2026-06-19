@@ -60,7 +60,7 @@ lambda-workerlifecycle: ## Build the worker-lifecycle lambda bootstrap (provided
 ingest: ## Embed and upsert the seed claims (needs DATABASE_URL and EMBEDDING_API_KEY)
 	go run ./cmd/ingest
 
-stats-ingest: ## Fetch the curated statistical series (Eurostat + interior-ministry CSV + INSEE), render French passages, embed and upsert into the evidence corpus; idempotent, sources need no key (optional INSEE_API_KEY from env; needs DATABASE_URL and EMBEDDING_API_KEY)
+stats-ingest: ## Fetch the curated statistical series (Eurostat + interior-ministry CSV + INSEE), render French passages, upsert them un-embedded into the live corpus, and publish one embed job per passage to the broker; the embedworker fleet fills the vectors in place (bulk-into-live, no inline Voyage call). Idempotent, sources need no key (optional INSEE_API_KEY from env; needs DATABASE_URL and RABBITMQ_URL)
 	go run ./cmd/statsingest
 
 seed: ## Load the local dataset (claims, wiki, sample videos) offline from the committed cache (DATABASE_URL; no API key)
