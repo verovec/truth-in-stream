@@ -28,7 +28,7 @@ const analysing = (id: string, start: number, text: string): LiveStatement => ({
 });
 
 describe("deriveFactChecks", () => {
-  test("emits one entry per match on a checked statement, carrying the origin", () => {
+  test("emits one entry per concrete-verdict match on a checked statement, carrying the origin", () => {
     const entries = deriveFactChecks([
       checked("s1", 4, "the earth is round", {
         matches: [
@@ -40,10 +40,11 @@ describe("deriveFactChecks", () => {
             similarity: 0.92,
           },
           {
-            kind: "evidence",
-            excerpt: "Earth is the third planet",
-            article: { title: "Earth", url: "https://en.wikipedia.org/wiki/Earth" },
-            similarity: 0.81,
+            kind: "claim",
+            claim: "Earth is flat",
+            verdict: "contradicts",
+            sources: [{ title: "NASA", url: "https://nasa.gov" }],
+            similarity: 0.88,
           },
         ],
       }),
@@ -57,7 +58,7 @@ describe("deriveFactChecks", () => {
       snippet: "the earth is round",
       match: { kind: "claim", verdict: "corroborates" },
     });
-    expect(entries[1].kind === "match" && entries[1].match.kind).toBe("evidence");
+    expect(entries[1]).toMatchObject({ kind: "match", match: { kind: "claim", verdict: "contradicts" } });
     // Keys are unique so React can list them without index collisions.
     expect(new Set(entries.map((e) => e.key)).size).toBe(2);
   });
@@ -92,7 +93,7 @@ describe("deriveFactChecks", () => {
     const claim = (claim: string): SegmentMatch => ({
       kind: "claim",
       claim,
-      verdict: "unclear",
+      verdict: "corroborates",
       sources: [],
       similarity: 0.5,
     });
@@ -102,6 +103,116 @@ describe("deriveFactChecks", () => {
     ]);
 
     expect(entries.map((e) => e.statementId)).toEqual(["s1", "s2", "s2"]);
+  });
+
+  test("drops unclear curated matches, keeping only concrete-verdict claim matches", () => {
+    // The curated path's unverifiable-equivalent is an "unclear" claim match -
+    // neither corroborates nor contradicts. The section keeps only concrete
+    // stances, matching the verify path's credible/disputed intent.
+    const entries = deriveFactChecks([
+      checked("s1", 0, "mixed bag", {
+        matches: [
+          {
+            kind: "claim",
+            claim: "corroborated",
+            verdict: "corroborates",
+            sources: [],
+            similarity: 0.9,
+          },
+          {
+            kind: "claim",
+            claim: "could not be resolved",
+            verdict: "unclear",
+            sources: [],
+            similarity: 0.7,
+          },
+          {
+            kind: "claim",
+            claim: "contradicted",
+            verdict: "contradicts",
+            sources: [],
+            similarity: 0.8,
+          },
+        ],
+      }),
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(
+      entries.map((e) => (e.kind === "match" && e.match.kind === "claim" ? e.match.verdict : null)),
+    ).toEqual(["corroborates", "contradicts"]);
+  });
+
+  test("drops evidence matches from the section: they carry no concrete verdict", () => {
+    // An evidence match is supporting context with no verdict, the curated
+    // analogue of "no concrete result"; the section shows only verdicts.
+    const entries = deriveFactChecks([
+      checked("s1", 0, "earth", {
+        matches: [
+          {
+            kind: "claim",
+            claim: "Earth is an oblate spheroid",
+            verdict: "corroborates",
+            sources: [],
+            similarity: 0.92,
+          },
+          {
+            kind: "evidence",
+            excerpt: "Earth is the third planet",
+            article: { title: "Earth", url: "https://en.wikipedia.org/wiki/Earth" },
+            similarity: 0.81,
+          },
+        ],
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "match", match: { kind: "claim" } });
+  });
+
+  test("excludes an unverifiable claim verdict from the verify path", () => {
+    const claims: Record<string, LiveClaim[]> = {
+      s1: [
+        {
+          claimId: "c0",
+          text: "grounded as credible",
+          status: "verified",
+          verdict: "credible",
+        },
+        {
+          claimId: "c1",
+          text: "could not be grounded",
+          status: "verified",
+          verdict: "unverifiable",
+        },
+        {
+          claimId: "c2",
+          text: "grounded as disputed",
+          status: "verified",
+          verdict: "disputed",
+        },
+      ],
+    };
+    const entries = deriveFactChecks(
+      [analysing("s1", 0, "three verified claims, one unverifiable")],
+      (id) => claims[id] ?? [],
+    );
+
+    expect(entries.map((e) => (e.kind === "claim" ? e.claim.verdict : null))).toEqual([
+      "credible",
+      "disputed",
+    ]);
+  });
+
+  test("excludes a verified claim that arrived without a verdict", () => {
+    // A degenerate verified frame can omit the verdict; with no concrete result
+    // it must not surface in the section.
+    const entries = deriveFactChecks(
+      [analysing("s1", 0, "verified but verdict-less")],
+      () => [{ claimId: "c0", text: "no verdict", status: "verified" }],
+    );
+
+    expect(entries).toEqual([]);
   });
 
   test("derives one entry per verified claim on the verify path", () => {
