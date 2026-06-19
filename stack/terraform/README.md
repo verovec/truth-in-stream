@@ -57,6 +57,56 @@ a fresh `terraform apply` has no dangling references. Prod defaults
 provisioned. Flip `enable_rds = true` in dev (via `terraform.tfvars` or `-var`)
 to bring the managed database online there.
 
+### Application secrets
+
+Two kinds of secret live in Secrets Manager, owned by two different sources, and
+they must stay separate:
+
+- **Terraform-owned**: the database DSN (`rds` module) and the Amazon MQ URL
+  (`rabbitmq` module). Terraform generates these values and writes them, so they
+  must **never** be pushed from `.env` — doing so would fight terraform and cause
+  drift. The task definitions consume them by ARN (`DATABASE_URL`, `RABBITMQ_URL`).
+- **App-key secrets**: the application's runtime API keys and operator auth.
+  Terraform declares the *containers* (the `aws_secretsmanager_secret` resources
+  in `prod/main.tf`) with **no value**; the operator fills the values from the
+  local `.env` out of band. The execution-role policy (the `iam` module's
+  `secret_arns`) grants `secretsmanager:GetSecretValue` on exactly these ARNs, so
+  the ECS execution role injects them at task start. The default AWS-managed key
+  (`aws/secretsmanager`) needs no `kms:Decrypt` grant; add one only if a
+  customer-managed key is ever configured.
+
+`make push-secrets ENV=prod` (`scripts/push-secrets.sh`) reads the local `.env`
+and writes the **allowlisted** keys to `truth-in-stream/<env>/app/<kebab-name>`
+idempotently — it checks each secret with `describe-secret`, then `create-secret`
+if absent or `put-secret-value` if present, so a re-run never duplicates. A value
+never passes through a shell argument, a log, or stdout: each is written to a
+`chmod 600` temp file and handed to the CLI as `--secret-string file://…`, then
+shredded. An unset or empty key is skipped, not pushed empty. Prod asks you to
+type `prod` to confirm.
+
+The allowlist (the set the script pushes; it is the source of truth and must
+match the `aws_secretsmanager_secret` resources and task-definition `secrets`
+wiring in `prod/main.tf`):
+
+| `.env` key | secret name (`…/<env>/app/`) | consumed by | required? |
+|---|---|---|---|
+| `EMBEDDING_API_KEY` | `embedding-api-key` | backend, embed/crawl workers, wiki-sync | yes |
+| `TRANSCRIPTION_API_KEY` | `transcription-api-key` | backend | yes |
+| `AUTH_EMAIL` | `auth-email` | backend | yes |
+| `AUTH_PASSWORD_HASH` | `auth-password-hash` | backend | yes |
+| `SESSION_SECRET` | `session-secret` | backend | yes |
+| `DEEPSEEK_API_KEY` | `deepseek-api-key` | backend (LLM gate) | optional |
+| `GEMINI_API_KEY` | `gemini-api-key` | backend (LLM gate) | optional |
+| `SLACK_WEBHOOK_URL` | `slack-webhook-url` | backend (run alerts) | optional |
+
+`DATABASE_URL` and `RABBITMQ_URL` are intentionally **absent** from this list:
+they are terraform-owned. To add a new app secret, add the `.env` key to the
+`ALLOWLIST` in `scripts/push-secrets.sh`, declare the matching
+`aws_secretsmanager_secret` resource in `prod/main.tf`, append its ARN to the
+`iam` module's `secret_arns`, and wire it into the consuming task def's
+`secrets` — all in the same change, so the allowlist and the task defs never
+drift apart.
+
 ### Ingestion monitoring (`enable_metrics_lambda`)
 
 Amazon MQ for RabbitMQ exposes almost nothing per queue, so there is no native
@@ -190,13 +240,14 @@ and a full public-access block on every run. Override `STATE_BUCKET`,
    - `AWS_REGION`, e.g. `eu-west-3`.
    - `DEPLOY_PROJECT`, the project slug, e.g. `truth-in-stream`.
    - `DEPLOY_ENVIRONMENT`, `dev` or `prod`.
-3. Put values into the app secrets (containers are created empty on purpose;
-   tasks cannot start without them):
+3. Put values into the app secrets (terraform creates the containers empty on
+   purpose; tasks cannot start without them). One command pushes the allowlisted
+   keys from the local `.env` — see [Application secrets](#application-secrets)
+   below. Pass the environment you are deploying (`ENV` defaults to `prod`, so a
+   **dev** first-deploy must pass `ENV=dev`); a prod push asks you to type `prod`
+   to confirm:
    ```sh
-   aws secretsmanager put-secret-value \
-     --secret-id truth-in-stream/dev/app/embedding-api-key --secret-string '<key>'
-   aws secretsmanager put-secret-value \
-     --secret-id truth-in-stream/dev/app/transcription-api-key --secret-string '<key>'
+   make push-secrets ENV=dev    # or ENV=prod for production
    ```
 4. Dispatch the per-service deploy workflows (`deploy-backend`,
    `deploy-frontend`, `deploy-workers`, `deploy-backup`) from the Actions tab.
