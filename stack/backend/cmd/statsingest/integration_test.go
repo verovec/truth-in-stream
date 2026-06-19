@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,24 +248,282 @@ func TestStatsIngestRoutesThroughFleetEndToEnd(t *testing.T) {
 	}
 }
 
+// tokenEmbedder maps text to an L2-normalized bag-of-tokens vector so two
+// passages that share words have graded (not orthogonal) cosine similarity,
+// unlike orthogonalEmbedder. The retrieval-floor test needs this: macro passages
+// must plausibly compete with a labor query in the same ANN search, so a trivial
+// one-hot embedding would not prove the floor holds.
+type tokenEmbedder struct{}
+
+func (tokenEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i] = tokenVector(text)
+	}
+	return out, nil
+}
+
+func tokenVector(text string) []float32 {
+	v := make([]float32, domain.EmbeddingDim)
+	for _, tok := range strings.Fields(strings.ToLower(text)) {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(tok))
+		v[h.Sum32()%domain.EmbeddingDim]++
+	}
+	var norm float64
+	for _, x := range v {
+		norm += float64(x) * float64(x)
+	}
+	if norm == 0 {
+		return v
+	}
+	inv := float32(1 / math.Sqrt(norm))
+	for j := range v {
+		v[j] *= inv
+	}
+	return v
+}
+
+// laborSeries yields a France employment-rate-of-immigrants observation under
+// the INSEE labor corpus - the immigration-employment passage the floor test
+// must keep retrievable when macro corpora are present.
+func laborSeries() domain.Datapoint {
+	return domain.Datapoint{
+		SourceName: "Insee",
+		SourceURL:  "https://bdm.insee.fr/series/sdmx/data/SERIES_BDM/010755676",
+		Dataset:    "EEC",
+		SeriesKey:  "010755676",
+		Title:      "Taux d'emploi des immigrés",
+		Geography:  "France",
+		Dimensions: []string{"immigrés", "15 à 64 ans"},
+		Period:     "2023",
+		Figure:     59.8,
+		Unit:       "%",
+	}
+}
+
+// macroFiller yields n distinct macro datapoints (GDP, prices, salaried
+// employment) under the INSEE macro corpora, so the floor test can flood the
+// index with macro passages and prove the labor passage still surfaces.
+func macroFiller(n int) []domain.Datapoint {
+	titles := []string{
+		"Produit intérieur brut en volume",
+		"Indice des prix à la consommation",
+		"Emploi salarié dans la construction",
+		"Investissement des entreprises",
+		"Dépense de consommation des ménages",
+	}
+	out := make([]domain.Datapoint, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, domain.Datapoint{
+			SourceName: "Insee",
+			SourceURL:  "https://bdm.insee.fr/series/sdmx/data/SERIES_BDM/macro",
+			Dataset:    "CNT-2020-PIB-EQB-RF",
+			SeriesKey:  fmt.Sprintf("macro-%d", i),
+			Title:      titles[i%len(titles)],
+			Geography:  "France",
+			Period:     "2023",
+			Figure:     float64(100 + i),
+			Unit:       "indice",
+		})
+	}
+	return out
+}
+
 func waitUnembedded(ctx context.Context, t *testing.T, store *postgres.Store, want int64) {
+	t.Helper()
+	waitUnembeddedCorpus(ctx, t, store, domain.StatCorpus, want)
+}
+
+func waitUnembeddedCorpus(ctx context.Context, t *testing.T, store *postgres.Store, corpus string, want int64) {
 	t.Helper()
 	deadline := time.NewTimer(15 * time.Second)
 	defer deadline.Stop()
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		n, err := store.CountUnembeddedLiveCorpus(ctx, domain.StatCorpus)
+		n, err := store.CountUnembeddedLiveCorpus(ctx, corpus)
 		if err != nil {
-			t.Fatalf("CountUnembeddedLiveCorpus: %v", err)
+			t.Fatalf("CountUnembeddedLiveCorpus(%s): %v", corpus, err)
 		}
 		if n == want {
 			return
 		}
 		select {
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for %d un-embedded chunks, still %d", want, n)
+			t.Fatalf("timed out waiting for %d un-embedded chunks in %s, still %d", want, corpus, n)
 		case <-tick.C:
 		}
 	}
 }
+
+// runFleet drains the in-memory queue through a real embedworker until every
+// listed corpus is fully embedded, then stops the worker.
+func runFleet(ctx context.Context, t *testing.T, store *postgres.Store, mq *memQueue, emb embedjob.Embedder, corpora ...string) {
+	t.Helper()
+	runCtx, cancel := context.WithCancel(ctx)
+	worker := embedjob.NewWorker(emb, store, mq, mq,
+		slog.New(slog.DiscardHandler), embedjob.Config{Concurrency: 2, MaxAttempts: 3, KnownVersions: []string{"1"}})
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx) }()
+	for _, c := range corpora {
+		waitUnembeddedCorpus(ctx, t, store, c, 0)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("worker Run: %v", err)
+	}
+}
+
+// inseeDataflowSource is a fixed stand-in for insee.NewDataflowSource that yields
+// the discovered member datapoints under the unemployment theme corpus, so the
+// e2e drives the real producer/fleet without a network call.
+type inseeDataflowSource struct{ dps []domain.Datapoint }
+
+func (s inseeDataflowSource) Datapoints(context.Context) ([]domain.Datapoint, error) {
+	return s.dps, nil
+}
+func (inseeDataflowSource) Corpus() string { return domain.INSEEUnemploymentCorpus }
+
+func chomageQuarterly() []domain.Datapoint {
+	base := domain.Datapoint{
+		SourceName: "Insee",
+		SourceURL:  "https://bdm.insee.fr/series/sdmx/data/SERIES_BDM/001688526",
+		Dataset:    "CHOMAGE-TRIM-NATIONAL",
+		SeriesKey:  "001688526",
+		Title:      "Taux de chômage au sens du BIT",
+		Geography:  "France métropolitaine",
+		Dimensions: []string{"ensemble", "15 ans ou plus"},
+		Unit:       "%",
+	}
+	a, b := base, base
+	a.Period, a.Figure = "2024-Q1", 7.5
+	b.Period, b.Figure = "2024-Q2", 7.3
+	return []domain.Datapoint{a, b}
+}
+
+// TestINSEEDataflowRoutesThroughFleetEndToEnd is the INSEE-source acceptance
+// check: the discovered quarterly unemployment passages upsert un-embedded under
+// the unemployment theme corpus, the fleet drains and embeds them, and a passage
+// is retrievable via SearchWiki. Re-running the ingest does not duplicate
+// passages - the (IDBANK, period) provenance key upserts in place.
+func TestINSEEDataflowRoutesThroughFleetEndToEnd(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := t.Context()
+	resetSchema(ctx, t, dsn)
+
+	store, err := postgres.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+
+	dps := chomageQuarterly()
+	src := inseeDataflowSource{dps: dps}
+
+	mq := &memQueue{}
+	st, err := stats.Run(ctx, slog.New(slog.DiscardHandler), src, store, mq,
+		stats.Config{MaxPriority: 10, EnqueueBatchSize: 64})
+	if err != nil {
+		t.Fatalf("stats.Run: %v", err)
+	}
+	if st.Upserted != 2 || st.Published != 2 {
+		t.Fatalf("first run upserted %d published %d, want 2/2", st.Upserted, st.Published)
+	}
+	runFleet(ctx, t, store, mq, orthogonalEmbedder{}, domain.INSEEUnemploymentCorpus)
+
+	want := stats.RenderFrench(dps[0])
+	got, err := store.SearchWiki(ctx, vectorFor(want), 1)
+	if err != nil {
+		t.Fatalf("SearchWiki: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != want {
+		t.Fatalf("nearest = %+v; want the embedded Q1 passage %q", got, want)
+	}
+
+	// Idempotent re-run: the same provenance keys upsert in place, the row count
+	// is unchanged, and nothing is re-published (every passage is already embedded).
+	mq2 := &memQueue{}
+	st2, err := stats.Run(ctx, slog.New(slog.DiscardHandler), src, store, mq2,
+		stats.Config{MaxPriority: 10, EnqueueBatchSize: 64})
+	if err != nil {
+		t.Fatalf("re-run stats.Run: %v", err)
+	}
+	if st2.Upserted != 2 {
+		t.Fatalf("re-run upserted %d, want 2 (same rows)", st2.Upserted)
+	}
+	if st2.Published != 0 {
+		t.Fatalf("re-run published %d, want 0 (all already embedded)", st2.Published)
+	}
+	total, err := store.CountUnembeddedLiveCorpus(ctx, domain.INSEEUnemploymentCorpus)
+	if err != nil {
+		t.Fatalf("CountUnembeddedLiveCorpus: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("un-embedded after idempotent re-run = %d, want 0 (no new rows)", total)
+	}
+}
+
+// TestLaborPassageSurvivesMacroCorpora is the retrieval-floor acceptance check:
+// with a labor (immigration-employment) passage and a flood of macro passages
+// all embedded into the shared index, a labor query still retrieves the labor
+// passage as its top hit. Macro corpora must not crowd out immigration-employment
+// retrieval. It uses a graded bag-of-tokens embedding so the macro passages
+// genuinely compete in the ANN search rather than being trivially orthogonal.
+func TestLaborPassageSurvivesMacroCorpora(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := t.Context()
+	resetSchema(ctx, t, dsn)
+
+	store, err := postgres.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+
+	labor := laborSeries()
+	mq := &memQueue{}
+
+	// Labor passage under the INSEE labor corpus.
+	if _, err := stats.Run(ctx, slog.New(slog.DiscardHandler),
+		statCorpusSource{corpus: domain.INSEEStatCorpus, dps: []domain.Datapoint{labor}},
+		store, mq, stats.Config{MaxPriority: 10, EnqueueBatchSize: 64}); err != nil {
+		t.Fatalf("labor run: %v", err)
+	}
+	// A flood of macro passages under the GDP theme corpus.
+	macro := macroFiller(200)
+	if _, err := stats.Run(ctx, slog.New(slog.DiscardHandler),
+		statCorpusSource{corpus: domain.INSEEGDPCorpus, dps: macro},
+		store, mq, stats.Config{MaxPriority: 10, EnqueueBatchSize: 64}); err != nil {
+		t.Fatalf("macro run: %v", err)
+	}
+
+	runFleet(ctx, t, store, mq, tokenEmbedder{}, domain.INSEEStatCorpus, domain.INSEEGDPCorpus)
+
+	// Query the way a verifier would: embed a labor-themed question and confirm
+	// the labor passage is the nearest neighbor despite 200 macro passages.
+	query := tokenVector("taux d'emploi des immigrés en France")
+	got, err := store.SearchWiki(ctx, query, 3)
+	if err != nil {
+		t.Fatalf("SearchWiki: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no evidence returned for the labor query")
+	}
+	wantLabor := stats.RenderFrench(labor)
+	if got[0].Content != wantLabor {
+		t.Fatalf("top hit is not the labor passage despite macro corpora:\n top = %q\nwant = %q", got[0].Content, wantLabor)
+	}
+}
+
+// statCorpusSource yields fixed datapoints under an arbitrary statistical corpus
+// so a floor test can populate distinct corpora through the real foundation.
+type statCorpusSource struct {
+	corpus string
+	dps    []domain.Datapoint
+}
+
+func (s statCorpusSource) Datapoints(context.Context) ([]domain.Datapoint, error) {
+	return s.dps, nil
+}
+func (s statCorpusSource) Corpus() string { return s.corpus }

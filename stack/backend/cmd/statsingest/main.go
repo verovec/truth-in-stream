@@ -86,10 +86,18 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = client.Close() }()
 
+	// The INSEE BDM client is shared across the hand-curated labor series and the
+	// dataflow-discovery sweep so successive requests to the same host are spaced
+	// by one rate-limiter; each dataflow expands its live members off the SDMX
+	// catalog at ingest time and writes under its own economic-theme corpus.
+	inseeClient := insee.New(insee.ConfigFromEnv())
 	sources := []stats.Source{
 		eurostat.NewSource(eurostat.New(eurostat.Config{}), nil),
 		interieur.NewSource(interieur.New(interieur.Config{}), nil),
-		insee.NewSource(insee.New(insee.ConfigFromEnv()), nil),
+		insee.NewSource(inseeClient, nil),
+	}
+	for _, df := range insee.CuratedDataflows {
+		sources = append(sources, insee.NewDataflowSource(inseeClient, df))
 	}
 
 	statsCfg := stats.Config{

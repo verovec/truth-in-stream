@@ -62,6 +62,22 @@ func TestRenderFrenchDeterministic(t *testing.T) {
 			want: "Indicateur en Allemagne en mars 2022 : 1 000 personnes. Source : Eurostat (jeu de données DS), https://ec.europa.eu/eurostat/z",
 		},
 		{
+			name: "quarterly INSEE period rendered in French prose",
+			dp: domain.Datapoint{
+				SourceName: "Insee",
+				SourceURL:  "https://bdm.insee.fr/series/sdmx/data/SERIES_BDM/001688526",
+				Dataset:    "CHOMAGE-TRIM-NATIONAL",
+				SeriesKey:  "001688526",
+				Title:      "Taux de chômage au sens du BIT",
+				Geography:  "France métropolitaine",
+				Dimensions: []string{"ensemble", "15 ans ou plus"},
+				Period:     "2024-Q1",
+				Figure:     7.5,
+				Unit:       "%",
+			},
+			want: "Taux de chômage au sens du BIT (ensemble, 15 ans ou plus) en France métropolitaine au 1er trimestre 2024 : 7,5 %. Source : Insee (jeu de données CHOMAGE-TRIM-NATIONAL), https://bdm.insee.fr/series/sdmx/data/SERIES_BDM/001688526",
+		},
+		{
 			name: "empty dimensions dropped",
 			dp: domain.Datapoint{
 				SourceName: "Eurostat",

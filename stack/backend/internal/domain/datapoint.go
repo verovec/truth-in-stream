@@ -69,13 +69,34 @@ const (
 	INSEEStatCorpus    = "insee"
 )
 
+// The INSEE BDM dataflow-discovery sweep registers each curated economic theme
+// under its own corpus label so a retrieved macro passage's theme (and not just
+// its publisher) is identifiable, and so the broad sweep can be reasoned about
+// per theme. Each is excluded from the wiki-only maintenance reads exactly like
+// every other statistical corpus. The generic INSEEStatCorpus stays for the
+// hand-curated labor series the dataflow sweep does not supersede.
+const (
+	INSEEUnemploymentCorpus = "insee-chomage"
+	INSEEEmploymentCorpus   = "insee-emploi"
+	INSEEPricesCorpus       = "insee-prix"
+	INSEEGDPCorpus          = "insee-pib"
+)
+
 // statCorpora is every statistical corpus label sharing the wiki_chunks table.
 // The wiki-maintenance reads (CountWikiPages, EmbeddedWikiChunks) exclude all of
 // them so statistical evidence never skews the encyclopedic page-count guard or
 // the clustering scan. Adding a statistical source means adding its label here.
 // It is unexported so callers cannot mutate the exclusion set in place; reach it
 // through StatCorpora or IsStatCorpus.
-var statCorpora = []string{StatCorpus, InteriorStatCorpus, INSEEStatCorpus}
+var statCorpora = []string{
+	StatCorpus,
+	InteriorStatCorpus,
+	INSEEStatCorpus,
+	INSEEUnemploymentCorpus,
+	INSEEEmploymentCorpus,
+	INSEEPricesCorpus,
+	INSEEGDPCorpus,
+}
 
 // StatCorpora returns a fresh copy of the statistical corpus labels to exclude
 // from the wiki-only maintenance reads. It copies so a caller (e.g. an append)
@@ -123,33 +144,48 @@ func (d Datapoint) SeriesPageID() int64 {
 	return int64(h.Sum64() & uint64(statPageIDMask))
 }
 
+// quarterSlotBase offsets a quarter (1..4) into a slot range (21..24) disjoint
+// from the 1..12 month slots, so a quarterly and a monthly observation can never
+// collide on one (page_id, chunk_index) row and the four quarters sort within
+// the year after the months.
+const quarterSlotBase = 20
+
 // PeriodChunkIndex derives a stable, non-negative chunk index from the period
 // so one series' periods occupy distinct rows under the same page id. It is the
 // chunk-index half of the (page_id, chunk_index) provenance key. Errors on a
 // period it cannot map to a small index, so a malformed period fails loudly
 // rather than colliding two observations onto one row.
 func (d Datapoint) PeriodChunkIndex() (int, error) {
-	// Periods are "YYYY" or "YYYY-MM"; encode as year*100+month so two periods
-	// never collide and the index stays small and ordered.
-	year, month, err := parsePeriod(d.Period)
+	// Periods are "YYYY", "YYYY-MM", or the INSEE BDM quarterly "YYYY-Qn"; encode
+	// as year*100+slot where slot is 0 (annual), 1..12 (month), or 21..24
+	// (quarter) so two periods never collide and the index stays small and ordered.
+	year, slot, err := parsePeriod(d.Period)
 	if err != nil {
 		return 0, err
 	}
-	return year*100 + month, nil
+	return year*100 + slot, nil
 }
 
-// parsePeriod splits a Eurostat period into a year and a month in [0,12], where
-// 0 means an annual period with no month component.
-func parsePeriod(period string) (year, month int, err error) {
-	parts := strings.SplitN(period, "-", 2)
-	year, err = strconv.Atoi(parts[0])
-	if err != nil || year < 0 || year > 9999 {
+// parsePeriod splits a statistical period into a year and a within-year slot.
+// The slot is 0 for an annual period, the month [1,12] for "YYYY-MM", or
+// quarterSlotBase+quarter [21,24] for the INSEE BDM quarterly "YYYY-Qn".
+func parsePeriod(period string) (year, slot int, err error) {
+	head, tail, hasTail := strings.Cut(period, "-")
+	year, err = strconv.Atoi(head)
+	if err != nil || year < 1 || year > 9999 {
 		return 0, 0, fmt.Errorf("domain: datapoint period %q: invalid year", period)
 	}
-	if len(parts) == 1 {
+	if !hasTail {
 		return year, 0, nil
 	}
-	month, err = strconv.Atoi(parts[1])
+	if q, ok := strings.CutPrefix(tail, "Q"); ok {
+		quarter, err := strconv.Atoi(q)
+		if err != nil || quarter < 1 || quarter > 4 {
+			return 0, 0, fmt.Errorf("domain: datapoint period %q: invalid quarter", period)
+		}
+		return year, quarterSlotBase + quarter, nil
+	}
+	month, err := strconv.Atoi(tail)
 	if err != nil || month < 1 || month > 12 {
 		return 0, 0, fmt.Errorf("domain: datapoint period %q: invalid month", period)
 	}

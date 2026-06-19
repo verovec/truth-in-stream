@@ -1,5 +1,41 @@
 package insee
 
+import "github.com/verovec/truth-in-stream/backend/internal/domain"
+
+// CuratedDataflows is the curated set of INSEE BDM economic dataflows the broad
+// sweep discovers and expands at ingest time. Each names a real catalog dataflow
+// (verified 2026-06-19 against bdm.insee.fr/series/sdmx/dataflow/, agency FR1,
+// version 1.0) and a distinct economic-theme corpus; the member IDBANKs are NOT
+// listed here - discovery reads them off the live SDMX catalog so the sweep never
+// invents an identifier. The themes cover the labor-market and macro indicators
+// the French immigration-employment debate turns on (unemployment, employment,
+// consumer prices, GDP).
+//
+// IPC-2015 (consumer prices) carries thousands of series and a no-key expansion
+// can exceed the BDM payload limit, so it is intentionally excluded from the
+// default sweep until a dimension-keyed expansion lands; the prices corpus label
+// is registered for when it does.
+var CuratedDataflows = []DataflowSpec{
+	{
+		ID:        "CHOMAGE-TRIM-NATIONAL",
+		Corpus:    domain.INSEEUnemploymentCorpus,
+		Theme:     "Chômage au sens du BIT",
+		StartYear: "2014",
+	},
+	{
+		ID:        "EMPLOI-SALARIE-TRIM-NATIONAL",
+		Corpus:    domain.INSEEEmploymentCorpus,
+		Theme:     "Emploi salarié par secteur",
+		StartYear: "2014",
+	},
+	{
+		ID:        "CNT-2020-PIB-EQB-RF",
+		Corpus:    domain.INSEEGDPCorpus,
+		Theme:     "Produit intérieur brut",
+		StartYear: "2014",
+	},
+}
+
 // Spec is one curated INSEE BDM series to ingest: the IDBANK identifier, a
 // dataset slug, the period window, and the French labels the rendered passage
 // carries. A spec maps a single, fully-resolved series so the SDMX query is
@@ -20,6 +56,10 @@ type Spec struct {
 	// Unit is the French unit label rendered after the figure (these are rates,
 	// so "%").
 	Unit string
+	// Geography is the French geographic-scope label rendered into the passage,
+	// e.g. "France métropolitaine"; empty falls back to defaultGeography so a
+	// hand-curated national series stays "France".
+	Geography string
 	// StartYear bounds the query (inclusive) via startPeriod, e.g. "2014"; empty
 	// fetches the full available history.
 	StartYear string
