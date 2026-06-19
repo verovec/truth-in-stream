@@ -698,6 +698,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Analysis cache. Local mirror of the production managed Valkey cache, selected by
+  # config (REDIS_URL). go-redis speaks a wire protocol both Redis OSS and Valkey
+  # serve, so the same backend client drives this dev container and prod Valkey with
+  # no engine-specific code. redis:8-alpine is the current stable line; the cache is
+  # an ephemeral replay accelerator (TTL-bounded, rebuildable by re-analysis), so it
+  # runs with no persistent volume - a restart simply starts cold.
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./stack/backend
@@ -707,6 +723,12 @@ services:
       PORT: "8080"
       # Dev-only credentials; production DATABASE_URL comes from Secrets Manager.
       DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+      # Analysis cache. Points at the local redis container; production sets this to
+      # the managed Valkey endpoint. Empty disables caching and the backend falls back
+      # to the no-op cache, behaving exactly as it does today. ANALYSIS_CACHE_TTL
+      # bounds the cached-analysis lifetime (default 24h). REDIS_URL is never logged.
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      ANALYSIS_CACHE_TTL: "${ANALYSIS_CACHE_TTL:-}"
       # AssemblyAI API key from the root .env (see .env.example); the sole
       # transcriber (Universal-3 Pro streaming) for both live streams and
       # imported videos. The server fails fast if unset. Optional tuning falls
@@ -869,6 +891,8 @@ services:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   frontend:
     image: node:24-alpine

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 
 	"github.com/verovec/truth-in-stream/backend/internal/auth"
@@ -34,6 +35,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/source/websearch"
 	"github.com/verovec/truth-in-stream/backend/internal/stance"
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
+	"github.com/verovec/truth-in-stream/backend/internal/store"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/transcribe"
 	"github.com/verovec/truth-in-stream/backend/internal/verify"
@@ -144,12 +146,27 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-
-	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	analysisCacheCfg, err := config.LoadAnalysisCache()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+
+	pgStore, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pgStore.Close()
+
+	// The cache is wired and lifecycle-managed here; the snapshot capture and
+	// cache-hit replay that consume it arrive in the dependent cards, so for now it
+	// is only constructed (and degraded-or-enabled at startup) but not yet read.
+	analysisCache, closeCache := buildAnalysisCache(ctx, analysisCacheCfg, logger)
+	defer func() {
+		if err := closeCache(); err != nil {
+			logger.WarnContext(ctx, "closing analysis cache", slog.Any("err", err))
+		}
+	}()
+	_ = analysisCache
 
 	mediaStore, err := storage.New(ctx, storage.Config{
 		Endpoint:       storageCfg.Endpoint,
@@ -166,14 +183,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	videoSvc, err := service.NewVideoService(store, mediaStore, service.VideoConfig{
+	videoSvc, err := service.NewVideoService(pgStore, mediaStore, service.VideoConfig{
 		MaxUploadBytes: uploadCfg.MaxBytes,
 	})
 	if err != nil {
 		return err
 	}
 
-	youtubeSvc, err := service.NewIngestService(store, mediaStore, ytdlp.New(ytdlp.Config{
+	youtubeSvc, err := service.NewIngestService(pgStore, mediaStore, ytdlp.New(ytdlp.Config{
 		BinaryPath: youtubeCfg.BinaryPath,
 		MaxBytes:   youtubeCfg.MaxBytes,
 	}), service.IngestConfig{
@@ -184,10 +201,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	health := service.NewHealthChecker(store)
+	health := service.NewHealthChecker(pgStore)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
-	matcher, err := service.NewMatcher(embedder, store, store, service.MatcherConfig{
+	matcher, err := service.NewMatcher(embedder, pgStore, pgStore, service.MatcherConfig{
 		TopK:                  matchCfg.TopK,
 		ScoreThreshold:        matchCfg.ScoreThreshold,
 		EvidenceTopK:          matchCfg.EvidenceTopK,
@@ -211,13 +228,13 @@ func run(logger *slog.Logger) error {
 	if verifyPathCfg.Active() {
 		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, locale, logger)
 	} else {
-		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, locale, embedder, store, store, logger)
+		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, locale, embedder, pgStore, pgStore, logger)
 	}
 	if err != nil {
 		return err
 	}
 
-	debugSearch, err := buildDebugSearch(debugSearchCfg, embedder, store)
+	debugSearch, err := buildDebugSearch(debugSearchCfg, embedder, pgStore)
 	if err != nil {
 		return err
 	}
@@ -228,11 +245,11 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
-	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, embedder, store, segmentMatcher)
+	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, embedder, pgStore, segmentMatcher)
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, store, store, locale, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, pgStore, pgStore, locale, logger)
 	if err != nil {
 		return err
 	}
@@ -323,6 +340,51 @@ func liveStream(cfg config.Transcription, locale domain.Locale, logger *slog.Log
 		Logger:      logger,
 	})
 	return transcribe.NewStreamSegmenter(client, transcribe.Options{Language: locale.LanguageCode()})
+}
+
+// buildAnalysisCache selects the analysis cache from config: a Redis/Valkey-backed
+// cache when REDIS_URL is set and the server is reachable, and the no-op cache
+// otherwise. It never fails startup - an empty URL, an unparseable URL, or an
+// unreachable server each degrade to the no-op cache with a single warning, so the
+// service behaves exactly as it does today when caching is unavailable. The
+// returned close func releases the Redis client (a no-op when caching is disabled).
+// REDIS_URL can carry a password, so it is never logged; only that caching is
+// disabled or that the ping failed is recorded.
+func buildAnalysisCache(ctx context.Context, cfg config.AnalysisCache, logger *slog.Logger) (store.AnalysisCache, func() error) {
+	noop := func() (store.AnalysisCache, func() error) {
+		return store.NoopCache{}, func() error { return nil }
+	}
+	if !cfg.Enabled() {
+		logger.InfoContext(ctx, "analysis cache disabled: REDIS_URL not set, using no-op cache")
+		return noop()
+	}
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.WarnContext(ctx, "analysis cache disabled: REDIS_URL is not a valid redis url, using no-op cache")
+		return noop()
+	}
+	// Fail fast and quietly when the cache is unreachable: a single dial attempt (no
+	// retry storm) bounded by a short timeout, so an unavailable cache degrades to
+	// no-op promptly at startup rather than retrying for seconds.
+	opts.MaxRetries = -1
+	opts.DialTimeout = 3 * time.Second
+	client := redis.NewClient(opts)
+	// The ping timeout is derived from a fresh context, not the signal-bound ctx, so
+	// a SIGINT arriving during the startup probe is not misread as an unreachable
+	// cache and silently degraded - shutdown is handled by the server loop instead.
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		// The ping error can embed the host:port from REDIS_URL, so it is summarized
+		// to its error type rather than logged verbatim - never leak any part of the
+		// connection string, which may carry a password.
+		logger.WarnContext(ctx, "analysis cache disabled: redis ping failed, using no-op cache",
+			slog.String("err_type", fmt.Sprintf("%T", err)))
+		_ = client.Close()
+		return noop()
+	}
+	logger.InfoContext(ctx, "analysis cache enabled", slog.Duration("ttl", cfg.TTL))
+	return store.NewRedisCache(client), client.Close
 }
 
 // buildVerifier wires the Keycloak access-token verifier over a JWKS keyfunc.

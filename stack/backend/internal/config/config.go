@@ -347,6 +347,46 @@ func LoadKeycloak() Keycloak {
 	}
 }
 
+// defaultAnalysisCacheTTL is how long a completed video's cached analysis lives
+// before it expires and a replay re-runs the pipeline. 24h gives an instant
+// replay for a day after a video finishes without pinning stale verdicts in the
+// cache forever. ANALYSIS_CACHE_TTL overrides it.
+const defaultAnalysisCacheTTL = 24 * time.Hour
+
+// AnalysisCache holds the analysis-cache configuration. RedisURL is the Redis or
+// Valkey connection string (a redis:// or rediss:// URL parsed by redis.ParseURL);
+// empty disables caching entirely and the service uses the no-op cache, behaving
+// exactly as it does today. TTL bounds how long a cached analysis lives. RedisURL
+// can carry a password, so it is a secret: read from the environment only, never
+// logged.
+type AnalysisCache struct {
+	RedisURL string
+	TTL      time.Duration
+}
+
+// Enabled reports whether Redis caching is configured: a non-empty RedisURL.
+// Wiring keys off this so an unset URL degrades to the no-op cache rather than
+// failing to start.
+func (a AnalysisCache) Enabled() bool {
+	return a.RedisURL != ""
+}
+
+// LoadAnalysisCache reads the analysis-cache configuration from the environment.
+// REDIS_URL is optional: when unset the cache is disabled and the no-op store is
+// used. ANALYSIS_CACHE_TTL overrides the 24h default and must be positive (a
+// non-positive TTL has no valid expiry window). REDIS_URL carries a secret and is
+// never logged.
+func LoadAnalysisCache() (AnalysisCache, error) {
+	ttl, err := positiveDurationEnv("ANALYSIS_CACHE_TTL", defaultAnalysisCacheTTL)
+	if err != nil {
+		return AnalysisCache{}, err
+	}
+	return AnalysisCache{
+		RedisURL: os.Getenv("REDIS_URL"),
+		TTL:      ttl,
+	}, nil
+}
+
 // Match defaults: top-5 keeps responses focused, 0.5 cosine similarity drops
 // unrelated text without hiding genuine paraphrases, 4 concurrent embed calls
 // stay well inside the Voyage rate limits, and 10s bounds a single segment
