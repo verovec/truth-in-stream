@@ -28,7 +28,7 @@ You own the work end to end: card -> implementation -> e2e verification -> PR ->
 8. **Check the card's boxes** you completed (edit the description, `- [ ]` to `- [X]`).
 9. **Rebase on `main`, then open the PR.** Rebase the branch onto latest `origin/main` (independent card) or its dependency branch (stacked card) so the merge is conflict-free, then open the PR with a summary and a test plan that references the card and the e2e evidence. Set the card to In Review and link the PR in a comment. The push and PR are the delivery hand-off; they do not need separate approval.
 10. **Auto-merge on green CI, then Done.** See "Auto-merge on green CI" below: watch the PR's checks, merge to `main` when they pass, and move the card to Done. Then stop, or continue to a dependent card (see below).
-11. **Post the epic recap if this was the epic's last card.** After the card is Done, check whether it completed its parent epic; if so, post the epic digest (see "Epic close-out digest" below).
+11. **Post the epic recap and check docs if this was the epic's last card.** After the card is Done, check whether it completed its parent epic; if so, post the epic digest and run the documentation check (see "Epic close-out digest" below).
 
 ## Auto-merge on green CI
 
@@ -60,6 +60,11 @@ step you already perform, so there is no separate cron.
 4. **Exactly one session posts it.** The all-children-Done check is true for only the delivery that
    lands the final card, so parallel sessions do not double-post. If unsure whether it already ran,
    confirm no prior recap exists before posting.
+5. **Check the docs once, here.** Epic close-out is the only documentation-sync trigger - it rides
+   this step, never individual cards. Consult the `maintaining-documentation` skill: run its
+   decision gate and, if it passes, update the README and `docs/` to match what the epic shipped, or
+   open a follow-up card scoped to that doc update. If the gate fails, record "no doc change needed"
+   and move on.
 
 ## Continue to a dependent card (optional, stacked)
 

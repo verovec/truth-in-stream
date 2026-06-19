@@ -62,6 +62,7 @@ changes. A card is not Done until its review passes.
 - Running/adding tests, finishing a card, CI checks -> testing skill.
 - Terraform / AWS -> terraform skill.
 - Writing/reviewing code -> coding-philosophy skill.
+- Updating the README / `docs/` after an epic completes -> maintaining-documentation skill.
 - Linear cards / roadmap -> roadmap-linear skill; commands `/roadmap`, `/card`.
 - Implementing a card / parallel card delivery -> delivering-linear-cards skill; commands `/pick`, `/reconcile`.
 - Integrating a new pattern -> research-patterns skill; command `/research`.
