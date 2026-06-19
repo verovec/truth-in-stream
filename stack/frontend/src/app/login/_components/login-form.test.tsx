@@ -1,134 +1,35 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, test, vi } from "vitest";
-import { push, refresh, replace } from "@/test/next-navigation-mock";
+import { describe, expect, test } from "vitest";
 import { LoginForm } from "./login-form";
 
-vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
-
-beforeEach(() => {
-  push.mockClear();
-  replace.mockClear();
-  refresh.mockClear();
-});
-
-function mockFetch(response: Partial<Response>) {
-  const fn = vi.fn().mockResolvedValue(response);
-  vi.stubGlobal("fetch", fn);
-  return fn;
-}
-
 describe("LoginForm", () => {
-  test("renders email, password, and submit controls", () => {
-    mockFetch({ ok: true });
+  test("renders a Keycloak sign-in link to the server-side login route", () => {
     render(<LoginForm />);
 
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: /sign in with keycloak/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/auth/login");
   });
 
-  test("posts credentials and navigates to the analyser on success", async () => {
-    const fetchMock = mockFetch({ ok: true });
-    const user = userEvent.setup();
-    render(<LoginForm />);
-
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "hunter2hunter2");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: "op@example.com",
-        password: "hunter2hunter2",
-      }),
-    });
-    expect(replace).toHaveBeenCalledWith("/app");
-    expect(push).not.toHaveBeenCalled();
-    expect(refresh).toHaveBeenCalled();
-  });
-
-  test("shows one generic error on rejected credentials", async () => {
-    mockFetch({ ok: false, status: 401 });
-    const user = userEvent.setup();
-    render(<LoginForm />);
-
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "wrong");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
-
-    expect(await screen.findByText("Invalid credentials")).toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
-  });
-
-  test("does not blame the credentials for a server error", async () => {
-    mockFetch({ ok: false, status: 500 });
-    const user = userEvent.setup();
-    render(<LoginForm />);
-
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "correct-password");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
+  test("surfaces an expired-session error when login could not start", () => {
+    render(<LoginForm error="session" />);
 
     expect(
-      await screen.findByText("Something went wrong. Try again."),
+      screen.getByText(/sign-in session expired/i),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Invalid credentials")).not.toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
   });
 
-  test("tells the operator to wait when the backend rate-limits", async () => {
-    mockFetch({ ok: false, status: 429 });
-    const user = userEvent.setup();
-    render(<LoginForm />);
-
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "correct-password");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
+  test("surfaces a generic error when the token exchange failed", () => {
+    render(<LoginForm error="exchange" />);
 
     expect(
-      await screen.findByText("Too many attempts. Wait a moment and try again."),
+      screen.getByText(/could not be completed/i),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Invalid credentials")).not.toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
   });
 
-  test("reports a connectivity problem, not bad credentials, when the request never completes", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    const user = userEvent.setup();
+  test("shows no error banner on a clean load", () => {
     render(<LoginForm />);
 
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "whatever");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
-
-    expect(
-      await screen.findByText("Cannot reach the server. Try again."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Invalid credentials")).not.toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
-  });
-
-  test("disables the submit button while the request is in flight", async () => {
-    let resolve: (value: { ok: boolean }) => void = () => {};
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockReturnValue(
-        new Promise((r) => {
-          resolve = r;
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    render(<LoginForm />);
-
-    await user.type(screen.getByLabelText(/email/i), "op@example.com");
-    await user.type(screen.getByLabelText(/password/i), "hunter2hunter2");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
-
-    expect(screen.getByRole("button", { name: /signing in/i })).toBeDisabled();
-    resolve({ ok: true });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

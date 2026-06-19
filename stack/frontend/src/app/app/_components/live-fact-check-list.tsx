@@ -55,7 +55,7 @@ export const LiveFactCheckList = memo(function LiveFactCheckList({
               <span className="font-mono text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">
                 {formatTime(entry.start)}
               </span>
-              <span className="line-clamp-1 text-xs italic text-zinc-500 dark:text-zinc-400">
+              <span className="line-clamp-1 min-w-0 flex-1 text-xs italic text-zinc-500 dark:text-zinc-400">
                 {entry.snippet}
               </span>
             </button>

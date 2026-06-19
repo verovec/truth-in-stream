@@ -7,6 +7,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The server-only guard throws when imported in a client environment; in
+      // the test runner there is no real server/client split, so resolve it to
+      // its no-op server build to let server modules import cleanly under test.
+      "server-only": fileURLToPath(
+        new URL("./node_modules/server-only/empty.js", import.meta.url),
+      ),
     },
   },
   test: {
