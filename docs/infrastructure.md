@@ -22,5 +22,6 @@ pre-apply IAM guard, and the `enable_rds` toggle.
 - **Cloud ingestion** (producer Fargate task, worker fleet, versioned queue, SSM bastion drain) is
   documented in [`ingestion-pipeline.md`](ingestion-pipeline.md#10-cloud--production-pipeline).
 
-Deploys stay human-gated: a production deploy is always a deliberate `workflow_dispatch` of
-`deploy.yml`. See [Development -> CI](development.md#ci).
+Deploys stay human-gated: a production deploy is always a deliberate `workflow_dispatch` of a
+per-service deploy workflow (`deploy-backend`, `deploy-frontend`, `deploy-workers`). See
+[Development -> CI](development.md#ci).

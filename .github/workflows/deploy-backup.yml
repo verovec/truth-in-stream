@@ -1,0 +1,18 @@
+name: deploy-backup
+# Human-gated build+push of the database-backup image (no roll step): the
+# scheduled backup Fargate task (enable_db_backup) pulls the new image on its
+# next run. workflow_dispatch only: an auto-merge to main never deploys. Relevant
+# paths (stack/backend/Dockerfile.backup, stack/backend/** that it copies,
+# .github/workflows/_deploy.yml, .github/workflows/deploy-backup.yml) are
+# documented here for the operator who decides when to dispatch.
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      service: backup
+      ecr_repo: backup
+      context: stack/backend
+      dockerfile: stack/backend/Dockerfile.backup
+      deploy_mode: image-only

@@ -1,0 +1,251 @@
+name: _deploy
+# Reusable deploy workflow: build one service's image, scan it, push it to ECR
+# with an immutable tag, then roll the service out and wait for it to stabilise.
+# Called by the thin per-service workflows (deploy-backend, deploy-frontend,
+# deploy-workers); never triggered directly. AWS auth is GitHub OIDC role
+# assumption (no static keys, no secrets in YAML); the role ARN, region, ECR
+# repos, and ECS cluster/service names come from repo/environment variables.
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: Logical service name; the ECR repo is ${PROJECT}-${ENVIRONMENT}-${ecr_repo}.
+        type: string
+        required: true
+      ecr_repo:
+        description: ECR repository suffix to push to (e.g. backend, frontend).
+        type: string
+        required: true
+      context:
+        description: Docker build context.
+        type: string
+        required: true
+      dockerfile:
+        description: Dockerfile path.
+        type: string
+        required: true
+      deploy_mode:
+        description: >-
+          rolling  -> aws ecs update-service --force-new-deployment + wait
+                      services-stable (backend, frontend; circuit breaker
+                      rolls back on failure when enabled on the service).
+          ingestion -> roll the worker fleet + producers that share the backend
+                      image via scripts/deploy-ingestion.sh (EXTERNAL-controller
+                      services owned by the worker-lifecycle lambda; a direct
+                      update-service would bypass the lambda and drop in-flight
+                      work).
+          image-only -> build, scan, and push the image with no roll step, for
+                      images a scheduled task picks up on its next run (backup).
+        type: string
+        required: true
+      ecs_service:
+        description: >-
+          ECS service name to roll (rolling mode only). Ignored in ingestion
+          mode, which derives the worker/producer set from the deploy script.
+        type: string
+        required: false
+        default: ""
+      migrate_dockerfile:
+        description: >-
+          rolling mode only: when set, build and push the migration image from
+          this Dockerfile and run the migrate ECS task before rolling the
+          service (backend). Empty = no migration step (frontend).
+        type: string
+        required: false
+        default: ""
+      queue_versions:
+        description: >-
+          ingestion mode only: new RABBITMQ_QUEUE_VERSIONS list to roll in the
+          same deploy (comma-separated, oldest-first). Empty = no version roll.
+        type: string
+        required: false
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      PROJECT: ${{ vars.DEPLOY_PROJECT }}
+      ENVIRONMENT: ${{ vars.DEPLOY_ENVIRONMENT }}
+    steps:
+      # Fail fast with a clear message when the deploy config lives in the wrong
+      # place: these are repository VARIABLES (Settings -> Variables), not
+      # secrets. An unset vars.* expands to an empty string and would otherwise
+      # surface as a cryptic OIDC AssumeRole error several steps later.
+      - name: Check deploy configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${ROLE_ARN}" ] || missing="${missing} AWS_DEPLOY_ROLE_ARN"
+          [ -n "${AWS_REGION}" ] || missing="${missing} AWS_REGION"
+          [ -n "${PROJECT}" ] || missing="${missing} DEPLOY_PROJECT"
+          [ -n "${ENVIRONMENT}" ] || missing="${missing} DEPLOY_ENVIRONMENT"
+          if [ -n "${missing}" ]; then
+            echo "Missing repository variable(s):${missing}. Set them under Settings -> Secrets and variables -> Actions -> Variables." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+      - id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ inputs.ecr_repo }}
+          # type=sha yields the immutable sha-<7-char> tag the rolling/ingestion
+          # deploy pins to. type=raw latest is the moving tag, only moved on the
+          # default branch so a dispatch from a side branch never overwrites the
+          # production-tracked latest. Keep the sha tag in sync with the IMAGE
+          # computed in the deploy steps below.
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      # Build once locally so the image can be scanned before it is published.
+      - name: Build image (no push)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          tags: ${{ inputs.service }}:scan
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,scope=${{ inputs.service }},mode=max
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ inputs.service }}:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+      # Cache from the previous step makes this a near-instant re-tag and push.
+      - name: Build and push image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,scope=${{ inputs.service }},mode=max
+          provenance: true
+          sbom: true
+      # Build the migration image (backend only), scan it, then push it tagged
+      # latest so the migrate task definition picks it up. Same context as the
+      # service image; scanned before push like the service image so a HIGH/
+      # CRITICAL CVE blocks the deploy.
+      - name: Build migration image (no push)
+        if: inputs.deploy_mode == 'rolling' && inputs.migrate_dockerfile != ''
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.migrate_dockerfile }}
+          load: true
+          tags: ${{ inputs.service }}-migrate:scan
+          cache-from: type=gha,scope=${{ inputs.service }}-migrate
+          cache-to: type=gha,scope=${{ inputs.service }}-migrate,mode=max
+      - name: Scan migration image for vulnerabilities
+        if: inputs.deploy_mode == 'rolling' && inputs.migrate_dockerfile != ''
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ inputs.service }}-migrate:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+      - name: Build and push migration image
+        if: inputs.deploy_mode == 'rolling' && inputs.migrate_dockerfile != ''
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.migrate_dockerfile }}
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-migrate:latest
+          cache-from: type=gha,scope=${{ inputs.service }}-migrate
+          cache-to: type=gha,scope=${{ inputs.service }}-migrate,mode=max
+          provenance: true
+          sbom: true
+      # Run DB migrations as a one-off Fargate task before rolling the service.
+      # The migrate task definition only exists when RDS is provisioned; with the
+      # database developed locally it is absent, so there is nothing to migrate
+      # and the step skips rather than failing the deploy.
+      - name: Run database migrations
+        if: inputs.deploy_mode == 'rolling' && inputs.migrate_dockerfile != ''
+        run: |
+          set -euo pipefail
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          if ! aws ecs describe-task-definition --task-definition "${PROJECT}-${ENVIRONMENT}-migrate" >/dev/null 2>&1; then
+            echo "No migrate task definition (enable_rds=false); skipping migrations."
+            exit 0
+          fi
+          SUBNETS=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/private-subnet-ids" --query 'Parameter.Value' --output text)
+          SG=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/tasks-security-group-id" --query 'Parameter.Value' --output text)
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${PROJECT}-${ENVIRONMENT}-migrate" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          if [ "$TASK_ARN" = "None" ] || [ -z "$TASK_ARN" ]; then
+            echo "run-task did not start a task (capacity or IAM error)"; exit 1
+          fi
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          STOP_REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
+          fi
+          echo "Migrations applied"
+      # Rolling ECS deploy for ALB-fronted services (backend, frontend). The
+      # service's deployment circuit breaker rolls back to the last good task
+      # set on failure (when enabled on the service); wait services-stable blocks
+      # until the rollout settles or fails, so a failed deploy fails this step.
+      - name: Roll service (rolling)
+        if: inputs.deploy_mode == 'rolling'
+        env:
+          ECS_SERVICE: ${{ inputs.ecs_service }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ECS_SERVICE}" ]; then
+            echo "rolling mode requires ecs_service" >&2
+            exit 1
+          fi
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          echo "Rolling ${ECS_SERVICE} on ${CLUSTER}"
+          aws ecs update-service --cluster "$CLUSTER" --service "$ECS_SERVICE" --force-new-deployment >/dev/null
+          if ! aws ecs wait services-stable --cluster "$CLUSTER" --services "$ECS_SERVICE"; then
+            echo "Service ${ECS_SERVICE} did not reach steady state (deploy failed or rolled back)" >&2
+            exit 1
+          fi
+          echo "Service ${ECS_SERVICE} stable"
+      # Ingestion deploy for the worker/producer fleet sharing the backend image.
+      # Rolls via the worker-lifecycle lambda (EXTERNAL deployment controller) so
+      # in-flight messages drain on the old version; never updates the service
+      # directly. Unprovisioned workloads are skipped, not fatal.
+      - name: Roll ingestion pipeline (workers + producers)
+        if: inputs.deploy_mode == 'ingestion'
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          QUEUE_VERSIONS: ${{ inputs.queue_versions }}
+        run: |
+          set -euo pipefail
+          # Mirror docker/metadata-action's type=sha tag (sha- + 7-char short
+          # SHA) so the fleet runs the exact image built above, not :latest.
+          IMAGE="${REGISTRY}/${PROJECT}-${ENVIRONMENT}-${{ inputs.ecr_repo }}:sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          export PROJECT ENVIRONMENT IMAGE QUEUE_VERSIONS
+          bash scripts/deploy-ingestion.sh

@@ -564,8 +564,9 @@ From the root `.env` (read by Compose). Defaults shown.
 ## 13. Cloud / production pipeline
 
 The local flow runs the producer and the fleet on one machine. In production the same binaries run as
-separate workloads against an Amazon MQ for RabbitMQ broker; the deploy is human-gated (`deploy.yml`,
-`workflow_dispatch`-only). Same images, different entry points - no separate producer or worker image.
+separate workloads against an Amazon MQ for RabbitMQ broker; the deploy is human-gated
+(`deploy-workers.yml`, `workflow_dispatch`-only). Same images, different entry points - no separate
+producer or worker image.
 
 ### Versioned queue
 
@@ -650,9 +651,9 @@ skipped individually when absent, so the deploy is safe before the crawl path is
 `scripts/deploy-ingestion.test.sh` covers the crawl producer/worker skip paths. Override `PRODUCER_SERVICES`
 / `WORKER_SERVICES` to target a subset.
 
-**Rolling the queue version** is an explicit, gated step in the same deploy: run `deploy.yml` with
-`queue_versions` set to the new oldest-first list. The version lives on the task definitions, so the roll
-never edits Terraform.
+**Rolling the queue version** is an explicit, gated step in the same deploy: run `deploy-workers.yml`
+with `queue_versions` set to the new oldest-first list. The version lives on the task definitions, so the
+roll never edits Terraform.
 
 ### Drain the cloud queue locally (SSM bastion tunnel)
 
@@ -874,5 +875,5 @@ re-embeds unchanged articles. See the design for the rationale and follow-ups:
 - Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
 - LLM classifiers: `stack/backend/internal/llm` (shared transport), `internal/evidencegate` (crawl gate), `internal/checkworthy` (live)
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
-- Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy.yml`
+- Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy-workers.yml` (calls the reusable `_deploy.yml`)
 - Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

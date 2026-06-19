@@ -175,8 +175,13 @@ and a full public-access block on every run. Override `STATE_BUCKET`,
    task and embedding worker are not created; the backend/frontend services flap
    until images exist, which is expected. Set `enable_rds = true` first if you
    want the managed database and migration path in dev.
-2. Set the GitHub repository secret `AWS_DEPLOY_ROLE_ARN` from the
-   `deploy_role_arn` output.
+2. Set the GitHub Actions **repository variables** the per-service deploy
+   workflows read (Settings, Secrets and variables, Actions, Variables tab; a
+   role ARN and these identifiers are not secrets):
+   - `AWS_DEPLOY_ROLE_ARN` from the `deploy_role_arn` output.
+   - `AWS_REGION`, e.g. `eu-west-3`.
+   - `DEPLOY_PROJECT`, the project slug, e.g. `truth-in-stream`.
+   - `DEPLOY_ENVIRONMENT`, `dev` or `prod`.
 3. Put values into the app secrets (containers are created empty on purpose;
    tasks cannot start without them):
    ```sh
@@ -185,8 +190,13 @@ and a full public-access block on every run. Override `STATE_BUCKET`,
    aws secretsmanager put-secret-value \
      --secret-id truth-in-stream/dev/app/transcription-api-key --secret-string '<key>'
    ```
-4. Run the `deploy` workflow (push to main or dispatch). It pushes images, rolls
-   the services, and — when `enable_rds = true` — applies migrations.
+4. Dispatch the per-service deploy workflows (`deploy-backend`,
+   `deploy-frontend`, `deploy-workers`, `deploy-backup`) from the Actions tab.
+   Each is `workflow_dispatch`-only and deploys one service: it builds and scans
+   the image, pushes an immutable `sha-<short>` tag plus `latest` to ECR, then
+   rolls that service and waits for stability (`deploy-backend` also builds the
+   migrate image and applies migrations when `enable_rds = true`; `deploy-backup`
+   is image-only, with no roll). There is no auto-deploy on merge.
 5. Open the `app_url` output.
 
 ## Adding HTTPS later
@@ -245,9 +255,11 @@ terraform apply
 `AWS_ROLE_ARN` repository secret to an IAM role whose trust policy is scoped to this
 repo. The state-bucket bootstrap script and the pre-apply IAM guard are unit-tested
 with a stubbed `aws` CLI in the `pr.yml` `bootstrap-script` and
-`iam-apply-guard-script` jobs. The application deploy workflow uses the separate,
-narrower `AWS_DEPLOY_ROLE_ARN` created by the `iam` module. See
-`.github/workflows/_terraform.yml` and `deploy.yml`.
+`iam-apply-guard-script` jobs. The per-service application deploy workflows use
+the separate, narrower `AWS_DEPLOY_ROLE_ARN` (a repository variable) created by
+the `iam` module. See `.github/workflows/_terraform.yml`, the reusable
+`.github/workflows/_deploy.yml`, and its per-service callers `deploy-backend.yml`,
+`deploy-frontend.yml`, and `deploy-workers.yml`.
 
 ## CI/CD roles and the pre-apply IAM guard
 
