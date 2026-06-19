@@ -73,6 +73,15 @@ Backend and frontend cards point their OIDC issuer at the table's issuer URL and
 `realm_access.roles` claim to gate `admin`-only routes; `guest` is the baseline every authenticated
 user carries.
 
+The frontend signs in through Keycloak with a server-side authorization-code + PKCE flow (the
+`/auth/login`, `/auth/callback`, `/auth/refresh`, and `/auth/logout` route handlers). The access,
+refresh, and id tokens are kept in httpOnly cookies, never reaching client JavaScript; the access
+token is promoted to an `Authorization: Bearer` header for `/api` requests at the proxy boundary, and
+the caller's role is read from the verified token server-side to reveal the `admin`-only debug toggle.
+The frontend reads `KEYCLOAK_ISSUER` and `KEYCLOAK_CLIENT_ID` (defaulting to the local realm) plus
+`NEXT_PUBLIC_APP_URL` for the redirect/post-logout URIs; over plain-HTTP local dev the OIDC client
+relaxes its HTTPS-only requirement for an `http://` issuer only.
+
 ## Local development data
 
 `make up` seeds a realistic, fully offline dataset (curated claims, a Wikipedia evidence subset, demo

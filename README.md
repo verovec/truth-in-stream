@@ -38,15 +38,17 @@ make bootstrap   # generate .env: operator email, argon2id password hash, sessio
 make up          # build and start the whole stack
 ```
 
-Then open the app and sign in with the operator credentials from `make bootstrap`:
+Then open the app and sign in through Keycloak with a local dev user (`admin` / `admin` or
+`guest` / `guest`); `admin` additionally sees the debug toggle:
 
 - Frontend -> <http://localhost:3000>
 - Backend health -> <http://localhost:8080/healthz>
+- Keycloak admin console -> <http://localhost:8081>
 
-`make up` runs, in order: Postgres, a one-shot `migrate`, a one-shot offline `seed`, then the backend
-and frontend. The bundled demo clip plays with the fact-check panel populated from seeded results -
-no provider call. To move on to live analysis, add real API keys; see
-[Configuration](docs/configuration.md).
+`make up` runs, in order: Postgres, a one-shot `migrate`, a one-shot offline `seed`, a local Keycloak
+importing a prepopulated realm, then the backend and frontend. The bundled demo clip plays with the
+fact-check panel populated from seeded results - no provider call. To move on to live analysis, add
+real API keys; see [Configuration](docs/configuration.md).
 
 ## How it works
 
