@@ -97,3 +97,8 @@ output "health_dashboard_name" {
   value       = module.observability.dashboard_name
   description = "CloudWatch dashboard summarising the key health signals (ALB, targets, ECS tasks, RDS, MQ, WAF)."
 }
+
+output "valkey_endpoint" {
+  value       = one(module.valkey[*].primary_endpoint_address)
+  description = "Primary endpoint of the Valkey analysis cache (null when the cache is gated off). Resolvable only inside the VPC; the backend reaches it as REDIS_URL. No secret."
+}

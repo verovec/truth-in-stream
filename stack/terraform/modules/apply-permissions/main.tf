@@ -258,6 +258,28 @@ locals {
     "rds:DescribeDBSubnetGroups",
   ]
 
+  # Managed Valkey cache (modules/valkey): the ElastiCache replication group and
+  # its subnet group. Only required when the env provisions the cache. The
+  # cache's security group is covered by networking_actions.
+  elasticache_actions = [
+    "elasticache:CreateReplicationGroup",
+    "elasticache:DeleteReplicationGroup",
+    "elasticache:ModifyReplicationGroup",
+    "elasticache:CreateCacheSubnetGroup",
+    "elasticache:DeleteCacheSubnetGroup",
+    "elasticache:ModifyCacheSubnetGroup",
+    "elasticache:AddTagsToResource",
+    "elasticache:RemoveTagsFromResource",
+    "elasticache:ListTagsForResource",
+    "elasticache:DescribeReplicationGroups",
+    "elasticache:DescribeCacheSubnetGroups",
+    "elasticache:DescribeCacheClusters",
+    # Provider reads the referenced parameter group (and its engine defaults) on
+    # every plan/apply to detect drift; without these the apply role 403s on read.
+    "elasticache:DescribeCacheParameterGroups",
+    "elasticache:DescribeEngineDefaultParameters",
+  ]
+
   # Scheduled Fargate tasks (modules/scheduled-task): EventBridge Scheduler.
   scheduled_task_actions = [
     "scheduler:CreateSchedule",
@@ -371,6 +393,7 @@ locals {
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
     var.include_bastion ? local.bastion_actions : [],
+    var.include_elasticache ? local.elasticache_actions : [],
     var.include_metrics_lambda ? concat(local.metrics_lambda_actions, local.dashboard_actions, local.scheduled_task_actions) : [],
     # Observability module (modules/observability): the Slack forwarder lambda
     # (metrics_lambda_actions covers the function lifecycle), the health
