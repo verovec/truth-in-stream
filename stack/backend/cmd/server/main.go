@@ -157,16 +157,21 @@ func run(logger *slog.Logger) error {
 	}
 	defer pgStore.Close()
 
-	// The cache is wired and lifecycle-managed here; the snapshot capture and
-	// cache-hit replay that consume it arrive in the dependent cards, so for now it
-	// is only constructed (and degraded-or-enabled at startup) but not yet read.
+	// The cache is wired and lifecycle-managed here; the snapshot persister tees a
+	// completed finite video's live analysis into it (the cache-hit replay that
+	// reads it back arrives in a dependent card). When caching is disabled the cache
+	// is the no-op store, so the persister is a clean no-op and the live path is
+	// unchanged.
 	analysisCache, closeCache := buildAnalysisCache(ctx, analysisCacheCfg, logger)
 	defer func() {
 		if err := closeCache(); err != nil {
 			logger.WarnContext(ctx, "closing analysis cache", slog.Any("err", err))
 		}
 	}()
-	_ = analysisCache
+	snapshotPersister, err := service.NewSnapshotPersister(analysisCache, analysisCacheCfg.TTL, logger)
+	if err != nil {
+		return err
+	}
 
 	mediaStore, err := storage.New(ctx, storage.Config{
 		Endpoint:       storageCfg.Endpoint,
@@ -275,7 +280,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, snapshotPersister, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

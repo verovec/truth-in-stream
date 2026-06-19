@@ -35,6 +35,25 @@ type LiveAnalyzer interface {
 	Run(ctx context.Context, audio <-chan []byte) (<-chan service.LiveEvent, error)
 }
 
+// AnalysisRecorder persists a finite video's completed analysis so the cache-hit
+// replay path can re-emit it without re-running the pipeline. The handler tees
+// the live event stream and, only on a genuine completion (audio reached EOF and
+// the pipeline drained, not an early disconnect), hands the ordered events here.
+// Satisfied by *service.SnapshotPersister; the handler owns neither the snapshot
+// wire format nor the cache contract. A nil recorder disables capture entirely,
+// so the live route works unchanged when snapshot persistence is not wired.
+type AnalysisRecorder interface {
+	Persist(ctx context.Context, videoID string, events []service.LiveEvent) error
+}
+
+// snapshotPersistTimeout bounds the post-session cache write. The write runs
+// after the socket has closed, on a context detached from the (now-canceled)
+// request, so it needs its own deadline: a slow or wedged cache must not pin the
+// handler goroutine indefinitely. It is generous - the user's session has already
+// ended, so this only protects against an unbounded hang, not latency the user
+// feels.
+const snapshotPersistTimeout = 10 * time.Second
+
 // liveReadLimit bounds one inbound audio frame. At 16 kHz mono 16-bit PCM a
 // second of audio is 32 KB, so 1 MiB leaves ample room for coarse client
 // chunking while rejecting a runaway frame.
@@ -57,7 +76,7 @@ const (
 
 // liveAudioBuffer bounds how many inbound frames may queue between the socket
 // reader and the analyzer. A small buffer absorbs transient analysis stalls so
-// readAudio keeps returning to conn.Read (where the library services pong
+// the audio reader keeps returning to conn.Read (where the library services pong
 // frames), which keeps the keepalive ping from mistaking backpressure for a
 // dead peer. It also bounds memory; sustained overload still applies
 // backpressure once the buffer fills. At ~100 ms/frame this is a few seconds.
@@ -214,7 +233,7 @@ type speakerScoreFrame struct {
 // (a query-param token validated here, or the session cookie bridged to a role)
 // is the frontend's job (VER-138). The gate is correct as a server-side admin
 // check regardless: nothing a client sends can flip the detail on.
-func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
+func liveHandler(analyzer LiveAnalyzer, recorder AnalysisRecorder, allowedOrigins []string, debugFactCheckEnabled bool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		debugFactCheck := debugFactCheckEnabled && middleware.IdentityFrom(r.Context()).IsAdmin()
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: allowedOrigins})
@@ -230,7 +249,8 @@ func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheckE
 
 		videoID := r.PathValue("id")
 		audio := make(chan []byte, liveAudioBuffer)
-		go readAudio(ctx, cancel, conn, audio)
+		reader := newAudioReader()
+		go reader.run(ctx, cancel, conn, audio)
 		go pingLoop(ctx, cancel, conn, livePingInterval, livePingTimeout)
 
 		events, err := analyzer.Run(ctx, audio)
@@ -240,21 +260,80 @@ func liveHandler(analyzer LiveAnalyzer, allowedOrigins []string, debugFactCheckE
 			return
 		}
 
-		writeEvents(ctx, cancel, conn, events, debugFactCheck, logger, videoID)
+		captured, drained := writeEvents(ctx, cancel, conn, events, debugFactCheck, logger, videoID)
+		// Capture the request's abort state before closing the socket: conn.Close
+		// tears down the underlying connection, which can cancel r.Context(), so
+		// reading it afterwards would misread a clean completion as an aborted one.
+		requestAborted := r.Context().Err() != nil
 		_ = conn.Close(websocket.StatusNormalClosure, "")
+
+		// Persist a snapshot only on a genuine completion, telling it apart from an
+		// early disconnect by three independent signals that must all hold:
+		//   - the client closed the socket cleanly (StatusNormalClosure), i.e. it
+		//     finished streaming the finite video's audio to EOF rather than dropping;
+		//   - the event stream drained to its close (the pipeline flushed every unit),
+		//     not a mid-stream write failure (which forces a cancel and so is false);
+		//   - the request was not otherwise aborted (a server shutdown cancels r.Context()).
+		// A live stream never closes cleanly at an EOF it does not have, and a viewer
+		// who navigates away aborts the socket, so both fail the clean-close check and
+		// persist nothing. Any signal failing discards the accumulator unwritten. The
+		// reader.cleanClose read is ordered after the reader goroutine returns (it is
+		// what closes audio and so ends the analyzer and this writer loop); the wait
+		// below also covers the write-failure path where the loop exits first.
+		<-reader.done
+		if reader.cleanClose && drained && !requestAborted {
+			persistSnapshot(recorder, videoID, captured, logger)
+		}
 	}
 }
 
-// readAudio forwards inbound binary frames to the analyzer until the client
-// closes, a read fails, or ctx is canceled. Non-binary frames are ignored. It
-// closes audio on exit so the analyzer's stream ends, and cancels the session so
-// the writer stops too.
-func readAudio(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, audio chan<- []byte) {
+// audioReader forwards inbound audio and records whether the client ended the
+// stream with a clean close - the finite video's audio reaching EOF - which is
+// the handler's completion signal. done is closed when the reader returns so the
+// handler can read cleanClose with a happens-before guarantee on every exit path,
+// including a writer-side failure that unwinds the reader concurrently.
+type audioReader struct {
+	cleanClose bool
+	done       chan struct{}
+}
+
+func newAudioReader() *audioReader {
+	return &audioReader{done: make(chan struct{})}
+}
+
+// persistSnapshot writes the completed analysis to the cache after the live
+// session has ended. It is best-effort and never affects the user, who has
+// already disconnected: it runs on a fresh background context so the write is not
+// aborted by the very disconnect that completed the stream, under its own timeout
+// so a slow cache cannot pin the goroutine, and any error is logged rather than
+// surfaced. A nil recorder makes capture a no-op.
+func persistSnapshot(recorder AnalysisRecorder, videoID string, events []service.LiveEvent, logger *slog.Logger) {
+	if recorder == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotPersistTimeout)
+	defer cancel()
+	if err := recorder.Persist(ctx, videoID, events); err != nil {
+		logger.ErrorContext(ctx, "persisting analysis snapshot failed", slog.String("video_id", videoID), slog.Any("err", err))
+	}
+}
+
+// run forwards inbound binary frames to the analyzer until the client closes, a
+// read fails, or ctx is canceled. Non-binary frames are ignored. It closes audio
+// on exit so the analyzer's stream ends, cancels the session so the writer stops
+// too, and closes done so the handler can read cleanClose. A read that returns a
+// normal-closure close error is the finite video's audio reaching EOF: the client
+// streamed every frame and closed politely, the one exit that marks a completion.
+// An abnormal close, any other read error, or a context cancel leaves cleanClose
+// false, so a dropped viewer or a live stream never reads as complete.
+func (a *audioReader) run(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, audio chan<- []byte) {
+	defer close(a.done)
 	defer close(audio)
 	defer cancel()
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
+			a.cleanClose = ctx.Err() == nil && websocket.CloseStatus(err) == websocket.StatusNormalClosure
 			return
 		}
 		if typ != websocket.MessageBinary || len(data) == 0 {
@@ -296,16 +375,25 @@ func pingLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Co
 // liveWriteTimeout, so a failure - including an interim that the client could not
 // accept within the deadline - means the connection is broken or wedged and the
 // session is torn down at once rather than burning a per-frame timeout on it.
-func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, events <-chan service.LiveEvent, debugFactCheck bool, logger *slog.Logger, videoID string) {
+//
+// It tees the stream as it goes: every event it forwards to the client is also
+// appended to the returned slice, unchanged, so a finite video's completed
+// analysis can be persisted as a snapshot without altering a single wire frame.
+// drained reports whether the loop ended because the event channel closed (the
+// pipeline finished) rather than because a write failed - the caller persists a
+// snapshot only when drained is true, never on a truncated session.
+func writeEvents(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, events <-chan service.LiveEvent, debugFactCheck bool, logger *slog.Logger, videoID string) (captured []service.LiveEvent, drained bool) {
 	for ev := range events {
+		captured = append(captured, ev)
 		if err := writeEvent(ctx, conn, ev, debugFactCheck); err != nil {
 			if ctx.Err() == nil {
 				logger.ErrorContext(ctx, "live event write failed", slog.String("video_id", videoID), slog.Any("err", err))
 			}
 			cancel()
-			return
+			return captured, false
 		}
 	}
+	return captured, true
 }
 
 // writeEvent writes one event under a bounded deadline, shaping it by kind.

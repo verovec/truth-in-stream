@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
@@ -117,6 +119,11 @@ type wireFrame struct {
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debugFactCheck bool) string {
 	t.Helper()
+	return liveTestServerWithRecorder(t, analyzer, nil, origins, debugFactCheck)
+}
+
+func liveTestServerWithRecorder(t *testing.T, analyzer LiveAnalyzer, recorder AnalysisRecorder, origins []string, debugFactCheck bool) string {
+	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	// The live route runs behind the Identity middleware so the handler reads the
@@ -124,11 +131,57 @@ func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debug
 	// dial with no Bearer token is a guest (debug detail stays off even when the
 	// server-side flag is on); the admin Bearer the stub verifier knows is what
 	// unlocks the evidence detail.
-	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, origins, debugFactCheck, logger))
+	h := middleware.Identity(stubVerifier{})(liveHandler(analyzer, recorder, origins, debugFactCheck, logger))
 	mux.Handle("GET /api/videos/{id}/live", h)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"
+}
+
+// recordingPersister captures Persist calls so the handler's completion gate can
+// be asserted: it records the video id and events on each call, and a buffered
+// channel lets a test wait for the post-session write rather than poll-and-sleep.
+type recordingPersister struct {
+	persistErr error
+
+	mu       sync.Mutex
+	calls    int
+	videoID  string
+	events   []service.LiveEvent
+	notified chan struct{}
+}
+
+func newRecordingPersister() *recordingPersister {
+	return &recordingPersister{notified: make(chan struct{}, 1)}
+}
+
+func (p *recordingPersister) Persist(_ context.Context, videoID string, events []service.LiveEvent) error {
+	p.mu.Lock()
+	p.calls++
+	p.videoID = videoID
+	p.events = append([]service.LiveEvent(nil), events...)
+	p.mu.Unlock()
+	select {
+	case p.notified <- struct{}{}:
+	default:
+	}
+	return p.persistErr
+}
+
+func (p *recordingPersister) snapshot() (int, string, []service.LiveEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls, p.videoID, append([]service.LiveEvent(nil), p.events...)
+}
+
+// awaitPersist waits for one Persist call or fails the test on timeout.
+func (p *recordingPersister) awaitPersist(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.notified:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected a snapshot persist call, none arrived")
+	}
 }
 
 // adminDialOptions carries the admin Bearer header the stub verifier recognizes,
@@ -136,6 +189,155 @@ func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debug
 // emitted.
 func adminDialOptions() *websocket.DialOptions {
 	return &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + testAdminToken}}}
+}
+
+func TestLiveHandlerPersistsSnapshotOnCleanCompletion(t *testing.T) {
+	t.Parallel()
+	// A finite video analyzed to completion: the client streams audio, reads its
+	// events, then closes the socket cleanly (StatusNormalClosure - its audio
+	// reached EOF). The handler tees the events and persists exactly one snapshot
+	// under the video id with the same ordered events it sent the client.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
+	events := []service.LiveEvent{
+		{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg},
+		{Kind: service.LiveEventResult, ID: "0", Segment: seg},
+	}
+	fake := &recordingLive{events: events}
+	rec := newRecordingPersister()
+	wsURL := liveTestServerWithRecorder(t, fake, rec, nil, false)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	// Drain both events, then close cleanly to signal the audio reached its end.
+	_ = readFrame(ctx, t, conn)
+	_ = readFrame(ctx, t, conn)
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("clean close: %v", err)
+	}
+
+	rec.awaitPersist(t)
+	calls, videoID, got := rec.snapshot()
+	if calls != 1 {
+		t.Fatalf("persist calls = %d, want exactly 1", calls)
+	}
+	if videoID != "vid1" {
+		t.Errorf("video id = %q, want vid1", videoID)
+	}
+	if diff := cmp.Diff(events, got); diff != "" {
+		t.Errorf("persisted events (-want +got):\n%s", diff)
+	}
+}
+
+func TestLiveHandlerPersistsNothingOnEarlyDisconnect(t *testing.T) {
+	t.Parallel()
+	// A viewer who leaves before completion: the client aborts the socket
+	// (CloseNow - no close frame) instead of closing cleanly. The audio reader
+	// never sees a normal closure, so the session is not a completion and nothing
+	// is persisted, even though the pipeline drained.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
+	fake := &recordingLive{events: []service.LiveEvent{{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg}}}
+	rec := newRecordingPersister()
+	wsURL := liveTestServerWithRecorder(t, fake, rec, nil, false)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	_ = readFrame(ctx, t, conn)
+	// Abort without a close handshake - the dropped-viewer / live-stream shape.
+	_ = conn.CloseNow()
+
+	select {
+	case <-rec.notified:
+		t.Fatal("a snapshot was persisted on an early disconnect")
+	case <-time.After(500 * time.Millisecond):
+	}
+	if calls, _, _ := rec.snapshot(); calls != 0 {
+		t.Fatalf("persist calls = %d, want 0 on disconnect", calls)
+	}
+}
+
+func TestLiveHandlerCacheWriteFailureDoesNotAffectSession(t *testing.T) {
+	t.Parallel()
+	// A cache write failure is logged, never surfaced: the client's session
+	// completes normally (it received all its events and a clean close) regardless
+	// of the persist error, which the recorder returns.
+	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the earth is round", Speaker: "A"}
+	events := []service.LiveEvent{{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg}}
+	fake := &recordingLive{events: events}
+	rec := newRecordingPersister()
+	rec.persistErr = errors.New("redis down")
+	wsURL := liveTestServerWithRecorder(t, fake, rec, nil, false)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	frame := readFrame(ctx, t, conn)
+	if frame.Type != "subtitle" || frame.ID != "0" {
+		t.Fatalf("client did not receive its event before the failing persist: %+v", frame)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("clean close: %v", err)
+	}
+
+	// The persist was attempted (and failed) but the session was unaffected.
+	rec.awaitPersist(t)
+	if calls, _, _ := rec.snapshot(); calls != 1 {
+		t.Fatalf("persist calls = %d, want 1 (attempted despite the error)", calls)
+	}
+}
+
+func TestLiveHandlerNilRecorderIsSafe(t *testing.T) {
+	t.Parallel()
+	// With no recorder wired, capture is disabled and the live route works
+	// unchanged: a clean completion simply persists nothing and does not panic.
+	seg := domain.Segment{Text: "the earth is round"}
+	fake := &recordingLive{events: []service.LiveEvent{{Kind: service.LiveEventSubtitle, ID: "0", Segment: seg}}}
+	wsURL := liveTestServerWithRecorder(t, fake, nil, nil, false)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte{0x01}); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	_ = readFrame(ctx, t, conn)
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("clean close: %v", err)
+	}
 }
 
 func TestLiveHandlerStreamsAudioAndReturnsEvents(t *testing.T) {

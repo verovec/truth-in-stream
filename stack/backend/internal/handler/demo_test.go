@@ -15,7 +15,7 @@ import (
 func newDemoServer(dir string) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	return NewMux(hc, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, false, nil, dir, globalTestAuth, logger)
+	return NewMux(hc, &fakeVideoService{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, nil, false, nil, dir, globalTestAuth, logger)
 }
 
 // demoRequest carries the session cookie; demo media is application content
