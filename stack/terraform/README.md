@@ -43,8 +43,47 @@ deploys via the GitHub OIDC deploy role: push images to ECR, run the migration
 task, wait for exit 0, then force a new deployment of both services.
 
 Dev: single NAT gateway, `db.t4g.micro`, no Multi-AZ, nothing protected.
-Prod: per-AZ NAT, Multi-AZ RDS, deletion protection. Same modules, different
-variables.
+Prod: a deliberately small, single-AZ **cost-baseline** (single NAT, single-AZ
+RDS, single-instance MQ, right-sized SPOT-where-safe Fargate tasks) with backups,
+deletion protection, and security posture unchanged — every reduction reversible
+by a variable. Same modules, different variables. See the cost-baseline note
+below for each choice and the scale-up order.
+
+### Cost-baseline (right-sized prod)
+
+Prod runs an early-production, single-region baseline that meets current needs
+without over-provisioning. Every reduction below is reversible by **raising a
+variable**, never by editing code, so HA is restored by changing values. Backups,
+deletion protection, and the security posture are **not** traded for cost.
+
+| Area | Baseline | Variable | HA / scale-up |
+|---|---|---|---|
+| NAT gateway | 1 (single-AZ egress) | `nat_gateway_count` | `2` for per-AZ HA egress |
+| RDS | `db.t4g.small`, single-AZ | `rds_instance_class`, `rds_multi_az` | larger class, then `rds_multi_az = true` |
+| RDS backups / deletion protection | 21-day backups, protected, final snapshot | (unchanged) | always on, independent of Multi-AZ |
+| Amazon MQ | `SINGLE_INSTANCE` on `mq.t3.micro` | `mq_deployment_mode`, `mq_host_instance_type` | `CLUSTER_MULTI_AZ` on `mq.m5`/`mq.m7g` |
+| Backend tasks | 1 task, 512 CPU / 1024 MiB, on-demand FARGATE | `backend_desired_count`, `backend_cpu`, `backend_memory` | raise count for serving redundancy; stays on-demand (live WebSocket sessions) |
+| Frontend tasks | 1 task, 256 CPU / 512 MiB, FARGATE_SPOT | `frontend_desired_count`, `frontend_cpu`, `frontend_memory`, `frontend_use_spot` | raise count; `frontend_use_spot = false` for interruption-free rollouts |
+| CloudWatch logs | 30-day finite retention | `log_retention_days` | raise for longer audit windows |
+
+**SPOT safety.** Only the stateless frontend runs on FARGATE_SPOT. The backend
+terminates live transcription WebSocket sessions, so a SPOT reclamation would drop
+in-flight sessions; it stays on on-demand FARGATE. The cluster keeps both
+`FARGATE` and `FARGATE_SPOT` registered, so a service opts into SPOT through its
+own `capacity_provider_strategy` (the `service` module's
+`capacity_provider_strategy` input) and the rest inherit the on-demand default.
+
+**Scale-up order as load grows** (cheapest, highest-impact first):
+
+1. **Backend redundancy** — `backend_desired_count = 2` (removes the single-task
+   serving SPOF; cheapest availability win).
+2. **NAT HA** — `nat_gateway_count = 2` (removes the single-AZ egress SPOF).
+3. **RDS** — scale `rds_instance_class` for CPU/memory pressure, then
+   `rds_multi_az = true` for failover durability.
+4. **Frontend redundancy** — `frontend_desired_count = 2`, and
+   `frontend_use_spot = false` if SPOT interruptions affect rollouts.
+5. **MQ HA** — `mq_deployment_mode = CLUSTER_MULTI_AZ` with an `mq.m5`/`mq.m7g`
+   `mq_host_instance_type`, once the worker fleet drives sustained queue traffic.
 
 ### Optional RDS (`enable_rds`)
 

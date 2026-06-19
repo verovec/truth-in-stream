@@ -26,6 +26,102 @@ variable "media_cors_allowed_origins" {
   description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Defaults to any origin while there is no fixed frontend domain; restrict to the app origin once one exists."
 }
 
+# --- Cost right-sizing baseline (VER-134) ---
+# Prod runs a deliberately small, single-AZ baseline to avoid over-provisioning.
+# Every reduction below is reversible by raising a variable, never by editing
+# code: restore HA by setting nat_gateway_count=2, rds_multi_az=true,
+# mq_deployment_mode=CLUSTER_MULTI_AZ (on an mq.m5/mq.m7g host), and removing the
+# frontend SPOT strategy. See "Cost-baseline (right-sized prod)" in
+# stack/terraform/README.md for the documented choices and scale-up order.
+
+variable "nat_gateway_count" {
+  type        = number
+  default     = 1
+  description = "NAT gateways for private-subnet egress. Baseline is 1 (a single AZ's NAT is the egress SPOF, acceptable for early prod); set 2 for per-AZ HA egress. First HA lever to pull as availability matters."
+
+  validation {
+    condition     = var.nat_gateway_count >= 1 && var.nat_gateway_count <= 2
+    error_message = "nat_gateway_count must be 1 (cost baseline) or 2 (per-AZ HA)."
+  }
+}
+
+variable "rds_instance_class" {
+  type        = string
+  default     = "db.t4g.small"
+  description = "RDS instance class. db.t4g.small (2 GiB) is the small baseline with enough memory headroom for PostgreSQL + pgvector; scale up the class before adding Multi-AZ if the bottleneck is CPU/memory."
+}
+
+variable "rds_multi_az" {
+  type        = bool
+  default     = false
+  description = "RDS standby replica in a second AZ. Baseline is single-AZ (false) for cost; backups and deletion protection are independent of this and stay on. Set true for failover HA — a key durability lever once prod carries real traffic."
+}
+
+variable "log_retention_days" {
+  type        = number
+  default     = 30
+  description = "Finite CloudWatch retention for ECS task logs (days). 30 keeps a month of logs without unbounded storage cost; raise for longer audit windows. Must be a CloudWatch-allowed value (1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,...)."
+}
+
+variable "mq_deployment_mode" {
+  type        = string
+  default     = "SINGLE_INSTANCE"
+  description = "Amazon MQ deployment mode. SINGLE_INSTANCE is the cost baseline; CLUSTER_MULTI_AZ (3 nodes) is the HA upgrade and requires an mq.m5/mq.m7g host (not mq.t3), so flip mq_host_instance_type with it."
+
+  validation {
+    condition     = contains(["SINGLE_INSTANCE", "CLUSTER_MULTI_AZ"], var.mq_deployment_mode)
+    error_message = "mq_deployment_mode must be SINGLE_INSTANCE or CLUSTER_MULTI_AZ."
+  }
+}
+
+variable "mq_host_instance_type" {
+  type        = string
+  default     = "mq.t3.micro"
+  description = "Amazon MQ broker instance class. mq.t3.micro is the smallest baseline; CLUSTER_MULTI_AZ requires mq.m5.* or mq.m7g.*."
+}
+
+variable "backend_cpu" {
+  type        = number
+  default     = 512
+  description = "Fargate CPU units for the backend service (1024 = 1 vCPU). 512 right-sizes the serving task for the early-prod baseline."
+}
+
+variable "backend_memory" {
+  type        = number
+  default     = 1024
+  description = "Fargate memory in MiB for the backend service."
+}
+
+variable "backend_desired_count" {
+  type        = number
+  default     = 1
+  description = "Backend running tasks. Baseline is 1; the backend serves live WebSocket sessions, so it stays on on-demand FARGATE (no SPOT). Raise to 2 for serving redundancy — a primary scale-up lever."
+}
+
+variable "frontend_cpu" {
+  type        = number
+  default     = 256
+  description = "Fargate CPU units for the frontend service (1024 = 1 vCPU)."
+}
+
+variable "frontend_memory" {
+  type        = number
+  default     = 512
+  description = "Fargate memory in MiB for the frontend service."
+}
+
+variable "frontend_desired_count" {
+  type        = number
+  default     = 1
+  description = "Frontend running tasks. Baseline is 1; the frontend is stateless and runs on FARGATE_SPOT when frontend_use_spot is true."
+}
+
+variable "frontend_use_spot" {
+  type        = bool
+  default     = true
+  description = "Run the stateless frontend on FARGATE_SPOT (cheaper, interruptible). Safe because the frontend holds no long-lived connection state; set false to pin it to on-demand FARGATE for interruption-free rollouts."
+}
+
 variable "enable_rds" {
   type        = bool
   default     = true
