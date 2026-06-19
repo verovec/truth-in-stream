@@ -888,6 +888,46 @@ services:
     depends_on:
       - backend
 
+  # Local identity provider: imports stack/keycloak/realm.json on start (read-only
+  # mount) so the dev stack carries the same realm shape the operator manages in
+  # production. `start-dev --import-realm` runs the dev profile (HTTP, ephemeral H2)
+  # and is import-idempotent (an existing realm is skipped). Local-dev credentials
+  # only; no real secret is committed. The realm shape, the local/production split,
+  # and the issuer the backend and frontend validate are documented in
+  # docs/configuration.md.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.3
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Bootstrap admin for the master realm's admin console (dev only). Production
+      # uses the operator's own admin, set out of band and never these defaults.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Published on :8081 with a matching internal port so the issuer the backend
+      # and browser validate (http://localhost:8081/realms/truth-in-stream) is the
+      # same string Keycloak advertises in its OIDC discovery document.
+      KC_HTTP_PORT: "8081"
+      # Enables the management /health endpoints (on :9000) the healthcheck probes.
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./stack/keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro
+    healthcheck:
+      # The image ships no curl, so use Keycloak's own documented container probe:
+      # a HEAD request to the management /health/ready endpoint over a bash TCP
+      # redirect (KC_HEALTH_ENABLED exposes it on :9000). retries + start_period
+      # absorb the startup window before the management listener binds.
+      test:
+        [
+          "CMD-SHELL",
+          "(printf 'HEAD /health/ready HTTP/1.0\\r\\n\\r\\n' >&0; grep 'HTTP/1.0 200';) 0<>/dev/tcp/localhost/9000",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
 volumes:
   go-mod-cache:
   frontend-node-modules:

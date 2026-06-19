@@ -39,6 +39,40 @@ openssl rand -hex 32                                  # -> SESSION_SECRET
 Sessions are stateless HMAC tokens: to revoke every outstanding session, rotate `SESSION_SECRET` and
 restart the backend.
 
+## Local Keycloak (identity provider)
+
+`make up` (or `make keycloak` on its own) starts a local Keycloak on `:8081` that imports
+`stack/keycloak/realm.json` on startup. It is the local mirror of the production identity provider
+the operator manages at `https://login.jeminforme.fr`; only the realm definition is shared between
+the two, so the backend and frontend issuer config lines up across environments.
+
+| Property | Local value | Production (operator-managed) |
+|----------|-------------|-------------------------------|
+| Issuer | `http://localhost:8081/realms/truth-in-stream` | `https://login.jeminforme.fr/realms/truth-in-stream` |
+| Realm | `truth-in-stream` | `truth-in-stream` (same `realm.json` shape) |
+| OIDC client | `truth-in-stream-web` (public, PKCE S256, standard flow) | same client id |
+| Realm roles | `admin`, `guest` | `admin`, `guest` |
+| Default role | `guest` (granted to every new user) | `guest` |
+| Roles claim | `realm_access.roles` in the access token | `realm_access.roles` |
+| Admin console | `http://localhost:8081` (`admin` / `admin`, dev only) | operator credentials, out of band |
+
+The realm ships two dev users for local login and token tests: `admin` / `admin` (realm roles
+`admin` + `guest`) and `guest` / `guest` (role `guest`). These credentials, the bootstrap admin, and
+the public client are **local-dev only** — `realm.json` holds no real secret.
+
+The realm definition is the shared contract (realm name, roles, default role, client id, and the
+`realm_access.roles` claim), not a verbatim production export. The operator imports the same shape
+into production Keycloak and then hardens it for that environment: TLS and Postgres-backed storage
+instead of the dev profile's HTTP + ephemeral H2, real users instead of the two dev accounts, and the
+direct-access (password) grant the local client enables for token tests turned **off** so production
+authentication is browser + PKCE only. Keep the issuer, realm, client id, roles, and roles-claim in
+the table above identical across environments so the backend and frontend validate the same tokens; the
+transport, storage, and grant hardening are production-side concerns.
+
+Backend and frontend cards point their OIDC issuer at the table's issuer URL and validate the
+`realm_access.roles` claim to gate `admin`-only routes; `guest` is the baseline every authenticated
+user carries.
+
 ## Local development data
 
 `make up` seeds a realistic, fully offline dataset (curated claims, a Wikipedia evidence subset, demo
