@@ -81,6 +81,11 @@ route. The verification store can be seeded with curated claims or backed by a f
 evidence corpus built by an opt-in ingestion fleet (see
 [the ingestion pipeline](docs/ingestion-pipeline.md)).
 
+Once an imported or uploaded video finishes, its analysis is cached, so reopening it **replays the
+full transcript and verdicts instantly** with no re-transcription or LLM calls; a cache miss falls
+through to the live pipeline unchanged (see
+[the analysis cache](docs/configuration.md#analysis-cache-instant-replay)).
+
 ## Tech stack
 
 | Layer | Tech | Location |
