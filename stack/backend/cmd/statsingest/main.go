@@ -1,17 +1,21 @@
 // Command statsingest fetches the curated statistical series from every
 // registered source (EU Eurostat, the French interior ministry's open-data
 // permit/asylum CSVs, and the INSEE national labor-market series), renders each
-// observation into a self-contained French evidence passage, embeds it with the
-// shared document-embedding model, and upserts it into the evidence corpus with
-// provenance. It is an offline ingest entrypoint mirroring cmd/ingest: idempotent
-// on the (series, period) provenance key, so re-running refreshes the figures
-// without duplicating passages. Each source writes under its own corpus label, so
-// a retrieved passage's publisher is identifiable.
+// observation into a self-contained French evidence passage, upserts it into the
+// live evidence corpus un-embedded with provenance, and publishes one prioritized
+// embedding job per passage to the RabbitMQ queue (RABBITMQ_URL). The existing
+// embedding-worker fleet drains the queue and fills the vectors in place - the
+// same bulk-into-live pattern the Wikipedia corpus uses, so a broad sweep scales
+// by worker replica count rather than one synchronous Voyage burst. It is
+// idempotent on the (series, period) provenance key, so re-running refreshes the
+// figures without duplicating passages and re-publishes only the still-unembedded
+// ones. Each source writes under its own corpus label, so a retrieved passage's
+// publisher is identifiable.
 //
 // The Eurostat, interior-ministry, and INSEE BDM endpoints need no key (the
-// INSEE_API_KEY is optional and read from the environment only); the only
-// required secret is the embedding API key, loaded from the environment like
-// every other ingest.
+// INSEE_API_KEY is optional and read from the environment only). Embedding now
+// happens in the fleet, so this producer needs no Voyage key; it needs the broker
+// URL (RABBITMQ_URL) and the database (DATABASE_URL).
 package main
 
 import (
@@ -22,10 +26,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
-	"github.com/verovec/truth-in-stream/backend/internal/embed"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/stats"
 	"github.com/verovec/truth-in-stream/backend/internal/stats/eurostat"
 	"github.com/verovec/truth-in-stream/backend/internal/stats/insee"
@@ -50,7 +53,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	emb, err := config.LoadEmbedding()
+	queueCfg, err := config.LoadQueue()
+	if err != nil {
+		return err
+	}
+	producerCfg, err := config.LoadWikiProducer()
 	if err != nil {
 		return err
 	}
@@ -64,10 +71,20 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	embedder := embed.WithRetry(
-		embed.New(embed.Config{APIKey: emb.APIKey, Model: emb.Model, Dim: emb.Dim}),
-		embed.RetryConfig{MaxAttempts: 5, BaseDelay: time.Second, MaxDelay: 30 * time.Second, Logger: logger},
-	)
+	// The producer publishes to the active versioned embedding queue resolved from
+	// the same configuration the worker consumes, so both bind to the same queue
+	// without touching the enqueue logic - the stats path shares the wiki fleet.
+	client, err := queue.New(queue.Config{
+		URL:         queueCfg.URL,
+		QueueName:   queueCfg.VersionedName(),
+		Version:     queueCfg.Version,
+		MaxPriority: queueCfg.MaxPriority,
+		Prefetch:    queueCfg.Prefetch,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
 
 	sources := []stats.Source{
 		eurostat.NewSource(eurostat.New(eurostat.Config{}), nil),
@@ -75,26 +92,35 @@ func run(logger *slog.Logger) error {
 		insee.NewSource(insee.New(insee.ConfigFromEnv()), nil),
 	}
 
+	statsCfg := stats.Config{
+		MaxPriority:      queueCfg.MaxPriority,
+		EnqueueBatchSize: producerCfg.EnqueueBatchSize,
+	}
+
 	// Each source writes a distinct, independent corpus, so a failure in one
 	// (e.g. a transient outage at one provider) must not block the others. Log
 	// and continue per source, then fail the run if any source failed so a
 	// scheduled job still surfaces the error.
-	total := 0
+	var upserted, published int
 	var failed []string
 	for _, source := range sources {
-		n, err := stats.Run(ctx, source, embedder, store, 0)
+		st, err := stats.Run(ctx, logger, source, store, qPublisher{client: client}, statsCfg)
 		if err != nil {
 			failed = append(failed, source.Corpus())
 			logger.ErrorContext(ctx, "statsingest source failed",
 				slog.String("corpus", source.Corpus()), slog.Any("err", err))
 			continue
 		}
-		total += n
+		upserted += st.Upserted
+		published += st.Published
 		logger.InfoContext(ctx, "statsingest source complete",
-			slog.String("corpus", source.Corpus()), slog.Int("passages", n))
+			slog.String("corpus", source.Corpus()),
+			slog.Int("upserted", st.Upserted),
+			slog.Int("published", st.Published))
 	}
 
-	logger.InfoContext(ctx, "statsingest complete", slog.Int("passages", total))
+	logger.InfoContext(ctx, "statsingest complete; the worker fleet fills the vectors in place",
+		slog.Int("upserted", upserted), slog.Int("published", published))
 	if len(failed) > 0 {
 		return fmt.Errorf("statsingest: %d source(s) failed: %v", len(failed), failed)
 	}

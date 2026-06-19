@@ -117,8 +117,9 @@ seed-wiki: ## Seed only the Wikipedia evidence subset
 seed-videos: ## Seed only the curated sample videos (records + best-effort media); SAMPLE_VIDEO_URL overrides the clip
 	$(COMPOSE) run --rm seed go run ./cmd/seed -videos
 
-stats-ingest: ## Ingest the official statistical sources (Eurostat + interior-ministry open-data CSV + INSEE) into the evidence corpus; renders French passages, embeds, and upserts under one corpus per source. Idempotent (re-run to refresh, no duplicates). Sources need no key; needs EMBEDDING_API_KEY in .env, optional INSEE_API_KEY
-	$(COMPOSE) run --rm seed go run ./cmd/statsingest
+stats-ingest: ## Bulk-into-live ingest of the official statistical sources (Eurostat + interior-ministry open-data CSV + INSEE): render French passages, upsert them un-embedded under one corpus per source, and enqueue one embedding job per passage; the running worker fleet fills the vectors in place (no inline Voyage call), so the passages are searchable as they embed. Publishes and exits. Idempotent (re-run to refresh, no duplicates; only un-embedded rows republished). Reuses a fleet from `make fleet-up`, or brings up the broker and one worker; scale throughput with `make fleet-up EMBEDWORKER_REPLICAS=N` first. Sources need no key; optional INSEE_API_KEY from .env
+	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq embedworker
+	$(COMPOSE) --profile tools run --rm --no-deps stats-ingest
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
 	$(COMPOSE) run --rm seed go run ./cmd/seed -refresh
