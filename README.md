@@ -25,6 +25,9 @@ similarity, so a match is a reason, not a coincidence.
 
 ## Quick start
 
+The app runs in production at **<https://jeminforme.fr>**, behind Keycloak login. The steps below
+bring up the whole stack locally as a fully offline demo.
+
 From a clean clone to the demo playing in the browser is **three commands**. The local dataset
 (curated claims, a Wikipedia evidence subset, demo-video results) seeds **fully offline** from a
 committed embedding cache, so **no API keys are needed to bring the stack up and play the demo**.
@@ -86,10 +89,13 @@ evidence corpus built by an opt-in ingestion fleet (see
 | Backend | Go (standard-library `net/http` service) | `stack/backend` |
 | Data | Postgres 16 + `pgvector`, Voyage AI `voyage-4-large` embeddings (1024-dim `halfvec`, HNSW cosine) | `stack/backend` |
 | Speech-to-text | AssemblyAI Universal-3 Pro streaming (the single transcriber) | `stack/backend` |
-| Infra | Terraform on AWS, region `eu-west-3` | `stack/terraform` |
+| Auth | Keycloak OIDC with `admin`/`guest` roles; the `/api` subtree and live WebSocket are gated on the verified identity | `stack/keycloak` |
+| Infra | Terraform on AWS (`eu-west-3`): CloudFront + WAF over an internal ALB, RDS Postgres 17 + `pgvector`, live at [jeminforme.fr](https://jeminforme.fr) | `stack/terraform` |
 
 The Go backend is layered `cmd/server` (wiring) -> `internal/handler` (HTTP) -> `internal/service`
-(logic) -> `internal/store` (data). The frontend defaults to Server Components.
+(logic) -> `internal/store` (data). The frontend defaults to Server Components and is responsive
+across mobile and desktop. In production, structured logs ship to CloudWatch and alarms fan out to
+Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observability).
 
 ## Documentation
 
@@ -97,7 +103,7 @@ The Go backend is layered `cmd/server` (wiring) -> `internal/handler` (HTTP) -> 
 |-------|-------|
 | Configuration, auth secrets, local seeded data | [`docs/configuration.md`](docs/configuration.md) |
 | Tests, CI, and the Claude delivery workflow | [`docs/development.md`](docs/development.md) |
-| Infrastructure (Terraform, AWS, backups, secrets) | [`docs/infrastructure.md`](docs/infrastructure.md) |
+| Infrastructure & operations (AWS edge, deploy, backups, observability) | [`docs/infrastructure.md`](docs/infrastructure.md) |
 | Ingestion pipeline (local + cloud, diagrams, consistency) | [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md) |
 | Fact-check evidence sources | [`docs/fact-check-sources.md`](docs/fact-check-sources.md) |
 | Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |
