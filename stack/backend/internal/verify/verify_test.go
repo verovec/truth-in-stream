@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 )
 
@@ -211,6 +212,78 @@ func TestVerifyForcesStructuredToolCall(t *testing.T) {
 	if !ok || choice["type"] != "tool" || choice["name"] != toolName {
 		t.Errorf("tool_choice = %v, want forced %s", captured["tool_choice"], toolName)
 	}
+}
+
+// TestVerifyPromptLocale asserts the credibility verifier reasons and writes its
+// rationale in the locale's language: the French locale sends the French system
+// prompt so the viewer-facing rationale comes back in French, while the default
+// locale keeps the English prompt unchanged. Only the system prompt language
+// changes; the forced record_verdict tool call is identical across locales.
+func TestVerifyPromptLocale(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		locale     domain.Locale
+		wantSystem string
+	}{
+		{name: "default locale keeps English prompt", locale: domain.LocaleEnglish, wantSystem: systemPrompt},
+		{name: "French locale sends French prompt", locale: domain.LocaleFrench, wantSystem: systemPromptFR},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var captured map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &captured)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{
+					"verdict":    VerdictUnverifiable,
+					"basis":      BasisKnowledge,
+					"confidence": 0.1,
+					"citations":  []map[string]any{},
+					"rationale":  "",
+				}))
+			}))
+			t.Cleanup(server.Close)
+
+			c, err := New(
+				Config{Provider: llm.ProviderAnthropic, APIKey: "test-key", Locale: tc.locale},
+				llm.WithBaseURL(server.URL), llm.WithMaxRetries(0),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			if _, err := c.Verify(context.Background(), "a claim", []Passage{{ID: "e1", Text: "some text"}}); err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if got := systemText(t, captured["system"]); got != tc.wantSystem {
+				t.Errorf("system = %q, want %q", got, tc.wantSystem)
+			}
+		})
+	}
+}
+
+// systemText pulls the prompt out of the Anthropic request's system field, which
+// serializes as an array of {type:text, text:...} content blocks rather than a
+// bare string.
+func systemText(t *testing.T, system any) string {
+	t.Helper()
+	blocks, ok := system.([]any)
+	if !ok || len(blocks) == 0 {
+		t.Fatalf("system = %v, want a non-empty content-block array", system)
+	}
+	block, ok := blocks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("system[0] = %v, want a content block", blocks[0])
+	}
+	text, ok := block["text"].(string)
+	if !ok {
+		t.Fatalf("system[0].text = %v, want a string", block["text"])
+	}
+	return text
 }
 
 func TestVerifyRequiresPassages(t *testing.T) {
