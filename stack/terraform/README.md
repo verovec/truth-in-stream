@@ -237,6 +237,32 @@ cd prod
 terraform output certificate_domain_validation_options
 ```
 
+## CloudFront in front of the internal ALB (prod)
+
+Prod serves the app only through CloudFront over HTTPS. The ALB is `internal`
+(private subnets, no public DNS) and its security group accepts ingress only
+from the CloudFront origin-facing managed prefix list; CloudFront reaches it
+over a **VPC origin** (PrivateLink), so the ALB is not publicly resolvable.
+`modules/cloudfront` defines a default behavior (frontend) and an `/api/*`
+behavior (backend), both dynamic and never cached (CachingDisabled cache policy
++ AllViewer origin-request policy forward all headers/cookies/query). Media
+stays on direct presigned S3 URLs and is not fronted here.
+
+The distribution exposes `cloudfront_domain_name` and `cloudfront_hosted_zone_id`
+(the main-account root creates the apex/`www` alias records against those — see
+VER-140) and `cloudfront_distribution_id` / `cloudfront_distribution_arn` (the
+WAFv2 web ACL associates against those — see VER-131). This card creates no
+alias records and no WAF association.
+
+**Flipping an existing public ALB to internal is a replacement.** `internal` is
+a `ForceNew` attribute on `aws_lb`, so changing an already-applied internet-facing
+ALB to internal destroys and recreates it. The prod ALB sets
+`deletion_protection = true`, and `DeleteLoadBalancer` fails while protection is
+on. On the one apply that introduces this change against a pre-existing public
+ALB, first disable deletion protection out of band (or in a prior apply), let the
+replacement happen, then it is re-enabled. A fresh environment that has never
+applied a public ALB creates the internal ALB directly with no replacement.
+
 ## Usage
 
 Always run from inside an environment directory:
