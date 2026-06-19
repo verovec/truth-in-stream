@@ -40,8 +40,11 @@ func RenderFrench(d domain.Datapoint) string {
 		b.WriteString(d.Geography)
 	}
 
-	b.WriteString(" en ")
-	b.WriteString(renderPeriod(d.Period))
+	connector, period := renderPeriod(d.Period)
+	b.WriteByte(' ')
+	b.WriteString(connector)
+	b.WriteByte(' ')
+	b.WriteString(period)
 
 	b.WriteString(" : ")
 	b.WriteString(formatFigure(d.Figure))
@@ -75,17 +78,35 @@ func nonEmpty(in []string) []string {
 	return out
 }
 
-// renderPeriod renders an annual period as the year and a monthly period as
-// "<month> <year>" in French. A period that does not parse (already rejected by
-// Datapoint.Validate before rendering) falls back to the raw string.
-func renderPeriod(period string) string {
-	parts := strings.SplitN(period, "-", 2)
-	if len(parts) == 2 {
-		if m, err := strconv.Atoi(parts[1]); err == nil && m >= 1 && m <= 12 {
-			return frenchMonths[m] + " " + parts[0]
-		}
+// renderPeriod renders a period into French prose and the preposition that
+// precedes it: an annual period is "en <year>", a monthly period is "en <month>
+// <year>", and an INSEE BDM quarterly period is "au <n>er/e trimestre <year>". A
+// period that does not parse (already rejected by Datapoint.Validate before
+// rendering) falls back to "en <raw>".
+func renderPeriod(period string) (connector, text string) {
+	head, tail, hasTail := strings.Cut(period, "-")
+	if !hasTail {
+		return "en", period
 	}
-	return period
+	if q, ok := strings.CutPrefix(tail, "Q"); ok {
+		if quarter, err := strconv.Atoi(q); err == nil && quarter >= 1 && quarter <= 4 {
+			return "au", frenchQuarter(quarter) + " " + head
+		}
+		return "en", period
+	}
+	if m, err := strconv.Atoi(tail); err == nil && m >= 1 && m <= 12 {
+		return "en", frenchMonths[m] + " " + head
+	}
+	return "en", period
+}
+
+// frenchQuarter renders a quarter [1,4] as the French ordinal trimester label,
+// e.g. "1er trimestre" or "2e trimestre".
+func frenchQuarter(quarter int) string {
+	if quarter == 1 {
+		return "1er trimestre"
+	}
+	return strconv.Itoa(quarter) + "e trimestre"
 }
 
 // formatFigure renders a number in French convention: a regular space as the

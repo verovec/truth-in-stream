@@ -53,6 +53,10 @@ const (
 	apiKeyEnv = "INSEE_API_KEY"
 	// missingValue is the SDMX sentinel for an absent observation value.
 	missingValue = "NaN"
+	// defaultGeography labels a series whose spec sets no geography (the
+	// hand-curated national series); the dataflow sweep derives the real scope
+	// from each series' REF_AREA so a métropolitaine-only figure is not mislabeled.
+	defaultGeography = "France"
 )
 
 // Config configures a Client. Every field is optional; the zero Config targets
@@ -150,6 +154,11 @@ func (c *Client) Fetch(ctx context.Context, spec Spec) ([]domain.Datapoint, erro
 		return nil, fmt.Errorf("insee: parse sdmx for %s: %w", spec.IDBank, err)
 	}
 
+	geography := spec.Geography
+	if geography == "" {
+		geography = defaultGeography
+	}
+
 	var out []domain.Datapoint
 	for _, series := range doc.Series {
 		if series.IDBank != spec.IDBank {
@@ -170,7 +179,7 @@ func (c *Client) Fetch(ctx context.Context, spec Spec) ([]domain.Datapoint, erro
 				Dataset:    spec.Dataset,
 				SeriesKey:  spec.IDBank,
 				Title:      spec.Title,
-				Geography:  "France",
+				Geography:  geography,
 				Dimensions: spec.Dimensions,
 				Period:     strings.TrimSpace(obs.TimePeriod),
 				Figure:     figure,
