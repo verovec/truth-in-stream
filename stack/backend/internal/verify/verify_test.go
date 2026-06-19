@@ -622,6 +622,164 @@ func TestValidateCitationsConfidence(t *testing.T) {
 	}
 }
 
+// newReasonTestClient points a DeepSeek-provider Client at a fake OpenAI-compatible
+// server, so the thinking-enabled Reverify path is exercised against the real
+// provider wire format without hitting the network.
+func newReasonTestClient(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	c, err := New(Config{Provider: llm.ProviderDeepSeek, DeepSeekAPIKey: "test-key", Model: "deepseek-v4-pro"}, llm.WithBaseURL(server.URL), llm.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c
+}
+
+// deepseekReasonVerdict builds a DeepSeek thinking-mode chat completion carrying a
+// reasoning_content chain-of-thought alongside the record_verdict tool call - the
+// real wire shape the reasoning second pass parses.
+func deepseekReasonVerdict(t *testing.T, input map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal tool args: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   "deepseek-v4-pro",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]any{
+					"role":              "assistant",
+					"reasoning_content": "Re-reading the passages, the contradiction is subtle but the evidence does settle it.",
+					"tool_calls": []map[string]any{
+						{
+							"id":       "call_test",
+							"type":     "function",
+							"function": map[string]any{"name": toolName, "arguments": string(raw)},
+						},
+					},
+				},
+				"finish_reason": "tool_calls",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return string(body)
+}
+
+// TestReverifyParsesReasoningVerdict asserts the thinking-enabled second pass
+// parses a verdict from the real DeepSeek reasoning wire format (reasoning_content
+// plus a tool call) and runs the same citation guard, surviving a valid citation
+// into an evidence verdict.
+func TestReverifyParsesReasoningVerdict(t *testing.T) {
+	t.Parallel()
+	passage := Passage{ID: "wiki:v:0", Text: "Large studies show the vaccine does not cause autism."}
+	c := newReasonTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekReasonVerdict(t, map[string]any{
+			"verdict":    VerdictDisputed,
+			"basis":      BasisEvidence,
+			"confidence": 0.95,
+			"citations": []map[string]any{
+				{"evidence_id": "wiki:v:0", "quoted_span": "the vaccine does not cause autism"},
+			},
+			"rationale": "The passage directly contradicts the claim.",
+		}))
+	})
+
+	got, err := c.Reverify(context.Background(), "the vaccine causes autism", []Passage{passage})
+	if err != nil {
+		t.Fatalf("Reverify: %v", err)
+	}
+	assertResultEqual(t, got, Result{
+		Verdict:    VerdictDisputed,
+		Basis:      BasisEvidence,
+		Confidence: 0.95,
+		Citations:  []Citation{{EvidenceID: "wiki:v:0", QuotedSpan: "the vaccine does not cause autism"}},
+		Rationale:  "The passage directly contradicts the claim.",
+	})
+}
+
+// TestReverifyEnforcesKnowledgeCap asserts the cap invariant holds on the reasoning
+// path: a reasoning model that claims an evidence basis at high confidence but cites
+// nothing surviving the guard is demoted to a capped knowledge basis, exactly as on
+// the fast Verify path - a deeper model can never prop up an ungrounded verdict.
+func TestReverifyEnforcesKnowledgeCap(t *testing.T) {
+	t.Parallel()
+	passage := Passage{ID: "wiki:v:0", Text: "Large studies show the vaccine does not cause autism."}
+	c := newReasonTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekReasonVerdict(t, map[string]any{
+			"verdict":    VerdictCredible,
+			"basis":      BasisEvidence,
+			"confidence": 0.99,
+			"citations": []map[string]any{
+				{"evidence_id": "wiki:v:0", "quoted_span": "a span that is not in the passage"},
+			},
+			"rationale": "Confidently asserted but ungrounded.",
+		}))
+	})
+
+	got, err := c.Reverify(context.Background(), "the vaccine is safe", []Passage{passage})
+	if err != nil {
+		t.Fatalf("Reverify: %v", err)
+	}
+	if got.Basis != BasisKnowledge {
+		t.Errorf("basis = %q, want %q (demoted: no surviving citation)", got.Basis, BasisKnowledge)
+	}
+	if got.Confidence > knowledgeConfidenceCap {
+		t.Errorf("confidence = %v, want <= cap %v", got.Confidence, knowledgeConfidenceCap)
+	}
+	if len(got.Citations) != 0 {
+		t.Errorf("citations = %v, want none survived", got.Citations)
+	}
+}
+
+// TestReverifyUsesReasoningTokenCap asserts the thinking-enabled path sends the
+// larger reasoningMaxTokens (not the fast path's tight maxTokens), so the model's
+// deliberation does not exhaust the budget and truncate the tool call.
+func TestReverifyUsesReasoningTokenCap(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	c := newReasonTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekReasonVerdict(t, map[string]any{
+			"verdict": VerdictUnverifiable, "basis": BasisKnowledge, "confidence": 0.1, "citations": []map[string]any{}, "rationale": "",
+		}))
+	})
+
+	if _, err := c.Reverify(context.Background(), "a claim", []Passage{{ID: "e1", Text: "some text"}}); err != nil {
+		t.Fatalf("Reverify: %v", err)
+	}
+	if captured["max_tokens"] != float64(reasoningMaxTokens) {
+		t.Errorf("max_tokens = %v, want the larger reasoning cap %d", captured["max_tokens"], reasoningMaxTokens)
+	}
+	if reasoningMaxTokens <= maxTokens {
+		t.Errorf("reasoningMaxTokens %d must exceed the fast cap %d", reasoningMaxTokens, maxTokens)
+	}
+}
+
+// TestReverifyRequiresPassages asserts the reasoning path, like Verify, refuses an
+// empty evidence set rather than inviting an ungrounded reasoning verdict.
+func TestReverifyRequiresPassages(t *testing.T) {
+	t.Parallel()
+	c := newReasonTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("Reverify must not call the model with no passages")
+	})
+	if _, err := c.Reverify(context.Background(), "a claim", nil); err == nil {
+		t.Fatal("expected an error when no passages are supplied")
+	}
+}
+
 func assertResultEqual(t *testing.T, got, want Result) {
 	t.Helper()
 	if got.Verdict != want.Verdict {

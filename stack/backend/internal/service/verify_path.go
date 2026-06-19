@@ -180,6 +180,14 @@ type VerifyPathConfig struct {
 	// the path runs the credibility-only verify stage, so the political flag off is
 	// byte-for-byte the legacy retrieve-then-verify behavior.
 	Political *PoliticalConfig
+	// SecondPass, when non-nil, enables the deeper-reasoner second pass: after a
+	// credibility-only verify call returns an evidence-grounded verdict whose
+	// confidence sits in the configured mid band, a stronger reasoning model
+	// re-judges the same evidence and may upgrade the verdict, re-emitted in place.
+	// It runs after the fast verdict is emitted and outside the verify pool, so it
+	// never delays the live result or consumes a scoring slot. When nil (the default)
+	// the verify path is byte-for-byte the legacy single-pass behavior.
+	SecondPass *SecondPassConfig
 }
 
 // VerifyPath is the retrieve-then-verify orchestration for one analyzer: per
@@ -200,6 +208,7 @@ type VerifyPath struct {
 	logger         *slog.Logger
 	cache          *claimCache
 	pol            *PoliticalConfig
+	secondPass     *secondPass
 }
 
 // NewVerifyPath builds a VerifyPath, failing when a required collaborator is
@@ -235,6 +244,13 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 			return nil, errors.New("service: political verify path requires a two-axis verifier")
 		}
 	}
+	var sp *secondPass
+	if cfg.SecondPass != nil {
+		var err error
+		if sp, err = newSecondPass(*cfg.SecondPass); err != nil {
+			return nil, err
+		}
+	}
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -260,6 +276,7 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		logger:         logger,
 		cache:          cache,
 		pol:            cfg.Political,
+		secondPass:     sp,
 	}, nil
 }
 
@@ -419,6 +436,12 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+	// Deeper second pass, off by default: a grounded mid-confidence verdict gets
+	// re-judged by a stronger reasoning model and may be upgraded in place. It runs
+	// only after the fast verdict has already emitted above and outside the verify
+	// pool, so it never delays the live result or consumes a scoring slot; it is a
+	// no-op when the feature is off or the verdict does not qualify.
+	vp.maybeReverify(ctx, out, pu, claim, verdict, ret)
 }
 
 // retrieve embeds the atomic claim and pulls the high-recall evidence cluster

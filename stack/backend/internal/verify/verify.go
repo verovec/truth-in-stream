@@ -38,11 +38,20 @@ import (
 // config layer mirrors this default; the two must stay in sync.
 const defaultModel = "claude-haiku-4-5-20251001"
 
-// maxTokens bounds the structured reply: the model emits one tool call carrying a
-// verdict, a basis, a confidence, a few short cited spans, and a one-sentence
-// rationale. The cap is looser than the binary classifiers because citations can
-// quote several passages, but still tight enough to keep latency and cost down.
+// maxTokens bounds the structured reply on the fast (non-thinking) Verify path:
+// the model emits one tool call carrying a verdict, a basis, a confidence, a few
+// short cited spans, and a one-sentence rationale. The cap is looser than the
+// binary classifiers because citations can quote several passages, but still tight
+// enough to keep latency and cost down.
 const maxTokens = 1024
+
+// reasoningMaxTokens bounds the reply on the thinking-enabled Reverify path. A
+// reasoning model spends tokens on its chain-of-thought (reasoning_content) BEFORE
+// emitting the tool call, and that deliberation counts against the same cap, so the
+// fast path's 1024 would routinely be exhausted by the reasoning trace and truncate
+// the tool arguments - turning every second pass into a silent decode failure. This
+// larger cap leaves room for the deliberation plus the same compact verdict.
+const reasoningMaxTokens = 4096
 
 // toolName is the single tool the model is forced to call, so the verdict always
 // arrives as validated structured input rather than prose.
@@ -212,10 +221,48 @@ func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (
 		return Result{}, fmt.Errorf("verify: no evidence passages supplied")
 	}
 
-	res, err := llm.Classify[Result](ctx, c.llm, llm.Request{
+	res, err := llm.Classify[Result](ctx, c.llm, c.verdictRequest(claim, passages, maxTokens))
+	if err != nil {
+		return Result{}, fmt.Errorf("verify: %w", err)
+	}
+
+	return ValidateCitations(res, passages), nil
+}
+
+// Reverify re-judges the same claim and passages on the thinking-enabled reasoning
+// path - a deeper second look for a claim the fast verifier found grounded but
+// hard to adjudicate. It reuses the identical prompt, tool schema, and the
+// deterministic citation guard, so the knowledge-confidence-cap invariant is
+// enforced on the upgraded verdict exactly as on the first pass: a reasoning model
+// that loses its last surviving citation is demoted to a capped knowledge basis,
+// never propped up. It differs from Verify only in the transport path (llm.Reason
+// vs llm.Classify), so a reasoning model can deliberate over the passages before
+// recording its verdict. The caller selects the reasoning model (the larger,
+// costlier tier) at construction; this method names no model.
+func (c *Client) Reverify(ctx context.Context, claim string, passages []Passage) (Result, error) {
+	if len(passages) == 0 {
+		return Result{}, fmt.Errorf("verify: no evidence passages supplied")
+	}
+
+	res, err := llm.Reason[Result](ctx, c.llm, c.verdictRequest(claim, passages, reasoningMaxTokens))
+	if err != nil {
+		return Result{}, fmt.Errorf("verify: %w", err)
+	}
+
+	return ValidateCitations(res, passages), nil
+}
+
+// verdictRequest builds the shared record_verdict request - system frame, prompt,
+// and tool schema - used by both the fast forced-tool Verify and the
+// thinking-enabled Reverify, so the two passes judge against an identical contract
+// and only the transport path and token cap differ. maxOut bounds the reply: the
+// fast path passes the compact maxTokens, the reasoning path the larger
+// reasoningMaxTokens so the model's deliberation does not crowd out the tool call.
+func (c *Client) verdictRequest(claim string, passages []Passage, maxOut int64) llm.Request {
+	return llm.Request{
 		System:    c.system,
 		User:      buildPrompt(claim, passages),
-		MaxTokens: maxTokens,
+		MaxTokens: maxOut,
 		Tool: llm.Tool{
 			Name:        toolName,
 			Description: "Record the grounded credibility verdict for the claim against the supplied evidence.",
@@ -259,12 +306,7 @@ func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (
 			},
 			Required: []string{"verdict", "basis", "confidence", "citations", "rationale"},
 		},
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("verify: %w", err)
 	}
-
-	return ValidateCitations(res, passages), nil
 }
 
 // buildPrompt renders the claim and the labeled evidence passages into the user

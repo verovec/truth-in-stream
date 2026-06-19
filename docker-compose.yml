@@ -734,6 +734,25 @@ services:
       FACTCHECK_VERIFY_FAST_DEADLINE: "${FACTCHECK_VERIFY_FAST_DEADLINE:-}"
       FACTCHECK_VERIFY_DEADLINE: "${FACTCHECK_VERIFY_DEADLINE:-}"
       FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
+      # Deeper-reasoner second pass: after the verify path returns an evidence-grounded
+      # verdict whose confidence sits in a mid band, a stronger reasoning model
+      # re-judges the same evidence and may upgrade the verdict in place. It runs off
+      # the live hot path (after the fast verdict is emitted, outside the verify pool)
+      # and never lifts a knowledge-only verdict past the confidence cap. Off unless
+      # FACTCHECK_SECOND_PASS is true AND FACTCHECK_SECOND_PASS_API_KEY (Anthropic) or
+      # the selected provider's key is set; with no key it degrades to the single-pass
+      # verify path. Only the credibility-only verify stage runs it (political mode owns
+      # its own verify stage). Optional tuning falls back to defaults when empty:
+      # FACTCHECK_SECOND_PASS_MODEL (deepseek-v4-pro under DeepSeek - the larger,
+      # costlier reasoning tier), FACTCHECK_SECOND_PASS_BAND_LO (0.45) /
+      # FACTCHECK_SECOND_PASS_BAND_HI (0.8) bound the qualifying confidence band, and
+      # FACTCHECK_SECOND_PASS_DEADLINE (12s) bounds one reverify call.
+      FACTCHECK_SECOND_PASS: "${FACTCHECK_SECOND_PASS:-}"
+      FACTCHECK_SECOND_PASS_API_KEY: "${FACTCHECK_SECOND_PASS_API_KEY:-}"
+      FACTCHECK_SECOND_PASS_MODEL: "${FACTCHECK_SECOND_PASS_MODEL:-}"
+      FACTCHECK_SECOND_PASS_BAND_LO: "${FACTCHECK_SECOND_PASS_BAND_LO:-}"
+      FACTCHECK_SECOND_PASS_BAND_HI: "${FACTCHECK_SECOND_PASS_BAND_HI:-}"
+      FACTCHECK_SECOND_PASS_DEADLINE: "${FACTCHECK_SECOND_PASS_DEADLINE:-}"
       # French/EU political fact-checking mode. Off by default; when true the live
       # transcription biases toward French (language_code=fr) and the gate and
       # claim decomposition prompt and reason in French. When it is on AND the

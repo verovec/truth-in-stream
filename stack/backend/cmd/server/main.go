@@ -89,6 +89,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	secondPassCfg, err := config.LoadSecondPass()
+	if err != nil {
+		return err
+	}
 	locale := politicalCfg.Locale()
 	debugSearchCfg, err := config.LoadDebugSearch()
 	if err != nil {
@@ -218,7 +222,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, verifyMatcher, store, locale, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, store, locale, logger)
 	if err != nil {
 		return err
 	}
@@ -456,7 +460,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher service.SegmentMatcher, votingStore voting.Store, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPass config.SecondPass, matcher service.SegmentMatcher, votingStore voting.Store, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -469,6 +473,13 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher 
 		return nil, err
 	}
 	pol, err := buildPoliticalConfig(cfg, political, votingStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	// The second pass attaches to the credibility-only verify stage; the political
+	// path owns its own two-axis lifecycle and does not run the credibility second
+	// pass, so it is wired only when political mode is off.
+	secondPassCfg, err := buildSecondPass(secondPass, pol, locale, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -485,6 +496,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher 
 		PriorStrength:     cfg.SpeakerPriorStrength,
 		Logger:            logger,
 		Political:         pol,
+		SecondPass:        secondPassCfg,
 	})
 	if err != nil {
 		return nil, err
@@ -494,7 +506,34 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, matcher 
 	} else {
 		logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
 	}
+	if secondPassCfg != nil {
+		logger.Info("deeper-reasoner second pass enabled for grounded mid-confidence verdicts", slog.String("model", secondPass.Model))
+	}
 	return path, nil
+}
+
+// buildSecondPass wires the deeper-reasoner second pass, or returns nil (so the
+// verify path runs its single fast pass unchanged) when the feature is not active
+// or political mode owns the verify stage. The reverifier is a verify client built
+// on the larger reasoning model; it shares the credibility verifier's locale so the
+// re-judged rationale stays in the viewer's language. The API key is never logged.
+func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale domain.Locale, logger *slog.Logger) (*service.SecondPassConfig, error) {
+	if !cfg.Active() || pol != nil {
+		if cfg.Active() && pol != nil {
+			logger.Info("deeper-reasoner second pass skipped: political mode owns the verify stage")
+		}
+		return nil, nil
+	}
+	reverifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, Model: cfg.Model, Locale: locale})
+	if err != nil {
+		return nil, err
+	}
+	return &service.SecondPassConfig{
+		Reverifier: reverifierAdapter{reverifier},
+		MidBandLo:  cfg.BandLo,
+		MidBandHi:  cfg.BandHi,
+		Deadline:   cfg.Deadline,
+	}, nil
 }
 
 // buildPoliticalConfig assembles the political verify path's collaborators - the
@@ -632,6 +671,38 @@ func (v verifierAdapter) Verify(ctx context.Context, claim string, passages []se
 		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
 	}
 	res, err := v.client.Verify(ctx, claim, in)
+	if err != nil {
+		return service.ClaimVerdict{}, err
+	}
+	citations := make([]service.EvidenceCitation, len(res.Citations))
+	for i, c := range res.Citations {
+		citations[i] = service.EvidenceCitation{EvidenceID: c.EvidenceID, QuotedSpan: c.QuotedSpan}
+	}
+	return service.ClaimVerdict{
+		Verdict:    res.Verdict,
+		Basis:      res.Basis,
+		Confidence: res.Confidence,
+		Citations:  citations,
+		Rationale:  res.Rationale,
+	}, nil
+}
+
+// reverifierAdapter adapts the verify client's reasoning Reverify to the service
+// ClaimReverifier port: it maps the service's evidence passages onto the
+// verifier's, and the verifier's deeper grounded result (already citation-guarded
+// and cap-enforced) back onto the service verdict. It is the second-pass twin of
+// verifierAdapter, differing only in calling Reverify (the thinking-enabled path)
+// rather than Verify.
+type reverifierAdapter struct {
+	client *verify.Client
+}
+
+func (v reverifierAdapter) Reverify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
+	in := make([]verify.Passage, len(passages))
+	for i, p := range passages {
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+	}
+	res, err := v.client.Reverify(ctx, claim, in)
 	if err != nil {
 		return service.ClaimVerdict{}, err
 	}

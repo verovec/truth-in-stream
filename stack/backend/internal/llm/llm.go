@@ -49,17 +49,33 @@ type Request struct {
 	MaxTokens int64
 }
 
-// Provider is the forced-tool / structured-output transport contract every LLM
-// backend satisfies: run req as a single forced tool call at temperature zero
-// and return the named tool's structured arguments as raw JSON for the caller
-// to decode. Implementations map provider errors uniformly and wrap them with
-// %w. The interface is unexported-by-method so the generic Classify is the only
-// way callers decode a verdict; a provider never learns the caller's type.
+// Provider is the structured-output transport contract every LLM backend
+// satisfies. It has two paths over the same Request/Tool shape, both returning
+// the tool's structured arguments as raw JSON for the caller to decode:
+//
+//   - classify is the fast path: a single forced (named) tool call at temperature
+//     zero with thinking off, used by every binary/structured classifier.
+//   - reason is the thinking-enabled path: the model is offered a single tool with
+//     an auto tool choice (never forced by name) so it may deliberate before
+//     emitting the tool call, used by the deeper reasoner second pass.
+//
+// The split exists because DeepSeek - the default backend - rejects a forced
+// named tool_choice while thinking is enabled, so a reasoning call cannot reuse
+// the forced-tool path. Implementations map provider errors uniformly and wrap
+// them with %w. The interface is unexported-by-method so the generic Classify
+// and Reason are the only ways callers decode a verdict; a provider never learns
+// the caller's type.
 type Provider interface {
 	// classify runs the forced tool call and returns the tool arguments as raw
 	// JSON. It errors when the transport fails or when the response carries no
 	// call to the named tool.
 	classify(ctx context.Context, req Request) (json.RawMessage, error)
+	// reason runs the thinking-enabled call (auto tool choice, single tool
+	// offered) and returns the tool arguments as raw JSON. It errors when the
+	// transport fails or when the model deliberated but emitted no call to the
+	// offered tool (a thinking model may answer in prose instead of calling the
+	// tool, since the choice is not forced).
+	reason(ctx context.Context, req Request) (json.RawMessage, error)
 }
 
 // Client is the transport every Classify call uses. It wraps the configured
@@ -84,6 +100,30 @@ func Classify[T any](ctx context.Context, c *Client, req Request) (T, error) {
 		return zero, fmt.Errorf("llm: MaxTokens must be positive, got %d", req.MaxTokens)
 	}
 	raw, err := c.provider.classify(ctx, req)
+	if err != nil {
+		return zero, err
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return zero, fmt.Errorf("decode %s arguments: %w", req.Tool.Name, err)
+	}
+	return out, nil
+}
+
+// Reason runs req on the thinking-enabled structured-output path - the model is
+// offered a single tool with an auto tool choice (never forced by name) so it may
+// deliberate before emitting the tool call - and decodes the tool's structured
+// arguments into T. It is the deeper-reasoner counterpart of Classify: same
+// Request/Tool shape and decode, but a reasoning model behind it. It errors when
+// MaxTokens is not positive, when the transport fails, when the model answered in
+// prose without calling the offered tool, or when the tool arguments do not decode
+// into T. Callers wrap the returned error with their own package context.
+func Reason[T any](ctx context.Context, c *Client, req Request) (T, error) {
+	var zero T
+	if req.MaxTokens <= 0 {
+		return zero, fmt.Errorf("llm: MaxTokens must be positive, got %d", req.MaxTokens)
+	}
+	raw, err := c.provider.reason(ctx, req)
 	if err != nil {
 		return zero, err
 	}

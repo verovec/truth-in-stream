@@ -162,6 +162,73 @@ func deepseekRawArgsResponse(t *testing.T, name, args, finishReason string) stri
 	return string(body)
 }
 
+// deepseekReasonResponse builds a minimal valid OpenAI Chat Completions response
+// shaped like DeepSeek's thinking-mode reply: a reasoning_content chain-of-thought
+// alongside one tool call carrying the verdict, so a test can fake the reasoning
+// reply without the network.
+func deepseekReasonResponse(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal tool args: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   "deepseek-v4-pro",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]any{
+					"role":              "assistant",
+					"reasoning_content": "Let me weigh the passages against the claim...",
+					"tool_calls": []map[string]any{
+						{
+							"id":       "call_test",
+							"type":     "function",
+							"function": map[string]any{"name": name, "arguments": string(raw)},
+						},
+					},
+				},
+				"finish_reason": "tool_calls",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return string(body)
+}
+
+// deepseekProseResponse builds a thinking-mode reply where the model deliberated
+// but answered in prose without calling the offered tool - the case the auto
+// tool_choice allows and the reason path must surface as an error.
+func deepseekProseResponse(t *testing.T) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   "deepseek-v4-pro",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]any{
+					"role":              "assistant",
+					"reasoning_content": "thinking out loud",
+					"content":           "I think the claim is credible.",
+				},
+				"finish_reason": "stop",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return string(body)
+}
+
 // geminiTestClient points a Gemini-provider Client at a fake server.
 func geminiTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
@@ -567,6 +634,178 @@ func TestNewClientDefaultsDeepSeekModelWhenEmpty(t *testing.T) {
 	}
 	if captured["model"] != defaultDeepSeekModel {
 		t.Errorf("model = %v, want default %s", captured["model"], defaultDeepSeekModel)
+	}
+}
+
+func TestReasonRejectsNonPositiveMaxTokens(t *testing.T) {
+	t.Parallel()
+	c, err := NewClient(Config{DeepSeekAPIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	req := testRequest()
+	req.MaxTokens = 0
+	if _, err := Reason[testVerdict](context.Background(), c, req); err == nil ||
+		!strings.Contains(err.Error(), "MaxTokens must be positive") {
+		t.Fatalf("err = %v, want a MaxTokens guard error", err)
+	}
+}
+
+func TestReasonDeepSeekResponseHandling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		want    testVerdict
+		wantErr string
+	}{
+		{
+			name: "decodes tool arguments from a thinking-mode reply",
+			body: deepseekReasonResponse(t, testTool, map[string]any{"flag": true, "reason": "because"}),
+			want: testVerdict{Flag: true, Reason: "because"},
+		},
+		{
+			name:    "prose answer without a tool call errors",
+			body:    deepseekProseResponse(t),
+			wantErr: "no " + testTool,
+		},
+		{
+			name:    "malformed tool arguments errors",
+			body:    deepseekReasonResponse(t, testTool, map[string]any{"flag": "not-a-bool", "reason": ""}),
+			wantErr: "decode " + testTool,
+		},
+		{
+			name:    "transport error propagates",
+			status:  http.StatusInternalServerError,
+			body:    `{"error":{"message":"boom","type":"server_error"}}`,
+			wantErr: "reasoning tool call",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := deepseekTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				_, _ = io.WriteString(w, tc.body)
+			})
+
+			got, err := Reason[testVerdict](context.Background(), c, testRequest())
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Reason: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("verdict = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReasonDeepSeekEnablesThinkingWithAutoToolChoice(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekReasonResponse(t, testTool, map[string]any{"flag": false, "reason": ""}))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewClient(Config{Provider: ProviderDeepSeek, DeepSeekAPIKey: "test-key", Model: "deepseek-v4-pro"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := Reason[testVerdict](context.Background(), c, testRequest()); err != nil {
+		t.Fatalf("Reason: %v", err)
+	}
+
+	if captured["model"] != "deepseek-v4-pro" {
+		t.Errorf("model = %v, want the supplied deepseek-v4-pro", captured["model"])
+	}
+	// Thinking must be enabled on the reason path.
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Errorf("thinking = %v, want {type: enabled}", captured["thinking"])
+	}
+	// The tool_choice MUST be the auto string, never a forced (named) object:
+	// DeepSeek rejects a forced named tool_choice while thinking is enabled.
+	if captured["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v (%T), want the auto string", captured["tool_choice"], captured["tool_choice"])
+	}
+	// The penalty knobs DeepSeek rejects must still never be sent.
+	if _, ok := captured["frequency_penalty"]; ok {
+		t.Errorf("frequency_penalty must not be sent, got %v", captured["frequency_penalty"])
+	}
+	if _, ok := captured["presence_penalty"]; ok {
+		t.Errorf("presence_penalty must not be sent, got %v", captured["presence_penalty"])
+	}
+}
+
+func TestReasonAnthropicOffersToolWithAutoChoice(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, anthropicToolResponse(t, map[string]any{"flag": true, "reason": "because"}))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewClient(Config{Provider: ProviderAnthropic, APIKey: "test-key"}, WithBaseURL(server.URL), WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	got, err := Reason[testVerdict](context.Background(), c, testRequest())
+	if err != nil {
+		t.Fatalf("Reason: %v", err)
+	}
+	if want := (testVerdict{Flag: true, Reason: "because"}); got != want {
+		t.Errorf("verdict = %+v, want %+v", got, want)
+	}
+	choice, ok := captured["tool_choice"].(map[string]any)
+	if !ok || choice["type"] != "auto" {
+		t.Errorf("tool_choice = %v, want an auto choice (never forced by name)", captured["tool_choice"])
+	}
+}
+
+func TestReasonGeminiOffersFunctionWithAutoMode(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	c := geminiTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, geminiFunctionResponse(t, testTool, map[string]any{"flag": true, "reason": "because"}))
+	})
+
+	got, err := Reason[testVerdict](context.Background(), c, testRequest())
+	if err != nil {
+		t.Fatalf("Reason: %v", err)
+	}
+	if want := (testVerdict{Flag: true, Reason: "because"}); got != want {
+		t.Errorf("verdict = %+v, want %+v", got, want)
+	}
+	toolConfig, ok := captured["toolConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolConfig missing in %v", captured)
+	}
+	fcc, ok := toolConfig["functionCallingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("functionCallingConfig missing in %v", toolConfig)
+	}
+	if fcc["mode"] != "AUTO" {
+		t.Errorf("mode = %v, want AUTO (offered, not forced)", fcc["mode"])
 	}
 }
 
