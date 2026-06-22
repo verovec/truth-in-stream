@@ -36,18 +36,25 @@ export function insecureOption(issuer: string): {
 const authServerCache = new Map<string, Promise<oauth.AuthorizationServer>>();
 
 // authServer discovers and caches the Keycloak authorization-server metadata for
-// the configured issuer.
+// the configured issuer. Discovery is fetched from internalUrl (the host this
+// server can reach) but validated against the public issuer: in the split-horizon
+// dev stack the realm is fetched over keycloak:8081 yet advertises the public
+// localhost:8081 issuer, so the returned metadata carries browser-facing
+// authorize/logout endpoints on the public host and back-channel token/jwks
+// endpoints on the internal host (Keycloak's dynamic back-channel hostname). When
+// internalUrl === issuer (every non-split deployment) this is ordinary discovery.
 export async function authServer(): Promise<oauth.AuthorizationServer> {
-  const { issuer } = readOidcConfig();
+  const { issuer, internalUrl } = readOidcConfig();
   const cached = authServerCache.get(issuer);
   if (cached) {
     return cached;
   }
   const discovery = (async () => {
     const issuerUrl = new URL(issuer);
-    const response = await oauth.discoveryRequest(issuerUrl, {
+    const discoveryUrl = new URL(internalUrl);
+    const response = await oauth.discoveryRequest(discoveryUrl, {
       algorithm: "oidc",
-      ...insecureOption(issuer),
+      ...insecureOption(internalUrl),
     });
     return oauth.processDiscoveryResponse(issuerUrl, response);
   })();

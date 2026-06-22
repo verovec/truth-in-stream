@@ -16,6 +16,26 @@ describe("readOidcConfig", () => {
     expect(cfg.postLogoutRedirectUri).toBe("http://localhost:3000/");
   });
 
+  test("internalUrl defaults to the issuer (single-host topology)", () => {
+    expect(readOidcConfig({}).internalUrl).toBe(
+      "http://localhost:8081/realms/truth-in-stream",
+    );
+    expect(
+      readOidcConfig({ KEYCLOAK_ISSUER: "https://id.example.com/realms/prod" })
+        .internalUrl,
+    ).toBe("https://id.example.com/realms/prod");
+  });
+
+  test("KEYCLOAK_INTERNAL_URL overrides the discovery host and trims slashes", () => {
+    const cfg = readOidcConfig({
+      KEYCLOAK_ISSUER: "http://localhost:8081/realms/truth-in-stream",
+      KEYCLOAK_INTERNAL_URL: "http://keycloak:8081/realms/truth-in-stream/",
+    });
+
+    expect(cfg.issuer).toBe("http://localhost:8081/realms/truth-in-stream");
+    expect(cfg.internalUrl).toBe("http://keycloak:8081/realms/truth-in-stream");
+  });
+
   test("overrides from the environment and trims trailing slashes", () => {
     const cfg = readOidcConfig({
       KEYCLOAK_ISSUER: "https://id.example.com/realms/prod/",

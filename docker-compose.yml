@@ -859,6 +859,15 @@ services:
       SESSION_SECRET: "${SESSION_SECRET:-}"
       # Local dev runs over plain HTTP, so the session cookie cannot be Secure.
       AUTH_INSECURE_COOKIE: "true"
+      # Keycloak split-horizon for the docker dev stack. The issuer is the public
+      # string tokens carry and the browser validates (localhost:8081, reachable
+      # via the published port). The JWKS, however, is fetched server-side from
+      # inside this container, where localhost:8081 is its own loopback - so it is
+      # overridden to the compose-network hostname keycloak:8081. Keycloak serves
+      # this back-channel host because KC_HOSTNAME_BACKCHANNEL_DYNAMIC is on. In
+      # production both default to the single public HTTPS issuer.
+      KEYCLOAK_ISSUER: "http://localhost:8081/realms/truth-in-stream"
+      KEYCLOAK_JWKS_URL: "http://keycloak:8081/realms/truth-in-stream/protocol/openid-connect/certs"
       # Object storage points at the local MinIO container (path-style, static
       # dev credentials). Production uses the ECS task role, an empty endpoint,
       # and virtual-hosted addressing. Consumed by the upload API.
@@ -904,6 +913,18 @@ services:
       # browser must never call the backend cross-origin: the session cookie
       # is SameSite=Strict and only rides same-origin /api requests.
       BACKEND_URL: "http://backend:8080"
+      # Keycloak split-horizon for the OIDC login routes. KEYCLOAK_ISSUER is the
+      # public identity: tokens carry it and the browser is redirected to its
+      # authorize/logout endpoints (localhost:8081, the published port).
+      # KEYCLOAK_INTERNAL_URL is where this container runs OIDC discovery and the
+      # back-channel code/refresh token exchanges - localhost:8081 would be its own
+      # loopback, so it uses the compose-network hostname keycloak:8081. Keycloak
+      # advertises localhost:8081 for the browser-facing endpoints (KC_HOSTNAME)
+      # and keycloak:8081 for the back-channel ones (KC_HOSTNAME_BACKCHANNEL_DYNAMIC),
+      # so one discovery document serves both. In production this is unset and
+      # discovery uses the single public issuer.
+      KEYCLOAK_ISSUER: "http://localhost:8081/realms/truth-in-stream"
+      KEYCLOAK_INTERNAL_URL: "http://keycloak:8081/realms/truth-in-stream"
     ports:
       - "3000:3000"
     volumes:
@@ -931,6 +952,17 @@ services:
       # and browser validate (http://localhost:8081/realms/truth-in-stream) is the
       # same string Keycloak advertises in its OIDC discovery document.
       KC_HTTP_PORT: "8081"
+      # Split-horizon for the docker dev network (hostname v2). KC_HOSTNAME pins the
+      # browser-facing URLs (issuer, authorize, logout) to localhost:8081 - the
+      # address the host browser reaches over the published port - regardless of
+      # which internal host the request arrived on. KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+      # then resolves the back-channel URLs (token, certs/JWKS, userinfo) from the
+      # request host, so the backend and frontend, which call those from inside the
+      # compose network, get keycloak:8081 endpoints they can actually reach. One
+      # realm serves both the browser and the containers. Production sets neither:
+      # the single public HTTPS issuer is reachable by every party.
+      KC_HOSTNAME: "http://localhost:8081"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       # Enables the management /health endpoints (on :9000) the healthcheck probes.
       KC_HEALTH_ENABLED: "true"
     ports:

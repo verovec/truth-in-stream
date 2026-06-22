@@ -13,8 +13,14 @@ const DEFAULT_CLIENT_ID = "truth-in-stream-web";
 const DEFAULT_APP_URL = "http://localhost:3000";
 
 // OidcConfig is the resolved set of values every auth route handler needs.
+// issuer is the public identity tokens carry and the browser is redirected to;
+// internalUrl is where this server runs OIDC discovery and the back-channel
+// token exchanges from. They differ only in a split-horizon deployment (the
+// docker dev stack: browser reaches Keycloak at localhost:8081, this container
+// reaches it at keycloak:8081); everywhere else internalUrl === issuer.
 export interface OidcConfig {
   issuer: string;
+  internalUrl: string;
   clientId: string;
   appUrl: string;
   redirectUri: string;
@@ -33,10 +39,16 @@ type AuthEnv = Record<string, string | undefined>;
 // default reads process.env.
 export function readOidcConfig(env: AuthEnv = process.env): OidcConfig {
   const issuer = (env.KEYCLOAK_ISSUER ?? DEFAULT_ISSUER).replace(/\/$/, "");
+  // KEYCLOAK_INTERNAL_URL is the base this server uses for discovery and the
+  // back-channel token/refresh calls when the issuer host is not reachable from
+  // inside the container (the docker dev stack). It defaults to the issuer, so an
+  // unset value is the ordinary single-host topology with no behaviour change.
+  const internalUrl = (env.KEYCLOAK_INTERNAL_URL ?? issuer).replace(/\/$/, "");
   const clientId = env.KEYCLOAK_CLIENT_ID ?? DEFAULT_CLIENT_ID;
   const appUrl = (env.NEXT_PUBLIC_APP_URL ?? DEFAULT_APP_URL).replace(/\/$/, "");
   return {
     issuer,
+    internalUrl,
     clientId,
     appUrl,
     redirectUri: `${appUrl}/auth/callback`,
