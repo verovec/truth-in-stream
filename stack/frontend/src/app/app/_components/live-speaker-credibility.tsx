@@ -1,13 +1,13 @@
 "use client";
 
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
-import type { SpeakerCredibility } from "@/lib/live/speakers";
+import type { SpeakerTally } from "@/lib/live/speakers";
 
-// LiveSpeakerCredibility is the per-speaker running-trust widget on the
+// LiveSpeakerCredibility is the per-speaker breakdown panel on the
 // retrieve-then-verify path. It reads the shared live snapshot through a selector
-// and renders one row per speaker: a credibility score with the sample size behind
-// it. It renders nothing when no speaker scores exist (a legacy stream, or the
-// verify path off), so a flag-off session is unaffected.
+// and renders one row per speaker: an itemised count of the speaker's checkable
+// claims and how they broke down. It renders nothing when no speaker tallies exist
+// (a legacy stream, or the verify path off), so a flag-off session is unaffected.
 export function LiveSpeakerCredibility() {
   const speakers = useLiveAnalysisSelector(
     (snapshot) => snapshot?.speakers ?? null,
@@ -15,17 +15,12 @@ export function LiveSpeakerCredibility() {
   return <SpeakerCredibilityView speakers={speakers} />;
 }
 
-// thinSampleThreshold is the number of checked claims below which a score is
-// visually de-emphasized: with only a claim or two the Bayesian-shrunk score is
-// still close to neutral and should not read as a confident judgment.
-const thinSampleThreshold = 3;
-
-// SpeakerCredibilityView is the presentational widget. A null or empty list is the
-// no-data state (legacy stream or nothing scored yet) and renders nothing.
+// SpeakerCredibilityView is the presentational panel. A null or empty list is the
+// no-data state (legacy stream or nothing tallied yet) and renders nothing.
 export function SpeakerCredibilityView({
   speakers,
 }: {
-  speakers: SpeakerCredibility[] | null;
+  speakers: SpeakerTally[] | null;
 }) {
   if (speakers === null || speakers.length === 0) {
     return null;
@@ -47,39 +42,38 @@ export function SpeakerCredibilityView({
   );
 }
 
-// SpeakerRow is one speaker's score and sample tally. The score colour tracks the
-// same positive/negative tones as the verdict badges; a thin sample is muted so a
-// near-neutral early score does not read as a verdict. The misleading-framing
-// count is a separate affordance from the score: a speaker can be credible overall
-// yet repeatedly frame true facts dishonestly, so outright falsehood (which moves
-// the score) is shown apart from flagged framing (which does not).
-function SpeakerRow({ speaker }: { speaker: SpeakerCredibility }) {
-  const checked = speaker.credible + speaker.disputed;
-  const thin = checked < thinSampleThreshold;
-  const percent = Math.round(speaker.score * 100);
-  const tally =
-    `${checked} vérifiées` +
-    (speaker.unverifiable > 0 ? ` · ${speaker.unverifiable} invérifiables` : "");
+// SpeakerRow is one speaker's itemised verdict breakdown: how many checkable claims
+// they made and the credible / disputed / unverifiable split, plus the
+// misleading-framing count. There is no rolled-up trust number: the counts speak
+// for themselves. The misleading-framing count is a separate affordance, since a
+// speaker can make credible claims yet repeatedly frame true facts dishonestly.
+function SpeakerRow({ speaker }: { speaker: SpeakerTally }) {
+  const checkable =
+    speaker.credible + speaker.disputed + speaker.unverifiable;
+  const parts = [`${speaker.credible} crédibles`, `${speaker.disputed} contestées`];
+  if (speaker.unverifiable > 0) {
+    parts.push(`${speaker.unverifiable} invérifiables`);
+  }
+  const breakdown = parts.join(" · ");
   const framing =
     speaker.misleadingFraming > 0
       ? `${speaker.misleadingFraming} cadrage${speaker.misleadingFraming > 1 ? "s" : ""} trompeur${speaker.misleadingFraming > 1 ? "s" : ""}`
       : null;
+  const claimsLabel = `${checkable} affirmation${checkable > 1 ? "s" : ""} vérifiable${checkable > 1 ? "s" : ""}`;
   const label =
-    `Intervenant ${speaker.speaker} : ${percent} % de fiabilité, ${tally}` +
+    `Intervenant ${speaker.speaker} : ${claimsLabel}, ${breakdown}` +
     (framing ? `, ${framing}` : "");
   return (
     <li aria-label={label} className="flex items-baseline gap-2">
       <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
         {speaker.speaker}
       </span>
-      <span
-        className={`text-base font-semibold tabular-nums ${
-          thin ? "text-zinc-400 dark:text-zinc-500" : scoreTone(speaker.score)
-        }`}
-      >
-        {percent} %
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+        {claimsLabel}
       </span>
-      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{tally}</span>
+      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+        {breakdown}
+      </span>
       {framing ? (
         <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
           {framing}
@@ -87,17 +81,4 @@ function SpeakerRow({ speaker }: { speaker: SpeakerCredibility }) {
       ) : null}
     </li>
   );
-}
-
-// scoreTone maps a credibility score to the verdict palette: a score clearly above
-// neutral reads positive, clearly below reads negative, and the band around 0.5 is
-// left neutral so a borderline score is not over-claimed.
-function scoreTone(score: number): string {
-  if (score >= 0.6) {
-    return "text-emerald-700 dark:text-emerald-300";
-  }
-  if (score <= 0.4) {
-    return "text-rose-700 dark:text-rose-300";
-  }
-  return "text-zinc-900 dark:text-zinc-100";
 }

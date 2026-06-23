@@ -492,10 +492,10 @@ func LoadMatch() (Match, error) {
 	if m.ConfidenceClusterSize, err = intEnv("MATCH_CONFIDENCE_CLUSTER_SIZE", m.ConfidenceClusterSize, 1, math.MaxInt32); err != nil {
 		return Match{}, err
 	}
-	if m.ConfidenceLeadWeight, err = floatEnv("MATCH_CONFIDENCE_LEAD_WEIGHT", m.ConfidenceLeadWeight, 0, 1); err != nil {
+	if m.ConfidenceLeadWeight, err = floatEnv("MATCH_CONFIDENCE_LEAD_WEIGHT", m.ConfidenceLeadWeight); err != nil {
 		return Match{}, err
 	}
-	if m.ConfidenceBodyWeight, err = floatEnv("MATCH_CONFIDENCE_BODY_WEIGHT", m.ConfidenceBodyWeight, 0, 1); err != nil {
+	if m.ConfidenceBodyWeight, err = floatEnv("MATCH_CONFIDENCE_BODY_WEIGHT", m.ConfidenceBodyWeight); err != nil {
 		return Match{}, err
 	}
 	return m, nil
@@ -771,14 +771,6 @@ const (
 	// every claim short-circuits to a no-evidence not_enough_info verdict.
 	// FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD overrides it.
 	defaultVerifyRetrievalThreshold = 0.45
-	// defaultSpeakerScorePriorStrength is the Beta-Binomial prior pseudo-count k
-	// for the per-speaker credibility score. A symmetric Beta(k/2, k/2) prior is
-	// neutral (mean 0.5); larger k shrinks harder toward neutral, so the score
-	// moves more slowly and a speaker with one credible claim does not read as a
-	// confident 100% (k=4 puts one full-confidence credible claim at 60%).
-	// SPEAKER_SCORE_PRIOR_STRENGTH overrides it; the service package mirrors the
-	// same default for direct construction.
-	defaultSpeakerScorePriorStrength = 4.0
 	// defaultSecondPassModel is the larger DeepSeek reasoning tier the deeper
 	// second pass escalates to. It is materially more expensive per token than the
 	// flash default, which is exactly why the second pass is off the hot path and
@@ -826,9 +818,6 @@ type VerifyPath struct {
 	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
 	// discarded before the verifier ever sees it.
 	RetrievalThreshold float64
-	// SpeakerPriorStrength is the Beta-Binomial prior pseudo-count for the
-	// per-speaker credibility score. Larger values move the score more slowly.
-	SpeakerPriorStrength float64
 }
 
 // Active reports whether the retrieve-then-verify path should be wired: it is
@@ -846,15 +835,14 @@ func (v VerifyPath) Active() bool {
 // whole feature (default off). The secret is read but never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
-		MaxClaimsPerUnit:     defaultVerifyMaxClaimsPerUnit,
-		FastTau:              defaultVerifyFastTau,
-		Concurrency:          defaultVerifyConcurrency,
-		QueueDepth:           defaultVerifyQueueDepth,
-		FastDeadline:         defaultVerifyFastDeadline,
-		VerifyDeadline:       defaultVerifyDeadline,
-		CacheTTL:             defaultVerifyCacheTTL,
-		RetrievalThreshold:   defaultVerifyRetrievalThreshold,
-		SpeakerPriorStrength: defaultSpeakerScorePriorStrength,
+		MaxClaimsPerUnit:   defaultVerifyMaxClaimsPerUnit,
+		FastTau:            defaultVerifyFastTau,
+		Concurrency:        defaultVerifyConcurrency,
+		QueueDepth:         defaultVerifyQueueDepth,
+		FastDeadline:       defaultVerifyFastDeadline,
+		VerifyDeadline:     defaultVerifyDeadline,
+		CacheTTL:           defaultVerifyCacheTTL,
+		RetrievalThreshold: defaultVerifyRetrievalThreshold,
 	}
 	llmSel, err := loadLLMSelection()
 	if err != nil {
@@ -889,11 +877,6 @@ func LoadVerifyPath() (VerifyPath, error) {
 	}
 	// 0 disables the repeated-claim cache; a positive value is the collapse window.
 	if v.CacheTTL, err = durationEnvAllowZero("FACTCHECK_VERIFY_CACHE_TTL", v.CacheTTL); err != nil {
-		return VerifyPath{}, err
-	}
-	// The prior strength must stay positive (a non-positive k has no valid Beta
-	// prior); the lower bound keeps it meaningfully above a single observation.
-	if v.SpeakerPriorStrength, err = floatEnv("SPEAKER_SCORE_PRIOR_STRENGTH", v.SpeakerPriorStrength, 0.5, 1000); err != nil {
 		return VerifyPath{}, err
 	}
 	return v, nil
@@ -945,10 +928,10 @@ func LoadSecondPass() (SecondPass, error) {
 	}
 	s.APIKey = getenv("FACTCHECK_SECOND_PASS_API_KEY", "")
 	s.Model = getenv("FACTCHECK_SECOND_PASS_MODEL", llmSel.secondPassModel())
-	if s.BandLo, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_LO", s.BandLo, 0, 1); err != nil {
+	if s.BandLo, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_LO", s.BandLo); err != nil {
 		return SecondPass{}, err
 	}
-	if s.BandHi, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_HI", s.BandHi, 0, 1); err != nil {
+	if s.BandHi, err = floatEnv("FACTCHECK_SECOND_PASS_BAND_HI", s.BandHi); err != nil {
 		return SecondPass{}, err
 	}
 	if s.BandLo > s.BandHi {
@@ -1901,7 +1884,7 @@ func LoadWikiDelta() (WikiDelta, error) {
 	if w.RetentionDays, err = intEnv("WIKI_DELTA_RETENTION_DAYS", w.RetentionDays, 1, maxWikiDeltaRetentionDays); err != nil {
 		return WikiDelta{}, err
 	}
-	if w.BulkFraction, err = floatEnv("WIKI_DELTA_BULK_FRACTION", w.BulkFraction, 0, 1); err != nil {
+	if w.BulkFraction, err = floatEnv("WIKI_DELTA_BULK_FRACTION", w.BulkFraction); err != nil {
 		return WikiDelta{}, err
 	}
 	return w, nil
@@ -2183,9 +2166,9 @@ func intEnv(key string, fallback, low, high int) (int, error) {
 	return v, nil
 }
 
-// floatEnv reads a float environment variable, applying fallback when unset and
-// enforcing an inclusive [low, high] range.
-func floatEnv(key string, fallback, low, high float64) (float64, error) {
+// floatEnv reads a unit-interval float environment variable, applying fallback
+// when unset and enforcing an inclusive [0, 1] range.
+func floatEnv(key string, fallback float64) (float64, error) {
 	raw := os.Getenv(key)
 	if raw == "" {
 		return fallback, nil
@@ -2194,8 +2177,8 @@ func floatEnv(key string, fallback, low, high float64) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("config: %s %q: %w", key, raw, err)
 	}
-	if v < low || v > high {
-		return 0, fmt.Errorf("config: %s must be in [%g, %g], got %g", key, low, high, v)
+	if v < 0 || v > 1 {
+		return 0, fmt.Errorf("config: %s must be in [0, 1], got %g", key, v)
 	}
 	return v, nil
 }

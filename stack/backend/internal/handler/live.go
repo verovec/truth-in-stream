@@ -213,11 +213,10 @@ type claimResultFrame struct {
 	Error       string                `json:"error,omitempty"`
 }
 
-// speakerScoreFrame is the wire form of a speaker-score event (retrieve-then-verify
-// path): a speaker's running credibility score in [0,1] and the verdict tallies
-// that produced it, so the client can render a per-speaker credibility widget keyed
-// on speaker and de-emphasize a thin sample. It is additive - a client that does
-// not understand it drops the frame and renders everything else unchanged.
+// speakerTallyFrame is the wire form of a speaker-tally event (retrieve-then-verify
+// path): a speaker's running verdict counts, so the client can render a per-speaker
+// itemized breakdown keyed on speaker. It is additive - a client that does not
+// understand it drops the frame and renders everything else unchanged.
 //
 // MisleadingFraming is the political path's separate count of the speaker's claims
 // that carried at least one manipulation flag, orthogonal to the credibility
@@ -225,14 +224,13 @@ type claimResultFrame struct {
 // misleading framing. It is omitted when zero, so the credibility-only path (which
 // never flags a claim) keeps its byte-for-byte wire shape; the frontend treats an
 // absent value as zero.
-type speakerScoreFrame struct {
-	Type              string  `json:"type"`
-	Speaker           string  `json:"speaker"`
-	Score             float64 `json:"score"`
-	Credible          int     `json:"credible"`
-	Disputed          int     `json:"disputed"`
-	Unverifiable      int     `json:"unverifiable"`
-	MisleadingFraming int     `json:"misleading_framing,omitempty"`
+type speakerTallyFrame struct {
+	Type              string `json:"type"`
+	Speaker           string `json:"speaker"`
+	Credible          int    `json:"credible"`
+	Disputed          int    `json:"disputed"`
+	Unverifiable      int    `json:"unverifiable"`
+	MisleadingFraming int    `json:"misleading_framing,omitempty"`
 }
 
 // liveHandler upgrades the request to a WebSocket and bridges it to the live
@@ -477,20 +475,19 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent,
 			Speaker: ev.Segment.Speaker,
 		})
 	}
-	if ev.Kind == service.LiveEventSpeakerScore {
-		// The service always sets SpeakerScore for this kind; the guard keeps a
-		// malformed event from emitting a zero-valued score frame.
-		if ev.SpeakerScore == nil {
+	if ev.Kind == service.LiveEventSpeakerTally {
+		// The service always sets SpeakerTally for this kind; the guard keeps a
+		// malformed event from emitting a zero-valued tally frame.
+		if ev.SpeakerTally == nil {
 			return nil
 		}
-		return wsjson.Write(ctx, conn, speakerScoreFrame{
+		return wsjson.Write(ctx, conn, speakerTallyFrame{
 			Type:              string(ev.Kind),
-			Speaker:           ev.SpeakerScore.Speaker,
-			Score:             ev.SpeakerScore.Score,
-			Credible:          ev.SpeakerScore.Credible,
-			Disputed:          ev.SpeakerScore.Disputed,
-			Unverifiable:      ev.SpeakerScore.Unverifiable,
-			MisleadingFraming: ev.SpeakerScore.MisleadingFraming,
+			Speaker:           ev.SpeakerTally.Speaker,
+			Credible:          ev.SpeakerTally.Credible,
+			Disputed:          ev.SpeakerTally.Disputed,
+			Unverifiable:      ev.SpeakerTally.Unverifiable,
+			MisleadingFraming: ev.SpeakerTally.MisleadingFraming,
 		})
 	}
 	if ev.Kind == service.LiveEventClaims {

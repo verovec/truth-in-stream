@@ -62,7 +62,7 @@ func sampleEvents() []LiveEvent {
 		},
 		{Kind: LiveEventResult, ID: "1", Segment: seg, Matches: []domain.SegmentMatch{cite}, Confidence: &conf},
 		{Kind: LiveEventConsistency, ID: "2", Segment: seg, Consistency: &ConsistencyFlag{EarlierID: "0", EarlierText: "flat", Speaker: "A", Rationale: "contradiction"}},
-		{Kind: LiveEventSpeakerScore, SpeakerScore: &SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, MisleadingFraming: 1}},
+		{Kind: LiveEventSpeakerTally, SpeakerTally: &SpeakerTally{Speaker: "A", Credible: 1, MisleadingFraming: 1}},
 	}
 }
 

@@ -212,11 +212,11 @@ func TestPoliticalPathEventLifecycleCarriesLiteralFlagsSource(t *testing.T) {
 	}
 }
 
-func TestPoliticalPathScoreMovesAndFramingTallyMoves(t *testing.T) {
+func TestPoliticalPathTalliesMoveAndFramingTallyMoves(t *testing.T) {
 	t.Parallel()
-	// The flag-aware aggregator: an accurate claim moves the score up, an inaccurate
-	// claim moves it down, and a flagged claim moves the misleading-framing tally
-	// independently of the literal verdict.
+	// The flag-aware aggregator: an accurate claim bumps the credible count, an
+	// inaccurate claim bumps the disputed count, and a flagged claim moves the
+	// misleading-framing tally independently of the literal verdict.
 	unit := "trois affirmations."
 	accClaim, inaccClaim, flaggedClaim := "fait exact.", "fait faux.", "fait exact mais trompeur."
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{
@@ -245,27 +245,27 @@ func TestPoliticalPathScoreMovesAndFramingTallyMoves(t *testing.T) {
 		},
 	}}
 
+	// Concurrency and queue depth cover all three claims so none is shed for
+	// capacity: every claim reaches a verdict and emits its tally, making the
+	// cumulative final snapshot deterministic regardless of completion order.
 	a := politicalFixture(t, stream, matcher, VerifyPathConfig{
-		Decomposer:    fakeDecomposer{byText: map[string][]string{unit: {accClaim, inaccClaim, flaggedClaim}}},
-		Verifier:      &fakeVerifier{},
-		PriorStrength: 4,
+		Decomposer:        fakeDecomposer{byText: map[string][]string{unit: {accClaim, inaccClaim, flaggedClaim}}},
+		Verifier:          &fakeVerifier{},
+		VerifyConcurrency: 3,
+		VerifyQueueDepth:  3,
 	}, PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier})
 
 	events := runVerifyPath(t, a)
 
-	scores := speakerScores(events)
-	if len(scores) == 0 {
-		t.Fatal("no speaker score events emitted")
+	tallies := speakerTallies(events)
+	if len(tallies) != 3 {
+		t.Fatalf("speaker tally events = %d, want 3 (one per reached verdict)", len(tallies))
 	}
-	final := maxSampleScore(scores)
+	final := maxSampleTally(tallies)
 	// accurate -> credible, inaccurate -> disputed, the flagged accurate -> credible
 	// too: two credible, one disputed.
 	if final.Credible != 2 || final.Disputed != 1 {
 		t.Fatalf("tallies = credible %d disputed %d, want 2/1", final.Credible, final.Disputed)
-	}
-	// (k/2 + S) / (k + S + F) = (2 + 0.8 + 0.8) / (4 + 1.6 + 0.8) = 3.6 / 6.4.
-	if want := 3.6 / 6.4; !approxEqual(final.Score, want) {
-		t.Fatalf("score = %v, want %v", final.Score, want)
 	}
 	// Exactly one claim carried a flag, so the misleading-framing tally is 1.
 	if final.MisleadingFraming != 1 {
@@ -479,7 +479,6 @@ func TestPoliticalPathCacheReplayPreservesFramingTally(t *testing.T) {
 		FastDeadline:      time.Second,
 		VerifyDeadline:    time.Second,
 		CacheTTL:          time.Minute,
-		PriorStrength:     4,
 		Political:         &PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier},
 	}
 	vp, err := NewVerifyPath(vpCfg)
@@ -503,7 +502,7 @@ func TestPoliticalPathCacheReplayPreservesFramingTally(t *testing.T) {
 	}
 	// Both occurrences fold their flag into the framing tally, so the final snapshot
 	// counts two flagged claims even though only one was verified.
-	final := maxSampleScore(speakerScores(events))
+	final := maxSampleTally(speakerTallies(events))
 	if final.MisleadingFraming != 2 {
 		t.Fatalf("misleading framing = %d, want 2 (cache replay must not drop the framing axis)", final.MisleadingFraming)
 	}

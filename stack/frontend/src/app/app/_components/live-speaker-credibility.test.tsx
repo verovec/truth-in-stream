@@ -1,13 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import type { SpeakerCredibility } from "@/lib/live/speakers";
+import type { SpeakerTally } from "@/lib/live/speakers";
 import { SpeakerCredibilityView } from "./live-speaker-credibility";
 
-const speaker = (
-  overrides: Partial<SpeakerCredibility> = {},
-): SpeakerCredibility => ({
+const speaker = (overrides: Partial<SpeakerTally> = {}): SpeakerTally => ({
   speaker: "A",
-  score: 0.6,
   credible: 2,
   disputed: 1,
   unverifiable: 0,
@@ -28,35 +25,44 @@ describe("SpeakerCredibilityView", () => {
     expect(none).toBeEmptyDOMElement();
   });
 
-  test("renders one row per speaker with score and sample tally", () => {
+  test("renders one row per speaker with the itemised verdict breakdown", () => {
     render(
       <SpeakerCredibilityView
         speakers={[
-          speaker({ speaker: "A", score: 0.62, credible: 3, disputed: 2 }),
-          speaker({ speaker: "B", score: 0.4, credible: 1, disputed: 3, unverifiable: 2 }),
+          speaker({ speaker: "A", credible: 3, disputed: 2 }),
+          speaker({ speaker: "B", credible: 1, disputed: 3, unverifiable: 2 }),
         ]}
       />,
     );
 
     expect(
-      screen.getByLabelText(/Intervenant A : 62 % de fiabilité, 5 vérifiées/i),
+      screen.getByLabelText(
+        /Intervenant A : 5 affirmations vérifiables, 3 crédibles · 2 contestées/i,
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText(
-        /Intervenant B : 40 % de fiabilité, 4 vérifiées · 2 invérifiables/i,
+        /Intervenant B : 6 affirmations vérifiables, 1 crédibles · 3 contestées · 2 invérifiables/i,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("62 %")).toBeInTheDocument();
   });
 
-  test("omits the unverifiable tally when there are none", () => {
+  test("shows no rolled-up percentage or score", () => {
     render(
-      <SpeakerCredibilityView speakers={[speaker({ unverifiable: 0 })]} />,
+      <SpeakerCredibilityView
+        speakers={[speaker({ credible: 3, disputed: 2 })]}
+      />,
     );
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fiabilité,/i)).not.toBeInTheDocument();
+  });
+
+  test("omits the unverifiable count when there are none", () => {
+    render(<SpeakerCredibilityView speakers={[speaker({ unverifiable: 0 })]} />);
     expect(screen.queryByText(/invérifiable/i)).not.toBeInTheDocument();
   });
 
-  test("shows a distinct misleading-framing tally separate from the credibility score", () => {
+  test("shows a distinct misleading-framing tally separate from the verdict counts", () => {
     render(
       <SpeakerCredibilityView
         speakers={[
@@ -64,9 +70,9 @@ describe("SpeakerCredibilityView", () => {
         ]}
       />,
     );
-    // The framing count is its own affordance, orthogonal to the score: a speaker
-    // can be credible overall yet have flagged framing.
-    expect(screen.getByText(/2 cadrage/i)).toBeInTheDocument();
+    // The framing count is its own affordance, orthogonal to the verdict counts: a
+    // speaker can make credible claims yet have flagged framing.
+    expect(screen.getByText(/2 cadrages trompeurs/i)).toBeInTheDocument();
   });
 
   test("omits the misleading-framing tally when there is none", () => {
@@ -76,15 +82,15 @@ describe("SpeakerCredibilityView", () => {
     expect(screen.queryByText(/cadrage/i)).not.toBeInTheDocument();
   });
 
-  test("de-emphasizes a thin sample so an early score reads as tentative", () => {
-    render(
+  test("renders no colour-banded score element", () => {
+    const { container } = render(
       <SpeakerCredibilityView
-        speakers={[speaker({ speaker: "A", score: 0.6, credible: 1, disputed: 0 })]}
+        speakers={[speaker({ credible: 5, disputed: 0 })]}
       />,
     );
-    // One checked claim is below the thin threshold: the score is muted rather
-    // than coloured as a confident positive verdict.
-    const score = screen.getByText("60 %");
-    expect(score.className).toContain("text-zinc-400");
+    // The old widget tinted a score green/red; the itemised breakdown carries no
+    // such verdict-palette element.
+    expect(container.querySelector(".text-emerald-700")).toBeNull();
+    expect(container.querySelector(".text-rose-700")).toBeNull();
   });
 });

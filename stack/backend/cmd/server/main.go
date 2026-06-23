@@ -618,7 +618,6 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 		FastDeadline:      cfg.FastDeadline,
 		VerifyDeadline:    cfg.VerifyDeadline,
 		CacheTTL:          cfg.CacheTTL,
-		PriorStrength:     cfg.SpeakerPriorStrength,
 		Logger:            logger,
 		Political:         pol,
 		SecondPass:        secondPassCfg,

@@ -142,7 +142,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		verdict := politicalNoEvidenceVerdict()
 		vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
-		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 		return
 	}
@@ -161,7 +161,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 	}
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
-	vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 }
 
