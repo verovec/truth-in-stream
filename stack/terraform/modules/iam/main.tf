@@ -43,12 +43,15 @@ data "aws_iam_policy_document" "deploy_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Pinned to one ref: PR branches and forks can never assume the deploy
-    # role. workflow_dispatch from another branch is rejected by design.
+    # Pinned to an explicit allowlist of refs: PR branches and forks can never
+    # assume the deploy role. StringLike (not StringEquals) so a bounded glob
+    # like refs/tags/v* authorizes the tag-release path (release.yml) while a
+    # literal ref like refs/heads/main still matches exactly. Never widen any
+    # entry to refs/* — see github_deploy_refs.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:${var.github_deploy_ref}"]
+      values   = [for r in var.github_deploy_refs : "repo:${var.github_repository}:ref:${r}"]
     }
   }
 }

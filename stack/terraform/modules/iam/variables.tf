@@ -13,10 +13,10 @@ variable "github_repository" {
   description = "GitHub org/repo allowed to assume the deploy role (e.g. verovec/truth-in-stream)."
 }
 
-variable "github_deploy_ref" {
-  type        = string
-  default     = "refs/heads/main"
-  description = "Git ref whose workflow runs may assume the deploy role. Never widen to a wildcard; PR-time previews get their own weaker role if ever needed."
+variable "github_deploy_refs" {
+  type        = list(string)
+  default     = ["refs/heads/main"]
+  description = "Git refs whose workflow runs may assume the deploy role, matched with StringLike on the OIDC sub. Each entry may use a bounded glob (e.g. refs/tags/v* for the tag-release path). Never set a blanket wildcard (refs/*) — PR branches and forks must never assume the deploy role; PR-time previews get their own weaker role if ever needed."
 }
 
 variable "create_oidc_provider" {

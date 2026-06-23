@@ -250,6 +250,10 @@ module "iam" {
   project           = local.project
   environment       = var.environment
   github_repository = local.github_repository
+  # main for terraform-apply on merge and manual workflow_dispatch deploys;
+  # refs/tags/v* for the tag-triggered prod release (release.yml). Both are
+  # human-gated production gestures. Never widen to a blanket wildcard.
+  github_deploy_refs = ["refs/heads/main", "refs/tags/v*"]
   # The OIDC provider is account-global and owned by the dev environment.
   create_oidc_provider = false
 
