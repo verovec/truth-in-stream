@@ -13,6 +13,8 @@ import {
   submitYoutubeUrl,
 } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
+import { ExportControls } from "@/components/export/export-controls";
+import type { Role } from "@/lib/auth/token";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { LiveSpeakerCredibility } from "./live-speaker-credibility";
 import { LiveSummaryStrip } from "./live-summary-strip";
@@ -95,12 +97,14 @@ function firstReadyId(videos: LibraryVideo[]): string | null {
 // data) so it rides the same-origin proxy that makes the backend session cookie
 // first-party; loadVideos and uploader are injection seams for tests.
 export function LibraryExperience({
+  role = "guest",
   loadVideos = listVideos,
   pollVideos = listVideos,
   uploader,
   submitYoutube = submitYoutubeUrl,
   pollIntervalMs = DEFAULT_YOUTUBE_POLL_MS,
 }: {
+  role?: Role;
   loadVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
   pollVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
   uploader?: PutUploader;
@@ -282,6 +286,7 @@ export function LibraryExperience({
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="flex flex-col gap-4">
               <PlayerStage active={active} />
+              <ExportControls role={role} videoId={activeVideoId} />
               <section className="flex flex-col gap-3">
                 {nowPlayingTitle ? (
                   <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
