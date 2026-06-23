@@ -106,6 +106,33 @@ echo "TEST: wiki-populate runs the bulk override on the same wikisync family"
   assert_contains "$log" "-mode=bulk" "wiki-populate runs bulk mode"
 )
 
+echo "TEST: wikicrawl resolves to its own family with no default override"
+(
+  make_sandbox
+  bash "$RUN" wikicrawl >/dev/null 2>&1
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" "--task-definition truth-in-stream-prod-wikicrawl" "wikicrawl targets its prefixed family"
+  assert_not_contains "$log" "--overrides" "wikicrawl passes no command override"
+)
+
+echo "TEST: factcheckcrawl resolves to its own family with no default override"
+(
+  make_sandbox
+  bash "$RUN" factcheckcrawl >/dev/null 2>&1
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" "--task-definition truth-in-stream-prod-factcheckcrawl" "factcheckcrawl targets its prefixed family"
+  assert_not_contains "$log" "--overrides" "factcheckcrawl passes no command override"
+)
+
+echo "TEST: scrutinscrawl resolves to its own family with no default override"
+(
+  make_sandbox
+  bash "$RUN" scrutinscrawl >/dev/null 2>&1
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" "--task-definition truth-in-stream-prod-scrutinscrawl" "scrutinscrawl targets its prefixed family"
+  assert_not_contains "$log" "--overrides" "scrutinscrawl passes no command override"
+)
+
 echo "TEST: an explicit -- override replaces the default command"
 (
   make_sandbox

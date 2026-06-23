@@ -38,7 +38,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # resolve_ingest INGEST: set FAMILY and DEFAULT_OVERRIDE for a known ingest, or
 # fail. wiki-populate and wikisync share the one wikisync family, differing only
-# by the mode override - the same image, two entry points by command.
+# by the mode override - the same image, two entry points by command. The crawl
+# producers (wikicrawl, factcheckcrawl, scrutinscrawl) each own a distinct family
+# and take no default override; their behaviour is driven by environment the
+# /ingest orchestrator validates, not by a command flag.
 resolve_ingest() {
   case "$1" in
     statsingest)
@@ -47,8 +50,14 @@ resolve_ingest() {
       FAMILY="wikisync"; DEFAULT_OVERRIDE=("-mode=delta") ;;
     wiki-populate)
       FAMILY="wikisync"; DEFAULT_OVERRIDE=("-mode=bulk") ;;
+    wikicrawl)
+      FAMILY="wikicrawl"; DEFAULT_OVERRIDE=() ;;
+    factcheckcrawl)
+      FAMILY="factcheckcrawl"; DEFAULT_OVERRIDE=() ;;
+    scrutinscrawl)
+      FAMILY="scrutinscrawl"; DEFAULT_OVERRIDE=() ;;
     *)
-      ig_fatal "unknown ingest '$1'; one of: statsingest wikisync wiki-populate" ;;
+      ig_fatal "unknown ingest '$1'; one of: statsingest wikisync wiki-populate wikicrawl factcheckcrawl scrutinscrawl" ;;
   esac
 }
 
@@ -69,7 +78,7 @@ build_overrides() {
 
 main() {
   local ingest="${1:-}"
-  [[ -n "$ingest" ]] || ig_fatal "usage: $0 <statsingest|wikisync|wiki-populate> [-- override...]"
+  [[ -n "$ingest" ]] || ig_fatal "usage: $0 <statsingest|wikisync|wiki-populate|wikicrawl|factcheckcrawl|scrutinscrawl> [-- override...]"
   shift
 
   local -a override=()
