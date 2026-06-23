@@ -28,7 +28,7 @@ export function AppShell({
         <LogoutButton />
       </header>
       <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
-        <LibraryExperience />
+        <LibraryExperience role={role} />
       </main>
       {authenticated && <SessionKeepalive />}
       <DebugSurface role={role} />

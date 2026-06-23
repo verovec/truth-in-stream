@@ -35,6 +35,13 @@ func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeS
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
 	// Live fact-check stream (WebSocket). See live.go.
 	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, recorder, replayer, liveAllowedOrigins, debugFactCheck, logger))
+	// Admin-only exports of a completed video's cached analysis: an SRT transcript
+	// and a CSV decision trace. They read the snapshot the live route persists via
+	// the same replayer and never run transcription or an LLM. RequireAdmin gates
+	// them on a verified admin claim with 403, mirroring the debug surface. See
+	// export.go.
+	api.Handle("GET /api/videos/{id}/export/transcript.srt", middleware.RequireAdmin(exportTranscriptHandler(videos, replayer)))
+	api.Handle("GET /api/videos/{id}/export/claims.csv", middleware.RequireAdmin(exportClaimsHandler(videos, replayer)))
 	// Developer wiki-search probe (WebSocket), dev only. Registered solely when a
 	// searcher is supplied (the debug flag is on), so the route does not exist in
 	// production. It shares the live socket's origin allow-list. See debug_search.go.
