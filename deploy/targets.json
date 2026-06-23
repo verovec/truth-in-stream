@@ -1,0 +1,5 @@
+{
+  "_comment": "Local source of truth for the /ingest account guard (scripts/aws-target-guard.sh). The expected AWS account id per environment, compared against the live `sts get-caller-identity` account before any mutation. AWS account ids are identifiers, not secrets, so committing them is correct and is what makes the guard trustworthy. prod is the app account that owns the ECS cluster and ingestion families (965638922723, region eu-west-3, per stack/terraform/README.md). dev has no committed account id yet (the dev terraform root carries only the region); fill the real dev account id here before running /ingest against dev, or the guard will refuse with the placeholder mismatch.",
+  "dev": { "account_id": "000000000000", "region": "eu-west-3" },
+  "prod": { "account_id": "965638922723", "region": "eu-west-3" }
+}
