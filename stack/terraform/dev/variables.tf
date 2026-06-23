@@ -187,6 +187,120 @@ variable "crawl_worker_max_attempts" {
   description = "Per-job delivery budget before a persistent failure is dropped with a log (CRAWL_WORKER_MAX_ATTEMPTS)."
 }
 
+variable "enable_factcheck_producer" {
+  type        = bool
+  default     = false
+  description = "Create the on-demand fact-check producer family (factcheckcrawl). It reads the Google Fact Check Tools API and publishes curated-claim jobs; it has no database, so it is gated only on this flag. Default false; launched with `aws ecs run-task`."
+}
+
+variable "factcheck_producer_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units for the factcheckcrawl producer task (1024 = 1 vCPU)."
+}
+
+variable "factcheck_producer_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB for the factcheckcrawl producer task."
+}
+
+variable "factcheck_queries" {
+  type        = string
+  default     = "désinformation"
+  description = "Default comma-separated Fact Check Tools queries the factcheckcrawl producer runs (FACTCHECK_QUERIES). Overridable per run via the run-task command."
+}
+
+variable "enable_scrutins_producer" {
+  type        = bool
+  default     = false
+  description = "Create the on-demand scrutins producer family (scrutinscrawl). It downloads the Assemblee Nationale open-data archive and publishes scrutin jobs; it has no database and no secret, so it is gated only on this flag. Default false; launched with `aws ecs run-task`."
+}
+
+variable "scrutins_producer_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units for the scrutinscrawl producer task (1024 = 1 vCPU)."
+}
+
+variable "scrutins_producer_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB for the scrutinscrawl producer task."
+}
+
+variable "enable_factcheck_worker" {
+  type        = bool
+  default     = false
+  description = "Create the fact-check-worker service (factcheckworker), draining the factcheck.claims queue and upserting curated claims. Requires enable_rds; runs under an EXTERNAL deployment controller, so the worker-lifecycle lambda owns its task sets and scale via the factcheckworker entry in worker_lifecycle_scaling_config. Default false."
+}
+
+variable "factcheck_worker_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units per fact-check-worker replica (1024 = 1 vCPU)."
+}
+
+variable "factcheck_worker_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB per fact-check-worker replica."
+}
+
+variable "factcheck_worker_desired_count" {
+  type        = number
+  default     = 2
+  description = "Number of fact-check-worker replicas. Scale this to scale fact-check ingestion throughput."
+}
+
+variable "factcheck_worker_concurrency" {
+  type        = number
+  default     = 4
+  description = "Jobs one fact-check-worker replica processes in parallel (CRAWL_WORKER_CONCURRENCY, the shared worker tuning the binary reads)."
+}
+
+variable "factcheck_worker_max_attempts" {
+  type        = number
+  default     = 5
+  description = "Per-job delivery budget before a persistent failure is dropped with a log (CRAWL_WORKER_MAX_ATTEMPTS, the shared worker tuning the binary reads)."
+}
+
+variable "enable_scrutins_worker" {
+  type        = bool
+  default     = false
+  description = "Create the scrutins-worker service (scrutinsworker), draining the scrutins.votes queue and upserting vote records. Requires enable_rds; runs under an EXTERNAL deployment controller, so the worker-lifecycle lambda owns its task sets and scale via the scrutinsworker entry in worker_lifecycle_scaling_config. Default false."
+}
+
+variable "scrutins_worker_cpu" {
+  type        = number
+  default     = 1024
+  description = "Fargate CPU units per scrutins-worker replica (1024 = 1 vCPU)."
+}
+
+variable "scrutins_worker_memory" {
+  type        = number
+  default     = 2048
+  description = "Fargate memory in MiB per scrutins-worker replica."
+}
+
+variable "scrutins_worker_desired_count" {
+  type        = number
+  default     = 2
+  description = "Number of scrutins-worker replicas. Scale this to scale scrutins ingestion throughput."
+}
+
+variable "scrutins_worker_concurrency" {
+  type        = number
+  default     = 4
+  description = "Jobs one scrutins-worker replica processes in parallel (SCRUTINS_WORKER_CONCURRENCY)."
+}
+
+variable "scrutins_worker_max_attempts" {
+  type        = number
+  default     = 5
+  description = "Per-job delivery budget before a persistent failure is dropped with a log (SCRUTINS_WORKER_MAX_ATTEMPTS)."
+}
+
 variable "db_backup_schedule" {
   type        = string
   default     = "cron(0 4 * * ? *)"
@@ -252,6 +366,20 @@ variable "worker_lifecycle_scaling_config" {
       max              = 0
       cooldown_seconds = 180
     }
+    factcheckworker = {
+      queue_base       = "factcheck.claims"
+      ratio            = 200
+      min              = 0
+      max              = 0
+      cooldown_seconds = 180
+    }
+    scrutinsworker = {
+      queue_base       = "scrutins.votes"
+      ratio            = 200
+      min              = 0
+      max              = 0
+      cooldown_seconds = 180
+    }
   }
-  description = "Per-service queue-depth scaling policy for the worker-lifecycle lambda, keyed by ECS service name. max = 0 keeps a service disabled - the gate that holds both worker fleets at zero until they move onto ECS. Raise a service's max to enable its autoscaling (embedworker drains embedding.jobs, crawlworker drains crawl.chunks)."
+  description = "Per-service queue-depth scaling policy for the worker-lifecycle lambda, keyed by ECS service name. max = 0 keeps a service disabled - the gate that holds the worker fleets at zero until they move onto ECS. Raise a service's max to enable its autoscaling (embedworker drains embedding.jobs, crawlworker drains crawl.chunks, factcheckworker drains factcheck.claims, scrutinsworker drains scrutins.votes)."
 }

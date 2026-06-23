@@ -208,6 +208,23 @@ resource "aws_secretsmanager_secret" "slack_webhook_url" {
   description = "Slack incoming webhook URL. Value set manually, never in Terraform."
 }
 
+# Anthropic API key for the category-crawl producer's fact-checkability gate
+# (CHECKWORTHY_API_KEY). Created empty; the value is set out of band. Consumed by
+# the wikicrawl producer to judge whether each crawled chunk is citable evidence
+# before it is published.
+resource "aws_secretsmanager_secret" "checkworthy_api_key" {
+  name        = "${local.project}/${var.environment}/app/checkworthy-api-key"
+  description = "Anthropic API key for the crawl fact-checkability gate. Value set manually, never in Terraform."
+}
+
+# Google Fact Check Tools API key for the fact-check producer (FACTCHECK_API_KEY).
+# Created empty; the value is set out of band. Consumed by the factcheckcrawl
+# producer to read already-checked French claims from the aggregator API.
+resource "aws_secretsmanager_secret" "factcheck_api_key" {
+  name        = "${local.project}/${var.environment}/app/factcheck-api-key"
+  description = "Google Fact Check Tools API key for the fact-check crawl producer. Value set manually, never in Terraform."
+}
+
 module "media_storage" {
   source = "../modules/s3"
 
@@ -251,6 +268,8 @@ module "iam" {
       aws_secretsmanager_secret.deepseek_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
       aws_secretsmanager_secret.slack_webhook_url.arn,
+      aws_secretsmanager_secret.checkworthy_api_key.arn,
+      aws_secretsmanager_secret.factcheck_api_key.arn,
       module.rabbitmq.url_secret_arn,
     ],
   )
@@ -573,6 +592,229 @@ module "crawl_worker" {
       EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
       RABBITMQ_URL      = module.rabbitmq.url_secret_arn
     },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
+
+  cluster_id              = module.ecs.cluster_id
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Category-crawl producer. An on-demand Fargate task (no schedule) that runs the
+# wikicrawl binary: it walks the configured Wikipedia categories over the
+# MediaWiki Action API, runs the fact-checkability gate, and publishes self-
+# contained chunk jobs to the crawl queue (crawl.chunks), then exits. It never
+# touches the database (every field a chunk needs travels in the message), so it
+# is NOT gated on enable_rds - only on enable_crawl_producer. Launch it with
+# `aws ecs run-task` against the family this module outputs, overriding
+# CRAWL_CATEGORIES per run. Container name = the bare suffix wikicrawl, so the
+# run-ingest-task command override targets it unchanged. Gated off by default.
+module "crawl_producer" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_crawl_producer ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "wikicrawl"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/wikicrawl"]
+  # wikicrawl reads its whole configuration from the environment, so it takes no
+  # command override; the image's own (empty) command stands.
+  command = []
+
+  # No schedule: the producer runs on demand. An empty expression yields a task
+  # definition only, launched with `aws ecs run-task`.
+  schedule_expression = ""
+  cpu                 = var.crawl_producer_cpu
+  memory              = var.crawl_producer_memory
+
+  environment_variables = {
+    CRAWL_CATEGORIES = var.crawl_categories
+    # CRAWL_PROJECT drives both the MediaWiki API host the crawl hits and the
+    # corpus tag (which defaults to <project>-crawl), so the two never diverge.
+    CRAWL_PROJECT = var.wiki_corpus
+  }
+  # wikicrawl publishes to the broker and runs the Anthropic-backed gate; it does
+  # not embed (the crawlworker fleet does), so it needs only the broker URL and
+  # the gate key - least privilege, no embedding key.
+  secrets = {
+    RABBITMQ_URL        = module.rabbitmq.url_secret_arn
+    CHECKWORTHY_API_KEY = aws_secretsmanager_secret.checkworthy_api_key.arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Fact-check producer. An on-demand Fargate task (no schedule) that runs the
+# factcheckcrawl binary: it reads already-checked French claims from the Google
+# Fact Check Tools API and publishes one self-contained curated-claim job per
+# reviewed claim to the fact-check queue (factcheck.claims), then exits. It needs
+# no database (every political_claims field travels in the message), so it is NOT
+# gated on enable_rds - only on enable_factcheck_producer. Launch it with
+# `aws ecs run-task`, overriding FACTCHECK_QUERIES per run; the FACTCHECK_API_KEY
+# secret is the standing credential. Container name = the bare suffix
+# factcheckcrawl. Gated off by default.
+module "factcheck_producer" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_factcheck_producer ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "factcheckcrawl"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/factcheckcrawl"]
+  # factcheckcrawl reads its whole configuration from the environment, so it takes
+  # no command override; the image's own (empty) command stands.
+  command = []
+
+  # No schedule: the producer runs on demand. An empty expression yields a task
+  # definition only, launched with `aws ecs run-task`.
+  schedule_expression = ""
+  cpu                 = var.factcheck_producer_cpu
+  memory              = var.factcheck_producer_memory
+
+  environment_variables = {
+    FACTCHECK_QUERIES = var.factcheck_queries
+  }
+  # factcheckcrawl publishes to the broker and reads the aggregator API; it does
+  # not touch the database, so it needs only the broker URL and the API key.
+  secrets = {
+    RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+    FACTCHECK_API_KEY = aws_secretsmanager_secret.factcheck_api_key.arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Scrutins producer. An on-demand Fargate task (no schedule) that runs the
+# scrutinscrawl binary: it conditionally downloads the Assemblee Nationale
+# open-data Scrutins archive and publishes one self-contained scrutin job per
+# recorded vote to the scrutins queue (scrutins.votes), then exits. It carries no
+# secret (the archive is public open data) and needs no database, so it is gated
+# only on enable_scrutins_producer. Launch it with `aws ecs run-task`. Container
+# name = the bare suffix scrutinscrawl. Gated off by default.
+module "scrutins_producer" {
+  source = "../modules/scheduled-task"
+  count  = var.enable_scrutins_producer ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "scrutinscrawl"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/scrutinscrawl"]
+  # scrutinscrawl reads its whole configuration from the environment, so it takes
+  # no command override; the image's own (empty) command stands.
+  command = []
+
+  # No schedule: the producer runs on demand. An empty expression yields a task
+  # definition only, launched with `aws ecs run-task`.
+  schedule_expression = ""
+  cpu                 = var.scrutins_producer_cpu
+  memory              = var.scrutins_producer_memory
+
+  # scrutinscrawl publishes to the broker and reads a public open-data archive; it
+  # carries no secret beyond the broker URL.
+  secrets = {
+    RABBITMQ_URL = module.rabbitmq.url_secret_arn
+  }
+
+  cluster_arn             = module.ecs.cluster_id
+  subnet_ids              = module.vpc.private_subnet_ids
+  security_group_ids      = [module.vpc.ecs_tasks_security_group_id]
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Fact-check-worker fleet. A headless ECS service that drains the fact-check queue
+# (factcheck.claims), embeds each claim's text through Voyage, and upserts the
+# curated claim record into the political claim DB. It mirrors the embedding and
+# crawl workers: same EXTERNAL deployment controller (so a worker-lifecycle lambda
+# must create and scale its task sets - not yet provisioned in prod, so enabling it
+# here is foundation-only until that lambda is added), outbound-only on the shared
+# tasks SG. It reuses the CRAWL_WORKER_* tuning the binary reads. Writes to the
+# database, so it requires RDS as well as its own enable flag; gated off by default.
+module "factcheck_worker" {
+  source = "../modules/worker"
+  count  = var.enable_factcheck_worker && var.enable_rds ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "factcheckworker"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/factcheckworker"]
+
+  cpu           = var.factcheck_worker_cpu
+  memory        = var.factcheck_worker_memory
+  desired_count = var.factcheck_worker_desired_count
+
+  # The fact-check worker reads the shared CRAWL_WORKER_* tuning (the binary calls
+  # config.LoadCrawlWorker), so the embedding-fault handling is reused, not
+  # redefined.
+  environment_variables = {
+    CRAWL_WORKER_CONCURRENCY  = tostring(var.factcheck_worker_concurrency)
+    CRAWL_WORKER_MAX_ATTEMPTS = tostring(var.factcheck_worker_max_attempts)
+  }
+  secrets = merge(
+    {
+      EMBEDDING_API_KEY = aws_secretsmanager_secret.embedding_api_key.arn
+      RABBITMQ_URL      = module.rabbitmq.url_secret_arn
+    },
+    local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+  )
+
+  cluster_id              = module.ecs.cluster_id
+  task_execution_role_arn = module.iam.task_execution_role_arn
+  task_role_arn           = module.iam.task_role_arn
+  log_group_name          = module.ecs.log_group_name
+}
+
+# Scrutins-worker fleet. A headless ECS service that drains the scrutins queue
+# (scrutins.votes), parses each scrutin job, and upserts the vote record into the
+# database. It mirrors the other worker fleets: same EXTERNAL deployment controller
+# (foundation-only in prod until a worker-lifecycle lambda is added),
+# outbound-only on the shared tasks SG. The scrutins worker parses and upserts and
+# never embeds, so it needs no embedding key (it reads SCRUTINS_WORKER_* tuning).
+# Writes to the database, so it requires RDS as well as its own enable flag; gated
+# off by default.
+module "scrutins_worker" {
+  source = "../modules/worker"
+  count  = var.enable_scrutins_worker && var.enable_rds ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "scrutinsworker"
+
+  image       = "${module.ecr.repository_urls["backend"]}:latest"
+  entry_point = ["/scrutinsworker"]
+
+  cpu           = var.scrutins_worker_cpu
+  memory        = var.scrutins_worker_memory
+  desired_count = var.scrutins_worker_desired_count
+
+  environment_variables = {
+    SCRUTINS_WORKER_CONCURRENCY  = tostring(var.scrutins_worker_concurrency)
+    SCRUTINS_WORKER_MAX_ATTEMPTS = tostring(var.scrutins_worker_max_attempts)
+  }
+  # The scrutins worker parses and upserts; it does not embed, so it needs no
+  # embedding key - least privilege, just the broker URL and the database.
+  secrets = merge(
+    { RABBITMQ_URL = module.rabbitmq.url_secret_arn },
     local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
   )
 
