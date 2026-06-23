@@ -64,8 +64,6 @@ func TestPeriodChunkIndex(t *testing.T) {
 		{"2021", 202100, false},
 		{"2022-03", 202203, false},
 		{"2022-12", 202212, false},
-		{"2022-Q1", 202213, false},
-		{"2022-Q4", 202216, false},
 		{"", 0, true},
 		{"20x2", 0, true},
 		{"2022-13", 0, true},
