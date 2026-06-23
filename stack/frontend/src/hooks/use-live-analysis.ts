@@ -12,10 +12,10 @@ import {
   type SubtitleFrame,
 } from "@/lib/live/frames";
 import {
-  applySpeakerScoreFrame,
+  applySpeakerTallyFrame,
   emptySpeakers,
   listSpeakers,
-  type SpeakerCredibility,
+  type SpeakerTally,
   type SpeakersState,
 } from "@/lib/live/speakers";
 import {
@@ -65,9 +65,9 @@ export type LiveAnalysis = {
   // a legacy stream that emits no claim frames. The subtitle list reads it per
   // row to render the progressive per-claim disclosure under each statement.
   claimsFor: (statementId: string) => LiveClaim[];
-  // speakers is each speaker's running credibility snapshot in stable label
-  // order, empty on a legacy stream that emits no speaker-score frames.
-  speakers: SpeakerCredibility[];
+  // speakers is each speaker's running verdict breakdown in stable label
+  // order, empty on a legacy stream that emits no speaker-tally frames.
+  speakers: SpeakerTally[];
 };
 
 // survivingUnitIds returns the ids of statements that clearAnalysing keeps (the
@@ -219,11 +219,11 @@ export function useLiveAnalysis(
         }
         return;
       }
-      // A speaker-score frame keys on a stable speaker label, not a per-session
+      // A speaker-tally frame keys on a stable speaker label, not a per-session
       // correlation id, so it bypasses id-namespacing; the reducer keeps the
       // freshest snapshot per speaker regardless of arrival order.
-      if (frame.type === "speaker_score") {
-        setSpeakers((prev) => applySpeakerScoreFrame(prev, frame));
+      if (frame.type === "speaker_tally") {
+        setSpeakers((prev) => applySpeakerTallyFrame(prev, frame));
         return;
       }
       // A subtitle commits the current utterance to a statement, so the live

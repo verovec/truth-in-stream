@@ -109,12 +109,11 @@ type wireFrame struct {
 	Literal     string   `json:"literal"`
 	Flags       []string `json:"flags"`
 	Confidence  *float64 `json:"confidence"`
-	// Speaker-score frame fields.
-	Score             float64 `json:"score"`
-	Credible          int     `json:"credible"`
-	Disputed          int     `json:"disputed"`
-	Unverifiable      int     `json:"unverifiable"`
-	MisleadingFraming int     `json:"misleading_framing"`
+	// Speaker-tally frame fields.
+	Credible          int `json:"credible"`
+	Disputed          int `json:"disputed"`
+	Unverifiable      int `json:"unverifiable"`
+	MisleadingFraming int `json:"misleading_framing"`
 }
 
 func liveTestServer(t *testing.T, analyzer LiveAnalyzer, origins []string, debugFactCheck bool) string {
@@ -344,7 +343,7 @@ func TestLiveHandlerReplaysFullEventSequence(t *testing.T) {
 		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
 		{Kind: service.LiveEventConsistency, ID: "1", Segment: seg, Consistency: &service.ConsistencyFlag{EarlierID: "0", EarlierText: "the moon is rock", Speaker: "A", Rationale: "contradiction"}},
-		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, Unverifiable: 2}},
+		{Kind: service.LiveEventSpeakerTally, SpeakerTally: &service.SpeakerTally{Speaker: "A", Credible: 1, Unverifiable: 2}},
 	}
 	live := &countingLive{}
 	replayer := &stubReplayer{events: events, found: true}
@@ -361,7 +360,7 @@ func TestLiveHandlerReplaysFullEventSequence(t *testing.T) {
 	}
 	defer func() { _ = conn.CloseNow() }()
 
-	wantTypes := []string{"interim", "subtitle", "claims", "claim_result", "consistency", "speaker_score"}
+	wantTypes := []string{"interim", "subtitle", "claims", "claim_result", "consistency", "speaker_tally"}
 	for i, want := range wantTypes {
 		frame := readFrame(ctx, t, conn)
 		if frame.Type != want {
@@ -872,12 +871,12 @@ func TestLiveHandlerOmitsEvidenceDetailForNonAdminEvenWhenDebugOn(t *testing.T) 
 	}
 }
 
-func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
+func TestLiveHandlerForwardsSpeakerTally(t *testing.T) {
 	t.Parallel()
-	// A speaker-score event serializes to a speaker_score frame carrying the running
-	// credibility score and verdict tallies, keyed on speaker.
+	// A speaker-tally event serializes to a speaker_tally frame carrying the running
+	// verdict counts, keyed on speaker.
 	fake := &recordingLive{events: []service.LiveEvent{
-		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 1, Disputed: 0, Unverifiable: 2}},
+		{Kind: service.LiveEventSpeakerTally, SpeakerTally: &service.SpeakerTally{Speaker: "A", Credible: 1, Disputed: 0, Unverifiable: 2}},
 	}}
 	wsURL := liveTestServer(t, fake, nil, false)
 
@@ -896,11 +895,11 @@ func TestLiveHandlerForwardsSpeakerScore(t *testing.T) {
 	}
 
 	frame := readFrame(ctx, t, conn)
-	if frame.Type != "speaker_score" || frame.Speaker != "A" {
-		t.Fatalf("frame = %+v, want speaker_score for A", frame)
+	if frame.Type != "speaker_tally" || frame.Speaker != "A" {
+		t.Fatalf("frame = %+v, want speaker_tally for A", frame)
 	}
-	if frame.Score != 0.6 || frame.Credible != 1 || frame.Disputed != 0 || frame.Unverifiable != 2 {
-		t.Errorf("score frame = %+v, want score 0.6 credible 1 disputed 0 unverifiable 2", frame)
+	if frame.Credible != 1 || frame.Disputed != 0 || frame.Unverifiable != 2 {
+		t.Errorf("tally frame = %+v, want credible 1 disputed 0 unverifiable 2", frame)
 	}
 	if frame.MisleadingFraming != 0 {
 		t.Errorf("misleading_framing = %d, want 0 on the credibility-only path", frame.MisleadingFraming)
@@ -968,10 +967,10 @@ func TestLiveHandlerForwardsPoliticalTwoAxisVerdict(t *testing.T) {
 
 func TestLiveHandlerForwardsMisleadingFramingTally(t *testing.T) {
 	t.Parallel()
-	// A speaker-score event with a misleading-framing tally serializes it onto the
+	// A speaker-tally event with a misleading-framing tally serializes it onto the
 	// wire, so the frontend can distinguish outright falsehood from misleading framing.
 	fake := &recordingLive{events: []service.LiveEvent{
-		{Kind: service.LiveEventSpeakerScore, SpeakerScore: &service.SpeakerScore{Speaker: "A", Score: 0.6, Credible: 2, MisleadingFraming: 1}},
+		{Kind: service.LiveEventSpeakerTally, SpeakerTally: &service.SpeakerTally{Speaker: "A", Credible: 2, MisleadingFraming: 1}},
 	}}
 	wsURL := liveTestServer(t, fake, nil, false)
 
@@ -990,8 +989,8 @@ func TestLiveHandlerForwardsMisleadingFramingTally(t *testing.T) {
 	}
 
 	frame := readFrame(ctx, t, conn)
-	if frame.Type != "speaker_score" || frame.MisleadingFraming != 1 {
-		t.Fatalf("frame = %+v, want speaker_score with misleading_framing 1", frame)
+	if frame.Type != "speaker_tally" || frame.MisleadingFraming != 1 {
+		t.Fatalf("frame = %+v, want speaker_tally with misleading_framing 1", frame)
 	}
 }
 

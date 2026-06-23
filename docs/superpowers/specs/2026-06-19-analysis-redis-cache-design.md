@@ -59,7 +59,7 @@ show claims with a concrete result.
 
 The live pipeline is untouched. `LiveAnalyzer.Run()` returns a `<-chan LiveEvent`
 that `internal/handler/live.go` serialises into WS frames (`subtitle`, `claims`,
-`claim_result`, `result`, `speaker_score`, `consistency`). We wrap that channel.
+`claim_result`, `result`, `speaker_tally`, `consistency`). We wrap that channel.
 
 ### Components
 

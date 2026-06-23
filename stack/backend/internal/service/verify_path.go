@@ -82,8 +82,8 @@ type AtomicClaim struct {
 // (missing-context, cherry-picked, outdated, misattributed, misleading-causation)
 // that applies to the claim's framing, independent of whether the literal claim is
 // true. Verdict (the credibility axis) is derived from Literal on the political
-// path so a single per-speaker score and the existing frontend verdict contract
-// keep working; the frontend (VER-104) reads Literal and Flags for the two-axis
+// path so the per-speaker tally and the existing frontend verdict contract keep
+// working; the frontend (VER-104) reads Literal and Flags for the two-axis
 // display.
 type VerifiedVerdict struct {
 	Verdict    string
@@ -169,10 +169,7 @@ type VerifyPathConfig struct {
 	FastDeadline      time.Duration
 	VerifyDeadline    time.Duration
 	CacheTTL          time.Duration
-	// PriorStrength is the Beta-Binomial prior pseudo-count k for the per-speaker
-	// credibility score. It defaults to defaultPriorStrength when non-positive.
-	PriorStrength float64
-	Logger        *slog.Logger
+	Logger            *slog.Logger
 	// Political, when non-nil, switches a checkable claim's verify stage onto the
 	// political path (FACTCHECK_POLITICAL on): classify -> route+retrieve -> two-axis
 	// verify, folding into the flag-aware aggregator. The curated fast-path borrow,
@@ -204,7 +201,6 @@ type VerifyPath struct {
 	verifyQueue    int
 	fastDeadline   time.Duration
 	verifyDeadline time.Duration
-	priorStrength  float64
 	logger         *slog.Logger
 	cache          *claimCache
 	pol            *PoliticalConfig
@@ -255,10 +251,6 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	priorStrength := cfg.PriorStrength
-	if priorStrength <= 0 {
-		priorStrength = defaultPriorStrength
-	}
 	var cache *claimCache
 	if cfg.CacheTTL > 0 {
 		cache = newClaimCache(cfg.CacheTTL)
@@ -272,7 +264,6 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		verifyQueue:    cfg.VerifyQueueDepth,
 		fastDeadline:   cfg.FastDeadline,
 		verifyDeadline: cfg.VerifyDeadline,
-		priorStrength:  priorStrength,
 		logger:         logger,
 		cache:          cache,
 		pol:            cfg.Political,
@@ -370,7 +361,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 
 	if cached, ok := vp.cacheGet(claim.Text); ok {
 		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
-		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, cached.verdict)
+		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, cached.verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, cached.embedding)
 		return
 	}
@@ -395,7 +386,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		if verdict, ok := vp.politicalFastMatch(ctx, ret.embedding); ok {
 			vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
 			vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
-			vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+			vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 			vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 			return
 		}
@@ -417,7 +408,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		}
 		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
-		vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 		return
 	}
@@ -451,7 +442,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	}
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
-	vp.recordSpeakerScore(ctx, out, mem, pu.speaker, verdict)
+	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 	// Deeper second pass, off by default: a grounded mid-confidence verdict gets
 	// re-judged by a stronger reasoning model and may be upgraded in place. It runs
@@ -677,22 +668,21 @@ func credibilityFromCurated(v domain.Verdict) (state, basis string) {
 	}
 }
 
-// recordSpeakerScore folds one claim's reached verdict into the speaker's running
-// aggregate and emits the updated snapshot as a LiveEventSpeakerScore. It is a
-// no-op for an unattributed turn (no speaker to score) or a nil verdict
-// (checking/unchecked/error claims never reach here). Only credible and disputed
-// move the score; unverifiable updates the speaker's tally alone. On the political
-// path a verdict carrying at least one manipulation flag also bumps the orthogonal
-// misleading-framing tally, folded under one lock so the emitted snapshot is
-// internally consistent. The same recorder serves the curated-borrow, cache-hit,
-// verified, and political branches, so the framing axis can never be silently
-// dropped on a replay.
-func (vp *VerifyPath) recordSpeakerScore(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, verdict *VerifiedVerdict) {
+// recordSpeakerTally folds one claim's reached verdict into the speaker's running
+// tally and emits the updated snapshot as a LiveEventSpeakerTally. It is a no-op
+// for an unattributed turn (no speaker to tally) or a nil verdict
+// (checking/unchecked/error claims never reach here). Each of credible, disputed,
+// and unverifiable moves its own count. On the political path a verdict carrying at
+// least one manipulation flag also bumps the orthogonal misleading-framing tally,
+// folded under one lock so the emitted snapshot is internally consistent. The same
+// recorder serves the curated-borrow, cache-hit, verified, and political branches,
+// so the framing axis can never be silently dropped on a replay.
+func (vp *VerifyPath) recordSpeakerTally(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, verdict *VerifiedVerdict) {
 	if speaker == "" || verdict == nil {
 		return
 	}
-	score := mem.observeVerdict(speaker, verdict.Verdict, verdict.Confidence, vp.priorStrength, len(verdict.Flags) > 0)
-	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerScore, SpeakerScore: &score})
+	tally := mem.observeVerdict(speaker, verdict.Verdict, len(verdict.Flags) > 0)
+	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerTally, SpeakerTally: &tally})
 }
 
 // cacheEntry is one cached claim verdict: its source tag, the verdict, and the

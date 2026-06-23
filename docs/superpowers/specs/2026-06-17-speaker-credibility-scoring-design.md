@@ -2,6 +2,14 @@
 
 Date: 2026-06-17
 Status: draft (brainstorming), pending user spec review
+
+> **Superseded in part (VER-150, 2026-06-23):** the aggregated per-speaker
+> credibility *score* described below — the Beta-Binomial posterior mean, its
+> `SPEAKER_SCORE_PRIOR_STRENGTH` prior, the percentage, and the colour band — has
+> been removed. The per-speaker breakdown is retained as a plain tally (credible /
+> disputed / unverifiable counts plus the misleading-framing count), emitted on the
+> `speaker_tally` frame. References to the score and the prior strength below are
+> historical.
 Supersedes the verdict-vocabulary portion of
 [2026-06-17-retrieve-then-verify-factcheck-design.md](2026-06-17-retrieve-then-verify-factcheck-design.md);
 the retrieve-then-verify architecture (gate -> decompose -> fast/verify pools, citation guard,

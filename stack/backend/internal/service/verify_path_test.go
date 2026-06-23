@@ -564,13 +564,12 @@ func TestVerifyPathNoEvidenceIsUnverifiable(t *testing.T) {
 	}
 }
 
-func TestVerifyPathEmitsSpeakerScore(t *testing.T) {
+func TestVerifyPathEmitsSpeakerTally(t *testing.T) {
 	t.Parallel()
-	// A speaker's claims feed the running credibility aggregate: a credible curated
-	// borrow and a disputed verified claim move the score, an unverifiable claim
-	// only its tally, and the basis round-trips from the verifier. The final
-	// cumulative snapshot (the one with the largest sample) carries the right
-	// counts and the Beta-Binomial-shrunk score.
+	// A speaker's claims feed the running per-speaker tally: a credible curated
+	// borrow, a disputed verified claim, and an unverifiable claim each bump their
+	// own count, and the basis round-trips from the verifier. The final cumulative
+	// snapshot (the one with the largest sample) carries the right counts.
 	unit := "three claims in one breath."
 	credClaim, dispClaim, unverClaim := "credible fact.", "disputed fact.", "unverifiable fact."
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
@@ -584,27 +583,22 @@ func TestVerifyPathEmitsSpeakerScore(t *testing.T) {
 		unverClaim: {Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0},
 	}}
 	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
-		Decomposer:    fakeDecomposer{byText: map[string][]string{unit: {credClaim, dispClaim, unverClaim}}},
-		Verifier:      verifier,
-		PriorStrength: 4,
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {credClaim, dispClaim, unverClaim}}},
+		Verifier:   verifier,
 	})
 
 	events := runVerifyPath(t, a)
 
-	scores := speakerScores(events)
-	if len(scores) != 3 {
-		t.Fatalf("speaker score events = %d, want 3 (one per reached verdict)", len(scores))
+	tallies := speakerTallies(events)
+	if len(tallies) != 3 {
+		t.Fatalf("speaker tally events = %d, want 3 (one per reached verdict)", len(tallies))
 	}
-	final := maxSampleScore(scores)
+	final := maxSampleTally(tallies)
 	if final.Speaker != "A" {
 		t.Fatalf("speaker = %q, want A", final.Speaker)
 	}
 	if final.Credible != 1 || final.Disputed != 1 || final.Unverifiable != 1 {
 		t.Fatalf("tallies = %d/%d/%d, want credible 1 disputed 1 unverifiable 1", final.Credible, final.Disputed, final.Unverifiable)
-	}
-	// (k/2 + S) / (k + S + F) = (2 + 0.9) / (4 + 0.9 + 0.8) = 2.9 / 5.7.
-	if want := 2.9 / 5.7; !approxEqual(final.Score, want) {
-		t.Fatalf("score = %v, want %v", final.Score, want)
 	}
 
 	// The basis round-trips from the verifier onto the emitted verdict.
@@ -614,10 +608,10 @@ func TestVerifyPathEmitsSpeakerScore(t *testing.T) {
 	}
 }
 
-func TestVerifyPathNoSpeakerScoreForUnattributedTurn(t *testing.T) {
+func TestVerifyPathNoSpeakerTallyForUnattributedTurn(t *testing.T) {
 	t.Parallel()
 	// An unattributed turn (no diarized speaker) reaches a verdict but emits no
-	// speaker-score event: there is no speaker to attribute credibility to.
+	// speaker-tally event: there is no speaker to attribute the breakdown to.
 	unit := "an unattributed statement."
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit})}
 	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
@@ -630,28 +624,28 @@ func TestVerifyPathNoSpeakerScoreForUnattributedTurn(t *testing.T) {
 	})
 
 	events := runVerifyPath(t, a)
-	if scores := speakerScores(events); len(scores) != 0 {
-		t.Fatalf("speaker score events = %d, want 0 for an unattributed turn", len(scores))
+	if tallies := speakerTallies(events); len(tallies) != 0 {
+		t.Fatalf("speaker tally events = %d, want 0 for an unattributed turn", len(tallies))
 	}
 }
 
-// speakerScores returns the speaker-score snapshots from the event stream in order.
-func speakerScores(events []LiveEvent) []SpeakerScore {
-	var out []SpeakerScore
+// speakerTallies returns the speaker-tally snapshots from the event stream in order.
+func speakerTallies(events []LiveEvent) []SpeakerTally {
+	var out []SpeakerTally
 	for _, ev := range events {
-		if ev.Kind == LiveEventSpeakerScore && ev.SpeakerScore != nil {
-			out = append(out, *ev.SpeakerScore)
+		if ev.Kind == LiveEventSpeakerTally && ev.SpeakerTally != nil {
+			out = append(out, *ev.SpeakerTally)
 		}
 	}
 	return out
 }
 
-// maxSampleScore returns the snapshot with the largest verdict sample, i.e. the
-// freshest cumulative score regardless of the order concurrent claims emitted in.
-func maxSampleScore(scores []SpeakerScore) SpeakerScore {
-	var best SpeakerScore
+// maxSampleTally returns the snapshot with the largest verdict sample, i.e. the
+// freshest cumulative tally regardless of the order concurrent claims emitted in.
+func maxSampleTally(tallies []SpeakerTally) SpeakerTally {
+	var best SpeakerTally
 	bestTotal := -1
-	for _, s := range scores {
+	for _, s := range tallies {
 		if total := s.Credible + s.Disputed + s.Unverifiable; total > bestTotal {
 			bestTotal = total
 			best = s

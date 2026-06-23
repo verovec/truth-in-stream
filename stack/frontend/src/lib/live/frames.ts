@@ -167,22 +167,20 @@ export type ClaimResultFrame = {
   error?: string;
 };
 
-// SpeakerScoreFrame is a speaker's running credibility snapshot (retrieve-then-
-// verify path), pushed after each of that speaker's claim verdicts updates the
-// aggregate. score is the Beta-Binomial posterior mean in [0,1]; credible,
-// disputed, and unverifiable are the lifetime verdict tallies, so the widget can
-// show the score with its sample size and de-emphasize a thin one. It is additive:
-// a client that ignores it renders everything else unchanged.
+// SpeakerTallyFrame is a speaker's running verdict breakdown (retrieve-then-verify
+// path), pushed after each of that speaker's claim verdicts updates the counts.
+// credible, disputed, and unverifiable are the lifetime verdict tallies, so the
+// widget can show how many checkable claims the speaker made and how they broke
+// down. It is additive: a client that ignores it renders everything else unchanged.
 //
 // misleadingFraming is the political path's separate tally of the speaker's claims
 // that carried at least one manipulation flag, orthogonal to the credibility
 // tallies, so the widget can distinguish an outright falsehood from honest-but-
 // misleading framing. The wire field (misleading_framing) is omitted when zero; an
 // absent value reads as zero.
-export type SpeakerScoreFrame = {
-  type: "speaker_score";
+export type SpeakerTallyFrame = {
+  type: "speaker_tally";
   speaker: string;
-  score: number;
   credible: number;
   disputed: number;
   unverifiable: number;
@@ -196,7 +194,7 @@ export type LiveFrame =
   | ConsistencyFrame
   | ClaimsFrame
   | ClaimResultFrame
-  | SpeakerScoreFrame;
+  | SpeakerTallyFrame;
 
 const CLAIM_STATUSES: ReadonlySet<string> = new Set([
   "pending",
@@ -408,18 +406,13 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     return frame;
   }
 
-  if (value.type === "speaker_score") {
-    if (
-      typeof value.speaker !== "string" ||
-      value.speaker.length === 0 ||
-      !isFiniteNumber(value.score)
-    ) {
+  if (value.type === "speaker_tally") {
+    if (typeof value.speaker !== "string" || value.speaker.length === 0) {
       return null;
     }
     return {
-      type: "speaker_score",
+      type: "speaker_tally",
       speaker: value.speaker,
-      score: value.score,
       credible: isFiniteNumber(value.credible) ? value.credible : 0,
       disputed: isFiniteNumber(value.disputed) ? value.disputed : 0,
       unverifiable: isFiniteNumber(value.unverifiable) ? value.unverifiable : 0,

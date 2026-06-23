@@ -50,10 +50,10 @@ type speakerMemory struct {
 	mu        sync.Mutex
 	bySpeaker map[string][]priorStatement
 	locks     map[string]*sync.Mutex
-	// credibility holds each speaker's running Beta-Binomial credibility tally,
-	// created lazily on a speaker's first scored verdict. It lives here, per
-	// session, so a later session never inherits a prior one's score; mu guards it
-	// alongside the consistency history.
+	// credibility holds each speaker's running verdict tally, created lazily on a
+	// speaker's first counted verdict. It lives here, per session, so a later
+	// session never inherits a prior one's counts; mu guards it alongside the
+	// consistency history.
 	credibility map[string]*speakerCredibility
 }
 
@@ -66,26 +66,24 @@ func newSpeakerMemory() *speakerMemory {
 	}
 }
 
-// observeVerdict folds one claim verdict into the speaker's running aggregate and
-// returns the single updated snapshot, stamped with the speaker. state and
-// confidence move the credibility score (the literal axis on the political path,
-// mapped onto the credibility vocabulary); flagged bumps the orthogonal
-// misleading-framing tally when the claim carried at least one manipulation flag.
-// Both axes are folded under one held lock so a concurrently-scored claim for the
-// same speaker can never observe a half-updated state, and exactly one snapshot is
-// emitted per verdict. The aggregator is created on first use with the given prior
-// strength. Access is mutex-guarded because the worker pool scores a speaker's
-// claims concurrently.
-func (m *speakerMemory) observeVerdict(speaker, state string, confidence, priorStrength float64, flagged bool) SpeakerScore {
+// observeVerdict folds one claim verdict into the speaker's running tally and
+// returns the single updated snapshot, stamped with the speaker. state moves the
+// matching credibility count (the literal axis on the political path, mapped onto
+// the credibility vocabulary); flagged bumps the orthogonal misleading-framing
+// tally when the claim carried at least one manipulation flag. Both axes are folded
+// under one held lock so a concurrently-counted claim for the same speaker can never
+// observe a half-updated state, and exactly one snapshot is emitted per verdict. The
+// aggregator is created on first use. Access is mutex-guarded because the worker pool
+// counts a speaker's claims concurrently.
+func (m *speakerMemory) observeVerdict(speaker, state string, flagged bool) SpeakerTally {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sc := m.credibility[speaker]
 	if sc == nil {
-		sc = newSpeakerCredibility(priorStrength)
+		sc = &speakerCredibility{}
 		m.credibility[speaker] = sc
 	}
-	sc.observe(state, confidence)
-	snapshot := sc.snapshot()
+	snapshot := sc.observe(state)
 	if flagged {
 		snapshot = sc.observeFraming()
 	}

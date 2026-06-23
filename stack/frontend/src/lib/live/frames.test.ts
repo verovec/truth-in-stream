@@ -415,21 +415,19 @@ describe("parseLiveFrame", () => {
     ).toBeNull();
   });
 
-  test("parses a speaker_score frame with score and tallies", () => {
+  test("parses a speaker_tally frame with the verdict counts", () => {
     const frame = parseLiveFrame(
       JSON.stringify({
-        type: "speaker_score",
+        type: "speaker_tally",
         speaker: "A",
-        score: 0.6,
         credible: 1,
         disputed: 0,
         unverifiable: 2,
       }),
     );
     expect(frame).toEqual({
-      type: "speaker_score",
+      type: "speaker_tally",
       speaker: "A",
-      score: 0.6,
       credible: 1,
       disputed: 0,
       unverifiable: 2,
@@ -437,20 +435,19 @@ describe("parseLiveFrame", () => {
     });
   });
 
-  test("returns null for a speaker_score frame missing its speaker", () => {
+  test("returns null for a speaker_tally frame missing its speaker", () => {
     expect(
-      parseLiveFrame(JSON.stringify({ type: "speaker_score", score: 0.6 })),
+      parseLiveFrame(JSON.stringify({ type: "speaker_tally", credible: 1 })),
     ).toBeNull();
   });
 
-  test("defaults missing speaker_score tallies to zero", () => {
+  test("defaults missing speaker_tally counts to zero", () => {
     const frame = parseLiveFrame(
-      JSON.stringify({ type: "speaker_score", speaker: "B", score: 0.5 }),
+      JSON.stringify({ type: "speaker_tally", speaker: "B" }),
     );
     expect(frame).toEqual({
-      type: "speaker_score",
+      type: "speaker_tally",
       speaker: "B",
-      score: 0.5,
       credible: 0,
       disputed: 0,
       unverifiable: 0,
@@ -458,12 +455,11 @@ describe("parseLiveFrame", () => {
     });
   });
 
-  test("parses the speaker_score misleading_framing tally", () => {
+  test("parses the speaker_tally misleading_framing count", () => {
     const frame = parseLiveFrame(
       JSON.stringify({
-        type: "speaker_score",
+        type: "speaker_tally",
         speaker: "C",
-        score: 0.7,
         credible: 4,
         disputed: 1,
         unverifiable: 0,
@@ -471,9 +467,8 @@ describe("parseLiveFrame", () => {
       }),
     );
     expect(frame).toEqual({
-      type: "speaker_score",
+      type: "speaker_tally",
       speaker: "C",
-      score: 0.7,
       credible: 4,
       disputed: 1,
       unverifiable: 0,
