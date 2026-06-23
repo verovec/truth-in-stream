@@ -129,6 +129,54 @@ The frontend reads `KEYCLOAK_ISSUER` and `KEYCLOAK_CLIENT_ID` (defaulting to the
 `NEXT_PUBLIC_APP_URL` for the redirect/post-logout URIs; over plain-HTTP local dev the OIDC client
 relaxes its HTTPS-only requirement for an `http://` issuer only.
 
+### Two-face networking in the docker-compose stack
+
+A single issuer URL cannot be reached identically by the browser and by the backend/frontend
+containers in docker-compose, and that is the whole reason local sign-in needs a deliberate split.
+The issuer is `http://localhost:8081/...`, but `localhost:8081` inside a container is that container's
+own loopback, so a server-side call (the backend's JWKS refresh, the frontend's OIDC discovery, the
+token exchange) to `localhost:8081` connection-refuses. In production the issuer is a publicly
+routable HTTPS host (`https://login.jeminforme.fr/...`) reachable by every party, so the split does
+not exist there.
+
+The dev stack resolves this with **Keycloak hostname v2**, configured on the `keycloak` service in
+`docker-compose.yml` — the same mechanism any reverse-proxied production deployment uses:
+
+| Env (Keycloak service) | Value | Effect |
+|------------------------|-------|--------|
+| `KC_HOSTNAME` | `http://localhost:8081` | Pins the **browser face** — the issuer claim and the authorize/logout URLs in the discovery document — to `localhost:8081`, regardless of which host the request arrived on. |
+| `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` | `true` | Resolves the **back-channel face** — token, certs/JWKS, userinfo — from the request host, so a container calling over `keycloak:8081` gets `keycloak:8081` endpoints it can actually reach. |
+
+One discovery document therefore serves both faces: browser endpoints on `localhost:8081`,
+back-channel endpoints on `keycloak:8081`. Three dev-only env values wire the services to it, and
+**all three are unset in production**, where the single public issuer needs none of them:
+
+| Env | Service | Local value | Production |
+|-----|---------|-------------|------------|
+| `KEYCLOAK_ISSUER` | backend + frontend | `http://localhost:8081/realms/truth-in-stream` (the public face; validates the token's issuer claim and is where the browser is redirected) | the public HTTPS issuer |
+| `KEYCLOAK_JWKS_URL` | backend | `http://keycloak:8081/realms/truth-in-stream/protocol/openid-connect/certs` (the container-reachable back-channel JWKS host) | unset — defaults to the issuer's certs endpoint |
+| `KEYCLOAK_INTERNAL_URL` | frontend | `http://keycloak:8081/realms/truth-in-stream` (the host the frontend container runs OIDC discovery and the back-channel code/refresh exchanges against) | unset — defaults to the issuer |
+
+The frontend runs OIDC discovery against `KEYCLOAK_INTERNAL_URL` (the host it can reach) but
+validates the returned document against the public `KEYCLOAK_ISSUER`. This is safe because the
+discovery processor checks only the document's `issuer` claim, not the URL it was fetched from; with
+the back-channel-dynamic Keycloak, that document carries the public browser endpoints and the
+internal token/JWKS endpoints, so the browser redirect always lands on `localhost:8081` while the
+server-side calls stay on `keycloak:8081`. When `KEYCLOAK_INTERNAL_URL` is unset, `internalUrl` equals
+the issuer and discovery is ordinary single-host behaviour — production is unchanged.
+
+> Do **not** point `KEYCLOAK_ISSUER` at `keycloak:8081`: it would corrupt the issuer claim every token
+> carries and send the browser to a host it cannot resolve. The public issuer is the browser's face;
+> only the back-channel overrides ever name `keycloak:8081`. No hosts-file entry or custom DNS is
+> needed — that is the point of the two-face contract.
+
+A build-tagged Go smoke test (`stack/backend/internal/keycloaksmoke`, behind the `keycloak_smoke`
+tag) guards this contract end to end against the booted stack: it does an `admin` password grant at
+the token endpoint, calls a representative `/api` route with the resulting bearer (expecting it
+accepted, not 401), and asserts `GET /auth/login` returns a 307 whose `Location` host is
+`localhost:8081`. It runs only in its own CI job (`keycloak-smoke` in `pr.yml`), never in the normal
+`go test ./...` run, so the whole login chain cannot silently break again.
+
 ## Local development data
 
 `make up` seeds a realistic, fully offline dataset (curated claims, a Wikipedia evidence subset, demo

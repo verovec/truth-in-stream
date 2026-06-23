@@ -129,3 +129,65 @@ jobs:
         with: { python-version: '3.13' }
       - run: python -m unittest handler_test -v
         working-directory: stack/terraform/modules/observability/forwarder
+  # Local Keycloak login smoke test. Boots the docker-compose stack (Postgres,
+  # the offline seed, backend, frontend, and the local Keycloak importing
+  # realm.json) and runs the build-tagged keycloak_smoke Go test from the host
+  # against the published ports. It proves the three legs of local sign-in
+  # against a running stack - admin password grant at the token endpoint, the
+  # backend accepting that bearer on a representative /api route, and the
+  # frontend /auth/login 307 pointing at the public localhost:8081 face. It is a
+  # dedicated job because it needs the whole stack up; the build tag keeps it out
+  # of the normal backend-test run, which boots only Postgres. The .env holds
+  # only synthetic local-dev placeholders (no real key): the smoke path never
+  # streams audio or embeds, and the seed is offline from the committed cache.
+  keycloak-smoke:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache: false }
+      - name: Write synthetic dev .env
+        # Written one line per redirect (not an indented heredoc, whose leading
+        # YAML whitespace would land in the key names and break compose's
+        # ${VAR} substitution). Single-quoted so the argon2id '$' segments are
+        # literal, never shell-expanded. Synthetic local-dev placeholders only;
+        # the smoke path never streams audio or embeds.
+        run: |
+          {
+            printf '%s\n' 'TRANSCRIPTION_API_KEY=ci-smoke-not-a-real-key'
+            printf '%s\n' 'EMBEDDING_API_KEY=ci-smoke-not-a-real-key'
+            printf '%s\n' 'AUTH_EMAIL=admin@example.com'
+            printf '%s\n' 'AUTH_PASSWORD_HASH=$argon2id$v=19$m=19456,t=2,p=1$shBQcmQC9qrZBGi0S55dZw$8FQY60gGln/W4hIs42tz7yeJ2WEzZFNOCbIlhNdx0k4'
+            printf '%s\n' 'SESSION_SECRET=ci-smoke-session-secret-at-least-32-bytes-long'
+            printf '%s\n' 'SAMPLE_VIDEO_URL='
+          } > .env
+      - name: Boot the stack
+        # --wait blocks until every started service (and its depends_on chain:
+        # postgres, migrate, seed, minio, redis) is healthy or has completed, so
+        # the readiness loop below only ever waits on application warm-up, not on
+        # the seed one-shot still running.
+        run: docker compose up -d --build --wait backend frontend keycloak
+      - name: Wait for Keycloak, backend, and frontend
+        run: |
+          probe() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$1")
+            [ "$code" = "200" ] || [ "$code" = "307" ]
+          }
+          for svc in \
+            "http://localhost:8081/realms/truth-in-stream/.well-known/openid-configuration" \
+            "http://localhost:8080/healthz" \
+            "http://localhost:3000/auth/login"; do
+            echo "waiting for $svc"
+            for i in $(seq 1 60); do
+              if probe "$svc"; then echo "ready: $svc"; break; fi
+              if [ "$i" = "60" ]; then echo "timed out waiting for $svc"; exit 1; fi
+              sleep 5
+            done
+          done
+      - name: Run the Keycloak login smoke test
+        working-directory: stack/backend
+        run: go test -tags keycloak_smoke -count=1 ./internal/keycloaksmoke/
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200
