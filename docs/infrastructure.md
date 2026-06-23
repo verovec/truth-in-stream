@@ -114,7 +114,32 @@ zero when idle so there is no standing ingestion cost.
 
 ## Deploys (human-gated)
 
-A production deploy is always a deliberate `workflow_dispatch` of a per-service deploy workflow
-(`deploy-backend`, `deploy-frontend`, `deploy-workers`, `deploy-backup`). See
-[Development -> CI](development.md#ci). No `terraform apply`, no deploy dispatch, and no main-account
-apply happens without explicit human approval.
+A production deploy is always a deliberate human action. There are two entrypoints, and both keep
+the human gate: an ordinary merge to `main` never deploys.
+
+**Tag release (`release.yml`).** Pushing a semver tag matching `v*` whose commit is on `main`
+deploys the user-facing app automatically: backend first (build, Trivy-scan, push, run migrations),
+then frontend (`needs: backend`), each rolling and waiting for `services-stable`. Cutting the tag is
+the deliberate release gesture and stands in for the dispatch approval.
+
+```bash
+git checkout main && git pull
+git tag v1.4.0           # semver tag on a main commit
+git push origin v1.4.0   # triggers release.yml -> prod backend then frontend
+```
+
+A tag whose commit is **not** on `main` (e.g. cut from a side branch) fails fast in the guard job
+and deploys nothing. The roll pins each service to a fresh task-definition revision referencing the
+build's immutable `sha-<7>` image (not the moving `latest` tag, which is not advanced on a tag ref),
+so the release is deterministic and a later unrelated `latest` push cannot drift prod. Workers are
+out of scope for a tag release; they roll via the worker-lifecycle lambda. Backup is image-only.
+
+**Manual dispatch (`deploy-*.yml`).** The per-service `workflow_dispatch` workflows
+(`deploy-backend`, `deploy-frontend`, `deploy-workers`, `deploy-backup`) remain for ad-hoc deploys
+and **rollbacks**: to roll back, dispatch the relevant `deploy-*` workflow from the last-good commit
+(or re-push that commit's tag). See [Development -> CI](development.md#ci).
+
+No `terraform apply`, no manual deploy dispatch, and no main-account apply happens without explicit
+human approval. Repo variables `AWS_REGION`, `DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and
+`AWS_DEPLOY_ROLE_ARN` drive both entrypoints; the release jobs bind to the `production` GitHub
+Environment (no required reviewers — the tag is the gate).

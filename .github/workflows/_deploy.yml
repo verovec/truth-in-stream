@@ -53,10 +53,36 @@ on:
         type: string
         required: false
         default: ""
+      pin_image_tag:
+        description: >-
+          rolling mode only. When true, register a new task-definition revision
+          whose container image is pinned to this build's immutable sha-<7> tag
+          and roll the service onto that revision, instead of a plain
+          force-new-deployment that re-pulls whatever the task definition
+          references. The tag-triggered release path (release.yml) sets this:
+          on a tag ref the moving `latest` tag is NOT advanced (it is gated on
+          is_default_branch), so a force-new-deployment would redeploy the old
+          image. Pinning the sha-<7> revision makes the release deterministic
+          and immune to a later unrelated `latest` push. The workflow_dispatch
+          wrappers leave it false and keep the existing force-new-deployment
+          behaviour unchanged.
+        type: boolean
+        required: false
+        default: false
       queue_versions:
         description: >-
           ingestion mode only: new RABBITMQ_QUEUE_VERSIONS list to roll in the
           same deploy (comma-separated, oldest-first). Empty = no version roll.
+        type: string
+        required: false
+        default: ""
+      environment:
+        description: >-
+          Optional GitHub Environment to bind the deploy job to (isolates
+          environment-scoped variables and any protection rules). The
+          tag-triggered release path passes "production"; the workflow_dispatch
+          wrappers leave it empty so their behaviour is unchanged. An empty
+          string means no environment binding.
         type: string
         required: false
         default: ""
@@ -66,6 +92,11 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # No environment binding for the dispatch wrappers (empty input); the
+    # release path passes "production" to isolate prod-scoped variables. The
+    # explicit null (rather than an empty string) makes "unset" intentional and
+    # immune to a runtime change in how an empty environment name is treated.
+    environment: ${{ inputs.environment != '' && inputs.environment || null }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       PROJECT: ${{ vars.DEPLOY_PROJECT }}
@@ -215,8 +246,12 @@ jobs:
       # service's deployment circuit breaker rolls back to the last good task
       # set on failure (when enabled on the service); wait services-stable blocks
       # until the rollout settles or fails, so a failed deploy fails this step.
-      - name: Roll service (rolling)
-        if: inputs.deploy_mode == 'rolling'
+      # Rolling deploy that re-pulls whatever image the task definition pins.
+      # Used by the workflow_dispatch wrappers: on the default branch the build
+      # also moved the `latest` tag, so a force-new-deployment picks up the new
+      # image. Unchanged from the original dispatch behaviour.
+      - name: Roll service (rolling, force-new-deployment)
+        if: inputs.deploy_mode == 'rolling' && !inputs.pin_image_tag
         env:
           ECS_SERVICE: ${{ inputs.ecs_service }}
         run: |
@@ -233,6 +268,60 @@ jobs:
             exit 1
           fi
           echo "Service ${ECS_SERVICE} stable"
+      # Deterministic rolling deploy that pins the service to a fresh
+      # task-definition revision referencing this build's immutable sha-<7>
+      # image. Used by the tag-triggered release path (release.yml): on a tag ref
+      # the `latest` tag is NOT advanced (metadata-action gates it on
+      # is_default_branch), so a force-new-deployment could redeploy the old
+      # image. We describe the current task definition, swap only the matching
+      # container's image to the sha-<7> tag (by container name, so it is robust
+      # to multiple containers and ordering), strip the server-managed fields,
+      # register a new revision, and update the service onto it. The deploy role
+      # already holds RegisterTaskDefinition + PassRole (see modules/iam). A
+      # later unrelated `latest` push cannot drift prod because the revision
+      # references the immutable digest-backed sha tag, not a moving tag.
+      - name: Roll service (rolling, pin sha-<7> task definition)
+        if: inputs.deploy_mode == 'rolling' && inputs.pin_image_tag
+        env:
+          ECS_SERVICE: ${{ inputs.ecs_service }}
+          ECR_REPO: ${{ inputs.ecr_repo }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ECS_SERVICE}" ]; then
+            echo "rolling mode requires ecs_service" >&2
+            exit 1
+          fi
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          FAMILY="${PROJECT}-${ENVIRONMENT}-${ECS_SERVICE}"
+          # Mirror docker/metadata-action's type=sha tag (sha- + 7-char short
+          # SHA) so the service runs the exact image built and scanned above.
+          IMAGE="${REGISTRY}/${PROJECT}-${ENVIRONMENT}-${ECR_REPO}:sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          echo "Pinning ${ECS_SERVICE} on ${CLUSTER} to ${IMAGE}"
+          # Build a clean register-task-definition payload from the current
+          # revision: set the matching container's image, strip server-managed
+          # read-only fields (enableFaultInjection is returned by describe but
+          # rejected on register), leave every other field intact.
+          NEW_DEF="$(aws ecs describe-task-definition --task-definition "$FAMILY" \
+            --query 'taskDefinition' --output json \
+            | jq --arg IMAGE "$IMAGE" --arg NAME "$ECS_SERVICE" '
+                del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy,
+                    .deregisteredAt, .enableFaultInjection)
+                | .containerDefinitions = [
+                    .containerDefinitions[]
+                    | if .name == $NAME then .image = $IMAGE else . end
+                  ]')"
+          NEW_ARN="$(aws ecs register-task-definition --cli-input-json "$NEW_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          echo "Registered ${NEW_ARN}"
+          aws ecs update-service --cluster "$CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$NEW_ARN" >/dev/null
+          if ! aws ecs wait services-stable --cluster "$CLUSTER" --services "$ECS_SERVICE"; then
+            echo "Service ${ECS_SERVICE} did not reach steady state (deploy failed or rolled back)" >&2
+            exit 1
+          fi
+          echo "Service ${ECS_SERVICE} stable on ${NEW_ARN}"
       # Ingestion deploy for the worker/producer fleet sharing the backend image.
       # Rolls via the worker-lifecycle lambda (EXTERNAL deployment controller) so
       # in-flight messages drain on the old version; never updates the service

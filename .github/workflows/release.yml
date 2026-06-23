@@ -1,0 +1,78 @@
+name: release
+# Tag-triggered production release. Pushing a semver tag (v*) whose commit is on
+# main deploys prod backend (with migrations) then frontend automatically. The
+# tag is the deliberate release gesture and stands in for the human approval the
+# workflow_dispatch deploy wrappers otherwise require: an ordinary merge to main
+# never deploys, only a tag does. The workflow_dispatch deploy-* wrappers stay in
+# place untouched for ad-hoc deploys and rollbacks (see docs/infrastructure.md).
+#
+# Orchestration only: the build/scan/push/roll mechanics live in the reusable
+# _deploy.yml. backend runs before frontend (needs:) so migrations land before
+# the new frontend serves. Both deploy jobs pin the service to this build's
+# immutable sha-<7> task-definition revision (pin_image_tag) because on a tag ref
+# the moving `latest` tag is not advanced; see _deploy.yml for the rationale.
+on:
+  push:
+    tags:
+      - "v*"
+# A called workflow only receives permissions the caller already holds, and the
+# repo default is id-token: none, so id-token: write must be granted here for the
+# OIDC AssumeRole in _deploy.yml. contents: read lets the guard read the graph.
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  # Refuse to deploy a tag whose commit is not on main (e.g. cut from a side
+  # branch). The tag's ref name is not trusted; release-guard.sh verifies the
+  # commit is an ancestor of origin/main against the real commit graph.
+  guard:
+    name: Guard tag is on main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Full history so merge-base can decide ancestry; checkout of a tag
+          # ref is detached, so fetch origin/main explicitly below.
+          fetch-depth: 0
+      - name: Assert tagged commit is on main
+        env:
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          bash scripts/release-guard.sh "$TAG_SHA" origin/main
+  backend:
+    name: Deploy backend (rolling + migrate)
+    needs: guard
+    uses: ./.github/workflows/_deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      service: backend
+      ecr_repo: backend
+      context: stack/backend
+      dockerfile: stack/backend/Dockerfile
+      deploy_mode: rolling
+      ecs_service: backend
+      migrate_dockerfile: stack/backend/Dockerfile.migrate
+      pin_image_tag: true
+      environment: production
+  frontend:
+    name: Deploy frontend (rolling)
+    needs: backend
+    uses: ./.github/workflows/_deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      service: frontend
+      ecr_repo: frontend
+      context: stack/frontend
+      dockerfile: stack/frontend/Dockerfile
+      deploy_mode: rolling
+      ecs_service: frontend
+      pin_image_tag: true
+      environment: production

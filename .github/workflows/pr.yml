@@ -117,6 +117,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/push-secrets.test.sh
+  # Unit-test the tag-release main-ancestor guard against real throwaway git
+  # repos (git is deterministic and offline): a tag on main passes, a tag off
+  # main fails fast. Gates the release.yml tag-deploy path.
+  release-guard-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/release-guard.test.sh
   # Unit-test the CloudWatch-alarm-to-Slack forwarder Lambda's message formatting
   # (pure, no AWS calls; boto3 is stubbed). The handler ships as a single source
   # file with no build step, so this is its only gate.

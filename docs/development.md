@@ -26,8 +26,15 @@ pass under `-race`; the frontend uses Vitest. See the `testing` skill for the fu
   immutable `sha-<short>` tag, then rolls that service alone and waits for stability (backend also
   builds/scans the migrate image and runs migrations; workers roll the ingestion fleet via the
   worker-lifecycle lambda; backup is image-only, picked up by the scheduled task on its next run).
-  No long-lived AWS credentials (GitHub OIDC); a production deploy is always a deliberate manual
-  dispatch.
+  No long-lived AWS credentials (GitHub OIDC). Use these for ad-hoc deploys and rollbacks.
+- `release.yml` - tag-triggered production release. Pushing a `v*` tag whose commit is on `main`
+  deploys backend (rolling + migrate) then frontend (`needs: backend`) via `_deploy.yml`, binding the
+  jobs to the `production` GitHub Environment. A guard job fails fast if the tagged commit is not an
+  ancestor of `origin/main`, so a tag cut from a side branch deploys nothing; an ordinary merge to
+  `main` (no tag) deploys nothing. The roll pins each service to a fresh task-definition revision on
+  the build's immutable `sha-<7>` image (the moving `latest` tag is not advanced on a tag ref), so a
+  later unrelated `latest` push cannot drift prod. The tag is the deliberate human approval; see
+  [Infrastructure -> Deploys](infrastructure.md#deploys-human-gated).
 
 ## Claude workflow
 
