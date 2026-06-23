@@ -80,6 +80,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/run-ingest-task.test.sh
+  # Unit-test the /ingest account guard (live sts identity vs the committed
+  # deploy/targets.json expected account; refuse on mismatch) with a stubbed aws
+  # CLI (no AWS account, no real credentials).
+  aws-target-guard-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/aws-target-guard.test.sh
+  # Unit-test the /ingest orchestrator (guard -> validate env -> family/service
+  # preflight -> fleet up -> producer -> drain -> fleet down, with trap-teardown)
+  # with a stubbed aws CLI and DRY_RUN (no AWS account, no real ECS/CloudWatch).
+  ingest-run-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ingest-run.test.sh
   # Unit-test the INSEE re-run idempotency checkpoint (count, re-run, assert no
   # growth) with a stubbed psql/aws (no database, no AWS account, no tunnel).
   insee-idempotency-script:
