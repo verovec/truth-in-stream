@@ -16,14 +16,21 @@ lives under `stack/`.
 - Local dev: `docker-compose.yml` (postgres :5432, backend :8080, frontend :3000)
 
 ## Always-on rules
-- Deploys stay human-gated: never run `terraform apply`, dispatch the deploy workflow, or take
-  any production-affecting action without explicit approval.
+- Deploys stay human-gated. Rolling the prod services is done by pushing a semver tag (`v*`) whose
+  commit is on `main`: that fires `release.yml`, which rolls backend (with migrations), Keycloak
+  (with its DB bootstrap), and frontend. Applying the prod infrastructure
+  (`terraform apply stack/terraform/prod`, including standing the stack up the first time) is a
+  separate, deliberate human step, kept out of the tag path on purpose. Never run `terraform apply`
+  by hand, dispatch a `deploy-*.yml` workflow, push a deploy tag, or take any other
+  production-affecting action on the user's behalf without explicit approval; an agent delivers to
+  `main` but never tags a release or applies prod.
 - Merging a card's PR to `main` is automatic in this workspace once the PR's CI is green. After a
   passing code-review and a green end-to-end check, the delivering agent rebases on `main`, opens
   the PR, waits for CI to pass, merges, and moves the card to Done (see the `delivering-linear-cards`
   skill and the `/pick` command). This project-scoped rule supersedes the global `ship-after-review`
-  skill's "merge stays human-gated" clause for this repo only. The deploy workflow is
-  `workflow_dispatch`-only, so an auto-merge to `main` never triggers a deploy.
+  skill's "merge stays human-gated" clause for this repo only. An auto-merge to `main` never
+  triggers a deploy; only a version tag does (the `deploy-*.yml` wrappers stay `workflow_dispatch`
+  for ad-hoc single-service rolls).
 - Best practice and long-term maintainability first.
 - Before integrating a new library/pattern/tool, verify current best practice and latest
   stable version via Context7 (web search if needed) before writing code.

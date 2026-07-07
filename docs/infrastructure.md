@@ -49,9 +49,15 @@ ALB; the ALB has no public DNS name and is reachable only from CloudFront.
   records to CloudFront cross-account. It is applied by hand and excluded from CI:
   `make tf-main-account-plan` / `make tf-main-account-apply`.
 - **Media** is served as direct presigned S3 GET URLs and is not fronted by CloudFront.
-- **Keycloak** the production identity provider is operator-managed out of band at
-  `https://login.jeminforme.fr` and is not provisioned by this terraform; see
-  [Configuration -> Local Keycloak](configuration.md#local-keycloak-identity-provider).
+- **Keycloak** the production identity provider is self-hosted by this terraform: an ECS Fargate
+  service (module `keycloak`) behind the internal ALB, reached from the browser at
+  `https://login.jeminforme.fr` through the same CloudFront distribution (a host-header ALB rule
+  routes `login.` to it). It runs in Keycloak production mode with edge TLS termination
+  (`KC_PROXY_HEADERS=xforwarded`, `KC_HOSTNAME=https://login.jeminforme.fr`) and stores its realm and
+  users in a dedicated `keycloak` database on the shared RDS instance, created by an idempotent
+  one-shot bootstrap task the release runs before Keycloak rolls. Gated by `enable_keycloak`
+  (default on; requires RDS). See [Configuration -> Local Keycloak](configuration.md#local-keycloak-identity-provider)
+  for the realm contract shared with local dev.
 
 ## Production database
 
@@ -117,29 +123,46 @@ zero when idle so there is no standing ingestion cost.
 A production deploy is always a deliberate human action. There are two entrypoints, and both keep
 the human gate: an ordinary merge to `main` never deploys.
 
-**Tag release (`release.yml`).** Pushing a semver tag matching `v*` whose commit is on `main`
-deploys the user-facing app automatically: backend first (build, Trivy-scan, push, run migrations),
-then frontend (`needs: backend`), each rolling and waiting for `services-stable`. Cutting the tag is
-the deliberate release gesture and stands in for the dispatch approval.
+**Tag release (`release.yml`).** Pushing a semver tag matching `v*` whose commit is on `main` rolls
+the prod services automatically, in order (`needs:`): **guard -> backend -> {keycloak, frontend}**.
+`backend` builds, Trivy-scans, pushes, runs migrations, and rolls; then `keycloak` (runs its
+idempotent DB-bootstrap task, then rolls) and `frontend` roll in parallel (frontend does not depend
+on keycloak, so a keycloak issue never blocks the frontend roll). Each service waits for
+`services-stable`. Cutting the tag is the deliberate release gesture and stands in for the dispatch
+approval.
 
 ```bash
 git checkout main && git pull
 git tag v1.4.0           # semver tag on a main commit
-git push origin v1.4.0   # triggers release.yml -> prod backend then frontend
+git push origin v1.4.0   # release.yml -> roll backend, keycloak, frontend
 ```
 
 A tag whose commit is **not** on `main` (e.g. cut from a side branch) fails fast in the guard job
 and deploys nothing. The roll pins each service to a fresh task-definition revision referencing the
 build's immutable `sha-<7>` image (not the moving `latest` tag, which is not advanced on a tag ref),
 so the release is deterministic and a later unrelated `latest` push cannot drift prod. Workers are
-out of scope for a tag release; they roll via the worker-lifecycle lambda. Backup is image-only.
+out of scope for a tag release; they roll via the worker-lifecycle lambda. Backup is image-only. The
+keycloak job assumes `enable_keycloak=true` (the default); if you run Keycloak out of band, drop that
+job.
+
+The tag rolls **services only**; it does not run `terraform apply`. Infrastructure changes to
+`stack/terraform/prod` (and standing the stack up the first time) are a separate, deliberate human
+apply, kept out of the tag path on purpose: the apply role's OIDC trust is ref-scoped (not
+tag/environment), and applying would revert the ECS services off their pinned `sha-<7>` task
+definitions back to `:latest`. So the flow is: apply prod (once, and again when infra changes), then
+tag to roll the images.
+
+```bash
+cd stack/terraform/prod && terraform init && terraform apply   # deliberate, human-run
+```
 
 **Manual dispatch (`deploy-*.yml`).** The per-service `workflow_dispatch` workflows
-(`deploy-backend`, `deploy-frontend`, `deploy-workers`, `deploy-backup`) remain for ad-hoc deploys
-and **rollbacks**: to roll back, dispatch the relevant `deploy-*` workflow from the last-good commit
-(or re-push that commit's tag). See [Development -> CI](development.md#ci).
+(`deploy-backend`, `deploy-frontend`, `deploy-keycloak`, `deploy-workers`, `deploy-backup`) remain
+for ad-hoc single-service rolls and **rollbacks**: to roll back, dispatch the relevant `deploy-*`
+workflow from the last-good commit (or re-push that commit's tag). See
+[Development -> CI](development.md#ci).
 
-No `terraform apply`, no manual deploy dispatch, and no main-account apply happens without explicit
-human approval. Repo variables `AWS_REGION`, `DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and
-`AWS_DEPLOY_ROLE_ARN` drive both entrypoints; the release jobs bind to the `production` GitHub
-Environment (no required reviewers — the tag is the gate).
+The tag is the gate: an ordinary merge to `main` never deploys, and no `terraform apply` (prod or
+main-account) ever runs without a deliberate human apply. Repo variables `AWS_REGION`,
+`DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and `AWS_DEPLOY_ROLE_ARN` drive the deploy jobs, which
+bind to the `production` GitHub Environment.
