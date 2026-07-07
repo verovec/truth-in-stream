@@ -9,10 +9,36 @@ locals {
   # the dashboard (reader) cannot drift to mismatched labels.
   broker_name = "${local.project}-${var.environment}"
 
+  # Effective RDS switch. Dev develops the database locally by default
+  # (var.enable_rds = false), but the ingestion hosts need a cloud database to
+  # write the corpus into, so enabling them implies RDS - the consumer host would
+  # be useless without it. Every "does a managed database exist?" gate below reads
+  # local.rds_enabled, never var.enable_rds directly, so the input toggle and the
+  # implied one can never disagree (distinct name so the two are not confused).
+  rds_enabled = var.enable_rds || var.enable_ingestion_hosts
+
   # DATABASE_URL secret ARN, or null when RDS is gated off (dev develops the
   # database locally). DB consumers read this: the backend drops the secret and
   # the migration task / embedding worker gate themselves off when it is null.
   rds_dsn_secret_arn = one(module.rds[*].dsn_secret_arn)
+
+  # Exact secret ARNs each ingestion host's instance profile may read - never a
+  # wildcard. Split by role so neither host holds a credential it does not use:
+  # the crawler runs the producers (broker + the producer-side API keys + the
+  # database the dump/stats producers stage in), the consumer runs the workers
+  # (broker + database + the embedding key the workers call). compact() drops the
+  # DSN if RDS were ever absent, though enable_ingestion_hosts implies it.
+  crawler_host_secret_arns = compact([
+    module.rabbitmq.url_secret_arn,
+    local.rds_dsn_secret_arn,
+    aws_secretsmanager_secret.checkworthy_api_key.arn,
+    aws_secretsmanager_secret.factcheck_api_key.arn,
+  ])
+  consumer_host_secret_arns = compact([
+    module.rabbitmq.url_secret_arn,
+    local.rds_dsn_secret_arn,
+    aws_secretsmanager_secret.embedding_api_key.arn,
+  ])
 }
 
 module "vpc" {
@@ -22,6 +48,16 @@ module "vpc" {
   environment = var.environment
   # Single NAT: dev trades AZ-redundant egress for cost.
   nat_gateway_count = 1
+
+  # The ingestion consumer host (and the crawler host's dump/stats producers)
+  # write to RDS, so their SGs join the postgres SG's 5432 allow-list when the
+  # hosts are provisioned. Added as an inline ingress rule on the postgres SG
+  # (an empty list adds no rule). No cycle: the host modules read only the VPC's
+  # id/subnets, never the postgres SG - mirrors how prod admits the bastion.
+  database_client_security_group_ids = var.enable_ingestion_hosts ? [
+    module.crawler_host[0].security_group_id,
+    module.consumer_host[0].security_group_id,
+  ] : []
 }
 
 module "ecs" {
@@ -41,7 +77,7 @@ module "ecr" {
 
 module "rds" {
   source = "../modules/rds"
-  count  = var.enable_rds ? 1 : 0
+  count  = local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -77,6 +113,12 @@ module "rabbitmq" {
   allowed_security_group_ids = concat(
     [module.vpc.ecs_tasks_security_group_id],
     var.enable_bastion ? [module.bastion[0].security_group_id] : [],
+    # The ingestion hosts publish to (crawler) and consume from (consumer) the
+    # broker over AMQPS, so both host SGs join the allow-list when provisioned.
+    var.enable_ingestion_hosts ? [
+      module.crawler_host[0].security_group_id,
+      module.consumer_host[0].security_group_id,
+    ] : [],
   )
 
   # The metrics-poller and worker-lifecycle lambdas reach the broker's management
@@ -108,6 +150,52 @@ module "bastion" {
   vpc_id        = module.vpc.vpc_id
   subnet_id     = module.vpc.private_subnet_ids[0]
   instance_type = var.bastion_instance_type
+}
+
+# On-demand EC2 ingestion hosts. Two stop/start-able instances that run the
+# existing producer/worker containers directly in the VPC (replacing the
+# Fargate-at-zero ingestion path): a crawler host for the producers and a
+# consumer host for the worker fleets. Each is SSM-only (no inbound, no SSH key),
+# IMDSv2-required, no public IP, with an instance profile scoped to SSM core plus
+# only the secrets/ECR-repo/logs its containers use. Their SGs are admitted by the
+# broker (5671) and RDS (5432) above/below. Gated off by default (running
+# instances cost money); enable for an ingestion run, then stop them to zero cost.
+# Enabling them implies RDS (local.rds_enabled), so the consumer has a database to
+# write. The operator's start/stop + SSM run command is a separate card.
+module "crawler_host" {
+  source = "../modules/ingestion-host"
+  count  = var.enable_ingestion_hosts ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "crawler-host"
+
+  vpc_id        = module.vpc.vpc_id
+  subnet_id     = module.vpc.private_subnet_ids[0]
+  instance_type = var.crawler_host_instance_type
+
+  # Producers: broker + the producer-side API keys + the DB the dump/stats
+  # producers stage in. No embedding key (workers embed, not producers).
+  secret_arns         = local.crawler_host_secret_arns
+  ecr_repository_arns = [module.ecr.repository_arns_by_name["backend"]]
+}
+
+module "consumer_host" {
+  source = "../modules/ingestion-host"
+  count  = var.enable_ingestion_hosts ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "consumer-host"
+
+  vpc_id        = module.vpc.vpc_id
+  subnet_id     = module.vpc.private_subnet_ids[0]
+  instance_type = var.consumer_host_instance_type
+
+  # Workers: broker + database + the embedding key the workers call. No
+  # producer-only API keys (checkworthy/factcheck) - least privilege.
+  secret_arns         = local.consumer_host_secret_arns
+  ecr_repository_arns = [module.ecr.repository_arns_by_name["backend"]]
 }
 
 # External API keys. Terraform creates the containers only; set the values out
@@ -280,7 +368,7 @@ module "frontend" {
 # to migrate in the cloud, and the deploy workflow's migrate step is skipped.
 module "migration" {
   source = "../modules/migration"
-  count  = var.enable_rds ? 1 : 0
+  count  = local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -296,7 +384,7 @@ module "migration" {
 module "wiki_sync" {
   source = "../modules/scheduled-task"
   # Writes to the database, so it requires RDS as well as its own enable flag.
-  count = var.enable_wiki_sync && var.enable_rds ? 1 : 0
+  count = var.enable_wiki_sync && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -333,7 +421,7 @@ module "wiki_sync" {
 module "db_backup" {
   source = "../modules/scheduled-task"
   # Dumps RDS, so it requires RDS as well as its own enable flag.
-  count = var.enable_db_backup && var.enable_rds ? 1 : 0
+  count = var.enable_db_backup && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -370,7 +458,7 @@ module "embed_worker" {
   source = "../modules/worker"
   # Writes embeddings to the database, so it requires RDS as well as its own
   # enable flag. The cloud worker stays gated off while the database is local.
-  count = var.enable_embed_worker && var.enable_rds ? 1 : 0
+  count = var.enable_embed_worker && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -410,7 +498,7 @@ module "embed_worker" {
 # database), so it is bound to enable_rds like the other DB-backed tasks.
 module "producer" {
   source = "../modules/scheduled-task"
-  count  = var.enable_producer && var.enable_rds ? 1 : 0
+  count  = var.enable_producer && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -502,7 +590,7 @@ module "crawl_producer" {
 # as well as its own enable flag; gated off by default.
 module "crawl_worker" {
   source = "../modules/worker"
-  count  = var.enable_crawl_worker && var.enable_rds ? 1 : 0
+  count  = var.enable_crawl_worker && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -631,7 +719,7 @@ module "scrutins_producer" {
 # requires RDS as well as its own enable flag; gated off by default.
 module "factcheck_worker" {
   source = "../modules/worker"
-  count  = var.enable_factcheck_worker && var.enable_rds ? 1 : 0
+  count  = var.enable_factcheck_worker && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -675,7 +763,7 @@ module "factcheck_worker" {
 # requires RDS as well as its own enable flag; gated off by default.
 module "scrutins_worker" {
   source = "../modules/worker"
-  count  = var.enable_scrutins_worker && var.enable_rds ? 1 : 0
+  count  = var.enable_scrutins_worker && local.rds_enabled ? 1 : 0
 
   project     = local.project
   environment = var.environment
@@ -769,7 +857,7 @@ module "monitoring" {
   queue_base        = "embedding.jobs"
 
   cluster_name        = module.ecs.cluster_name
-  worker_service_name = var.enable_embed_worker && var.enable_rds ? module.embed_worker[0].service_name : ""
+  worker_service_name = var.enable_embed_worker && local.rds_enabled ? module.embed_worker[0].service_name : ""
 }
 
 # Worker-lifecycle lambda: queue-depth autoscaling and zero-downtime rollout for
@@ -850,9 +938,10 @@ resource "aws_ssm_parameter" "tasks_security_group_id" {
 module "apply_permissions" {
   source = "../modules/apply-permissions"
 
-  include_rds              = var.enable_rds
+  include_rds              = local.rds_enabled
   include_scheduled_tasks  = var.enable_wiki_sync || var.enable_db_backup
   include_bastion          = var.enable_bastion
+  include_ingestion_hosts  = var.enable_ingestion_hosts
   include_metrics_lambda   = var.enable_metrics_lambda
   include_worker_lifecycle = var.enable_worker_lifecycle
 }

@@ -293,11 +293,20 @@ locals {
     "scheduler:GetScheduleGroup",
   ]
 
-  # SSM bastion (modules/bastion): the EC2 instance and its instance profile.
-  # Only required when the env provisions the bastion. The instance's own SG and
-  # IAM role/policy are covered by networking_actions and iam_actions; this block
-  # adds the instance lifecycle and the instance-profile binding those omit.
-  bastion_actions = [
+  # SSM-managed EC2 host instance + instance-profile lifecycle, shared by the
+  # bastion (modules/bastion) and the ingestion hosts (modules/ingestion-host):
+  # both are SSM-only EC2 instances fronted by an instance profile, so from the
+  # apply role's view they need the identical action set - one local so the two
+  # can never drift. Only required when the env provisions either. Each host's own
+  # SG and IAM role/policy are covered by networking_actions and iam_actions, and
+  # the profile is passed to EC2 via iam:PassRole (also in iam_actions); this block
+  # adds the instance lifecycle and the instance-profile binding those omit. The
+  # ingestion hosts' runtime secretsmanager:GetSecretValue / ECR-pull / CloudWatch
+  # Logs are inline policies on each host's OWN instance role, written by the apply
+  # role via iam:PutRolePolicy (iam_actions) - the apply role never reads those
+  # secrets or pulls those images itself, so they are deliberately not listed here,
+  # mirroring how the bastion's and the lambdas' runtime permissions are handled.
+  ec2_host_actions = [
     "ec2:RunInstances",
     "ec2:TerminateInstances",
     "ec2:StopInstances",
@@ -392,7 +401,8 @@ locals {
     var.include_waf ? local.waf_actions : [],
     var.include_rds ? local.rds_actions : [],
     var.include_scheduled_tasks ? local.scheduled_task_actions : [],
-    var.include_bastion ? local.bastion_actions : [],
+    var.include_bastion ? local.ec2_host_actions : [],
+    var.include_ingestion_hosts ? local.ec2_host_actions : [],
     var.include_elasticache ? local.elasticache_actions : [],
     var.include_metrics_lambda ? concat(local.metrics_lambda_actions, local.dashboard_actions, local.scheduled_task_actions) : [],
     # Observability module (modules/observability): the Slack forwarder lambda

@@ -38,6 +38,24 @@ variable "bastion_instance_type" {
   description = "Bastion instance class (x86_64 family; the AMI is x86_64). t3.micro suffices: the host only relays SSM port-forward traffic, it runs no workload."
 }
 
+variable "enable_ingestion_hosts" {
+  type        = bool
+  default     = false
+  description = "Provision the two on-demand EC2 ingestion hosts (a crawler host running the producers and a consumer host running the worker fleets), each SSM-only (no inbound, no SSH), IMDSv2-required, with an instance profile scoped to SSM core + the specific ingestion secrets + backend ECR pull + CloudWatch Logs. Default false: they are running instances with a cost, so enable them only for an ingestion run, then stop them to zero cost. Enabling them implies enable_rds (the consumer writes the corpus to the managed database), and their security groups are admitted by the broker on 5671 and RDS on 5432. Note: to pause an ingestion run, STOP the instances (aws ec2 stop-instances) rather than flipping this back to false - because it implies enable_rds, disabling it tears the dev RDS instance down (skip_final_snapshot = true), discarding the ingested corpus. Set enable_rds = true independently first if the database must outlive the hosts."
+}
+
+variable "crawler_host_instance_type" {
+  type        = string
+  default     = "t3.small"
+  description = "Crawler-host instance class (x86_64 family; the AMI is x86_64). t3.small suits the producers, which stream external APIs and publish to the queue without heavy local compute."
+}
+
+variable "consumer_host_instance_type" {
+  type        = string
+  default     = "t3.medium"
+  description = "Consumer-host instance class (x86_64 family; the AMI is x86_64). t3.medium is larger than the crawler because the worker fleets embed and upsert in parallel; raise it to scale drain throughput."
+}
+
 variable "enable_wiki_sync" {
   type        = bool
   default     = false
