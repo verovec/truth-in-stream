@@ -177,12 +177,7 @@ func (c *Client) Publish(ctx context.Context, msg Message) error {
 	// confirmations outstanding at once, so one slow confirm does not stall
 	// every other producer behind it.
 	c.pubMu.Lock()
-	confirm, err := c.pubCh.PublishWithDeferredConfirmWithContext(ctx, "", c.queueName, false, false, amqp.Publishing{
-		DeliveryMode: amqp.Persistent,
-		Priority:     msg.Priority,
-		Headers:      amqp.Table{versionHeader: c.version},
-		Body:         msg.Body,
-	})
+	confirm, err := c.pubCh.PublishWithDeferredConfirmWithContext(ctx, "", c.queueName, false, false, persistentPublishing(c.version, msg))
 	c.pubMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("queue: publish to %q: %w", c.queueName, err)
@@ -195,6 +190,21 @@ func (c *Client) Publish(ctx context.Context, msg Message) error {
 		return fmt.Errorf("queue: broker nacked publish to %q", c.queueName)
 	}
 	return nil
+}
+
+// persistentPublishing builds the AMQP envelope for msg: a persistent delivery
+// mode so an enqueued message survives a broker restart, the queue's schema
+// version stamped in the headers, and the caller's priority and body. Persistence
+// paired with a durable queue (see declareQueue) is the broker-restart half of the
+// at-least-once guarantee; it is a pure builder so the persistence guarantee can
+// be pinned by a unit test without a live broker.
+func persistentPublishing(version string, msg Message) amqp.Publishing {
+	return amqp.Publishing{
+		DeliveryMode: amqp.Persistent,
+		Priority:     msg.Priority,
+		Headers:      amqp.Table{versionHeader: version},
+		Body:         msg.Body,
+	}
 }
 
 // Consume opens a dedicated channel and returns a stream of deliveries the
@@ -281,11 +291,20 @@ func (c *Client) Close() error {
 	return errors.Join(errs...)
 }
 
+// queueDeclarer is the single channel operation queue declaration needs. The
+// concrete *amqp.Channel satisfies it; abstracting it lets a test fake record the
+// declaration arguments, so the durability and priority guarantees are pinned
+// without a live broker.
+type queueDeclarer interface {
+	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
+}
+
 // declareQueue declares the durable, priority-enabled embedding-job queue. It is
 // idempotent for matching arguments, so producer and consumers can each declare
 // it; x-max-priority must be set at declaration and cannot be changed later
-// without deleting the queue.
-func declareQueue(ch *amqp.Channel, name string, maxPriority uint8) error {
+// without deleting the queue. durable is true so the queue and, with persistent
+// messages, its enqueued work survive a broker restart.
+func declareQueue(ch queueDeclarer, name string, maxPriority uint8) error {
 	if _, err := ch.QueueDeclare(name, true, false, false, false, amqp.Table{
 		"x-max-priority": int(maxPriority),
 	}); err != nil {

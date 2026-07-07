@@ -31,17 +31,28 @@ func (f fakeEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]flo
 	return out, nil
 }
 
-// recordingStore captures every upserted claim.
+// recordingStore captures every upserted claim and can be configured to fail, so
+// a test can exercise the write-failure branch (a failed upsert must never ack).
 type recordingStore struct {
 	mu     sync.Mutex
 	claims []domain.PoliticalClaim
+	err    error
 }
 
 func (s *recordingStore) UpsertPoliticalClaim(_ context.Context, claim domain.PoliticalClaim) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
 	s.claims = append(s.claims, claim)
 	return nil
+}
+
+func (s *recordingStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.claims)
 }
 
 func validJob() ClaimJob {
@@ -216,6 +227,121 @@ func TestProcessRequeuesOnShutdown(t *testing.T) {
 	res := w.Process(ctx, mustEncode(t, validJob()), 5)
 	if res.Action != ActionRequeue {
 		t.Fatalf("action = %v, want ActionRequeue", res.Action)
+	}
+}
+
+// TestProcessRepublishesOnUpsertFailure pins the ack-after-write property on the
+// write side: when the upsert itself fails transiently, the delivery is NOT acked
+// but re-enqueued for a bounded retry, so a failed DB write can never drop a claim.
+func TestProcessRepublishesOnUpsertFailure(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{err: errors.New("db down")}
+	w := NewWorker(fakeEmbedder{}, store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	res := w.Process(t.Context(), mustEncode(t, validJob()), 5)
+	if res.Action != ActionRepublish {
+		t.Fatalf("action = %v, want ActionRepublish on a failed upsert", res.Action)
+	}
+	var retry ClaimJob
+	if err := json.Unmarshal(res.RepublishBody, &retry); err != nil {
+		t.Fatalf("decode republished body: %v", err)
+	}
+	if retry.Attempt != 1 {
+		t.Fatalf("attempt = %d, want 1", retry.Attempt)
+	}
+}
+
+// --- Run/handle loop: ack-after-write and shutdown requeue ---
+
+// recDelivery records which acknowledgement the loop applied to it.
+type recDelivery struct {
+	body     []byte
+	priority uint8
+	version  string
+	mu       sync.Mutex
+	acked    bool
+	nacked   bool
+	requeue  bool
+}
+
+func (d *recDelivery) Body() []byte    { return d.body }
+func (d *recDelivery) Priority() uint8 { return d.priority }
+func (d *recDelivery) Version() string { return d.version }
+
+func (d *recDelivery) Ack() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.acked = true
+	return nil
+}
+
+func (d *recDelivery) Nack(requeue bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nacked, d.requeue = true, requeue
+	return nil
+}
+
+func (d *recDelivery) state() (acked, nacked, requeue bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.acked, d.nacked, d.requeue
+}
+
+// sliceStream yields a fixed set of deliveries once, then closes, mirroring the
+// broker stream closing on ctx cancellation so Run terminates.
+type sliceStream struct{ deliveries []Delivery }
+
+func (s *sliceStream) Consume(_ context.Context) (<-chan Delivery, error) {
+	out := make(chan Delivery)
+	go func() {
+		defer close(out)
+		for _, d := range s.deliveries {
+			out <- d
+		}
+	}()
+	return out, nil
+}
+
+// TestRunAcksAfterUpsertAndReturns proves the ack-after-write ordering end to end:
+// Run drains a delivery whose upsert commits, acks it (never nacks), and returns
+// once the stream closes - a bounded exit with no leaked delivery.
+func TestRunAcksAfterUpsertAndReturns(t *testing.T) {
+	t.Parallel()
+	d := &recDelivery{body: mustEncode(t, validJob()), priority: 5}
+	store := &recordingStore{}
+	w := NewWorker(fakeEmbedder{}, store, &sliceStream{[]Delivery{d}}, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	acked, nacked, _ := d.state()
+	if !acked || nacked {
+		t.Fatalf("delivery acked=%v nacked=%v, want acked after a committed upsert", acked, nacked)
+	}
+	if store.count() != 1 {
+		t.Fatalf("upsert did not run before ack: stored %d claims, want 1", store.count())
+	}
+}
+
+// TestHandleNacksRequeueOnShutdown proves an in-flight delivery interrupted by a
+// shutdown (canceled context, so embed fails) is nacked WITH requeue and never
+// acked, so the broker redelivers it without the worker burning an attempt.
+func TestHandleNacksRequeueOnShutdown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	d := &recDelivery{body: mustEncode(t, validJob()), priority: 5}
+	w := NewWorker(fakeEmbedder{err: context.Canceled}, &recordingStore{}, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	w.handle(ctx, d)
+
+	acked, nacked, requeue := d.state()
+	if acked {
+		t.Fatal("delivery acked during shutdown; interrupted work would be lost")
+	}
+	if !nacked || !requeue {
+		t.Fatalf("delivery nacked=%v requeue=%v, want nacked with requeue=true", nacked, requeue)
 	}
 }
 

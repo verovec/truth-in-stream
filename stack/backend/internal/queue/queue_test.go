@@ -53,6 +53,58 @@ func TestPublishRejectsPriorityAboveMaximum(t *testing.T) {
 	}
 }
 
+// TestPersistentPublishingIsPersistentAndVersioned pins property 1's publish
+// half: every message leaves the process with a persistent delivery mode (so a
+// broker restart keeps it) and the active schema version in its headers, carrying
+// the caller's priority and body unchanged. It runs without a broker, so CI proves
+// persistence even though the broker round-trip skips.
+func TestPersistentPublishingIsPersistentAndVersioned(t *testing.T) {
+	t.Parallel()
+
+	pub := persistentPublishing("3", Message{Body: []byte("payload"), Priority: 7})
+	if pub.DeliveryMode != amqp.Persistent {
+		t.Fatalf("DeliveryMode = %d, want %d (amqp.Persistent); a transient message is dropped on a broker restart", pub.DeliveryMode, amqp.Persistent)
+	}
+	if pub.Priority != 7 {
+		t.Fatalf("Priority = %d, want 7 (the caller's priority is preserved)", pub.Priority)
+	}
+	if got, _ := pub.Headers[versionHeader].(string); got != "3" {
+		t.Fatalf("version header = %q, want %q", got, "3")
+	}
+	if string(pub.Body) != "payload" {
+		t.Fatalf("Body = %q, want %q (the caller's body is untouched)", pub.Body, "payload")
+	}
+}
+
+// TestDeclareQueueDeclaresDurablePriorityQueue pins property 1's queue half: the
+// queue is declared durable (so it and its persistent messages survive a broker
+// restart), at the requested priority ceiling, and as a shared surviving work
+// queue (not auto-delete, exclusive, or no-wait). A fake declarer records the
+// arguments, so CI proves durability without a live broker.
+func TestDeclareQueueDeclaresDurablePriorityQueue(t *testing.T) {
+	t.Parallel()
+
+	fd := &fakeDeclarer{}
+	if err := declareQueue(fd, "embedding.jobs.v1", 9); err != nil {
+		t.Fatalf("declareQueue() error = %v", err)
+	}
+	if !fd.called {
+		t.Fatal("declareQueue did not declare the queue")
+	}
+	if fd.name != "embedding.jobs.v1" {
+		t.Fatalf("declared queue name = %q, want %q", fd.name, "embedding.jobs.v1")
+	}
+	if !fd.durable {
+		t.Fatal("queue declared non-durable; a broker restart would drop the queue and its persistent messages")
+	}
+	if fd.autoDelete || fd.exclusive || fd.noWait {
+		t.Fatalf("queue declared autoDelete=%v exclusive=%v noWait=%v, want all false (a shared work queue that outlives any single consumer)", fd.autoDelete, fd.exclusive, fd.noWait)
+	}
+	if got := fd.args["x-max-priority"]; got != int(9) {
+		t.Fatalf("x-max-priority = %v, want 9 (priority delivery at the declared ceiling)", got)
+	}
+}
+
 func TestDeliveryAckDelegatesToAcknowledger(t *testing.T) {
 	t.Parallel()
 
@@ -268,6 +320,28 @@ func cleanupQueue(t *testing.T, url, queueName string) {
 		t.Logf("cleanup delete queue: %v", err)
 	}
 }
+
+// fakeDeclarer records the arguments a queue declaration is issued with, standing
+// in for an AMQP channel so declareQueue's durability and priority arguments are
+// asserted without a live broker.
+type fakeDeclarer struct {
+	called     bool
+	name       string
+	durable    bool
+	autoDelete bool
+	exclusive  bool
+	noWait     bool
+	args       amqp.Table
+	err        error
+}
+
+func (f *fakeDeclarer) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
+	f.called = true
+	f.name, f.durable, f.autoDelete, f.exclusive, f.noWait, f.args = name, durable, autoDelete, exclusive, noWait, args
+	return amqp.Queue{Name: name}, f.err
+}
+
+var _ queueDeclarer = (*fakeDeclarer)(nil)
 
 // fakeAcker records the acknowledgement calls a Delivery delegates to it,
 // standing in for an AMQP channel in unit tests.

@@ -192,3 +192,97 @@ func TestProcessRequeuesOnShutdown(t *testing.T) {
 		t.Fatalf("Action = %v, want ActionRequeue", res.Action)
 	}
 }
+
+// --- Run/handle loop: ack-after-write and shutdown requeue ---
+
+// recDelivery records which acknowledgement the loop applied to it.
+type recDelivery struct {
+	body     []byte
+	priority uint8
+	version  string
+	mu       sync.Mutex
+	acked    bool
+	nacked   bool
+	requeue  bool
+}
+
+func (d *recDelivery) Body() []byte    { return d.body }
+func (d *recDelivery) Priority() uint8 { return d.priority }
+func (d *recDelivery) Version() string { return d.version }
+
+func (d *recDelivery) Ack() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.acked = true
+	return nil
+}
+
+func (d *recDelivery) Nack(requeue bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nacked, d.requeue = true, requeue
+	return nil
+}
+
+func (d *recDelivery) state() (acked, nacked, requeue bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.acked, d.nacked, d.requeue
+}
+
+// sliceStream yields a fixed set of deliveries once, then closes, mirroring the
+// broker stream closing on ctx cancellation so Run terminates.
+type sliceStream struct{ deliveries []Delivery }
+
+func (s *sliceStream) Consume(_ context.Context) (<-chan Delivery, error) {
+	out := make(chan Delivery)
+	go func() {
+		defer close(out)
+		for _, d := range s.deliveries {
+			out <- d
+		}
+	}()
+	return out, nil
+}
+
+// TestRunAcksAfterUpsertAndReturns proves the ack-after-write ordering end to end:
+// Run drains a delivery whose voting records all upsert, acks it (never nacks),
+// and returns once the stream closes - a bounded exit with no leaked delivery.
+func TestRunAcksAfterUpsertAndReturns(t *testing.T) {
+	t.Parallel()
+	d := &recDelivery{body: jobBody(t, scrutinPayload, 0), priority: 5}
+	store := &recordingStore{}
+	w := NewWorker(store, &sliceStream{[]Delivery{d}}, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	acked, nacked, _ := d.state()
+	if !acked || nacked {
+		t.Fatalf("delivery acked=%v nacked=%v, want acked after committed upserts", acked, nacked)
+	}
+	if store.count() != 2 {
+		t.Fatalf("upserts did not run before ack: stored %d records, want 2", store.count())
+	}
+}
+
+// TestHandleNacksRequeueOnShutdown proves an in-flight delivery interrupted by a
+// shutdown (canceled context) is nacked WITH requeue and never acked, so the
+// broker redelivers it without the worker burning an attempt.
+func TestHandleNacksRequeueOnShutdown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	d := &recDelivery{body: jobBody(t, scrutinPayload, 0), priority: 5}
+	w := newTestWorker(&recordingStore{})
+
+	w.handle(ctx, d)
+
+	acked, nacked, requeue := d.state()
+	if acked {
+		t.Fatal("delivery acked during shutdown; interrupted work would be lost")
+	}
+	if !nacked || !requeue {
+		t.Fatalf("delivery nacked=%v requeue=%v, want nacked with requeue=true", nacked, requeue)
+	}
+}
