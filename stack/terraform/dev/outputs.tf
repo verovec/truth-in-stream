@@ -48,6 +48,16 @@ output "bastion_instance_id" {
   description = "SSM port-forward target instance ID. Null when enable_bastion is false."
 }
 
+output "crawler_host_instance_id" {
+  value       = one(module.crawler_host[*].instance_id)
+  description = "Crawler ingestion-host instance ID (the operator scripts start/stop it and open SSM sessions to it). Null when enable_ingestion_hosts is false."
+}
+
+output "consumer_host_instance_id" {
+  value       = one(module.consumer_host[*].instance_id)
+  description = "Consumer ingestion-host instance ID (the operator scripts start/stop it and open SSM sessions to it). Null when enable_ingestion_hosts is false."
+}
+
 output "ingestion_dashboard_name" {
   value       = one(module.monitoring[*].dashboard_name)
   description = "CloudWatch dashboard for the ingestion pipeline. Null when enable_metrics_lambda is false."

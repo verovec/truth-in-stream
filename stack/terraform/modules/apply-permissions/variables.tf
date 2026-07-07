@@ -34,6 +34,12 @@ variable "include_bastion" {
   description = "Include the SSM bastion actions (EC2 instance lifecycle + instance profile). Set from the env's enable_bastion so the manifest only demands them when the plan provisions the bastion."
 }
 
+variable "include_ingestion_hosts" {
+  type        = bool
+  default     = false
+  description = "Include the ingestion-host actions (the crawler + consumer EC2 instances and their instance profiles). Set from the env's enable_ingestion_hosts so the manifest only demands them when the plan provisions the hosts. Same EC2 instance + instance-profile lifecycle as the bastion; the hosts' runtime Secrets Manager / ECR-pull / CloudWatch Logs permissions live on each host's own instance role (created via iam:PutRolePolicy, covered by iam_actions), not on the apply role."
+}
+
 variable "include_metrics_lambda" {
   type        = bool
   default     = false

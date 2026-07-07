@@ -1,0 +1,23 @@
+#!/bin/bash
+# Bootstrap an Amazon Linux 2023 ingestion host: Docker Engine + the Docker
+# Compose plugin + git, with Docker enabled on boot. This provisions the
+# container runtime only; materializing the env file from Secrets Manager, logging
+# in to ECR, and running docker-compose.ingest.yml are the operator command's job.
+#
+# No secret is fetched or written here on purpose: user-data is stored in EC2
+# instance metadata and in Terraform state, so it must never carry a secret value.
+set -euxo pipefail
+
+dnf update -y
+dnf install -y docker git
+
+systemctl enable --now docker
+
+# Amazon Linux 2023 ships no docker-compose-plugin dnf package, so install the
+# Compose plugin binary where the Docker CLI discovers plugins, making
+# `docker compose` work. Pinned to an explicit release (never :latest) so a host
+# boots the same Compose version every time.
+install -d -m 0755 /usr/libexec/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-$(uname -m)" \
+  -o /usr/libexec/docker/cli-plugins/docker-compose
+chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose
