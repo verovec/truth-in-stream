@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -128,6 +129,122 @@ func TestProcessEmbedErrorRepublishes(t *testing.T) {
 	w := NewWorker(fakeEmbedder{err: errors.New("voyage 429")}, &fakeStore{}, nil, nil, nil, Config{MaxAttempts: 3})
 	if res := w.Process(t.Context(), mustBody(t, validJob()), 4); res.Action != ActionRepublish {
 		t.Errorf("action = %v, want Republish on transient embed error", res.Action)
+	}
+}
+
+// TestProcessRedeliveryIsIdempotent proves an at-least-once redelivery upserts the
+// same chunk key both times: the worker performs no duplicate-suppression, so
+// safety rests on the store's UpsertEmbeddedChunk being an idempotent upsert on
+// (page_id, chunk_index) (proven by store.TestUpsertEmbeddedChunkIsIdempotent).
+func TestProcessRedeliveryIsIdempotent(t *testing.T) {
+	st := &fakeStore{}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	body := mustBody(t, validJob())
+
+	first := w.Process(t.Context(), body, 5)
+	firstKey := [2]int64{st.got.PageID, int64(st.got.ChunkIndex)}
+	second := w.Process(t.Context(), body, 5)
+	secondKey := [2]int64{st.got.PageID, int64(st.got.ChunkIndex)}
+
+	if first.Action != ActionAck || second.Action != ActionAck {
+		t.Fatalf("actions = %v, %v; want both ActionAck", first.Action, second.Action)
+	}
+	if firstKey != secondKey || firstKey != [2]int64{5, 1} {
+		t.Fatalf("redelivery upserted keys %v then %v, want both (page 5, chunk 1)", firstKey, secondKey)
+	}
+}
+
+// --- Run/handle loop: ack-after-write and shutdown requeue ---
+
+// recDelivery records which acknowledgement the loop applied to it.
+type recDelivery struct {
+	body     []byte
+	priority uint8
+	version  string
+	mu       sync.Mutex
+	acked    bool
+	nacked   bool
+	requeue  bool
+}
+
+func (d *recDelivery) Body() []byte    { return d.body }
+func (d *recDelivery) Priority() uint8 { return d.priority }
+func (d *recDelivery) Version() string { return d.version }
+
+func (d *recDelivery) Ack() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.acked = true
+	return nil
+}
+
+func (d *recDelivery) Nack(requeue bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nacked, d.requeue = true, requeue
+	return nil
+}
+
+func (d *recDelivery) state() (acked, nacked, requeue bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.acked, d.nacked, d.requeue
+}
+
+// sliceStream yields a fixed set of deliveries once, then closes, mirroring the
+// broker stream closing on ctx cancellation so Run terminates.
+type sliceStream struct{ deliveries []Delivery }
+
+func (s *sliceStream) Consume(_ context.Context) (<-chan Delivery, error) {
+	out := make(chan Delivery)
+	go func() {
+		defer close(out)
+		for _, d := range s.deliveries {
+			out <- d
+		}
+	}()
+	return out, nil
+}
+
+// TestRunAcksAfterUpsertAndReturns proves the ack-after-write ordering end to end:
+// Run drains a delivery whose upsert commits, acks it (never nacks), and returns
+// once the stream closes - a bounded exit with no leaked delivery.
+func TestRunAcksAfterUpsertAndReturns(t *testing.T) {
+	t.Parallel()
+	d := &recDelivery{body: mustBody(t, validJob()), priority: 5}
+	st := &fakeStore{}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, &sliceStream{[]Delivery{d}}, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	acked, nacked, _ := d.state()
+	if !acked || nacked {
+		t.Fatalf("delivery acked=%v nacked=%v, want acked after a committed upsert", acked, nacked)
+	}
+	if st.got.PageID != 5 {
+		t.Fatalf("upsert did not run before ack: stored page id = %d", st.got.PageID)
+	}
+}
+
+// TestHandleNacksRequeueOnShutdown proves an in-flight delivery interrupted by a
+// shutdown (canceled context, so embed fails) is nacked WITH requeue and never
+// acked, so the broker redelivers it without the worker burning an attempt.
+func TestHandleNacksRequeueOnShutdown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	d := &recDelivery{body: mustBody(t, validJob()), priority: 5}
+	w := NewWorker(fakeEmbedder{err: context.Canceled}, &fakeStore{}, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	w.handle(ctx, d)
+
+	acked, nacked, requeue := d.state()
+	if acked {
+		t.Fatal("delivery acked during shutdown; interrupted work would be lost")
+	}
+	if !nacked || !requeue {
+		t.Fatalf("delivery nacked=%v requeue=%v, want nacked with requeue=true", nacked, requeue)
 	}
 }
 

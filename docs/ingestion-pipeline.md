@@ -410,6 +410,34 @@ Each guarantee maps to a concrete mechanism and holds for **both** ingestion pat
 
 ---
 
+## 9b. Stop/restart safety assurance (VER-164)
+
+The operator turns the ingestion hosts off between runs to save cost: `docker compose down` sends
+SIGTERM to every producer and worker, then the instance stops. This is safe at any instant during a
+run - every message is either already committed to its sink or returns to the queue for
+reprocessing on restart, so no work is lost and no row is corrupted. Four producer -> queue ->
+consumer pipelines share the one RabbitMQ transport (`internal/queue`): `embedding.jobs`
+(`cmd/wikisync`, `cmd/statsingest` -> `cmd/embedworker`), `crawl.chunks` (`cmd/wikicrawl` ->
+`cmd/crawlworker`), `factcheck.claims` (`cmd/factcheckcrawl` -> `cmd/factcheckworker`), and
+`scrutins.votes` (`cmd/scrutinscrawl` -> `cmd/scrutinsworker`). The guarantee rests on five
+properties, each mapped below to the code that enforces it and the test that pins it.
+
+| # | Property | Guaranteeing code | Pinned by test |
+|---|----------|-------------------|----------------|
+| 1 | Messages are published **persistent** and queues are **durable**, so a broker restart keeps enqueued work | `persistentPublishing` sets `DeliveryMode: amqp.Persistent`; `declareQueue` declares the queue `durable=true` (`internal/queue/queue.go`) | `queue.TestPersistentPublishingIsPersistentAndVersioned`, `queue.TestDeclareQueueDeclaresDurablePriorityQueue` (broker-free, run in CI); `queue.TestClientRoundTrip` proves it end to end when `TEST_RABBITMQ_URL` is set |
+| 2 | A consumer **acks only after its DB write commits**, so a mid-write stop redelivers | Each worker acks only on `ActionAck`, returned after the sink write returns nil; an embed/write failure returns `ActionRepublish` (re-enqueue then ack the original) or `ActionRequeue`, and never acks a lost job (`Process`/`handle`, four job packages) | embedjob `TestRunAcksSuccessfulDeliveries` + `TestProcessTransientWriteFailureRepublishes`; crawljob `TestRunAcksAfterUpsertAndReturns` + `TestProcessTransientFailureRepublishes`; factcheckjob `TestRunAcksAfterUpsertAndReturns` + `TestProcessRepublishesOnUpsertFailure`; scrutinsjob `TestRunAcksAfterUpsertAndReturns` + `TestProcessRepublishesOnTransientFailure` |
+| 3 | On SIGTERM the worker stops taking new deliveries and **nacks in-flight ones with requeue** without incrementing the attempt count, then exits within a bounded grace period | `signal.NotifyContext(SIGINT, SIGTERM)` cancels the context (each `cmd/*worker/main.go`); the queue closes the delivery stream on cancel (`queue.Consume`/`forward`); an interrupted `Process` sees `ctx.Err()` and returns `ActionRequeue` -> `Nack(requeue=true)` with no attempt bump; `Run` returns after `wg.Wait()` and `client.Close()` requeues anything still unacked | embedjob `TestRunNacksRequeueOnShutdown`; crawljob/factcheckjob/scrutinsjob `TestHandleNacksRequeueOnShutdown` + Process-level (`TestProcessShutdownRequeues`, `TestProcessRequeuesOnShutdown`); transport `queue.TestClientCloseEndsConsumerWithoutCancel` |
+| 4 | Writes are **idempotent upserts**, so an at-least-once redelivery rewrites the same row | wiki_chunks: `UpsertEmbeddedChunk` / content-guarded `SetLiveChunkEmbeddings`; political_claims: `UpsertPoliticalClaim` (keyed on `id`); voting_records: `UpsertVotingRecord` (keyed `(person, scrutin)`) - all `ON CONFLICT ... DO UPDATE` (`internal/store/postgres`) | store `TestUpsertEmbeddedChunkIsIdempotent`, `TestUpsertPoliticalClaimIsIdempotent`, `TestUpsertVotingRecordIsIdempotent` (CI Postgres service); worker redelivery `embedjob`/`crawljob` `TestProcessRedeliveryIsIdempotent`, factcheckjob `TestProcessIsIdempotentAcrossRedelivery`, scrutinsjob `TestProcessIsIdempotent` |
+| 5 | Producers are **re-runnable** without duplicating rows | Every job key is derived from a stable source id, never a UUID/timestamp: wikicrawl/wikisync `(page_id, chunk_index)`; statsingest `(SeriesPageID, PeriodChunkIndex)` from the `(series, period)` provenance; factcheckcrawl `ID = ClaimReview URL`; scrutinscrawl `ID = scrutin uid`. Re-running republishes the same keys, which the idempotent sinks (property 4) upsert in place | wiki `TestRunCrawlPublishesLeadAndBody`, `TestRunBulkEnqueueResumeEnqueuesOnlyRemaining`; stats `TestRunDeduplicatesSameProvenanceKey`, `TestRunIdempotentReRunPublishesNothingOnceEmbedded`; domain `TestSeriesPageIDStableAndPositive`, `TestPeriodChunkIndex`; factcheckarchive `TestRunIsIdempotentAcrossRuns`; scrutinsarchive `TestRunDiscoversAndPublishes`; real-RDS `make insee-idempotency-check` (section 13) |
+
+**Boundary (deferred to the deployment card).** The in-process grace period is bounded by the
+longest in-flight embed/DB call; the OS-level stop timeout before SIGKILL is a compose
+`stop_grace_period` on the cloud host, owned by a later card - not the local `docker-compose.yml`
+touched here. An at-least-once redelivery can re-embed the interrupted few messages (a bounded,
+paid re-embed), which the idempotent sinks make correct and never duplicated.
+
+---
+
 ## 10. How to use it (local)
 
 All commands are `make` targets (Compose under the hood). They need the dev stack and a real
