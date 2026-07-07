@@ -53,6 +53,16 @@ on:
         type: string
         required: false
         default: ""
+      db_bootstrap_task:
+        description: >-
+          rolling mode only: when set, run the one-shot ECS task
+          ${PROJECT}-${ENVIRONMENT}-<db_bootstrap_task> with aws ecs run-task and
+          wait for exit 0 before rolling the service (keycloak DB bootstrap:
+          creates its role/database and re-syncs the password). Idempotent, so it
+          runs on every deploy. Empty = no bootstrap step.
+        type: string
+        required: false
+        default: ""
       pin_image_tag:
         description: >-
           rolling mode only. When true, register a new task-definition revision
@@ -242,6 +252,46 @@ jobs:
             echo "Migration failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
           fi
           echo "Migrations applied"
+      # Run the Keycloak DB-bootstrap one-shot task before rolling Keycloak: it
+      # creates the keycloak role + database (Keycloak makes its tables but not
+      # its database) and re-syncs the role password, so the service comes up
+      # against an existing store. Idempotent, so running it on every deploy is
+      # safe. The task definition only exists when Keycloak is provisioned
+      # (enable_keycloak), so the step skips cleanly when it is absent. Same
+      # run-task-and-wait shape as the migrate step above.
+      - name: Run Keycloak DB bootstrap
+        if: inputs.deploy_mode == 'rolling' && inputs.db_bootstrap_task != ''
+        env:
+          BOOTSTRAP_NAME: ${{ inputs.db_bootstrap_task }}
+        run: |
+          set -euo pipefail
+          CLUSTER="${PROJECT}-${ENVIRONMENT}"
+          TASK_DEF="${PROJECT}-${ENVIRONMENT}-${BOOTSTRAP_NAME}"
+          if ! aws ecs describe-task-definition --task-definition "${TASK_DEF}" >/dev/null 2>&1; then
+            echo "No ${TASK_DEF} task definition (enable_keycloak=false); skipping."
+            exit 0
+          fi
+          SUBNETS=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/private-subnet-ids" --query 'Parameter.Value' --output text)
+          SG=$(aws ssm get-parameter --name "/${PROJECT}/${ENVIRONMENT}/deploy/tasks-security-group-id" --query 'Parameter.Value' --output text)
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${TASK_DEF}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          if [ "$TASK_ARN" = "None" ] || [ -z "$TASK_ARN" ]; then
+            echo "run-task did not start a task (capacity or IAM error)"; exit 1
+          fi
+          echo "Bootstrap task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          STOP_REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Keycloak DB bootstrap failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
+          fi
+          echo "Keycloak DB bootstrap applied"
       # Rolling ECS deploy for ALB-fronted services (backend, frontend). The
       # service's deployment circuit breaker rolls back to the last good task
       # set on failure (when enabled on the service); wait services-stable blocks

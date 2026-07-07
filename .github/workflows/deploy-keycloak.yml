@@ -18,3 +18,6 @@ jobs:
       dockerfile: stack/keycloak/Dockerfile
       deploy_mode: rolling
       ecs_service: keycloak
+      # Create the keycloak role/database and re-sync its password before the
+      # service rolls (Keycloak makes its own tables but not its database).
+      db_bootstrap_task: keycloak-db-bootstrap

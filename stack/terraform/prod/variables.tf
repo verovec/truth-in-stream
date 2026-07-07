@@ -446,3 +446,9 @@ variable "keycloak_admin_username" {
   default     = "admin"
   description = "Keycloak master-realm bootstrap admin username (KC_BOOTSTRAP_ADMIN_USERNAME). Only the password is secret (Secrets Manager, set out of band)."
 }
+
+variable "keycloak_db_bootstrap_image" {
+  type        = string
+  default     = "public.ecr.aws/docker/library/postgres:17-alpine"
+  description = "Image providing the psql client for the keycloak DB-bootstrap task. Defaults to the official Postgres 17 image (matches the RDS major) from the AWS public ECR mirror, so no bespoke image build is needed."
+}
