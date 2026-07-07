@@ -146,7 +146,7 @@ describe("VerifiedClaim primary source", () => {
 });
 
 describe("VerifiedClaim source label chip", () => {
-  test("renders the provider label and links the source url", () => {
+  test("renders the visible 'Source :' prefix and links the source url", () => {
     render(
       <VerifiedClaim
         claim={verified({
@@ -156,17 +156,17 @@ describe("VerifiedClaim source label chip", () => {
         })}
       />,
     );
-    const chip = screen.getByLabelText("Source : INSEE");
+    const chip = screen.getByRole("link", { name: "Source : INSEE" });
     expect(chip).toHaveAttribute("href", "https://insee.fr/x");
   });
 
-  test("renders the label as plain text when no url is present", () => {
+  test("renders the 'Source :' prefix as plain text when no url is present", () => {
     render(
       <VerifiedClaim
         claim={verified({ verdict: "credible", sourceLabel: "Wikipédia" })}
       />,
     );
-    const chip = screen.getByLabelText("Source : Wikipédia");
+    const chip = screen.getByText("Source : Wikipédia");
     expect(chip).toBeInTheDocument();
     expect(chip).not.toHaveAttribute("href");
   });
@@ -177,7 +177,7 @@ describe("VerifiedClaim source label chip", () => {
         claim={verified({ verdict: "unverifiable", basis: "knowledge" })}
       />,
     );
-    expect(screen.queryByLabelText(/^Source : /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Source : /)).not.toBeInTheDocument();
   });
 
   test("keeps the provider chip distinct from the curated/verified origin tag", () => {
@@ -192,7 +192,7 @@ describe("VerifiedClaim source label chip", () => {
       />,
     );
     expect(screen.getByText("vérifié sur preuves")).toBeInTheDocument();
-    expect(screen.getByLabelText("Source : INSEE")).toBeInTheDocument();
+    expect(screen.getByText("Source : INSEE")).toBeInTheDocument();
   });
 
   test("shows the evidence id and contribution in the operator detail panel", () => {

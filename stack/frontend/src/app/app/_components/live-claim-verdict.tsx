@@ -169,30 +169,27 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
 
 // SourceLabelChip names the authoritative provider that backed the verdict
 // (INSEE, Wikipédia, Assemblée nationale, ...), the clean provenance a normal
-// viewer sees without the operator detail. It links the source when a url is
-// present and is otherwise a plain chip; it is rendered only when a label
-// exists, so a knowledge-only verdict shows no empty chip.
+// viewer sees without the operator detail. It reads "Source : <provider>" so the
+// provenance is spelled out rather than left as a bare name; it links the
+// provider when a url is present and is otherwise a plain chip. It is rendered
+// only when a label exists, so a knowledge-only verdict shows no empty chip.
 function SourceLabelChip({ label, url }: { label: string; url?: string }) {
   const base =
     "inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:bg-slate-500/15 dark:text-slate-300";
+  const text = `Source : ${label}`;
   if (url) {
     return (
       <a
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`Source : ${label}`}
         className={`${base} underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-sky-500`}
       >
-        {label}
+        {text}
       </a>
     );
   }
-  return (
-    <span aria-label={`Source : ${label}`} className={base}>
-      {label}
-    </span>
-  );
+  return <span className={base}>{text}</span>;
 }
 
 // PrimarySourceRow surfaces the leading citation - the source name as a link and
