@@ -89,32 +89,43 @@ and restart the backend.
 ## Local Keycloak (identity provider)
 
 `make up` (or `make keycloak` on its own) starts a local Keycloak on `:8081` that imports
-`stack/keycloak/realm.json` on startup. It is the local mirror of the production identity provider
-the operator manages at `https://login.jeminforme.fr`; only the realm definition is shared between
-the two, so the backend and frontend issuer config lines up across environments.
+`stack/keycloak/realm.json` on startup. It is the local mirror of the production identity provider,
+which is self-hosted by Terraform (module `keycloak`) at `https://login.jeminforme.fr`; only the realm
+definition is shared between the two, so the backend and frontend issuer config lines up across
+environments.
 
-| Property | Local value | Production (operator-managed) |
-|----------|-------------|-------------------------------|
+| Property | Local value | Production (self-hosted on ECS) |
+|----------|-------------|---------------------------------|
 | Issuer | `http://localhost:8081/realms/truth-in-stream` | `https://login.jeminforme.fr/realms/truth-in-stream` |
 | Realm | `truth-in-stream` | `truth-in-stream` (same `realm.json` shape) |
 | OIDC client | `truth-in-stream-web` (public, PKCE S256, standard flow) | same client id |
 | Realm roles | `admin`, `guest` | `admin`, `guest` |
 | Default role | `guest` (granted to every new user) | `guest` |
 | Roles claim | `realm_access.roles` in the access token | `realm_access.roles` |
-| Admin console | `http://localhost:8081` (`admin` / `admin`, dev only) | operator credentials, out of band |
+| Admin console | `http://localhost:8081` (`admin` / `admin`, dev only) | `https://login.jeminforme.fr/admin`; bootstrap admin from the `keycloak/bootstrap-admin-password` secret (pushed out of band) |
 
 The realm ships two dev users for local login and token tests: `admin` / `admin` (realm roles
 `admin` + `guest`) and `guest` / `guest` (role `guest`). These credentials, the bootstrap admin, and
 the public client are **local-dev only** — `realm.json` holds no real secret.
 
 The realm definition is the shared contract (realm name, roles, default role, client id, and the
-`realm_access.roles` claim), not a verbatim production export. The operator imports the same shape
-into production Keycloak and then hardens it for that environment: TLS and Postgres-backed storage
-instead of the dev profile's HTTP + ephemeral H2, real users instead of the two dev accounts, and the
-direct-access (password) grant the local client enables for token tests turned **off** so production
-authentication is browser + PKCE only. Keep the issuer, realm, client id, roles, and roles-claim in
-the table above identical across environments so the backend and frontend validate the same tokens; the
-transport, storage, and grant hardening are production-side concerns.
+`realm_access.roles` claim), not a verbatim production export. Production ships its own hardened realm
+(`stack/keycloak/realm-prod.json`, baked into the optimized Keycloak image and imported on first
+boot): the same shape, but with `sslRequired=none` (TLS terminates at CloudFront; the internal ALB
+hop is HTTP), Postgres-backed storage on the dedicated RDS `keycloak` database instead of the dev
+profile's ephemeral H2, the `https://jeminforme.fr` redirect URIs and web origins, no dev users
+(real operators are created in the admin console), and the direct-access (password) grant turned
+**off** so production authentication is browser + PKCE only. Keep the issuer, realm, client id,
+roles, and roles-claim in the table above identical across environments so the backend and frontend
+validate the same tokens; the transport, storage, and grant hardening are production-side concerns.
+
+In production the app services set `KEYCLOAK_ISSUER=https://login.jeminforme.fr/realms/truth-in-stream`
+(the single public issuer for both browser and back-channel) and the frontend also sets
+`NEXT_PUBLIC_APP_URL=https://jeminforme.fr`; the operator pushes the Keycloak bootstrap admin password
+out of band (`make push-secrets ENV=prod`), while the scoped `keycloak` DB role password is generated
+by Terraform. Standing prod up is a deliberate `terraform apply` of `stack/terraform/prod`; pushing a
+`v*` tag whose commit is on `main` then rolls the services (including Keycloak's DB bootstrap). See
+[Infrastructure -> Deploys](infrastructure.md#deploys-human-gated).
 
 Backend and frontend cards point their OIDC issuer at the table's issuer URL and validate the
 `realm_access.roles` claim to gate `admin`-only routes; `guest` is the baseline every authenticated

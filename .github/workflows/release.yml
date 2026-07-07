@@ -1,16 +1,28 @@
 name: release
 # Tag-triggered production release. Pushing a semver tag (v*) whose commit is on
-# main deploys prod backend (with migrations) then frontend automatically. The
-# tag is the deliberate release gesture and stands in for the human approval the
+# main rolls the prod services automatically: backend (with migrations), the
+# self-hosted Keycloak (with its DB bootstrap), and frontend. The tag is the
+# deliberate release gesture and stands in for the human approval the
 # workflow_dispatch deploy wrappers otherwise require: an ordinary merge to main
 # never deploys, only a tag does. The workflow_dispatch deploy-* wrappers stay in
-# place untouched for ad-hoc deploys and rollbacks (see docs/infrastructure.md).
+# place untouched for ad-hoc single-service rolls and rollbacks (see
+# docs/infrastructure.md).
 #
-# Orchestration only: the build/scan/push/roll mechanics live in the reusable
-# _deploy.yml. backend runs before frontend (needs:) so migrations land before
-# the new frontend serves. Both deploy jobs pin the service to this build's
-# immutable sha-<7> task-definition revision (pin_image_tag) because on a tag ref
-# the moving `latest` tag is not advanced; see _deploy.yml for the rationale.
+# Scope: this rolls the SERVICES (build/scan/push/roll in _deploy.yml). It does
+# NOT run `terraform apply` - infrastructure changes to stack/terraform/prod
+# (including standing the stack up the first time) are a separate, deliberate
+# human apply, kept out of the tag path on purpose: the apply role's OIDC trust is
+# ref-scoped (not tag/environment) and applying would revert the ECS services off
+# their pinned sha-<7> task definitions back to :latest. So apply prod first, then
+# tag to roll the images.
+#
+# Order (needs:): guard -> backend -> {keycloak, frontend}. backend runs first so
+# migrations land before the app serves; keycloak and frontend then roll in
+# parallel (frontend does not need keycloak, so a keycloak issue never blocks the
+# frontend roll). Every deploy job binds to the `production` GitHub Environment and
+# pins the service to this build's immutable sha-<7> task-definition revision
+# (pin_image_tag) because on a tag ref the moving `latest` tag is not advanced; see
+# _deploy.yml for the rationale.
 on:
   push:
     tags:
@@ -58,6 +70,30 @@ jobs:
       deploy_mode: rolling
       ecs_service: backend
       migrate_dockerfile: stack/backend/Dockerfile.migrate
+      pin_image_tag: true
+      environment: production
+  # Deploy the self-hosted Keycloak after the backend. db_bootstrap_task runs the
+  # keycloak-db-bootstrap one-shot task (creates its role/database, re-syncs the
+  # password) before the service rolls; idempotent, so it is safe on every
+  # release. Pinned to this build's sha-<7> revision like the others. This job
+  # assumes Keycloak is provisioned (enable_keycloak=true, the prod default); if
+  # you gate Keycloak off to run it out of band, its ECR repo and service do not
+  # exist, so remove this job (the release would otherwise fail pushing its image).
+  keycloak:
+    name: Deploy keycloak (bootstrap DB + rolling)
+    needs: backend
+    uses: ./.github/workflows/_deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      service: keycloak
+      ecr_repo: keycloak
+      context: stack/keycloak
+      dockerfile: stack/keycloak/Dockerfile
+      deploy_mode: rolling
+      ecs_service: keycloak
+      db_bootstrap_task: keycloak-db-bootstrap
       pin_image_tag: true
       environment: production
   frontend:
