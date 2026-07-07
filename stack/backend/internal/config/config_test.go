@@ -656,6 +656,24 @@ func TestLoadKeycloak(t *testing.T) {
 				JWKSURL:  "https://internal/certs",
 			},
 		},
+		{
+			// Locks the exact production wiring the prod Terraform sets: the
+			// public login.jeminforme.fr issuer and the shared client id, with no
+			// KEYCLOAK_JWKS_URL override, so prod validates tokens against the
+			// single public issuer (JWKS derived from it) - the back-channel goes
+			// to the same host via CloudFront, matching the dev-networking spec's
+			// production behavior.
+			name: "production jeminforme.fr issuer derives the public jwks url",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER":    "https://login.jeminforme.fr/realms/truth-in-stream",
+				"KEYCLOAK_CLIENT_ID": "truth-in-stream-web",
+			},
+			want: Keycloak{
+				Issuer:   "https://login.jeminforme.fr/realms/truth-in-stream",
+				ClientID: "truth-in-stream-web",
+				JWKSURL:  "https://login.jeminforme.fr/realms/truth-in-stream/protocol/openid-connect/certs",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
