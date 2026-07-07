@@ -61,6 +61,10 @@ app/
   risk than middleware (which would have to be carefully scoped away from `/api`, `/auth`, etc.).
 - Static routes (`/login`, `/app`, `/auth/*`) win over the dynamic `[locale]` segment in Next's
   route resolution, so they are never captured as a "locale".
+- The auth proxy (`src/proxy.ts`) redirects every non-public path to `/login`. Its public
+  allowlist held only `/`, so `/fr` and `/en` must be added, derived from the `locales` config.
+  This is the auth gate, distinct from the untouched `next.config.ts` `/api` and `/demo`
+  rewrites. (Discovered during the e2e check: without it, `/fr` 307s to `/login`.)
 - `<html lang>`: the shared root layout renders `lang="fr"` (site default). The `/en` marketing
   layout corrects `document.documentElement.lang = 'en'` on the client. This keeps the shared
   root layout static and untouched by per-request locale, at the cost of a one-tick client

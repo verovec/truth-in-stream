@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Truth in Stream",
-  description: "Real-time fact-checking for live streams",
+  title: "jeminforme.fr",
+  description:
+    "Verification des faits en direct pour le debat politique francais et europeen.",
 };
 
 export default function RootLayout({
@@ -26,7 +27,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="fr"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       {/* overflow-x-hidden is the app-wide guard against horizontal scroll: a

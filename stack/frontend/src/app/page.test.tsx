@@ -1,49 +1,34 @@
-import { render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import LandingPage, { metadata } from "./page";
 
-vi.mock("next/link", () => import("@/test/next-link-mock"));
+const redirect = vi.fn();
+const getHeader = vi.fn();
 
-describe("LandingPage", () => {
-  test("renders the hero, how-it-works, and a closing call to action", () => {
-    render(<LandingPage />);
+vi.mock("next/navigation", () => ({
+  redirect: (...args: unknown[]) => redirect(...args),
+}));
+vi.mock("next/headers", () => ({
+  headers: async () => ({ get: getHeader }),
+}));
 
-    expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: /truth in the middle of the politics stage/i,
-      }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { level: 2, name: /how it works/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { level: 3, name: /^listen$/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { level: 3, name: /^verdict$/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", {
-        level: 2,
-        name: /bring the receipts/i,
-      }),
-    ).toBeInTheDocument();
+import RootPage from "./page";
+
+describe("root locale redirect", () => {
+  test("redirects to French by default", async () => {
+    getHeader.mockReturnValue(null);
+    await RootPage();
+    expect(redirect).toHaveBeenCalledWith("/fr");
   });
 
-  test("every 'Open the app' call to action points at the login route", () => {
-    render(<LandingPage />);
-
-    const ctas = screen.getAllByRole("link", { name: /open the app/i });
-    expect(ctas.length).toBeGreaterThanOrEqual(1);
-    for (const cta of ctas) {
-      expect(cta).toHaveAttribute("href", "/login");
-    }
+  test("redirects to English when English is preferred", async () => {
+    getHeader.mockReturnValue("en-US,en;q=0.9,fr;q=0.5");
+    await RootPage();
+    expect(redirect).toHaveBeenCalledWith("/en");
   });
 
-  test("exposes landing metadata for SEO and sharing", () => {
-    expect(metadata.title).toMatch(/truth in stream/i);
-    expect(metadata.description).toBeTruthy();
-    expect(metadata.openGraph?.title).toMatch(/truth in stream/i);
+  test("reads the Accept-Language header to negotiate", async () => {
+    getHeader.mockReturnValue("fr-FR,fr;q=0.9");
+    await RootPage();
+    expect(getHeader).toHaveBeenCalledWith("accept-language");
+    expect(redirect).toHaveBeenCalledWith("/fr");
   });
 });

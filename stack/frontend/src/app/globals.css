@@ -10,6 +10,23 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-spectral);
+}
+
+/* jeminforme.fr marketing identity. The tricolore is reserved for the logo and
+   a single hairline accent; the broader palette stays sober and institutional
+   so the page reads credible and non-partisan. */
+@theme {
+  --color-bleu: #0e3a6b;
+  --color-bleu-flag: #0055a4;
+  --color-rouge: #c8102e;
+  --color-rouge-flag: #ef4135;
+  --color-paper: #fbfbf9;
+  --color-ink: #12151d;
+  --color-night: #0b0e14;
+  --color-verdict-true: #1b7a4b;
+  --color-verdict-nuance: #b45309;
+  --color-verdict-false: #c8102e;
 }
 
 @media (prefers-color-scheme: dark) {
