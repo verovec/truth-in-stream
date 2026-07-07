@@ -54,7 +54,7 @@ locals {
 # If enable_keycloak=false to run Keycloak out of band, the operator owns
 # login.<domain> DNS and repoints it; the unused SAN/alias are harmless.
 # DNS validation records are NOT created here: the authoritative
-# hosted zone is in the main account (040265332493), so the main-account
+# hosted zone is in the main account (<main-account-id>), so the main-account
 # terraform root (VER-140) creates the records by reading this module's
 # domain_validation_options output. The certificate is PENDING_VALIDATION until
 # those records exist; that does not block this plan.

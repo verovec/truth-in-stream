@@ -1,0 +1,5 @@
+{
+  "_comment": "Template for deploy/targets.json, which is GITIGNORED. Copy this file to deploy/targets.json and replace the placeholders with the real per-environment AWS account ids. targets.json is the local source of truth for the /ingest, /consumer, and /crawler account guard (scripts/aws-target-guard.sh): before any mutation the guard compares the live `sts get-caller-identity` account against the expected id here and refuses on a mismatch, so a placeholder or wrong id fails closed. This repository is public, so the real account ids are never committed - they live only in your local targets.json (see the public-repo-hygiene skill). region is eu-west-3 for both environments.",
+  "dev": { "account_id": "000000000000", "region": "eu-west-3" },
+  "prod": { "account_id": "000000000000", "region": "eu-west-3" }
+}

@@ -47,7 +47,7 @@ make_sandbox() {
   AWS_CALL_LOG="$SANDBOX/aws.log"; : >"$AWS_CALL_LOG"
   TARGETS="$SANDBOX/targets.json"
   cat >"$TARGETS" <<'JSON'
-{ "dev":{"account_id":"111111111111","region":"eu-west-3"}, "prod":{"account_id":"965638922723","region":"eu-west-3"} }
+{ "dev":{"account_id":"111111111111","region":"eu-west-3"}, "prod":{"account_id":"999999999999","region":"eu-west-3"} }
 JSON
   cat >"$BIN/aws" <<'AWS'
 #!/usr/bin/env bash

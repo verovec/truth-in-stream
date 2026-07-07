@@ -34,6 +34,11 @@ lives under `stack/`.
 - Best practice and long-term maintainability first.
 - Before integrating a new library/pattern/tool, verify current best practice and latest
   stable version via Context7 (web search if needed) before writing code.
+- This repository is PUBLIC on GitHub. Never commit secrets or infrastructure identifiers
+  (AWS account ids, account-bearing ARNs, internal endpoints); keep real values in gitignored
+  local files (`deploy/targets.json`, `*.tfvars`, `.env`), env, or a secrets store, and leave
+  placeholders + a `.example` in the tree. Run `scripts/secret-scan.sh` before committing. See the
+  public-repo-hygiene skill.
 - Never use emojis. No comments that restate code. Only touch files needed for the task.
 - No code without tests. Every behaviour change ships with its tests in the same change,
   and CI runs them on every PR and before every deploy. Untestable code is a design
@@ -68,6 +73,7 @@ changes. A card is not Done until its review passes.
 - Go backend -> go skill.
 - Running/adding tests, finishing a card, CI checks -> testing skill.
 - Terraform / AWS -> terraform skill.
+- Committing, or handling secrets / infra identifiers on this public repo -> public-repo-hygiene skill.
 - Writing/reviewing code -> coding-philosophy skill.
 - Updating the README / `docs/` after an epic completes -> maintaining-documentation skill.
 - Linear cards / roadmap -> roadmap-linear skill; commands `/roadmap`, `/card`.

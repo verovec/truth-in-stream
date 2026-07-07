@@ -1,11 +1,19 @@
 # Example variables for the main-account DNS root. Copy to terraform.tfvars and
-# edit, OR pass -var on the command line. Nothing here is secret.
+# edit, OR pass -var on the command line. Nothing here is secret, but this
+# repository is public, so terraform.tfvars is gitignored: put the real account
+# id in your local copy, never in a committed file.
+
+# --- Target account (required) ----------------------------------------------
+# The account that owns the jeminforme.fr hosted zone. The committed default is a
+# placeholder (000000000000) that fails the allowed_account_ids guard closed, so
+# you MUST set the real id here (or via -var) before applying.
+# main_account_id = "000000000000"
 
 # --- Cross-account assume-role path (default) -------------------------------
 # Authenticate with your own credentials, then assume a role in the main account
 # that can read the zone and write Route 53 records. Leave empty to instead run
 # with ambient credentials that already belong to the main account.
-# main_account_role_arn = "arn:aws:iam::040265332493:role/main-account-dns"
+# main_account_role_arn = "arn:aws:iam::<main-account-id>:role/main-account-dns"
 
 # --- Source of the app-account values ---------------------------------------
 # Default (read_remote_state = true) reads the app-account prod state directly;

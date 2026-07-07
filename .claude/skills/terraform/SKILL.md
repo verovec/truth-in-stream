@@ -29,10 +29,10 @@ Each root holds its own `versions.tf`/`providers.tf`/`backend.tf`/`variables.tf`
 |---|---|---|
 | `dev/` | Full app stack, single NAT, gated extras off by default | plan on PR, **auto-apply** on merge to main |
 | `prod/` | Full app stack, dual NAT, gated extras on | plan on PR, **manual apply** only |
-| `main-account/` | DNS root in the **main account** (`040265332493`, zone `jeminforme.fr`): ACM DNS-validation CNAMEs + apex/`www` CloudFront alias records | **excluded from CI** - fmt-checked only |
+| `main-account/` | DNS root in the **main account** (`<main-account-id>`, zone `jeminforme.fr`): ACM DNS-validation CNAMEs + apex/`www` CloudFront alias records | **excluded from CI** - fmt-checked only |
 
 ### `main-account/` (hand-applied, CI-excluded)
-A separate root that publishes the app's public DNS into the authoritative hosted zone, which lives in the main account; the app (CloudFront + ACM cert) lives in the app account (`965638922723`). It creates the ACM validation CNAMEs (so the cert moves `PENDING_VALIDATION` -> `ISSUED`) and the apex/`www` alias records pointing at CloudFront, reading those values from the prod state via `terraform_remote_state` (or pasted overrides when cross-account S3 read is not granted).
+A separate root that publishes the app's public DNS into the authoritative hosted zone, which lives in the main account; the app (CloudFront + ACM cert) lives in the app account (`<app-account-id>`). It creates the ACM validation CNAMEs (so the cert moves `PENDING_VALIDATION` -> `ISSUED`) and the apex/`www` alias records pointing at CloudFront, reading those values from the prod state via `terraform_remote_state` (or pasted overrides when cross-account S3 read is not granted).
 
 - It is **deliberately excluded** from the terraform CI workflow: that workflow lists each root it runs by explicit path and `main-account` is **not listed**, so no CI job ever plans/applies against the main account. **NEVER add it to `terraform.yml`.**
 - Its only CI gate is the `main-account-terraform-fmt` job in `.github/workflows/pr.yml` - `terraform fmt -check -recursive`, no backend init, no role, no plan/apply.

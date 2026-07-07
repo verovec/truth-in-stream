@@ -6,8 +6,8 @@ variable "aws_region" {
 
 variable "main_account_id" {
   type        = string
-  default     = "040265332493"
-  description = "AWS account that owns the authoritative hosted zone for jeminforme.fr. Used as an allowed_account_ids guard so this root can only ever write into the main account."
+  default     = "000000000000"
+  description = "AWS account that owns the authoritative hosted zone for jeminforme.fr. Used as an allowed_account_ids guard so this root can only ever write into the main account. This repository is public, so the real id is not committed: the default is a placeholder that fails the guard closed. Supply the real id via a gitignored terraform.tfvars (see terraform.tfvars.example) or -var before applying."
 }
 
 variable "main_account_role_arn" {

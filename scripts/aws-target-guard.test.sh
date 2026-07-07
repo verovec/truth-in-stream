@@ -23,7 +23,7 @@ assert_not_contains() { printf '%s' "$1" | grep -qF -- "$2" && fail "$3 (found: 
 # A sandbox with a stubbed aws on PATH and a throwaway targets.json. The aws stub
 # serves sts get-caller-identity (account + arn) and logs every call so a test can
 # assert the guard never mutates. Behaviour knobs:
-#   LIVE_ACCOUNT   the account id sts reports (default 965638922723)
+#   LIVE_ACCOUNT   the account id sts reports (default 999999999999)
 #   STS_FAIL       sts get-caller-identity exits non-zero (no/expired credentials)
 make_sandbox() {
   SANDBOX="$(mktemp -d "$TMPROOT/sb.XXXXXX")"; BIN="$SANDBOX/bin"; mkdir -p "$BIN"
@@ -32,7 +32,7 @@ make_sandbox() {
   cat >"$TARGETS" <<'JSON'
 {
   "dev":  { "account_id": "111111111111", "region": "eu-west-3" },
-  "prod": { "account_id": "965638922723", "region": "eu-west-3" }
+  "prod": { "account_id": "999999999999", "region": "eu-west-3" }
 }
 JSON
   cat >"$BIN/aws" <<'AWS'
@@ -45,10 +45,10 @@ case "$1 $2" in
     args="$*"
     case "$args" in
       *Account*Arn*|*"[Account,Arn]"*)
-        printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-965638922723}" "${LIVE_ACCOUNT:-965638922723}" ;;
-      *Account*) echo "${LIVE_ACCOUNT:-965638922723}" ;;
-      *Arn*)     echo "arn:aws:iam::${LIVE_ACCOUNT:-965638922723}:user/operator" ;;
-      *)         printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-965638922723}" "${LIVE_ACCOUNT:-965638922723}" ;;
+        printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-999999999999}" "${LIVE_ACCOUNT:-999999999999}" ;;
+      *Account*) echo "${LIVE_ACCOUNT:-999999999999}" ;;
+      *Arn*)     echo "arn:aws:iam::${LIVE_ACCOUNT:-999999999999}:user/operator" ;;
+      *)         printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-999999999999}" "${LIVE_ACCOUNT:-999999999999}" ;;
     esac ;;
   *)
     echo "unexpected aws call: $*" >&2; exit 99 ;;
@@ -56,7 +56,7 @@ esac
 AWS
   chmod +x "$BIN/aws"
   export PATH="$BIN:$PATH" AWS_CALL_LOG \
-    LIVE_ACCOUNT="${LIVE_ACCOUNT:-965638922723}" \
+    LIVE_ACCOUNT="${LIVE_ACCOUNT:-999999999999}" \
     STS_FAIL="${STS_FAIL:-}" \
     TARGETS_FILE="$TARGETS" \
     CLUSTER="${CLUSTER:-truth-in-stream-prod-cluster}" \
@@ -70,8 +70,8 @@ echo "TEST: a matching account passes --check and emits the preflight summary"
   make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 when the live account matches" || fail "exit 0 when the live account matches (got $rc)"
-  assert_contains "$out" "965638922723" "summary shows the account id"
-  assert_contains "$out" "arn:aws:iam::965638922723:user/operator" "summary shows the caller ARN"
+  assert_contains "$out" "999999999999" "summary shows the account id"
+  assert_contains "$out" "arn:aws:iam::999999999999:user/operator" "summary shows the caller ARN"
   assert_contains "$out" "eu-west-3" "summary shows the region"
   assert_contains "$out" "truth-in-stream-prod-cluster" "summary shows the cluster"
   assert_contains "$out" "prod" "summary shows the environment"
@@ -83,7 +83,7 @@ echo "TEST: a mismatched account refuses, prints expected vs actual, makes no mu
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on account mismatch" || fail "non-zero exit on account mismatch (got $rc)"
   assert_contains "$out" "222222222222" "prints the actual (live) account"
-  assert_contains "$out" "965638922723" "prints the expected account"
+  assert_contains "$out" "999999999999" "prints the expected account"
   assert_contains "$out" "expected" "labels the expected id"
   log="$(cat "$AWS_CALL_LOG")"
   assert_not_contains "$log" "update-service" "a refused guard never scales a fleet"
@@ -125,7 +125,7 @@ echo "TEST: an unknown environment in targets.json aborts clearly"
 echo "TEST: a placeholder expected id refuses (guard is not bypassable by all-zeros)"
 (
   # targets.json with a placeholder dev id; a real live account must not match it.
-  LIVE_ACCOUNT=965638922723 ENVIRONMENT=dev make_sandbox
+  LIVE_ACCOUNT=999999999999 ENVIRONMENT=dev make_sandbox
   # overwrite the dev entry with the all-zeros placeholder
   cat >"$TARGETS_FILE" <<'JSON'
 { "dev": { "account_id": "000000000000", "region": "eu-west-3" } }
@@ -139,7 +139,7 @@ echo "TEST: a missing region in the targets entry aborts clearly"
 (
   ENVIRONMENT=prod make_sandbox
   cat >"$TARGETS_FILE" <<'JSON'
-{ "prod": { "account_id": "965638922723" } }
+{ "prod": { "account_id": "999999999999" } }
 JSON
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the region is absent" || fail "non-zero exit when the region is absent (got $rc)"

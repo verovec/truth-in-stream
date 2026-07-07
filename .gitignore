@@ -29,6 +29,10 @@ __pycache__/
 .env.*
 !.env.example
 
+# Account guard target ids (public repo: real AWS account ids stay local).
+# The committed template is deploy/targets.example.json.
+deploy/targets.json
+
 # Terraform
 **/.terraform/
 *.tfstate
@@ -39,6 +43,14 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# Terraform variable values may carry real account ids; keep them local.
+# The committed template is *.tfvars.example. The dev/prod roots track a
+# non-sensitive selector tfvars (aws_region + environment only, no ids/secrets)
+# that CI auto-loads for plan; those two are the only tracked *.tfvars.
+*.tfvars
+*.tfvars.json
+!stack/terraform/dev/terraform.tfvars
+!stack/terraform/prod/terraform.tfvars
 
 
 note.txt
