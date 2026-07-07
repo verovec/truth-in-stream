@@ -1,0 +1,20 @@
+name: deploy-keycloak
+# Human-gated rolling deploy of the self-hosted Keycloak identity service.
+# workflow_dispatch only: an auto-merge to main never deploys. The tag-triggered
+# deploy pipeline rolls Keycloak alongside the other services; this per-service
+# workflow is for a targeted single-service roll. Relevant paths
+# (stack/keycloak/**, .github/workflows/_deploy.yml,
+# .github/workflows/deploy-keycloak.yml) are documented here for the operator who
+# decides when to dispatch.
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      service: keycloak
+      ecr_repo: keycloak
+      context: stack/keycloak
+      dockerfile: stack/keycloak/Dockerfile
+      deploy_mode: rolling
+      ecs_service: keycloak

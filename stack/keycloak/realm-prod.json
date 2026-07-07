@@ -1,0 +1,76 @@
+{
+  "realm": "truth-in-stream",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Full administrative access (debug tools, admin-gated routes).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "guest",
+        "description": "Default read-only role granted to every new user.",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "defaultRole": {
+    "name": "guest",
+    "description": "Default role assigned to every new user in this realm.",
+    "composite": false,
+    "clientRole": false
+  },
+  "requiredCredentials": ["password"],
+  "clients": [
+    {
+      "clientId": "truth-in-stream-web",
+      "name": "Truth in Stream Web App",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "rootUrl": "https://jeminforme.fr",
+      "baseUrl": "/",
+      "redirectUris": [
+        "https://jeminforme.fr/*"
+      ],
+      "webOrigins": [
+        "https://jeminforme.fr"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "https://jeminforme.fr/*",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "organization",
+        "microprofile-jwt"
+      ]
+    }
+  ],
+  "users": []
+}

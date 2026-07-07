@@ -414,3 +414,35 @@ variable "valkey_node_type" {
   default     = "cache.t4g.micro"
   description = "ElastiCache node class for the Valkey cache. A single small node suits a 24h ephemeral cache. The engine version and parameter group are coupled and stay on the module defaults (Valkey 8.x)."
 }
+
+# --- Self-hosted Keycloak (VER-156) ---
+
+variable "enable_keycloak" {
+  type        = bool
+  default     = true
+  description = "Provision the self-hosted Keycloak identity provider (ECS Fargate service + its dedicated database on RDS). Requires enable_rds. Defaults true in prod so a tag deploys the identity provider straight away; set false to run Keycloak out of band."
+}
+
+variable "keycloak_cpu" {
+  type        = number
+  default     = 512
+  description = "Fargate task CPU units for Keycloak. 512 is the small baseline; Quarkus wants headroom, so raise this (with keycloak_memory) before adding a second node under load."
+}
+
+variable "keycloak_memory" {
+  type        = number
+  default     = 1024
+  description = "Fargate task memory (MiB) for Keycloak. 1 GiB is the small baseline; must be a valid Fargate CPU/memory pairing for keycloak_cpu."
+}
+
+variable "keycloak_desired_count" {
+  type        = number
+  default     = 1
+  description = "Number of Keycloak tasks. 1 is the cost baseline (single node); raise for identity-provider HA once it carries real traffic."
+}
+
+variable "keycloak_admin_username" {
+  type        = string
+  default     = "admin"
+  description = "Keycloak master-realm bootstrap admin username (KC_BOOTSTRAP_ADMIN_USERNAME). Only the password is secret (Secrets Manager, set out of band)."
+}
