@@ -1,0 +1,237 @@
+# Cloud ingestion override, run ON an EC2 ingestion host (never locally). Unlike
+# docker-compose.yml, this file has no postgres/rabbitmq/minio: the host talks to
+# the managed Amazon MQ broker (AMQPS 5671) and the dev RDS (5432) instead, and
+# every service runs the prebuilt backend ECR image by its compiled entrypoint
+# (/wikicrawl, /crawlworker, ...) - never `go run`, so nothing is built here.
+#
+# Every value is interpolated from a materialized ./.env that the host writes
+# from Secrets Manager before Compose runs (scripts/ingest-fetch-env.sh) plus the
+# INGEST_IMAGE / INGEST_ENV / AWS_REGION the operator command exports; the secrets
+# (RABBITMQ_URL, DATABASE_URL, and the API keys) never appear in this file. The
+# operator command scripts/ingest-host.sh drives one service at a time over SSM:
+#   /crawler <source>  -> `docker compose -f docker-compose.ingest.yml run --rm <producer>`
+#   /consumer <source> -> `docker compose -f docker-compose.ingest.yml up -d <worker>`
+#
+# Source -> producer / queue / worker:
+#   wikipedia  wikicrawl      / crawl.chunks     / crawlworker
+#   stats      statsingest    / embedding.jobs   / embedworker
+#   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
+#   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
+#
+# Container logs ship to CloudWatch Logs under /truth-in-stream/<env>/ingest/*,
+# the exact prefix the host instance profile is scoped to write; the operator
+# command also mirrors each producer run's stdout/stderr back over SSM.
+#
+# Validate offline with the image set (an empty image is an invalid project):
+#   INGEST_IMAGE=<acct>.dkr.ecr.eu-west-3.amazonaws.com/truth-in-stream-dev-backend:sha-abc \
+#     docker compose -f docker-compose.ingest.yml config
+
+# Common awslogs options merged into each service's options map (deep-merge at the
+# options level, since a top-level `<<` on `logging` would not merge nested keys).
+# Each service overrides awslogs-group and awslogs-stream-prefix with its own name.
+x-awslogs-options: &awslogs-options
+  awslogs-region: "${AWS_REGION:-eu-west-3}"
+  awslogs-create-group: "true"
+
+services:
+  # --- Producers (run by /crawler; one-shot, publish to the broker and exit) ---
+
+  # wikipedia: walk CRAWL_CATEGORIES over the MediaWiki Action API and publish
+  # self-contained chunk jobs to crawl.chunks. DB-free. CRAWL_CATEGORIES is
+  # required (the operator command forwards it); the fact-checkability gate reads
+  # its key from the materialized env.
+  wikicrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/wikicrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      CRAWL_CATEGORIES: "${CRAWL_CATEGORIES:-}"
+      CRAWL_PROJECT: "${CRAWL_PROJECT:-}"
+      WIKI_CORPUS: "${WIKI_CORPUS:-}"
+      CRAWL_CORPUS: "${CRAWL_CORPUS:-}"
+      CRAWL_MAX_DEPTH: "${CRAWL_MAX_DEPTH:-}"
+      CRAWL_MAX_PAGES: "${CRAWL_MAX_PAGES:-}"
+      CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
+      CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
+      CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
+      CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
+      CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
+      CRAWL_CHECKWORTHY_CONCURRENCY: "${CRAWL_CHECKWORTHY_CONCURRENCY:-}"
+      CRAWL_CHECKWORTHY_RPM: "${CRAWL_CHECKWORTHY_RPM:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/wikicrawl"
+        awslogs-stream-prefix: "wikicrawl"
+
+  # stats: fetch the curated statistical series, render French passages, upsert
+  # them un-embedded into wiki_chunks, and publish one embedding job per passage
+  # to embedding.jobs. Writes to the DB, so it needs DATABASE_URL. Keyless
+  # (optional INSEE_API_KEY).
+  statsingest:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/statsingest"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+      INSEE_API_KEY: "${INSEE_API_KEY:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/statsingest"
+        awslogs-stream-prefix: "statsingest"
+
+  # factcheck: read already-checked French claims from the Google Fact Check Tools
+  # API for FACTCHECK_QUERIES and publish curated-claim jobs to factcheck.claims.
+  # DB-free. FACTCHECK_QUERIES is required (forwarded by the operator command);
+  # FACTCHECK_API_KEY comes from the materialized env.
+  factcheckcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/factcheckcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
+      FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
+      FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/factcheckcrawl"
+        awslogs-stream-prefix: "factcheckcrawl"
+
+  # scrutins: conditionally download the Assemblee Nationale Scrutins archive
+  # (skipped when unchanged via the persisted ETag marker) and publish one job per
+  # scrutin to scrutins.votes. DB-free. Keyless.
+  scrutinscrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/scrutinscrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
+      SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - scrutins-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinscrawl"
+        awslogs-stream-prefix: "scrutinscrawl"
+
+  # --- Workers (run by /consumer; long-running, drain the queue into the DB) ---
+  #
+  # stop_grace_period is 120s so that on `docker compose down` / host stop the
+  # worker gets the same SIGTERM-to-drain window the ECS task definition grants
+  # (modules/worker stop_timeout, Fargate's 120s cap): an in-flight batch either
+  # finishes or is nacked with requeue, never force-killed mid-write.
+
+  # wikipedia consumer: drain crawl.chunks into live wiki_chunks (embeds).
+  crawlworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/crawlworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
+      CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
+      CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/crawlworker"
+        awslogs-stream-prefix: "crawlworker"
+
+  # stats consumer: drain embedding.jobs, embed a batch per Voyage call, and write
+  # the vectors back into the live corpus in place.
+  embedworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/embedworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      EMBED_WORKER_CONCURRENCY: "${EMBED_WORKER_CONCURRENCY:-}"
+      EMBED_WORKER_MAX_ATTEMPTS: "${EMBED_WORKER_MAX_ATTEMPTS:-}"
+      EMBED_WORKER_RPM: "${EMBED_WORKER_RPM:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/embedworker"
+        awslogs-stream-prefix: "embedworker"
+
+  # factcheck consumer: drain factcheck.claims, embed each claim, and upsert the
+  # political claim record into the claim DB.
+  factcheckworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/factcheckworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
+      CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
+      CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/factcheckworker"
+        awslogs-stream-prefix: "factcheckworker"
+
+  # scrutins consumer: drain scrutins.votes, parse each scrutin, and upsert the
+  # per-deputy voting records. Never embeds, so it needs no Voyage key.
+  scrutinsworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/scrutinsworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      SCRUTINS_WORKER_CONCURRENCY: "${SCRUTINS_WORKER_CONCURRENCY:-}"
+      SCRUTINS_WORKER_MAX_ATTEMPTS: "${SCRUTINS_WORKER_MAX_ATTEMPTS:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinsworker"
+        awslogs-stream-prefix: "scrutinsworker"
+
+volumes:
+  # Persists the scrutins-archive conditional-GET marker across producer runs on
+  # the same host, so an unchanged archive is a 304 and re-runs skip the download.
+  scrutins-state:

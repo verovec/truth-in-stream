@@ -98,6 +98,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/ingest-run.test.sh
+  # Unit-test the /crawler and /consumer ingestion-host orchestrator (guard ->
+  # required-env validation -> resolve by Name tag -> start-if-stopped -> ssm
+  # send-command -> get-command-invocation poll -> optional stop) with a stubbed
+  # aws CLI and DRY_RUN (no AWS account, no real EC2/SSM).
+  ingest-host-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ingest-host.test.sh
+  # Unit-test the host-side env materializer (per-role secret map, atomic 0600
+  # write, value-never-logged) with a stubbed aws CLI (no AWS account, no real
+  # Secrets Manager).
+  ingest-fetch-env-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ingest-fetch-env.test.sh
   # Unit-test the INSEE re-run idempotency checkpoint (count, re-run, assert no
   # growth) with a stubbed psql/aws (no database, no AWS account, no tunnel).
   insee-idempotency-script:

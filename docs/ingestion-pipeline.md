@@ -412,7 +412,9 @@ Each guarantee maps to a concrete mechanism and holds for **both** ingestion pat
 
 ## 9b. Stop/restart safety assurance (VER-164)
 
-The operator turns the ingestion hosts off between runs to save cost: `docker compose down` sends
+The operator turns the ingestion hosts off between runs to save cost via the `/crawler` and
+`/consumer` commands (start on demand, run one source, stop - see the runbook
+[`docs/ingestion-hosts.md`](ingestion-hosts.md)): `docker compose down` / an instance stop sends
 SIGTERM to every producer and worker, then the instance stops. This is safe at any instant during a
 run - every message is either already committed to its sink or returns to the queue for
 reprocessing on restart, so no work is lost and no row is corrupted. Four producer -> queue ->
