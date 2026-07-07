@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Opt-in pre-commit hook: refuse a commit that would put a real AWS account id into
+# this public repository. Enable with `make install-hooks` (sets core.hooksPath).
+# Runs the same scan CI enforces on every PR (scripts/secret-scan.sh).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+if ! "$REPO_ROOT/scripts/secret-scan.sh"; then
+  echo "" >&2
+  echo "pre-commit: blocked - externalize the account id before committing." >&2
+  echo "(bypass with 'git commit --no-verify' only if you are certain it is a placeholder)" >&2
+  exit 1
+fi

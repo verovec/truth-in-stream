@@ -2,8 +2,8 @@
 
 This is a **separate terraform root** that publishes the app's public DNS into the
 authoritative hosted zone for `jeminforme.fr`, which lives in the **main account**
-(`040265332493`, zone `Z0839748310ZNBMJ0HI90`). The app — CloudFront and the ACM
-certificate — lives in the **app account** (`965638922723`).
+(`<main-account-id>`, zone `Z0839748310ZNBMJ0HI90`). The app — CloudFront and the ACM
+certificate — lives in the **app account** (`<app-account-id>`).
 
 It creates two things, so no record is ever clicked in by hand:
 

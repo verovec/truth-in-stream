@@ -27,7 +27,7 @@ stack/terraform/
 
 The `main-account/` root is the one exception to "directory-per-environment": it
 is not an app environment but the cross-account DNS publisher. It targets the
-**main account** (`040265332493`) that owns the `jeminforme.fr` hosted zone,
+**main account** (`<main-account-id>`) that owns the `jeminforme.fr` hosted zone,
 creating the ACM validation records and apex/`www` CloudFront aliases from the
 prod outputs. It is **applied by hand and excluded from CI** — see
 `main-account/README.md`.
@@ -400,8 +400,8 @@ attach to the HTTPS listener automatically.
 ## Cross-account ACM validation
 
 The public certificate for `jeminforme.fr` is issued by the **app account**
-(`965638922723`), but the authoritative hosted zone for the domain stays in the
-**main account** (`040265332493`, zone `Z0839748310ZNBMJ0HI90`). The registrar
+(`<app-account-id>`), but the authoritative hosted zone for the domain stays in the
+**main account** (`<main-account-id>`, zone `Z0839748310ZNBMJ0HI90`). The registrar
 already delegates to that zone, so no nameserver change is needed and the app
 account never creates a hosted zone.
 

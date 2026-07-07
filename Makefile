@@ -84,7 +84,7 @@ INGEST ?= statsingest
 SOURCE ?= wikipedia
 ACTION ?= up
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets worker-up worker-down worker-status ingest-run crawler consumer insee-idempotency-check
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets worker-up worker-down worker-status ingest-run crawler consumer insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -283,3 +283,10 @@ tf-main-account-plan: ## Plan the main-account DNS root (ACM validation + apex/w
 
 tf-main-account-apply: ## Apply the main-account DNS root by hand (operator only; CI never runs this). Publishes the ACM validation records and apex/www CloudFront aliases into the jeminforme.fr zone. See stack/terraform/main-account/README.md
 	cd $(TF_MAIN) && terraform init && terraform apply
+
+secret-scan: ## Scan the tracked tree for committed AWS account ids (this repo is public). Fails on any unrecognized 12-digit account-shaped token outside the allow-list. Same check CI runs on every PR
+	./scripts/secret-scan.sh
+
+install-hooks: ## Point core.hooksPath at .githooks so the account-id scan runs before every local commit (opt-in, per-clone)
+	git config core.hooksPath .githooks
+	@echo "hooks installed: .githooks (pre-commit runs scripts/secret-scan.sh)"

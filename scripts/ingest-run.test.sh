@@ -33,7 +33,7 @@ assert_not_contains() { printf '%s' "$1" | grep -qF -- "$2" && fail "$3 (found: 
 #   cloudwatch get-metric-data   -> drain depth (DRAIN_DEPTHS sequence, or absent)
 # It logs every call so a test can assert order and that teardown ran.
 # Behaviour knobs:
-#   LIVE_ACCOUNT     account sts reports (default 965638922723, the prod target)
+#   LIVE_ACCOUNT     account sts reports (default 999999999999, the prod target)
 #   FAMILY_MISSING   describe-task-definition errors (family not provisioned)
 #   SERVICE_MISSING  describe-services reports the service in failures (MISSING)
 #   TASK_EXIT        producer container exit code (default 0)
@@ -45,7 +45,7 @@ make_sandbox() {
   DRAIN_STATE="$SANDBOX/drain.idx"; echo 0 >"$DRAIN_STATE"
   TARGETS="$SANDBOX/targets.json"
   cat >"$TARGETS" <<'JSON'
-{ "dev":{"account_id":"111111111111","region":"eu-west-3"}, "prod":{"account_id":"965638922723","region":"eu-west-3"} }
+{ "dev":{"account_id":"111111111111","region":"eu-west-3"}, "prod":{"account_id":"999999999999","region":"eu-west-3"} }
 JSON
   cat >"$BIN/aws" <<'AWS'
 #!/usr/bin/env bash
@@ -53,7 +53,7 @@ echo "$*" >> "$AWS_CALL_LOG"
 args="$*"
 case "$1 $2" in
   "sts get-caller-identity")
-    printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-965638922723}" "${LIVE_ACCOUNT:-965638922723}" ;;
+    printf '%s\tarn:aws:iam::%s:user/operator\n' "${LIVE_ACCOUNT:-999999999999}" "${LIVE_ACCOUNT:-999999999999}" ;;
   "ecs describe-task-definition")
     if [[ -n "${FAMILY_MISSING:-}" ]]; then
       echo "An error occurred (ClientException): Unable to describe task definition." >&2; exit 255; fi
@@ -97,7 +97,7 @@ esac
 AWS
   chmod +x "$BIN/aws"
   export PATH="$BIN:$PATH" AWS_CALL_LOG DRAIN_STATE \
-    LIVE_ACCOUNT="${LIVE_ACCOUNT:-965638922723}" \
+    LIVE_ACCOUNT="${LIVE_ACCOUNT:-999999999999}" \
     FAMILY_MISSING="${FAMILY_MISSING:-}" \
     SERVICE_MISSING="${SERVICE_MISSING:-}" \
     FLEET_UP_FAIL="${FLEET_UP_FAIL:-}" \
@@ -194,7 +194,7 @@ echo "TEST: a wrong account refuses before any mutation"
   LIVE_ACCOUNT=222222222222 make_sandbox
   out="$(bash "$RUN" stats --yes 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on wrong account" || fail "non-zero exit on wrong account (got $rc)"
-  assert_contains "$out" "965638922723" "prints the expected account"
+  assert_contains "$out" "999999999999" "prints the expected account"
   assert_contains "$out" "222222222222" "prints the actual account"
   log="$(cat "$AWS_CALL_LOG")"
   assert_not_contains "$log" "update-service" "wrong account never scales a fleet"
@@ -302,7 +302,7 @@ echo "TEST: status is read-only and reports identity, region, cluster, and fleet
   make_sandbox
   out="$(bash "$RUN" status stats 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on status" || fail "exit 0 on status (got $rc)"
-  assert_contains "$out" "965638922723" "status shows the account"
+  assert_contains "$out" "999999999999" "status shows the account"
   assert_contains "$out" "truth-in-stream-prod-cluster" "status shows the cluster"
   assert_contains "$out" "desired=2 running=2" "status shows fleet counts"
   log="$(cat "$AWS_CALL_LOG")"

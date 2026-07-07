@@ -154,6 +154,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/push-secrets.test.sh
+  # Unit-test the public-repo account-id scanner against throwaway working trees
+  # (offline, no AWS): a real-shaped account id in a tracked config/doc/script
+  # fails; placeholders, fixtures, out-of-scope files, and gitignored files pass.
+  secret-scan-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/secret-scan.test.sh
+  # Enforce that no real AWS account id is committed to this public repo. Scans the
+  # actual tracked tree; fails the PR on an unrecognized 12-digit account-shaped
+  # token outside the allow-list. See the public-repo-hygiene skill.
+  account-id-scan:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/secret-scan.sh
   # Unit-test the tag-release main-ancestor guard against real throwaway git
   # repos (git is deterministic and offline): a tag on main passes, a tag off
   # main fails fast. Gates the release.yml tag-deploy path.

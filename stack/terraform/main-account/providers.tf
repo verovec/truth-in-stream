@@ -1,4 +1,4 @@
-// The default provider operates against the MAIN account (040265332493), which
+// The default provider operates against the MAIN account (<main-account-id>), which
 // owns the authoritative hosted zone for jeminforme.fr. allowed_account_ids is a
 // guard: terraform refuses to run if the resolved credentials are not the main
 // account, so this root can never accidentally write DNS into the app account.

@@ -6,11 +6,15 @@ set -euo pipefail
 # it scales any fleet; `/ingest status` and a manual preflight run it directly with
 # --check for a read-only summary. It performs no mutation of its own.
 #
-# The expected account id comes from a LOCAL, COMMITTED source of truth
-# (deploy/targets.json), never from the account being targeted: reading the
-# expected id from SSM in that same account would be circular - a wrong account
-# would certify itself. AWS account ids are identifiers, not secrets, so the file
-# is committed and is exactly what makes the guard trustworthy.
+# The expected account id comes from a LOCAL source of truth (deploy/targets.json),
+# never from the account being targeted: reading the expected id from SSM in that
+# same account would be circular - a wrong account would certify itself.
+# deploy/targets.json is GITIGNORED: this repository is public, so the real account
+# ids are kept out of the tree. The committed template is deploy/targets.example.json
+# (placeholders only); the operator copies it to deploy/targets.json and fills the
+# real ids locally. Keeping the file local rather than committed does not weaken the
+# guard - the operator trusts their own machine, and the expected id is still
+# resolved independently of the account being targeted.
 #
 # guard_resolve:
 #   1. aws sts get-caller-identity -> live account id + caller ARN. A failure here
@@ -59,7 +63,7 @@ GUARD_CLUSTER=""
 guard_resolve() {
   ig_require_cmd aws jq
 
-  [[ -f "$TARGETS_FILE" ]] || ig_fatal "targets file not found: $TARGETS_FILE (the guard's local source of truth for expected account ids)"
+  [[ -f "$TARGETS_FILE" ]] || ig_fatal "targets file not found: $TARGETS_FILE - copy deploy/targets.example.json to deploy/targets.json and fill in the real per-environment account ids (targets.json is gitignored on purpose; this repository is public)"
 
   local expected region
   expected="$(jq -r --arg e "$ENVIRONMENT" '.[$e].account_id // empty' "$TARGETS_FILE")" \
