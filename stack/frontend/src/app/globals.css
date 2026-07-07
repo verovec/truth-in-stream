@@ -24,9 +24,7 @@
   --color-paper: #fbfbf9;
   --color-ink: #12151d;
   --color-night: #0b0e14;
-  --color-verdict-true: #1b7a4b;
   --color-verdict-nuance: #b45309;
-  --color-verdict-false: #c8102e;
 }
 
 @media (prefers-color-scheme: dark) {

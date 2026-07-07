@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { CtaLink } from "@/components/marketing/cta-link";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import { VerdictCard } from "./verdict-card";
 
@@ -20,12 +20,7 @@ export function Hero({ hero }: { hero: Dictionary["hero"] }) {
           {hero.subtitle}
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-          <Link
-            href="/login"
-            className="inline-flex items-center justify-center rounded-lg bg-bleu px-6 py-3 text-sm font-semibold text-paper transition-colors hover:bg-bleu/90"
-          >
-            {hero.ctaPrimary}
-          </Link>
+          <CtaLink href="/login">{hero.ctaPrimary}</CtaLink>
           <a
             href="#comment-ca-marche"
             className="inline-flex items-center justify-center gap-1 rounded-lg px-4 py-3 text-sm font-semibold text-ink/70 transition-colors hover:text-ink dark:text-paper/70 dark:hover:text-paper"

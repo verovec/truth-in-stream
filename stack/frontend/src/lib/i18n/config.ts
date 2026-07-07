@@ -31,7 +31,9 @@ export function negotiate(acceptLanguage: string | null | undefined): Locale {
 
     let q = 1;
     for (const param of params) {
-      const match = param.trim().match(/^q=(\d(?:\.\d+)?)$/);
+      // The q parameter is case-insensitive per RFC 9110; a value of 0 means
+      // "not acceptable".
+      const match = param.trim().match(/^q=(\d(?:\.\d+)?)$/i);
       if (match) {
         q = Number.parseFloat(match[1]);
       }
@@ -42,7 +44,10 @@ export function negotiate(acceptLanguage: string | null | undefined): Locale {
     }
   }
 
-  if (quality.fr < 0 && quality.en < 0) {
+  // A locale is only preferred when its best quality is strictly positive; a
+  // sentinel -1 (absent) or an explicit q=0 (rejected) both count as no
+  // preference, so French wins by default.
+  if (quality.fr <= 0 && quality.en <= 0) {
     return defaultLocale;
   }
 

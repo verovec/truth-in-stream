@@ -49,4 +49,16 @@ describe("negotiate", () => {
     expect(negotiate("de,es;q=0.9")).toBe("fr");
     expect(negotiate("*")).toBe("fr");
   });
+
+  test("treats an explicit q=0 as 'not acceptable', not a preference", () => {
+    expect(negotiate("de,en;q=0")).toBe("fr");
+    expect(negotiate("en;q=0,fr;q=0")).toBe("fr");
+    expect(negotiate("en;q=0,fr;q=0.5")).toBe("fr");
+    expect(negotiate("en;q=0.5,fr;q=0")).toBe("en");
+  });
+
+  test("parses the q parameter case-insensitively", () => {
+    expect(negotiate("en;Q=0.3,fr;q=0.9")).toBe("fr");
+    expect(negotiate("en;Q=0.9,fr;Q=0.2")).toBe("en");
+  });
 });

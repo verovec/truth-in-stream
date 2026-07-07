@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { CtaLink } from "@/components/marketing/cta-link";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 
 export function ClosingCta({ closing }: { closing: Dictionary["closing"] }) {
@@ -11,12 +11,9 @@ export function ClosingCta({ closing }: { closing: Dictionary["closing"] }) {
         <p className="mx-auto mt-4 max-w-xl text-ink/70 dark:text-paper/70">
           {closing.body}
         </p>
-        <Link
-          href="/login"
-          className="mt-8 inline-flex items-center justify-center rounded-lg bg-bleu px-6 py-3 text-sm font-semibold text-paper transition-colors hover:bg-bleu/90"
-        >
+        <CtaLink href="/login" className="mt-8">
           {closing.cta}
-        </Link>
+        </CtaLink>
       </div>
     </section>
   );

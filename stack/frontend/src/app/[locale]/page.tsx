@@ -14,14 +14,19 @@ export async function generateMetadata({
     return {};
   }
   const dict = await getDictionary(locale);
+  const ogLocale = locale === "fr" ? "fr_FR" : "en_US";
   return {
     title: dict.meta.title,
     description: dict.meta.description,
+    alternates: {
+      canonical: `/${locale}`,
+      languages: { fr: "/fr", en: "/en", "x-default": "/fr" },
+    },
     openGraph: {
       title: dict.meta.title,
       description: dict.meta.description,
       siteName: dict.brand.name,
-      locale,
+      locale: ogLocale,
       type: "website",
     },
   };

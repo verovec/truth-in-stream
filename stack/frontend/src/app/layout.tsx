@@ -16,6 +16,16 @@ export const metadata: Metadata = {
   title: "jeminforme.fr",
   description:
     "Verification des faits en direct pour le debat politique francais et europeen.",
+  // The bare domain redirects to a locale, but link unfurlers that do not follow
+  // the redirect still get a share card from this default.
+  openGraph: {
+    title: "jeminforme.fr",
+    description:
+      "Verification des faits en direct pour le debat politique francais et europeen.",
+    siteName: "jeminforme.fr",
+    locale: "fr_FR",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
@@ -27,7 +37,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="fr"
+      lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       {/* overflow-x-hidden is the app-wide guard against horizontal scroll: a

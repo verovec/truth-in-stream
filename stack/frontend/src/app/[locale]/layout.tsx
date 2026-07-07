@@ -4,7 +4,6 @@ import { isLocale, locales } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionaries";
 import { Footer } from "./_components/footer";
 import { Header } from "./_components/header";
-import { HtmlLang } from "./_components/html-lang";
 
 // Editorial serif by Production Type (Paris) for display headings only; the
 // body stays on Geist. Scoped here so it never loads outside the marketing
@@ -35,11 +34,15 @@ export default async function LocaleLayout({
 
   const dict = await getDictionary(locale);
 
+  // The shared root layout renders <html lang="en"> for the authenticated app.
+  // Setting lang here labels the marketing subtree with its actual locale for
+  // assistive technology, server-side and per locale (WCAG "language of parts").
+  // Cross-locale SEO is handled by the hreflang alternates in the page metadata.
   return (
     <div
+      lang={locale}
       className={`${spectral.variable} flex flex-1 flex-col bg-paper font-sans text-ink antialiased dark:bg-night dark:text-paper`}
     >
-      <HtmlLang locale={locale} />
       <Header locale={locale} dict={dict} />
       {children}
       <Footer locale={locale} dict={dict} />
