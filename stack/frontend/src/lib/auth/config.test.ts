@@ -49,4 +49,24 @@ describe("readOidcConfig", () => {
     expect(cfg.redirectUri).toBe("https://app.example.com/auth/callback");
     expect(cfg.postLogoutRedirectUri).toBe("https://app.example.com/");
   });
+
+  // Locks the exact production wiring the prod Terraform injects (KEYCLOAK_ISSUER
+  // = login.jeminforme.fr realm, NEXT_PUBLIC_APP_URL = the apex): the redirect and
+  // post-logout URIs must resolve to https://jeminforme.fr, never the localhost
+  // dev default, and prod uses the single public issuer for the back-channel too.
+  test("resolves the production jeminforme.fr wiring to absolute app URIs", () => {
+    const cfg = readOidcConfig({
+      KEYCLOAK_ISSUER: "https://login.jeminforme.fr/realms/truth-in-stream",
+      KEYCLOAK_CLIENT_ID: "truth-in-stream-web",
+      NEXT_PUBLIC_APP_URL: "https://jeminforme.fr",
+    });
+
+    expect(cfg.issuer).toBe("https://login.jeminforme.fr/realms/truth-in-stream");
+    expect(cfg.internalUrl).toBe(
+      "https://login.jeminforme.fr/realms/truth-in-stream",
+    );
+    expect(cfg.clientId).toBe("truth-in-stream-web");
+    expect(cfg.redirectUri).toBe("https://jeminforme.fr/auth/callback");
+    expect(cfg.postLogoutRedirectUri).toBe("https://jeminforme.fr/");
+  });
 });

@@ -28,6 +28,21 @@ locals {
   # interpolated when the stack is gated off.
   keycloak_issuer_host = "login.${var.domain_name}"
   keycloak_db_url      = local.keycloak_enabled ? "jdbc:postgresql://${one(module.rds[*].endpoint)}/keycloak?sslmode=require" : ""
+
+  # Public OIDC issuer the app (backend RequireIdentity gate + frontend OIDC flow)
+  # validates against. Unconditional: it points at login.<domain> whether Keycloak
+  # is self-hosted here or run out of band. Prod uses the single public issuer for
+  # both the browser and the back-channel (the tasks reach it via CloudFront), so
+  # no JWKS/internal-host override is set - matching the dev-networking spec's
+  # stated production behaviour.
+  keycloak_issuer_url = "https://${local.keycloak_issuer_host}/realms/truth-in-stream"
+
+  # OIDC client id, the authorized party (azp) the backend validates and the
+  # frontend authenticates as. Single source of truth: set explicitly on BOTH
+  # services (rather than letting the backend fall back to its compiled-in
+  # default), so a client rename changes one place and can never leave the two
+  # sides in disagreement (which would reject every token and 401 all of /api).
+  keycloak_client_id = "truth-in-stream-web"
 }
 
 # Public TLS certificate for jeminforme.fr (apex + www + login), requested in
@@ -196,20 +211,24 @@ resource "aws_secretsmanager_secret" "transcription_api_key" {
   description = "AssemblyAI API key. Value set manually, never in Terraform."
 }
 
-# Operator auth: the single-operator login and the session-cookie signing secret.
-# The backend's config requires all three at start (requireEnv), so the serving
-# task cannot run without them.
+# Legacy operator password login (retired). The /api gate uses the verified
+# Keycloak identity; the backend reads these only when LEGACY_PASSWORD_LOGIN is
+# on, so the containers exist only when enable_legacy_password_login re-enables
+# that path. Values set out of band, never in Terraform.
 resource "aws_secretsmanager_secret" "auth_email" {
+  count       = var.enable_legacy_password_login ? 1 : 0
   name        = "${local.project}/${var.environment}/app/auth-email"
   description = "Operator login email. Value set manually, never in Terraform."
 }
 
 resource "aws_secretsmanager_secret" "auth_password_hash" {
+  count       = var.enable_legacy_password_login ? 1 : 0
   name        = "${local.project}/${var.environment}/app/auth-password-hash"
   description = "Operator argon2id password hash. Value set manually, never in Terraform."
 }
 
 resource "aws_secretsmanager_secret" "session_secret" {
+  count       = var.enable_legacy_password_login ? 1 : 0
   name        = "${local.project}/${var.environment}/app/session-secret"
   description = "Session-cookie signing secret. Value set manually, never in Terraform."
 }
@@ -288,7 +307,10 @@ module "media_storage" {
   project     = local.project
   environment = var.environment
 
-  cors_allowed_origins = var.media_cors_allowed_origins
+  # Browser origins allowed to PUT/GET media via presigned URLs. Defaults to the
+  # app origin(s) now that a fixed domain exists (no longer "*"); an explicit
+  # media_cors_allowed_origins overrides.
+  cors_allowed_origins = length(var.media_cors_allowed_origins) > 0 ? var.media_cors_allowed_origins : ["https://${var.domain_name}", "https://www.${var.domain_name}"]
 }
 
 # Durable home for pg_dump snapshots, so the embedded corpus survives a loss
@@ -323,9 +345,6 @@ module "iam" {
     [
       aws_secretsmanager_secret.embedding_api_key.arn,
       aws_secretsmanager_secret.transcription_api_key.arn,
-      aws_secretsmanager_secret.auth_email.arn,
-      aws_secretsmanager_secret.auth_password_hash.arn,
-      aws_secretsmanager_secret.session_secret.arn,
       aws_secretsmanager_secret.deepseek_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
       aws_secretsmanager_secret.slack_webhook_url.arn,
@@ -333,7 +352,12 @@ module "iam" {
       aws_secretsmanager_secret.factcheck_api_key.arn,
       module.rabbitmq.url_secret_arn,
     ],
-    # Splat yields [] when Keycloak is gated off (count = 0), [arn] when on.
+    # Splat yields [] when the resource is gated off (count = 0), [arn] when on.
+    # Legacy auth secrets exist only under enable_legacy_password_login; the
+    # keycloak secrets only under keycloak_enabled.
+    aws_secretsmanager_secret.auth_email[*].arn,
+    aws_secretsmanager_secret.auth_password_hash[*].arn,
+    aws_secretsmanager_secret.session_secret[*].arn,
     aws_secretsmanager_secret.keycloak_bootstrap_admin_password[*].arn,
     aws_secretsmanager_secret.keycloak_db_password[*].arn,
   )
@@ -424,23 +448,36 @@ module "backend" {
       # keys); only the bucket and region are configured here.
       STORAGE_BUCKET = module.media_storage.bucket_id
       STORAGE_REGION = var.aws_region
+      # /api is gated on the verified Keycloak identity (RequireIdentity). The
+      # backend derives the JWKS URL from this issuer; prod uses the single public
+      # issuer, so no KEYCLOAK_JWKS_URL override is set. The client id is set
+      # explicitly (not left to the compiled-in default) so it shares one source
+      # with the frontend.
+      KEYCLOAK_ISSUER    = local.keycloak_issuer_url
+      KEYCLOAK_CLIENT_ID = local.keycloak_client_id
     },
     # REDIS_URL turns on the 24h analysis cache. No auth token, so it is a plain
     # env var, not a secret; absent when the Valkey cache is gated off.
     local.redis_url != null ? { REDIS_URL = local.redis_url } : {},
+    # Re-enable the retired operator password login only when explicitly asked.
+    var.enable_legacy_password_login ? { LEGACY_PASSWORD_LOGIN = "true" } : {},
   )
   secrets = merge(
     {
       EMBEDDING_API_KEY     = aws_secretsmanager_secret.embedding_api_key.arn
       TRANSCRIPTION_API_KEY = aws_secretsmanager_secret.transcription_api_key.arn
-      AUTH_EMAIL            = aws_secretsmanager_secret.auth_email.arn
-      AUTH_PASSWORD_HASH    = aws_secretsmanager_secret.auth_password_hash.arn
-      SESSION_SECRET        = aws_secretsmanager_secret.session_secret.arn
       DEEPSEEK_API_KEY      = aws_secretsmanager_secret.deepseek_api_key.arn
       GEMINI_API_KEY        = aws_secretsmanager_secret.gemini_api_key.arn
       SLACK_WEBHOOK_URL     = aws_secretsmanager_secret.slack_webhook_url.arn
     },
     local.rds_dsn_secret_arn != null ? { DATABASE_URL = local.rds_dsn_secret_arn } : {},
+    # Legacy password-login secrets are injected only when that path is enabled;
+    # RequireIdentity (Keycloak) is the default gate and reads none of these.
+    var.enable_legacy_password_login ? {
+      AUTH_EMAIL         = aws_secretsmanager_secret.auth_email[0].arn
+      AUTH_PASSWORD_HASH = aws_secretsmanager_secret.auth_password_hash[0].arn
+      SESSION_SECRET     = aws_secretsmanager_secret.session_secret[0].arn
+    } : {},
   )
 
   cluster_id              = module.ecs.cluster_id
@@ -482,6 +519,16 @@ module "frontend" {
   environment_variables = {
     PORT                    = "3000"
     NEXT_TELEMETRY_DISABLED = "1"
+    # OIDC login flow. Issuer and client id are public identifiers (the public
+    # PKCE client carries no secret). NEXT_PUBLIC_APP_URL sets the redirect /
+    # post-logout URIs, which must match the realm client's registered origins.
+    # config.ts (server-only) reads NEXT_PUBLIC_APP_URL at runtime via its
+    # injectable env default - it is not accessed as a build-time-inlined
+    # `process.env.NEXT_PUBLIC_*` literal, so a runtime task env var suffices and
+    # no image build-arg is needed.
+    KEYCLOAK_ISSUER     = local.keycloak_issuer_url
+    KEYCLOAK_CLIENT_ID  = local.keycloak_client_id
+    NEXT_PUBLIC_APP_URL = "https://${var.domain_name}"
   }
 
   cluster_id              = module.ecs.cluster_id

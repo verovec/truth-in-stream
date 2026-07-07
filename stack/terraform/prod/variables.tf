@@ -22,8 +22,8 @@ variable "domain_name" {
 
 variable "media_cors_allowed_origins" {
   type        = list(string)
-  default     = ["*"]
-  description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Defaults to any origin while there is no fixed frontend domain; restrict to the app origin once one exists."
+  default     = []
+  description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Empty (the default) derives the app origins (https://<domain> + https://www.<domain>) from domain_name; set an explicit list to override."
 }
 
 # --- Cost right-sizing baseline (VER-134) ---
@@ -451,4 +451,10 @@ variable "keycloak_db_bootstrap_image" {
   type        = string
   default     = "public.ecr.aws/docker/library/postgres:17-alpine"
   description = "Image providing the psql client for the keycloak DB-bootstrap task. Defaults to the official Postgres 17 image (matches the RDS major) from the AWS public ECR mirror, so no bespoke image build is needed."
+}
+
+variable "enable_legacy_password_login" {
+  type        = bool
+  default     = false
+  description = "Re-enable the retired operator password login (/api/login + /api/logout). Off by default: the /api gate uses the verified Keycloak identity. When true, the AUTH_EMAIL/AUTH_PASSWORD_HASH/SESSION_SECRET secret containers are created (values pushed out of band) and injected into the backend along with LEGACY_PASSWORD_LOGIN=true."
 }
