@@ -17,6 +17,13 @@ describe("proxy gating", () => {
     expect(res.headers.get("x-middleware-next")).toBe("1");
   });
 
+  test("lets an unauthenticated request reach the localised landing pages", () => {
+    for (const path of ["/fr", "/en"]) {
+      const res = proxy(request(path));
+      expect(res.headers.get("x-middleware-next")).toBe("1");
+    }
+  });
+
   test("redirects an unauthenticated request for a product route to login", () => {
     const res = proxy(request("/app"));
 

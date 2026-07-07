@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { ACCESS_TOKEN_COOKIE } from "@/lib/auth/cookies";
+import { locales } from "@/lib/i18n/config";
 
 const LOGIN_PATH = "/login";
 
@@ -12,15 +13,18 @@ const LOGIN_PATH = "/login";
 // either one means the caller has signed in.
 const SESSION_COOKIE = "session";
 
-// Routes reachable without a session: the public marketing landing page, the
-// login page itself, and the OIDC route handlers (login start, callback, logout)
-// which run the sign-in transaction before any session cookie exists. The login
-// page stays reachable even with a cookie present so an invalid or stale cookie
-// can never lock a user out of signing in. The auth handlers are listed
-// explicitly rather than allowed by a /auth/ prefix, so a future authenticated
-// page added under /auth/ is not silently served without a session check.
-const PUBLIC_PATHS = new Set([
+// Routes reachable without a session: the public marketing landing (the bare
+// root, which redirects to a locale, and each localised landing page under
+// `/fr` and `/en`), the login page itself, and the OIDC route handlers (login
+// start, callback, logout) which run the sign-in transaction before any session
+// cookie exists. The login page stays reachable even with a cookie present so an
+// invalid or stale cookie can never lock a user out of signing in. The auth
+// handlers are listed explicitly rather than allowed by a /auth/ prefix, so a
+// future authenticated page added under /auth/ is not silently served without a
+// session check.
+const PUBLIC_PATHS = new Set<string>([
   "/",
+  ...locales.map((locale) => `/${locale}`),
   LOGIN_PATH,
   "/auth/login",
   "/auth/callback",
