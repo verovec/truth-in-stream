@@ -30,8 +30,15 @@ locals {
   keycloak_db_url      = local.keycloak_enabled ? "jdbc:postgresql://${one(module.rds[*].endpoint)}/keycloak?sslmode=require" : ""
 }
 
-# Public TLS certificate for jeminforme.fr (apex + www), requested in us-east-1
-# for CloudFront. DNS validation records are NOT created here: the authoritative
+# Public TLS certificate for jeminforme.fr (apex + www + login), requested in
+# us-east-1 for CloudFront. login.<domain> fronts the self-hosted Keycloak.
+# The login SAN (and the matching CloudFront alias + DNS records below) are
+# deliberately unconditional, NOT gated on enable_keycloak: keeping a stable SAN
+# set avoids a full certificate replacement (which re-validates every domain on
+# the cert) whenever the flag is flipped, and login is self-hosted by default.
+# If enable_keycloak=false to run Keycloak out of band, the operator owns
+# login.<domain> DNS and repoints it; the unused SAN/alias are harmless.
+# DNS validation records are NOT created here: the authoritative
 # hosted zone is in the main account (040265332493), so the main-account
 # terraform root (VER-140) creates the records by reading this module's
 # domain_validation_options output. The certificate is PENDING_VALIDATION until
@@ -44,7 +51,7 @@ module "acm" {
   }
 
   domain_name               = var.domain_name
-  subject_alternative_names = ["www.${var.domain_name}"]
+  subject_alternative_names = ["www.${var.domain_name}", "login.${var.domain_name}"]
 }
 
 module "vpc" {
@@ -372,10 +379,14 @@ module "waf" {
 # CloudFront in front of the internal ALB. Serves the app over HTTPS at the
 # apex and www using the us-east-1 ACM certificate from the acm module, with a
 # default behavior (frontend) and an /api/* behavior (backend), both dynamic
-# and never cached. Media is served from direct presigned S3 URLs and is not
-# fronted here. The WAFv2 web ACL above is associated via web_acl_id; the
-# apex/www alias records are created by the main-account root (VER-140), which
-# reads domain_name and hosted_zone_id.
+# and never cached. It also serves login.<domain> as an alias: the AllViewer
+# origin-request policy forwards the viewer Host, so login. requests reach the
+# internal ALB with their original host and hit the Keycloak host-header rule (no
+# extra cache behavior needed, since every behavior targets the same VPC origin).
+# Media is served from direct presigned S3 URLs and is not fronted here. The
+# WAFv2 web ACL above is associated via web_acl_id; the apex/www/login alias
+# records are created by the main-account root (VER-140), which reads domain_name
+# and hosted_zone_id.
 module "cloudfront" {
   source = "../modules/cloudfront"
 
@@ -385,7 +396,7 @@ module "cloudfront" {
   alb_arn         = module.alb.arn
   alb_dns_name    = module.alb.dns_name
   certificate_arn = module.acm.certificate_arn
-  aliases         = [var.domain_name, "www.${var.domain_name}"]
+  aliases         = [var.domain_name, "www.${var.domain_name}", "login.${var.domain_name}"]
   web_acl_id      = module.waf.web_acl_arn
 }
 

@@ -27,8 +27,13 @@ locals {
   cloudfront_domain_name    = var.read_remote_state ? data.terraform_remote_state.app[0].outputs.cloudfront_domain_name : var.cloudfront_domain_name_override
   cloudfront_hosted_zone_id = var.read_remote_state ? data.terraform_remote_state.app[0].outputs.cloudfront_hosted_zone_id : var.cloudfront_hosted_zone_id_override
 
-  # The records the apex/www aliases are created for.
-  alias_fqdns = [var.domain_name, "www.${var.domain_name}"]
+  # The records the apex/www/login aliases are created for. login.<domain> fronts
+  # the self-hosted Keycloak through the same CloudFront distribution (the prod
+  # ACM cert covers it and the distribution serves it as an alias); the ALB
+  # host-header rule routes it to Keycloak. login is deliberately unconditional
+  # (not gated on the app account's enable_keycloak) for a stable record set; if
+  # Keycloak is run out of band, the operator repoints login.<domain> here.
+  alias_fqdns = [var.domain_name, "www.${var.domain_name}", "login.${var.domain_name}"]
 
   # In the tfvars path (read_remote_state = false) the operator MUST paste all
   # three prod outputs in; otherwise the selected source is empty and the plan
