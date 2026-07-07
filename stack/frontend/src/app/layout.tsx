@@ -13,6 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://jeminforme.fr"),
   title: "jeminforme.fr",
   description:
     "Verification des faits en direct pour le debat politique francais et europeen.",
