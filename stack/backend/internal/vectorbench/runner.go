@@ -112,7 +112,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config, logger *slog.Logge
 			})
 			continue
 		}
-		r, err := measureCell(ctx, pool, cfg, corpus, truth, cell)
+		r, err := measureCell(ctx, pool, cfg, corpus, truth, cell, iterative)
 		if err != nil {
 			return nil, fmt.Errorf("measuring %s: %w", cell.Label(), err)
 		}
@@ -276,7 +276,10 @@ func exactBaselines(ctx context.Context, pool *pgxpool.Pool, cfg Config, corpus 
 
 // measureCell runs every query through one cell's configuration on a single
 // pinned connection and scores recall and latency against the ground truth.
-func measureCell(ctx context.Context, pool *pgxpool.Pool, cfg Config, corpus Corpus, truth groundTruth, cell Cell) (Result, error) {
+// iterativeSupported gates the hnsw.iterative_scan SET: on pre-0.8 servers
+// the GUC does not exist, and the only cells reaching here are IterativeOff,
+// whose behavior those servers already have.
+func measureCell(ctx context.Context, pool *pgxpool.Pool, cfg Config, corpus Corpus, truth groundTruth, cell Cell, iterativeSupported bool) (Result, error) {
 	sql, err := SearchSQL(cell.Scenario, cell.Filter, cfg.Corpus.Dims)
 	if err != nil {
 		return Result{}, err
@@ -286,23 +289,29 @@ func measureCell(ctx context.Context, pool *pgxpool.Pool, cfg Config, corpus Cor
 		return Result{}, fmt.Errorf("acquiring connection: %w", err)
 	}
 	defer conn.Release()
+	// Reset before Release even if one SET succeeds and the other fails, so a
+	// pooled connection never escapes with a cell's GUCs still applied.
+	defer resetGUCs(ctx, conn)
 	if _, err := conn.Exec(ctx, fmt.Sprintf("SET hnsw.ef_search = %d", cell.EfSearch)); err != nil {
 		return Result{}, fmt.Errorf("setting ef_search: %w", err)
 	}
-	if _, err := conn.Exec(ctx, fmt.Sprintf("SET hnsw.iterative_scan = %s", cell.Iterative)); err != nil {
-		return Result{}, fmt.Errorf("setting iterative_scan: %w", err)
+	if iterativeSupported {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET hnsw.iterative_scan = %s", cell.Iterative)); err != nil {
+			return Result{}, fmt.Errorf("setting iterative_scan: %w", err)
+		}
 	}
-	defer resetGUCs(ctx, conn)
 
+	// A bounded untimed warmup pass fills the caches first, so every timed
+	// sample below is a first, identically-treated execution.
+	for i := range min(warmupQueries, len(corpus.Queries)) {
+		if _, err := queryIDs(ctx, conn, sql, cellArgs(cfg, cell, corpus.Queries[i], i)); err != nil {
+			return Result{}, fmt.Errorf("warmup query %d: %w", i, err)
+		}
+	}
 	approx := make([][]int64, len(corpus.Queries))
 	latencies := make([]time.Duration, 0, len(corpus.Queries))
 	for i, q := range corpus.Queries {
 		args := cellArgs(cfg, cell, q, i)
-		if i < warmupQueries {
-			if _, err := queryIDs(ctx, conn, sql, args); err != nil {
-				return Result{}, fmt.Errorf("warmup query %d: %w", i, err)
-			}
-		}
 		start := time.Now()
 		ids, err := queryIDs(ctx, conn, sql, args)
 		if err != nil {
