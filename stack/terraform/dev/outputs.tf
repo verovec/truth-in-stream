@@ -60,7 +60,7 @@ output "consumer_host_instance_id" {
 
 output "ingestion_dashboard_name" {
   value       = one(module.monitoring[*].dashboard_name)
-  description = "CloudWatch dashboard for the ingestion pipeline. Null when enable_metrics_lambda is false."
+  description = "CloudWatch dashboard for the ingestion queues. Null when enable_metrics_lambda is false."
 }
 
 output "apply_required_actions" {

@@ -113,10 +113,14 @@ Logs, alarms, and Slack alerting are provisioned for prod (`stack/terraform/modu
 
 ## Cloud ingestion
 
-The producer Fargate task, worker fleet, versioned queue, and SSM bastion drain are documented in
-[`ingestion-pipeline.md`](ingestion-pipeline.md#13-cloud--production-pipeline). The on-demand operator
-controls (`make worker-up` / `worker-down` / `worker-status`, `make ingest-run`) scale the fleets to
-zero when idle so there is no standing ingestion cost.
+There is one cloud ingestion model: two on-demand **EC2 hosts** (a crawler host running the
+producers, a consumer host running the workers) run the backend image's producer/worker containers
+directly in the VPC, driven by the `/crawler` and `/consumer` commands over SSM. The hosts live
+behind `enable_ingestion_hosts` (default off) in `stack/terraform/dev` and are stopped between runs,
+so idle cost is only their EBS volumes. See the operator runbook
+[`docs/ingestion-hosts.md`](ingestion-hosts.md) and the pipeline summary
+[`ingestion-pipeline.md`](ingestion-pipeline.md#13-cloud--production-pipeline). Provisioning is
+human-gated (`terraform apply -var enable_ingestion_hosts=true`).
 
 ## Deploys (human-gated)
 
@@ -140,10 +144,10 @@ git push origin v1.4.0   # release.yml -> roll backend, keycloak, frontend
 A tag whose commit is **not** on `main` (e.g. cut from a side branch) fails fast in the guard job
 and deploys nothing. The roll pins each service to a fresh task-definition revision referencing the
 build's immutable `sha-<7>` image (not the moving `latest` tag, which is not advanced on a tag ref),
-so the release is deterministic and a later unrelated `latest` push cannot drift prod. Workers are
-out of scope for a tag release; they roll via the worker-lifecycle lambda. Backup is image-only. The
-keycloak job assumes `enable_keycloak=true` (the default); if you run Keycloak out of band, drop that
-job.
+so the release is deterministic and a later unrelated `latest` push cannot drift prod. Cloud
+ingestion is out of scope for a tag release: the EC2 ingestion hosts pull the current backend image
+and are driven on demand by `/crawler`/`/consumer`. Backup is image-only. The keycloak job assumes
+`enable_keycloak=true` (the default); if you run Keycloak out of band, drop that job.
 
 The tag rolls **services only**; it does not run `terraform apply`. Infrastructure changes to
 `stack/terraform/prod` (and standing the stack up the first time) are a separate, deliberate human
@@ -157,10 +161,9 @@ cd stack/terraform/prod && terraform init && terraform apply   # deliberate, hum
 ```
 
 **Manual dispatch (`deploy-*.yml`).** The per-service `workflow_dispatch` workflows
-(`deploy-backend`, `deploy-frontend`, `deploy-keycloak`, `deploy-workers`, `deploy-backup`) remain
-for ad-hoc single-service rolls and **rollbacks**: to roll back, dispatch the relevant `deploy-*`
-workflow from the last-good commit (or re-push that commit's tag). See
-[Development -> CI](development.md#ci).
+(`deploy-backend`, `deploy-frontend`, `deploy-keycloak`, `deploy-backup`) remain for ad-hoc
+single-service rolls and **rollbacks**: to roll back, dispatch the relevant `deploy-*` workflow from
+the last-good commit (or re-push that commit's tag). See [Development -> CI](development.md#ci).
 
 The tag is the gate: an ordinary merge to `main` never deploys, and no `terraform apply` (prod or
 main-account) ever runs without a deliberate human apply. Repo variables `AWS_REGION`,

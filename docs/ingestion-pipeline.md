@@ -593,205 +593,112 @@ From the root `.env` (read by Compose). Defaults shown.
 
 ## 13. Cloud / production pipeline
 
-The local flow runs the producer and the fleet on one machine. In production the same binaries run as
-separate workloads against an Amazon MQ for RabbitMQ broker; the deploy is human-gated
-(`deploy-workers.yml`, `workflow_dispatch`-only). Same images, different entry points - no separate
-producer or worker image.
+The local flow runs the producer and the fleet on one machine. In the cloud there is
+exactly **one** ingestion model: two on-demand **EC2 hosts** run the same producer and
+worker containers directly in the VPC, driven by the `/crawler` and `/consumer` commands.
+Same backend image, different entry points - no separate producer or worker image, no
+Fargate task, no ECS worker service, no autoscaler.
 
-### On-demand control: `make` targets (the operator entrypoint)
+The operator runbook is [`docs/ingestion-hosts.md`](ingestion-hosts.md); this section is the
+pipeline-level summary. The orchestrator is `scripts/ingest-host.sh` (all AWS calls) with the
+cloud override `docker-compose.ingest.yml`; the account guard (`scripts/aws-target-guard.sh` +
+`deploy/targets.json`) fronts every run.
 
-Nothing ingestion-related runs 24/7 in prod: the worker services sit at desired-count **zero** and the
-one-shot ingests are tasks, not services, so idle cost between runs is zero. The operator drives a run
-with AWS-CLI-backed `make` targets (`scripts/worker-fleet.sh`, `scripts/run-ingest-task.sh`) that source
-the ECS cluster from terraform outputs and the subnets/security-group from the published SSM parameters
-(`/<project>/<env>/deploy/*`) - never hard-coded. Everything is human-triggered; nothing schedules itself.
+### The two hosts
 
-A typical run (prod is the default `ENV`; pass `ENV=dev` for dev):
+Nothing ingestion-related runs 24/7: both hosts are **off** (or absent) by default and are
+stopped between runs, so idle cost is only their EBS volumes. Each is SSM-only (no inbound, no
+SSH, no public IP), IMDSv2-required, with an instance profile scoped to SSM core plus only the
+secrets, backend ECR repo, and CloudWatch Logs its containers use.
+
+- `truth-in-stream-<env>-crawler-host` runs a source's **producer** - a one-shot that fills a
+  queue and exits (`docker compose run --rm`).
+- `truth-in-stream-<env>-consumer-host` runs a source's **worker** - long-running, drains the
+  queue into the database (`docker compose up -d`), stopped once the queue empties.
+
+They live behind `enable_ingestion_hosts` (default off) in `stack/terraform/dev` (module
+`stack/terraform/modules/ingestion-host`). Enabling them implies `enable_rds` (the consumer
+writes the corpus to the managed **dev RDS** instance), and their security groups are admitted
+by the broker on 5671 and RDS on 5432.
+
+| Source | Producer (`/crawler`) | Queue | Worker (`/consumer`) | Required producer env |
+|--------|-----------------------|-------|----------------------|-----------------------|
+| `wikipedia` | `wikicrawl` | `crawl.chunks` | `crawlworker` | `CRAWL_CATEGORIES` |
+| `stats` | `statsingest` | `embedding.jobs` | `embedworker` | (none) |
+| `factcheck` | `factcheckcrawl` | `factcheck.claims` | `factcheckworker` | `FACTCHECK_QUERIES` |
+| `scrutins` | `scrutinscrawl` | `scrutins.votes` | `scrutinsworker` | (none) |
+
+Required producer env is **non-secret** config the operator sets in the shell; the command
+forwards only these (never an API key). API keys come from Secrets Manager on the host, fetched
+by `scripts/ingest-fetch-env.sh` into a `0600` file - no secret ever passes through the SSM
+command or a log.
+
+### On-demand control: `/crawler` and `/consumer`
+
+The commands open an SSM connection, start the host if stopped, run one service over
+`aws ssm send-command`, stream the output, surface the container exit code, and can stop the
+host afterwards. `make crawler` / `make consumer` mirror them (`SOURCE=`, `ACTION=`, `ENV=`);
+the hosts live in `dev` today, so pass `ENV=dev`.
 
 ```bash
-# 1. start the embedding fleet for the run (worker services are at zero otherwise)
-make worker-up FLEET=embedworker COUNT=4        # aws ecs update-service --desired-count 4
-make worker-status FLEET=embedworker            # desired/running counts (read-only)
+# Fill a queue (start the crawler host, run the producer, stop the host when done):
+ENVIRONMENT=dev CRAWL_CATEGORIES="Category:Retraites en France" /crawler wikipedia --stop-after
 
-# 2. run a one-shot ingest; it launches a Fargate task, waits, and reports the exit code
-make ingest-run INGEST=statsingest              # the INSEE/Eurostat/interior sweep
-make ingest-run INGEST=wiki-populate            # wikisync -mode=bulk
-make ingest-run INGEST=wikisync                 # wikisync -mode=delta (refresh)
-
-# 3. scale the fleet back to ZERO when the queue drains - idle cost returns to zero
-make worker-down FLEET=embedworker
+# Drain a queue (start the consumer host, bring the worker up to drain into the DB):
+ENVIRONMENT=dev /consumer wikipedia            # up (default)
+ENVIRONMENT=dev /consumer wikipedia status     # watch state + backlog
+ENVIRONMENT=dev /consumer wikipedia down       # stop the host once the queue empties
 ```
 
-`FLEET` is the ECS service name (`embedworker`, `crawlworker`, and the foundation
-`factcheckworker`/`scrutinsworker` - the worker modules name the service by this bare suffix; only the
-task-definition family carries the `<project>-<env>-` prefix). `INGEST` is `statsingest`, `wikisync`, or
-`wiki-populate`, mapping to its task-definition family and command override (`wiki-populate` is the
-`wikisync` family run with `-mode=bulk`; the command override targets the container by its bare name,
-which is what the task definition uses - a mismatched override name is silently dropped by ECS).
+`DRY_RUN=1` drives the whole path (guard, resolve, start, send-command) without touching AWS,
+printing each mutating call - use it to rehearse. Stopping a host mid-run is safe: workers nack
+in-flight batches with requeue on SIGTERM within the 120s grace window (see
+[9b. Stop/restart safety](#9b-stoprestart-safety-assurance-ver-164)), so no work is lost.
 
-Scaling uses `aws ecs update-service --desired-count` - an explicit operator count up and an explicit
-zero down - exactly as the worker-lifecycle **scale** lambda's own `SetDesiredCount` does, not that
-lambda (a queue-depth autoscaler for a continuously-running fleet, the opposite of this on-demand model).
-The worker services run under an EXTERNAL deployment controller, so the desired count only launches tasks
-once a PRIMARY task set exists; the worker-lifecycle **deploy** lambda creates it via
-`scripts/deploy-ingestion.sh`. Roll the fleet once with that script before the first on-demand scale-up;
-`deploy-ingestion.sh` still owns image rolls thereafter.
+### Prerequisites (human-gated, deferred to the operator)
 
-**Dry run without infra or credentials.** Every target honours `DRY_RUN=1`, printing the exact AWS call it
-would make and skipping it, with `CLUSTER`/`SUBNETS`/`SECURITY_GROUP` overridable so the config lookups are
-bypassed:
-
-```bash
-DRY_RUN=1 CLUSTER=c SUBNETS=subnet-a SECURITY_GROUP=sg-1 make ingest-run INGEST=statsingest
-```
+1. **Fill the dev account id.** `deploy/targets.json`'s `dev.account_id` is the placeholder
+   `000000000000`; the reused account guard (`scripts/aws-target-guard.sh`) refuses every `dev`
+   run until it holds the real dev AWS account id. The command surfaces the expected-vs-actual
+   mismatch; fix the file rather than bypassing the guard.
+2. **Provision the hosts.** `terraform apply` stays human-gated:
+   `terraform apply -var enable_ingestion_hosts=true` in `stack/terraform/dev` (run with
+   elevated credentials). Until then the command reports "no host found ... enable_ingestion_hosts
+   is off or not applied" and does nothing.
+3. **Populate the secrets.** The `app/*` secrets are created empty by Terraform and set out of
+   band (`aws secretsmanager put-secret-value`); the broker URL and RDS DSN are published by
+   their modules. A secret the host cannot read fails the run loudly, naming the variable.
 
 ### INSEE re-run idempotency checkpoint
 
-After a real statsingest ingest into prod RDS, prove a re-run adds no duplicate passages - the validation
-of the VER-123/124 provenance-key scheme (the stable `(series, period)` key behind the
-`wiki_chunks (page_id, chunk_index)` upsert) against real RDS, not only the in-memory integration test.
-Run it over an open `make db-tunnel` tunnel (it `psql`s to `localhost`):
+After a real statsingest ingest into dev RDS, prove a re-run adds no duplicate passages - the
+validation of the VER-123/124 provenance-key scheme (the stable `(series, period)` key behind
+the `wiki_chunks (page_id, chunk_index)` upsert) against real RDS, not only the in-memory
+integration test. Run it over an open `make db-tunnel` tunnel (it `psql`s to `localhost`):
 
 ```bash
-make db-tunnel                                  # terminal 1: SSM port-forward to the private RDS
-PGPASSWORD=... make insee-idempotency-check     # terminal 2: count, re-run statsingest, assert no growth
+make db-tunnel ENV=dev                          # terminal 1: SSM port-forward to the private RDS
+PGPASSWORD=... make insee-idempotency-check ENV=dev  # terminal 2: count, re-run statsingest, assert no growth
 ```
 
 It counts `wiki_chunks` rows whose `corpus` matches the INSEE corpora (`insee`, `insee-chomage`,
-`insee-emploi`, `insee-prix`, `insee-pib`), re-runs the ingest, counts again, and exits non-zero if the
-count grew. `SKIP_INGEST=1` does a back-to-back count without re-ingesting (e.g. to re-check after a
-manual run); `DRY_RUN=1` dry-runs the re-ingest. The credentials ride in `PGPASSWORD`/`PGURL` in the
-environment, never on an argv.
+`insee-emploi`, `insee-prix`, `insee-pib`), re-runs the stats producer, counts again, and exits
+non-zero if the count grew. The re-ingest runs through the crawler host (`INSEE_REINGEST_CMD`
+defaults to `scripts/ingest-host.sh crawler stats up --stop-after` - the same single ingestion
+model); override it to point elsewhere. `SKIP_INGEST=1` does a back-to-back count without
+re-ingesting; `DRY_RUN=1` dry-runs the re-ingest. Credentials ride in `PGPASSWORD`/`PGURL` in
+the environment, never on an argv.
 
 ### Versioned queue
 
-The queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a comma-separated, oldest-first list
-(default `1`). The newest version is active: the producer publishes to it and stamps it on every message
-(an AMQP header); a worker drops a message stamped with a version it does not know. To roll, append a new
-version; workers on the old version drain it, then it is removed from the list. Delivery stays
-at-least-once with publisher confirms and durable, priority-ordered queues. The same machinery serves the
-crawl queue.
-
-### Dump producer task (on demand)
-
-A deployable Fargate task runs `wikisync -mode=bulk` (bulk-into-live): ingests the dump, publishes one
-self-contained, versioned job per chunk, and exits; the fleet embeds in place. For a wholesale re-chunk
-cutover, run `-atomic -publish-only` and the consumer owns the drain + swap. Terraform (`enable_producer`,
-off by default) creates a task definition with no schedule; launch on demand:
-
-```bash
-cd stack/terraform/dev
-SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
-SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
-aws ecs run-task \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --task-definition truth-in-stream-dev-producer \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}"
-```
-
-The run is resumable (keyset cursor; at-least-once with idempotent workers). The producer needs a
-database (`enable_rds`, or a tunnelled local database); the fleet writes vectors back to that database.
-
-### Crawl producer task + worker service
-
-Mirrors the dump producer/fleet. A Fargate `wikicrawl` task (behind `enable_crawl_producer`, off by
-default) fills the cloud crawl queue on demand; it reads the Anthropic gate key (`CHECKWORTHY_API_KEY`)
-from Secrets Manager and does not embed, so it carries no embedding key. Unlike the dump producer it is
-database-free - it crawls the MediaWiki Action API, runs the fact-checkability gate, and publishes
-self-contained chunk jobs - so it is **not** bound to `enable_rds`. The `crawlworker` fleet (which embeds
-and writes to the corpus) holds the embedding key. A `crawlworker` service runs under the worker-lifecycle EXTERNAL deployment
-controller (scaled/deployed via the lambda, never a direct service update that drops in-flight work); its
-queue-depth policy is the `crawlworker` entry in `worker_lifecycle_scaling_config` (`crawl.chunks` base,
-`max = 0` until raised). The crawl queue uses the same `RABBITMQ_QUEUE_VERSIONS` machinery as the dump
-queue, on its own base name `crawl.chunks` (`RABBITMQ_CRAWL_QUEUE`).
-
-Before the first launch, populate the gate-key secret out of band (the gate is on by default), the same
-way the app keys are set: `aws secretsmanager put-secret-value --secret-id truth-in-stream/dev/app/checkworthy-api-key --secret-string <anthropic-key>`
-(or set `CRAWL_CHECKWORTHY=false` in the run override to skip the gate). The task definition carries a
-default `CRAWL_CATEGORIES`; override it per run to crawl a different slice. The launch is the same
-`aws ecs run-task` shape against `truth-in-stream-<env>-wikicrawl`:
-
-```bash
-cd stack/terraform/dev
-SUBNETS=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/private-subnet-ids --query Parameter.Value --output text)
-SG=$(aws ssm get-parameter --name /truth-in-stream/dev/deploy/tasks-security-group-id --query Parameter.Value --output text)
-aws ecs run-task \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --task-definition truth-in-stream-dev-wikicrawl \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
-  --overrides '{"containerOverrides":[{"name":"wikicrawl","environment":[
-      {"name":"CRAWL_CATEGORIES","value":"Category:Physics,Category:Vaccines"},
-      {"name":"CRAWL_MAX_PAGES","value":"2000"}]}]}'
-```
-
-The producer keeps no checkpoint; a crash just re-runs (idempotent upserts make a re-crawl harmless).
-
-### Deploy the producer and worker (CI)
-
-After the backend/frontend services roll, `scripts/deploy-ingestion.sh` ships the deployed image
-(immutable `sha-<short>` tag, never `:latest`) to the ingestion workloads:
-
-- **Producer(s):** register a new task-definition revision pinned to that image, so the next on-demand
-  `run-task` uses the exact built, Trivy-scanned image.
-- **Worker fleet(s):** invoke the worker-lifecycle **deploy** lambda with the image and worker service
-  names. The lambda creates and promotes a new task set under the EXTERNAL controller, so in-flight
-  messages drain on the old task set before it is retired. The workflow never updates a worker service
-  directly.
-
-A workload not provisioned yet is skipped, not fatal. By default the script ships to both producers
-(`producer`, `wikicrawl`) and both worker fleets (`embedworker`, `crawlworker`); each crawl workload is
-skipped individually when absent, so the deploy is safe before the crawl path is stood up.
-`scripts/deploy-ingestion.test.sh` covers the crawl producer/worker skip paths. Override `PRODUCER_SERVICES`
-/ `WORKER_SERVICES` to target a subset.
-
-**Rolling the queue version** is an explicit, gated step in the same deploy: run `deploy-workers.yml`
-with `queue_versions` set to the new oldest-first list. The version lives on the task definitions, so the
-roll never edits Terraform.
-
-### Drain the cloud queue locally (SSM bastion tunnel)
-
-The develop-locally model keeps data on your machine: the producer fills the cloud queue, then you run
-the worker locally against a tunnel so it drains into local Postgres. No cloud database is involved. The
-broker is private (AMQPS 5671, VPC-only), so the tunnel goes through a hardened SSM-only bastion (no SSH,
-no public IP, IMDSv2 required).
-
-```bash
-cd stack/terraform/dev
-terraform apply -var enable_bastion=true   # deploy is human-gated; run with elevated creds
-
-aws sso login --profile verovec-dev
-./scripts/ssm-port-forward.sh dev          # prints localhost:5671; keep it open
-```
-
-The broker speaks AMQPS with a certificate for its real hostname:
-
-```bash
-BROKER_URL=$(aws secretsmanager get-secret-value --secret-id truth-in-stream/dev/rabbitmq/url \
-  --query SecretString --output text --profile verovec-dev)
-BROKER_HOST=$(printf '%s' "$BROKER_URL" | sed -E 's#.*@([^:/]+).*#\1#')
-echo "127.0.0.1 $BROKER_HOST" | sudo tee -a /etc/hosts   # remove when done
-```
-
-In a second terminal, run the worker as a host process (not the compose worker, which is on the container
-network and cannot reach the host tunnel) against the tunnel and local database:
-
-```bash
-cd stack/backend
-RABBITMQ_URL="$BROKER_URL" \
-DATABASE_URL='postgres://postgres:dev@localhost:5432/truthinstream?sslmode=disable' \
-EMBEDDING_API_KEY="$EMBEDDING_API_KEY" \
-  go run ./cmd/embedworker        # or ./cmd/crawlworker to drain the crawl queue (crawl.chunks)
-```
-
-`./cmd/crawlworker` reads the same three env vars (it shares the broker URL, embedding key, and local
-database); it binds to `crawl.chunks` instead of `embedding.jobs`, so the crawl producer's cloud queue
-drains straight into local Postgres exactly as the dump worker does.
-
-Prerequisites: AWS CLI v2 and the Session Manager plugin. The SSM port-forward has no TCP keepalive, so
-an idle tunnel can drop - re-run the script to reconnect. When done, drop the `/etc/hosts` line and tear
-the bastion down (`terraform apply -var enable_bastion=false`).
+The queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a comma-separated, oldest-first
+list (default `1`). The newest version is active: the producer publishes to it and stamps it on
+every message (an AMQP header); a worker drops a message stamped with a version it does not know.
+To roll, append a new version; workers on the old version drain it, then it is removed from the
+list. Delivery stays at-least-once with publisher confirms and durable, priority-ordered queues.
+The same machinery serves every source's queue. Because the hosts run the containers directly,
+a version roll is just a new `RABBITMQ_QUEUE_VERSIONS` value in the run environment - it touches
+no task definition and no Terraform.
 
 ---
 
@@ -970,6 +877,6 @@ re-embeds unchanged articles. See the design for the rationale and follow-ups:
 - Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
 - LLM classifiers: `stack/backend/internal/llm` (shared transport), `internal/evidencegate` (crawl gate), `internal/checkworthy` (live)
 - Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
-- Cloud deploy: `scripts/deploy-ingestion.sh`, `scripts/ssm-port-forward.sh`, `.github/workflows/deploy-workers.yml` (calls the reusable `_deploy.yml`)
-- On-demand control: `scripts/worker-fleet.sh` (scale up/down/status), `scripts/run-ingest-task.sh` (one-shot ingest), `scripts/insee-idempotency-check.sh`, `scripts/ingestion-common.sh` (shared config), make targets `worker-up`/`worker-down`/`worker-status`/`ingest-run`/`insee-idempotency-check`
-- Infra: `stack/terraform/README.md` (`enable_producer`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)
+- Cloud ingestion (EC2 hosts): runbook [`docs/ingestion-hosts.md`](ingestion-hosts.md); `scripts/ingest-host.sh` (orchestrator), `scripts/ingest-fetch-env.sh` (host env), `docker-compose.ingest.yml` (cloud override), commands `.claude/commands/crawler.md` + `.claude/commands/consumer.md`
+- On-demand control: `scripts/aws-target-guard.sh` (+ `deploy/targets.json`, account guard), `scripts/ingestion-common.sh` (shared config), `scripts/insee-idempotency-check.sh` (real-RDS idempotency checkpoint), `scripts/ssm-port-forward.sh` (bastion tunnel), make targets `crawler`/`consumer`/`insee-idempotency-check`
+- Infra: `stack/terraform/README.md` (`enable_ingestion_hosts`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)

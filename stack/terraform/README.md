@@ -240,47 +240,20 @@ namespace condition. Its security group is egress-only and is added to the
 broker's `management_allowed_security_group_ids` — a separate allow-list from the
 AMQPS data-plane one, so the management API stays closed to the application tasks.
 
-### Worker autoscaling and rollout (`enable_worker_lifecycle`)
+### On-demand ingestion hosts (`enable_ingestion_hosts`)
 
-The embedding-worker fleet runs under an **EXTERNAL deployment controller**:
-terraform provisions only the ECS service shell (no task definition, no desired
-count it fights over), and the `worker-lifecycle` lambda owns scale and rollout.
-With `enable_worker_lifecycle = true` the module provisions one Go lambda binary
-(`provided.al2023`, arm64) behind three functions selected by `LIFECYCLE_HANDLER`:
+Cloud ingestion runs on two on-demand EC2 hosts rather than a standing Fargate
+fleet: a **crawler host** runs the producers and a **consumer host** runs the
+workers, each running the backend image's containers directly in the VPC via the
+`docker-compose.ingest.yml` override. They are driven over SSM by the `/crawler`
+and `/consumer` commands through `scripts/ingest-host.sh`, with host env pulled
+from Secrets Manager by `scripts/ingest-fetch-env.sh` and the wrong-account guard
+(`scripts/aws-target-guard.sh` + `deploy/targets.json`) reused on every run. The
+hosts live in `dev/` behind `enable_ingestion_hosts` (default off); bringing them
+up is a human-gated `terraform apply`. Full runbook: `docs/ingestion-hosts.md`.
 
-- **scale** (EventBridge tick, default every minute) — reads the newest versioned
-  queue's backlog from the management API and sets each service's desired count to
-  `ceil(backlog / ratio)`, clamped to `[min, max]`, moving at most one exponential
-  step per tick (double up, halve down) and honoring a per-service cooldown.
-  `max = 0` disables a service and forces desired count to zero.
-- **cleanup** (EventBridge tick) — retires superseded task sets. A different-version
-  task set is deleted only once its version's queues have fully drained *and* the
-  PRIMARY has served past `max_age_hours`; a same-version replacement after a short
-  min-age; a zero-task "zombie" after its min-age. Nothing is retired while the
-  PRIMARY is still coming up, so a roll never drops the fleet below capacity.
-- **deploy** (invoked by the deploy workflow, no schedule) — registers a new task
-  definition revision with the new image, creates a task set on the service's
-  network (the PRIMARY's, or the configured bootstrap subnets/SGs on the first
-  deploy), and promotes it to PRIMARY. The old PRIMARY becomes a non-PRIMARY task
-  set that **cleanup** retires once its queues drain, so a version roll never drops
-  in-flight work.
-
-Build the lambda binary before applying (the module zips it):
-
-```sh
-cd stack/backend && make lambda-workerlifecycle   # -> build/workerlifecycle/bootstrap
-```
-
-The per-service scaling policy lives in **Parameter Store**
-(`/<project>/<env>/worker-lifecycle/scaling-config`), read at cold start, because
-the full map can exceed the lambda env-var limit. Tune it via the
-`worker_lifecycle_scaling_config` variable; its default keeps `embedworker` at
-`max = 0` (off) so the fleet stays at zero until the workers move onto ECS — raise
-that service's `max` to enable autoscaling. The lambda's execution role is
-least-privilege: ECS scale/task-set actions scoped to the one cluster,
-`iam:PassRole` for the worker task roles only, the broker-secret read, and the
-scaling-config parameter read. Its egress-only security group joins the broker's
-`management_allowed_security_group_ids` like the metrics lambda's.
+Prod (`prod/`) still instantiates the `worker` module and its producers as
+dormant, gated-off foundation for a future standing fleet; dev no longer does.
 
 ## Monitoring + alerting (`modules/observability`, prod)
 
@@ -383,7 +356,7 @@ and a full public-access block on every run. Override `STATE_BUCKET`,
    make push-secrets ENV=dev    # or ENV=prod for production
    ```
 4. Dispatch the per-service deploy workflows (`deploy-backend`,
-   `deploy-frontend`, `deploy-workers`, `deploy-backup`) from the Actions tab.
+   `deploy-frontend`, `deploy-backup`) from the Actions tab.
    Each is `workflow_dispatch`-only and deploys one service: it builds and scans
    the image, pushes an immutable `sha-<short>` tag plus `latest` to ECR, then
    rolls that service and waits for stability (`deploy-backend` also builds the
@@ -479,7 +452,7 @@ with a stubbed `aws` CLI in the `pr.yml` `bootstrap-script` and
 the separate, narrower `AWS_DEPLOY_ROLE_ARN` (a repository variable) created by
 the `iam` module. See `.github/workflows/_terraform.yml`, the reusable
 `.github/workflows/_deploy.yml`, and its per-service callers `deploy-backend.yml`,
-`deploy-frontend.yml`, and `deploy-workers.yml`.
+`deploy-frontend.yml`, and `deploy-backup.yml`.
 
 ## CI/CD roles and the pre-apply IAM guard
 

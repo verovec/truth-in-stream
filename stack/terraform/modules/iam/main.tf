@@ -111,8 +111,9 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:ecs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name}-*"]
   }
 
-  # RegisterTaskDefinition re-pins a producer/worker family to the deployed image
-  # (scripts/deploy-ingestion.sh) and rolls the queue message version. The action
+  # RegisterTaskDefinition registers a fresh task-definition revision pinned to the
+  # deployed image. The tag-release roll (release.yml via _deploy.yml) uses it to
+  # pin backend/frontend to the build's immutable sha-<7> image. The action
   # operates on the account's task-definition namespace, not an individual
   # resource: AWS does not support resource-level ARNs or a family/cluster
   # condition key for RegisterTaskDefinition, so "*" is the only valid resource.
@@ -125,11 +126,12 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["*"]
   }
 
-  # InvokeFunction rolls the worker fleet through the worker-lifecycle deploy
-  # lambda (scripts/deploy-ingestion.sh), draining in-flight work on the old task
-  # set before retiring it. Scoped to this environment's lambda functions.
+  # InvokeFunction on this environment's lambda functions. Currently unused: it
+  # backed the retired Fargate worker-fleet roll; kept scoped to ${local.name}-*
+  # so a future lambda-driven roll needs no deploy-role change (a follow-up may
+  # drop it).
   statement {
-    sid       = "InvokeWorkerLifecycle"
+    sid       = "InvokeEnvironmentLambda"
     actions   = ["lambda:InvokeFunction"]
     resources = ["arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${local.name}-*"]
   }

@@ -46,12 +46,6 @@ variable "include_metrics_lambda" {
   description = "Include the metrics-poller lambda, its CloudWatch dashboard, and EventBridge Scheduler actions. Set from the env's enable_metrics_lambda so the manifest only demands them when the plan provisions the lambda."
 }
 
-variable "include_worker_lifecycle" {
-  type        = bool
-  default     = false
-  description = "Include the worker-lifecycle lambda functions and their EventBridge Scheduler actions. Set from the env's enable_worker_lifecycle so the manifest only demands them when the plan provisions the lambda. The lambda's runtime ECS/scaling permissions live on its own execution role (covered by iam_actions), not on the apply role; its scaling-config parameter is covered by ssm_actions."
-}
-
 variable "include_observability" {
   type        = bool
   default     = false

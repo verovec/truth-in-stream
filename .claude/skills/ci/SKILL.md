@@ -35,7 +35,7 @@ guarded triggers.
 | `terraform.yml` | `push`/`pull_request` on `stack/terraform/**` | Path-filtered trigger that calls `_terraform.yml` for the `dev` env. |
 | `_terraform.yml` | `workflow_call` | fmt-check, validate, plan, IAM apply-guard, `apply tfplan` on main only. |
 | `_deploy.yml` | `workflow_call` | Deploy engine: OIDC -> ECR -> build -> Trivy scan -> push immutable `sha-` tag -> roll. |
-| `deploy-{backend,frontend,workers,backup}.yml` | `workflow_dispatch` only | Thin per-service wrappers around `_deploy.yml`. Human-gated. |
+| `deploy-{backend,frontend,backup}.yml` | `workflow_dispatch` only | Thin per-service wrappers around `_deploy.yml`. Human-gated. |
 
 ## The PR merge gate (`pr.yml`)
 
@@ -46,7 +46,7 @@ guarded triggers.
 - ~13 bash unit-test jobs, one per ops script, each `bash scripts/<name>.test.sh`
   with a stubbed `aws`/`docker`/`psql` (no AWS account, no credentials, no
   daemon): `bootstrap-tfstate`, `iam-apply-guard`, `ssm-port-forward`,
-  `db-tunnel`, `db-push`, `deploy-ingestion`, `worker-fleet`, `run-ingest-task`,
+  `db-tunnel`, `db-push`, `aws-target-guard`, `ingest-host`, `ingest-fetch-env`,
   `insee-idempotency-check`, `doctor`, `push-secrets`.
 - `main-account-terraform-fmt`: `terraform fmt -check -recursive` ONLY against
   `stack/terraform/main-account`. That DNS root is applied by hand against the
@@ -119,15 +119,9 @@ scanned BEFORE it is published.
   lower the severity or set `exit-code: "0"` to get a deploy out.
 - `docker/metadata-action` produces an immutable `type=sha` tag (`sha-<7char>`)
   that the roll step pins to, plus `latest` only `enable={{is_default_branch}}`.
-  The ingestion roll re-derives `sha-$(echo "$GITHUB_SHA" | cut -c1-7)` to run
-  the exact built image, never `:latest`.
-- Three `deploy_mode`s:
+- Two `deploy_mode`s:
   - `rolling`: `aws ecs update-service --force-new-deployment` + `wait
     services-stable` (backend, frontend). Circuit breaker rolls back on failure.
-  - `ingestion`: rolls the worker/producer fleet via
-    `scripts/deploy-ingestion.sh` -- these are EXTERNAL-controller services owned
-    by the worker-lifecycle lambda (see the `lambda` skill); a direct
-    `update-service` would bypass the lambda and drop in-flight work.
   - `image-only`: build, scan, push, no roll (backup; a scheduled task picks it
     up on its next run).
 - rolling + non-empty `migrate_dockerfile` (backend): build + scan + push a
@@ -137,7 +131,7 @@ scanned BEFORE it is published.
 
 ## Deploy wrappers (`deploy-*.yml`)
 
-`deploy-backend`, `deploy-frontend`, `deploy-workers`, `deploy-backup` are thin
+`deploy-backend`, `deploy-frontend`, `deploy-backup` are thin
 `workflow_dispatch`-ONLY wrappers that `uses: ./.github/workflows/_deploy.yml`
 with the service's `service`/`ecr_repo`/`context`/`dockerfile`/`deploy_mode`.
 Deploys are human-gated: an auto-merge to main NEVER deploys. NEVER add a `push`
@@ -166,15 +160,12 @@ trigger to a deploy wrapper while AWS is operator-gated.
    in the caller -- parse-time rejection, since callees only inherit caller
    permissions and the repo default is `id-token: none`.
 3. Floating a third-party action on a tag instead of a pinned SHA.
-4. Pinning the `sha-` deploy tag and `:latest` inconsistently -- the ingestion
-   roll re-derives the short SHA; keep it in sync with metadata-action's
-   `type=sha` or the fleet runs a different image than was scanned.
-5. Lowering Trivy severity or `exit-code` to ship past a CVE gate.
-6. Hardcoding the golangci-lint version instead of `version-file:
+4. Lowering Trivy severity or `exit-code` to ship past a CVE gate.
+5. Hardcoding the golangci-lint version instead of `version-file:
    .golangci-lint-version`.
-7. Adding an ops script without its `scripts/<name>.test.sh` job in `pr.yml`.
-8. Adding a `push` trigger to a `deploy-*.yml` wrapper -- deploys are
+6. Adding an ops script without its `scripts/<name>.test.sh` job in `pr.yml`.
+7. Adding a `push` trigger to a `deploy-*.yml` wrapper -- deploys are
    `workflow_dispatch`-only and human-gated.
-9. Forgetting the `main-account-terraform-fmt` gate when touching
+8. Forgetting the `main-account-terraform-fmt` gate when touching
    `stack/terraform/main-account` -- it is excluded from `terraform.yml` and
    only fmt-gated in `pr.yml`.

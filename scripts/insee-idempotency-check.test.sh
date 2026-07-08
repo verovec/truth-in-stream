@@ -4,8 +4,8 @@
 # count, the re-run, and the after count are exercised without a real database or
 # an open tunnel. The psql stub returns successive counts from a queue file so a
 # test can model "no growth" (idempotent, PASS) and "grew" (duplicate, FAIL).
-# SKIP_INGEST avoids invoking the real run-ingest-task.sh; one test stubs the
-# ingest call on PATH to prove the re-run is wired. Run: ./scripts/insee-idempotency-check.test.sh
+# SKIP_INGEST avoids invoking the real re-ingest; one test overrides
+# INSEE_REINGEST_CMD with a stub to prove the re-run is wired. Run: ./scripts/insee-idempotency-check.test.sh
 
 set -uo pipefail
 
@@ -81,21 +81,20 @@ echo "TEST: without SKIP_INGEST it re-runs the ingest between counts"
 (
   COUNTS="9 9" make_sandbox
   export SKIP_INGEST=""
-  # Stub the sibling run-ingest-task.sh by intercepting it: shadow it in BIN is
-  # not possible (the script calls it by absolute path), so stub the `aws` it
-  # would use and let it dry-run via DRY_RUN, which run-ingest-task honours.
-  export DRY_RUN=1
-  cat >"$SANDBOX/bin/aws" <<'AWS'
+  # Override the re-ingest command with a stub via the INSEE_REINGEST_CMD seam, so
+  # the re-run is exercised without touching the real EC2 crawler host or AWS. The
+  # stub logs its invocation so the test can prove the re-ingest was reached.
+  STUB="$SANDBOX/bin/reingest-stub"
+  cat >"$STUB" <<STUBSH
 #!/usr/bin/env bash
-echo "aws $*" >> "$PSQL_CALL_LOG"
+echo "reingest-stub \$*" >> "$PSQL_CALL_LOG"
 exit 0
-AWS
-  chmod +x "$SANDBOX/bin/aws"
-  # jq is needed by run-ingest-task; ensure it is reachable (real jq on PATH).
-  out="$(SUBNETS=subnet-a SECURITY_GROUP=sg-1 CLUSTER=cl bash "$CHECK" 2>&1)"; rc=$?
-  [[ $rc -eq 0 ]] && ok "exit 0 when ingest dry-runs and counts are equal" || fail "exit 0 on the ingest path (got $rc)"
+STUBSH
+  chmod +x "$STUB"
+  out="$(INSEE_REINGEST_CMD="$STUB stats" bash "$CHECK" 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 when the re-ingest succeeds and counts are equal" || fail "exit 0 on the ingest path (got $rc)"
   assert_contains "$out" "re-running statsingest" "announces the re-ingest"
-  assert_contains "$out" "DRY-RUN aws ecs run-task" "the re-ingest reaches run-task (dry-run)"
+  assert_contains "$(cat "$PSQL_CALL_LOG")" "reingest-stub stats" "the re-ingest command is invoked"
 )
 
 passes=$(grep -c PASS "$TALLY"); fails=$(grep -c FAIL "$TALLY")

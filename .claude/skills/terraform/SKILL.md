@@ -61,14 +61,13 @@ Networking / compute / data / edge / lambda / observability / iam / ops. Cross-c
 | `cloudfront` | edge | CloudFront distribution + VPC origin (PrivateLink to the internal ALB); CachingDisabled, AllViewer forwarding |
 | `waf` | edge | CLOUDFRONT-scoped WAFv2 web ACL, default-allow, managed groups + rate-based rule, decision logging |
 | `metrics-lambda` | lambda | Metrics-poller Lambda (VPC-attached, scoped secret read, namespaced metric publish) on an EventBridge schedule |
-| `worker-lifecycle` | lambda | Three-handler Lambda (scale / cleanup / deploy) from one zipped binary; scale+cleanup scheduled on queue depth, deploy invoked by workflow |
 | `observability` | observability | Regional alerts SNS topic, CloudWatch alarms (ALB 5xx, unhealthy targets, ECS/RDS/MQ/WAF), Slack forwarder Lambda, health dashboard |
 | `monitoring` | observability | CloudWatch dashboard with SEARCH-metric widgets that auto-discover versioned queues (no dashboard edit per queue) |
 | `iam` | iam | Account-global GitHub OIDC provider + deploy/task-execution/app roles and policies (-> the **iam** skill) |
 | `apply-permissions` | iam | Declarative manifest of apply-time AWS actions the CI apply role must hold; enforced by `iam-apply-guard.sh` (see below) |
 
 ## apply-permissions contract
-`stack/terraform/modules/apply-permissions/main.tf` is a **declarative manifest** of every apply-time AWS action the CI apply role (`AWS_ROLE_ARN`) must hold to provision an environment. It exists because the apply role cannot grant itself permissions it lacks - the first apply introducing a new resource type would fail halfway. The module aggregates per-concern action blocks (state, networking, ecs, ecr, alb, iam, logs, ssm, secrets, s3, mq, and gated areas: acm/cloudfront/waf/rds/valkey/scheduled-tasks/bastion/metrics-lambda/observability/worker-lifecycle) into the `apply_required_actions` output (sorted+deduped).
+`stack/terraform/modules/apply-permissions/main.tf` is a **declarative manifest** of every apply-time AWS action the CI apply role (`AWS_ROLE_ARN`) must hold to provision an environment. It exists because the apply role cannot grant itself permissions it lacks - the first apply introducing a new resource type would fail halfway. The module aggregates per-concern action blocks (state, networking, ecs, ecr, alb, iam, logs, ssm, secrets, s3, mq, and gated areas: acm/cloudfront/waf/rds/valkey/scheduled-tasks/bastion/metrics-lambda/observability) into the `apply_required_actions` output (sorted+deduped).
 
 - **Maintenance contract:** when a card adds a resource area, append its actions to the matching block **in the same change**, so the required permissions never drift from what terraform provisions. List concrete actions only - **NEVER `"*"`**. This is the action contract; resource-level scoping lives on the role's own policy (the **iam** skill).
 - Enumerate the **full** action set the provider needs (create/read/update/delete/list/tag), not just create/delete - the provider refreshes state on every plan, so missing read/describe actions 403 on refresh. (Mirrors the repo IAM completeness rule.)

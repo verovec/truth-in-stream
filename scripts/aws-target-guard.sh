@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Refuse to drive an ingestion run against the wrong AWS account. The /ingest
-# orchestrator (scripts/ingest-run.sh) sources this and calls guard_resolve before
-# it scales any fleet; `/ingest status` and a manual preflight run it directly with
-# --check for a read-only summary. It performs no mutation of its own.
+# Refuse to drive an ingestion run against the wrong AWS account. The /crawler and
+# /consumer orchestrator (scripts/ingest-host.sh) sources this and calls
+# guard_resolve before it starts a host or runs a service; a `status` action and a
+# manual preflight run it directly with --check for a read-only summary. It
+# performs no mutation of its own.
 #
 # The expected account id comes from a LOCAL source of truth (deploy/targets.json),
 # never from the account being targeted: reading the expected id from SSM in that
@@ -68,7 +69,7 @@ guard_resolve() {
   local expected region
   expected="$(jq -r --arg e "$ENVIRONMENT" '.[$e].account_id // empty' "$TARGETS_FILE")" \
     || ig_fatal "cannot read $TARGETS_FILE"
-  [[ -n "$expected" ]] || ig_fatal "no expected account id for environment '$ENVIRONMENT' in $TARGETS_FILE; add it before running /ingest against $ENVIRONMENT"
+  [[ -n "$expected" ]] || ig_fatal "no expected account id for environment '$ENVIRONMENT' in $TARGETS_FILE; add it before running /crawler or /consumer against $ENVIRONMENT"
   region="$(jq -r --arg e "$ENVIRONMENT" '.[$e].region // empty' "$TARGETS_FILE")"
   [[ -n "$region" ]] || ig_fatal "no region for environment '$ENVIRONMENT' in $TARGETS_FILE"
 

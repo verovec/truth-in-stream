@@ -2,7 +2,8 @@ name: _deploy
 # Reusable deploy workflow: build one service's image, scan it, push it to ECR
 # with an immutable tag, then roll the service out and wait for it to stabilise.
 # Called by the thin per-service workflows (deploy-backend, deploy-frontend,
-# deploy-workers); never triggered directly. AWS auth is GitHub OIDC role
+# deploy-backup) and the tag release (release.yml); never triggered directly. AWS
+# auth is GitHub OIDC role
 # assumption (no static keys, no secrets in YAML); the role ARN, region, ECR
 # repos, and ECS cluster/service names come from repo/environment variables.
 on:
@@ -29,19 +30,13 @@ on:
           rolling  -> aws ecs update-service --force-new-deployment + wait
                       services-stable (backend, frontend; circuit breaker
                       rolls back on failure when enabled on the service).
-          ingestion -> roll the worker fleet + producers that share the backend
-                      image via scripts/deploy-ingestion.sh (EXTERNAL-controller
-                      services owned by the worker-lifecycle lambda; a direct
-                      update-service would bypass the lambda and drop in-flight
-                      work).
           image-only -> build, scan, and push the image with no roll step, for
                       images a scheduled task picks up on its next run (backup).
         type: string
         required: true
       ecs_service:
         description: >-
-          ECS service name to roll (rolling mode only). Ignored in ingestion
-          mode, which derives the worker/producer set from the deploy script.
+          ECS service name to roll (rolling mode only).
         type: string
         required: false
         default: ""
@@ -79,13 +74,6 @@ on:
         type: boolean
         required: false
         default: false
-      queue_versions:
-        description: >-
-          ingestion mode only: new RABBITMQ_QUEUE_VERSIONS list to roll in the
-          same deploy (comma-separated, oldest-first). Empty = no version roll.
-        type: string
-        required: false
-        default: ""
       environment:
         description: >-
           Optional GitHub Environment to bind the deploy job to (isolates
@@ -142,8 +130,8 @@ jobs:
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ steps.ecr.outputs.registry }}/${{ env.PROJECT }}-${{ env.ENVIRONMENT }}-${{ inputs.ecr_repo }}
-          # type=sha yields the immutable sha-<7-char> tag the rolling/ingestion
-          # deploy pins to. type=raw latest is the moving tag, only moved on the
+          # type=sha yields the immutable sha-<7-char> tag the rolling deploy
+          # pins to. type=raw latest is the moving tag, only moved on the
           # default branch so a dispatch from a side branch never overwrites the
           # production-tracked latest. Keep the sha tag in sync with the IMAGE
           # computed in the deploy steps below.
@@ -372,19 +360,3 @@ jobs:
             exit 1
           fi
           echo "Service ${ECS_SERVICE} stable on ${NEW_ARN}"
-      # Ingestion deploy for the worker/producer fleet sharing the backend image.
-      # Rolls via the worker-lifecycle lambda (EXTERNAL deployment controller) so
-      # in-flight messages drain on the old version; never updates the service
-      # directly. Unprovisioned workloads are skipped, not fatal.
-      - name: Roll ingestion pipeline (workers + producers)
-        if: inputs.deploy_mode == 'ingestion'
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          QUEUE_VERSIONS: ${{ inputs.queue_versions }}
-        run: |
-          set -euo pipefail
-          # Mirror docker/metadata-action's type=sha tag (sha- + 7-char short
-          # SHA) so the fleet runs the exact image built above, not :latest.
-          IMAGE="${REGISTRY}/${PROJECT}-${ENVIRONMENT}-${{ inputs.ecr_repo }}:sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
-          export PROJECT ENVIRONMENT IMAGE QUEUE_VERSIONS
-          bash scripts/deploy-ingestion.sh

@@ -57,22 +57,11 @@ MODE ?=
 EPIC ?=
 DIGEST_FLAG := $(if $(MODE),--$(MODE),) $(if $(EPIC),--epic $(EPIC),)
 
-# Target environment for `make push-secrets` and the cloud on-demand ingestion
-# targets (worker-up/down/status, ingest-run, insee-idempotency-check). prod by
-# default; set ENV=dev to drive the dev environment instead. Exported so the
-# scripts under scripts/ read it as ENVIRONMENT.
+# Target environment for `make push-secrets` and the on-demand ingestion targets
+# (crawler/consumer, insee-idempotency-check). prod by default; set ENV=dev to
+# drive the dev environment instead (the ingestion hosts live in dev). Exported so
+# the scripts under scripts/ read it as ENVIRONMENT.
 ENV ?= prod
-
-# Cloud on-demand ingestion knobs. FLEET selects the worker service suffix
-# (embedworker | crawlworker | factcheckworker | scrutinsworker); COUNT is the
-# replica count `make worker-up` scales to (default 2). INGEST selects the
-# one-shot ingest (statsingest | wikisync | wiki-populate). DRY_RUN=1 makes every
-# target print the AWS call it would make and skip it, so they are exercisable
-# without credentials or live infra. CLUSTER/SUBNETS/SECURITY_GROUP override the
-# terraform-output/SSM lookups for an air-gapped dry run.
-FLEET ?= embedworker
-COUNT ?= 2
-INGEST ?= statsingest
 
 # Source and action for the on-demand ingestion-host commands (`make crawler` /
 # `make consumer`). SOURCE selects the pipeline (wikipedia | stats | factcheck |
@@ -84,7 +73,7 @@ INGEST ?= statsingest
 SOURCE ?= wikipedia
 ACTION ?= up
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets worker-up worker-down worker-status ingest-run crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -243,18 +232,6 @@ prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the bro
 
 push-secrets: ## Push the allowlisted app secrets from the local .env into AWS Secrets Manager under <project>/<ENV>/app/ (ENV=prod default; ENV=dev for dev). Idempotent (describe-then-create-or-put), reads .env at runtime only, and never echoes a value: each is handed to the CLI as a chmod-600 file:// reference and shredded. Pushes only the runtime app keys (EMBEDDING_API_KEY, TRANSCRIPTION_API_KEY, AUTH_EMAIL, AUTH_PASSWORD_HASH, SESSION_SECRET, DEEPSEEK_API_KEY, GEMINI_API_KEY, SLACK_WEBHOOK_URL); the terraform-owned DATABASE_URL and RABBITMQ_URL are never touched. Run after `terraform apply` creates the empty secret containers; prod asks you to type the env name to confirm.
 	./scripts/push-secrets.sh $(ENV)
-
-worker-up: ## Scale a cloud worker fleet up for an on-demand run via `aws ecs update-service` (FLEET=embedworker default, COUNT=2). The worker services sit at zero between runs; this is the on-demand start. Sources the ECS cluster from terraform outputs/env, never hard-coded. Scale crawl/factcheck/scrutins fleets with FLEET=crawlworker etc. DRY_RUN=1 prints the call without touching infra. ENV=prod default
-	ENVIRONMENT=$(ENV) ./scripts/worker-fleet.sh up $(FLEET) $(COUNT)
-
-worker-down: ## Scale a cloud worker fleet back to ZERO when its run is done (FLEET=embedworker default), so nothing ingestion-related bills idle. Always run this after a run completes. DRY_RUN=1 prints the call without touching infra. ENV=prod default
-	ENVIRONMENT=$(ENV) ./scripts/worker-fleet.sh down $(FLEET)
-
-worker-status: ## Report a cloud worker fleet's desired/running replica counts (FLEET=embedworker default); read-only. ENV=prod default
-	ENVIRONMENT=$(ENV) ./scripts/worker-fleet.sh status $(FLEET)
-
-ingest-run: ## Run a one-shot cloud ingest as a Fargate task and wait for it, reporting the container exit status (INGEST=statsingest default; also wikisync, wiki-populate). Launched via `aws ecs run-task` with the right command override; cluster/subnets/SG come from terraform outputs/SSM, never hard-coded. Bring the matching fleet up first (`make worker-up FLEET=embedworker`) so it embeds as it ingests. DRY_RUN=1 prints the run-task without launching. ENV=prod default
-	ENVIRONMENT=$(ENV) ./scripts/run-ingest-task.sh $(INGEST)
 
 crawler: ## Run a source's producer on the crawler EC2 host over SSM (SOURCE=wikipedia default; ACTION=up|down|status). Starts the host if stopped, fills the queue, streams output, surfaces the exit code; add --stop-after to stop the host after the run. Non-secret producer config (CRAWL_CATEGORIES, FACTCHECK_QUERIES) comes from the environment. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
 	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh crawler $(SOURCE) $(ACTION)
