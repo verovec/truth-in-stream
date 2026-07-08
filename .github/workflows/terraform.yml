@@ -22,10 +22,13 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
   # Validate + plan the prod root on every relevant PR and push so a prod-only
   # regression (fmt, invalid config, a plan the apply role lacks permission for)
-  # is caught before merge. apply is hard-false: prod is never auto-applied - a
-  # version tag rolls the services and `terraform apply stack/terraform/prod` is a
-  # separate, deliberate human step (see docs/infrastructure.md). Credential-less
-  # runs (e.g. fork PRs with no AWS_ROLE_ARN) fall back to offline validate.
+  # is caught before merge. apply is hard-false HERE: a plain merge to main
+  # never applies prod. Prod is applied by the tag-triggered release
+  # (release.yml calls this workflow with apply: true, bound to the `production`
+  # Environment approval); standing the stack up the first time stays a
+  # deliberate human `terraform apply` (see docs/infrastructure.md).
+  # Credential-less runs (e.g. fork PRs with no AWS_ROLE_ARN) fall back to
+  # offline validate.
   prod:
     uses: ./.github/workflows/_terraform.yml
     permissions:

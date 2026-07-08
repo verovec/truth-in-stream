@@ -124,7 +124,8 @@ In production the app services set `KEYCLOAK_ISSUER=https://login.jeminforme.fr/
 `NEXT_PUBLIC_APP_URL=https://jeminforme.fr`; the operator pushes the Keycloak bootstrap admin password
 out of band (`make push-secrets ENV=prod`), while the scoped `keycloak` DB role password is generated
 by Terraform. Standing prod up is a deliberate `terraform apply` of `stack/terraform/prod`; pushing a
-`v*` tag whose commit is on `main` then rolls the services (including Keycloak's DB bootstrap). See
+`v*` tag whose commit is on `main` then applies prod (behind the `production` Environment approval)
+and rolls the services (including Keycloak's DB bootstrap). See
 [Infrastructure -> Deploys](infrastructure.md#deploys-human-gated).
 
 Backend and frontend cards point their OIDC issuer at the table's issuer URL and validate the

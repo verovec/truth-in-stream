@@ -145,4 +145,13 @@ resource "aws_ecs_service" "main" {
   deployment_minimum_healthy_percent = 100
 
   depends_on = [aws_lb_listener_rule.main]
+
+  # The deploy pipeline owns the active task definition: the tag release pins
+  # the service to an immutable sha-<7> revision (_deploy.yml), and an apply
+  # must not revert it to this resource's revision (a transient downgrade to
+  # :latest). Terraform still registers new revisions; the next pinned roll's
+  # describe-task-definition picks up the latest one. Mirrors modules/worker.
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 }

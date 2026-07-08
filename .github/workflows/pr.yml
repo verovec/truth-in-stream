@@ -30,6 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/iam-apply-guard.test.sh
+  # Unit-test the CI apply-role OIDC trust-policy bootstrap with a stubbed aws
+  # CLI (no AWS account or credentials involved). Gates the subjects the
+  # release.yml prod apply authenticates with.
+  apply-role-trust-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/apply-role-trust.test.sh
   # Unit-test the SSM bastion port-forward helper with a stubbed aws CLI (no AWS
   # account, no real SSM session).
   ssm-port-forward-script:

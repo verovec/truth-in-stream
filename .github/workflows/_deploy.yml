@@ -5,7 +5,7 @@ name: _deploy
 # deploy-backup) and the tag release (release.yml); never triggered directly. AWS
 # auth is GitHub OIDC role
 # assumption (no static keys, no secrets in YAML); the role ARN, region, ECR
-# repos, and ECS cluster/service names come from repo/environment variables.
+# repos, and ECS cluster/service names come from repository variables.
 on:
   workflow_call:
     inputs:
@@ -74,27 +74,18 @@ on:
         type: boolean
         required: false
         default: false
-      environment:
-        description: >-
-          Optional GitHub Environment to bind the deploy job to (isolates
-          environment-scoped variables and any protection rules). The
-          tag-triggered release path passes "production"; the workflow_dispatch
-          wrappers leave it empty so their behaviour is unchanged. An empty
-          string means no environment binding.
-        type: string
-        required: false
-        default: ""
 permissions:
   contents: read
   id-token: write
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # No environment binding for the dispatch wrappers (empty input); the
-    # release path passes "production" to isolate prod-scoped variables. The
-    # explicit null (rather than an empty string) makes "unset" intentional and
-    # immune to a runtime change in how an empty environment name is treated.
-    environment: ${{ inputs.environment != '' && inputs.environment || null }}
+    # No GitHub Environment binding, deliberately: binding one would swap the
+    # OIDC subject from the ref (refs/heads/main, refs/tags/v*) to
+    # repo:<repo>:environment:<name>, which the deploy role's ref-scoped trust
+    # (modules/iam) does not accept, and on the release it would add an approval
+    # click per service. Only the release's terraform apply binds `production`
+    # (see release.yml).
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       PROJECT: ${{ vars.DEPLOY_PROJECT }}

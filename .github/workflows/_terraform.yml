@@ -4,16 +4,38 @@ on:
     inputs:
       path: { type: string, required: true }
       apply: { type: boolean, default: false }
+      # GitHub Environment to bind the job to. The tag release passes
+      # "production" so the prod apply waits on that environment's required
+      # reviewer; empty (the PR/main plan jobs) means no binding. Binding an
+      # environment also changes the OIDC subject GitHub issues, from
+      # repo:<repo>:ref:... to repo:<repo>:environment:<name> — the apply
+      # role's trust must list that subject (scripts/apply-role-trust.sh).
+      environment: { type: string, default: "" }
+      # Fail instead of falling back to the credential-less offline validate
+      # when AWS_ROLE_ARN is empty. The release apply sets this so a missing or
+      # misconfigured secret fails the release fast rather than passing green
+      # having applied nothing. The PR/main jobs leave it false so fork PRs and
+      # a not-yet-bootstrapped account still get the offline validate.
+      require_credentials: { type: boolean, default: false }
     secrets:
       AWS_ROLE_ARN: { required: false }
 jobs:
   terraform:
     runs-on: ubuntu-latest
     permissions: { id-token: write, contents: read }
+    # Explicit null when unbound: see _deploy.yml for the rationale.
+    environment: ${{ inputs.environment != '' && inputs.environment || null }}
     defaults: { run: { working-directory: "${{ inputs.path }}" } }
     env:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     steps:
+      # Runs before checkout, so the job default working-directory (the
+      # terraform root) does not exist yet; override it to the workspace root.
+      - if: ${{ inputs.require_credentials && env.AWS_ROLE_ARN == '' }}
+        working-directory: .
+        run: |
+          echo "AWS_ROLE_ARN is empty but this call requires credentials (apply). Set the AWS_ROLE_ARN repository secret to the CI apply role." >&2
+          exit 1
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive
@@ -47,6 +69,6 @@ jobs:
           terraform show -json tfplan > tfplan.json
           bash "$GITHUB_WORKSPACE/scripts/iam-apply-guard.sh" tfplan.json "$AWS_ROLE_ARN" "$ENV_DIR"
 
-      # Apply exactly the plan produced above (main only).
+      # Apply exactly the plan produced above.
       - if: ${{ inputs.apply && env.AWS_ROLE_ARN != '' }}
         run: terraform apply -input=false tfplan

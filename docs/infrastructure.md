@@ -127,37 +127,50 @@ human-gated (`terraform apply -var enable_ingestion_hosts=true`).
 A production deploy is always a deliberate human action. There are two entrypoints, and both keep
 the human gate: an ordinary merge to `main` never deploys.
 
-**Tag release (`release.yml`).** Pushing a semver tag matching `v*` whose commit is on `main` rolls
-the prod services automatically, in order (`needs:`): **guard -> backend -> {keycloak, frontend}**.
-`backend` builds, Trivy-scans, pushes, runs migrations, and rolls; then `keycloak` (runs its
-idempotent DB-bootstrap task, then rolls) and `frontend` roll in parallel (frontend does not depend
-on keycloak, so a keycloak issue never blocks the frontend roll). Each service waits for
-`services-stable`. Cutting the tag is the deliberate release gesture and stands in for the dispatch
-approval.
+**Tag release (`release.yml`).** Pushing a semver tag matching `v*` whose commit is on `main`
+deploys everything, in order (`needs:`): **guard -> terraform -> backend -> {keycloak, frontend}**.
+`terraform` applies `stack/terraform/prod` (plan, pre-apply IAM guard, then apply of that exact
+plan) so the release lands on current infrastructure; `backend` builds, Trivy-scans, pushes, runs
+migrations, and rolls; then `keycloak` (runs its idempotent DB-bootstrap task, then rolls) and
+`frontend` roll in parallel (frontend does not depend on keycloak, so a keycloak issue never blocks
+the frontend roll). Each service waits for `services-stable`. Cutting the tag is the deliberate
+release gesture, and the `terraform` job is the one job bound to the `production` GitHub
+Environment: give that environment a required reviewer and the whole release waits on a single
+approval click before anything is applied or rolled.
 
 ```bash
 git checkout main && git pull
 git tag v1.4.0           # semver tag on a main commit
-git push origin v1.4.0   # release.yml -> roll backend, keycloak, frontend
+git push origin v1.4.0   # release.yml -> apply prod, roll backend, keycloak, frontend
 ```
 
 A tag whose commit is **not** on `main` (e.g. cut from a side branch) fails fast in the guard job
 and deploys nothing. The roll pins each service to a fresh task-definition revision referencing the
 build's immutable `sha-<7>` image (not the moving `latest` tag, which is not advanced on a tag ref),
-so the release is deterministic and a later unrelated `latest` push cannot drift prod. Cloud
-ingestion is out of scope for a tag release: the EC2 ingestion hosts pull the current backend image
-and are driven on demand by `/crawler`/`/consumer`. Backup is image-only. The keycloak job assumes
-`enable_keycloak=true` (the default); if you run Keycloak out of band, drop that job.
+so the release is deterministic and a later unrelated `latest` push cannot drift prod. The apply
+cannot revert the services off those pinned revisions: the service modules ignore `task_definition`
+drift (`modules/service`, `modules/keycloak`, matching `modules/worker`), so Terraform provisions
+the services while the deploy pipeline owns the running revision. Cloud ingestion is out of scope
+for a tag release: the EC2 ingestion hosts pull the current backend image and are driven on demand
+by `/crawler`/`/consumer`. Backup is image-only. The keycloak job assumes `enable_keycloak=true`
+(the default); if you run Keycloak out of band, set the `DEPLOY_KEYCLOAK` repository variable to
+`false` and the release skips that job.
 
-The tag rolls **services only**; it does not run `terraform apply`. Infrastructure changes to
-`stack/terraform/prod` (and standing the stack up the first time) are a separate, deliberate human
-apply, kept out of the tag path on purpose: the apply role's OIDC trust is ref-scoped (not
-tag/environment), and applying would revert the ECS services off their pinned `sha-<7>` task
-definitions back to `:latest`. So the flow is: apply prod (once, and again when infra changes), then
-tag to roll the images.
+Two OIDC subjects authenticate the release. The deploy jobs present the tag ref
+(`repo:<repo>:ref:refs/tags/v*`), which the deploy role trusts (`modules/iam`,
+`github_deploy_refs`); they deliberately do not bind the `production` Environment, both because
+binding one swaps the subject to the environment form the deploy role does not trust and because it
+would add an approval click per service. The terraform job does bind it, so it presents
+`repo:<repo>:environment:production`; the apply role's trust must list that subject — run
+`scripts/apply-role-trust.sh` when wiring `AWS_ROLE_ARN` (see
+[the terraform README](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard)). An
+empty `AWS_ROLE_ARN` fails the terraform job fast rather than green-skipping the apply.
+
+Standing the stack up the first time (and granting the apply role permissions it lacks — the
+pre-apply guard names them) remains a deliberate human apply with elevated credentials:
 
 ```bash
-cd stack/terraform/prod && terraform init && terraform apply   # deliberate, human-run
+cd stack/terraform/prod && terraform init && terraform apply   # bootstrap, human-run
 ```
 
 **Manual dispatch (`deploy-*.yml`).** The per-service `workflow_dispatch` workflows
@@ -165,7 +178,7 @@ cd stack/terraform/prod && terraform init && terraform apply   # deliberate, hum
 single-service rolls and **rollbacks**: to roll back, dispatch the relevant `deploy-*` workflow from
 the last-good commit (or re-push that commit's tag). See [Development -> CI](development.md#ci).
 
-The tag is the gate: an ordinary merge to `main` never deploys, and no `terraform apply` (prod or
-main-account) ever runs without a deliberate human apply. Repo variables `AWS_REGION`,
-`DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and `AWS_DEPLOY_ROLE_ARN` drive the deploy jobs, which
-bind to the `production` GitHub Environment.
+The tag is the gate: an ordinary merge to `main` never deploys and never applies prod (the
+`terraform.yml` prod job stays plan-only), and the main-account root is always a deliberate human
+apply. Repo variables `AWS_REGION`, `DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and
+`AWS_DEPLOY_ROLE_ARN` drive the deploy jobs.
