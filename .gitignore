@@ -54,3 +54,6 @@ override.tf.json
 
 
 note.txt
+
+# Datastore benchmark raw report (make bench-datastore); the written verdict is docs/datastore-scale-benchmark.md
+stack/backend/vectorbench-report.md

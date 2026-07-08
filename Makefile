@@ -73,7 +73,7 @@ ENV ?= prod
 SOURCE ?= wikipedia
 ACTION ?= up
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -185,6 +185,11 @@ reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC
 	$(COMPOSE) --profile tools run --rm wiki-cluster
 	$(COMPOSE) --profile tools run --rm wiki-verify
 	@echo "reingest complete: corpus rebuilt (atomic), clustered, and verified"
+
+bench-datastore: ## Run the datastore scale benchmark (VER-173): spin a throwaway pgvector 0.8.2-pg17 (the version RDS PG 17 ships) on tmpfs, load a deterministic synthetic corpus, and measure recall@k / p50-p95 latency / footprint across halfvec HNSW, binary-quantize+rerank, and partition-by-source, sweeping hnsw.ef_search and hnsw.iterative_scan. Defaults to 100k x 1024-dim vectors (~15-30 min); BENCH_FLAGS overrides harness flags (e.g. BENCH_FLAGS="-rows=10000 -ef=40,100"). Writes stack/backend/vectorbench-report.md (gitignored); the written verdict lives in docs/datastore-scale-benchmark.md. Never touches the app database
+	$(COMPOSE) --profile bench run --rm vectorbench go run ./cmd/vectorbench -out=/app/vectorbench-report.md $(BENCH_FLAGS)
+	$(COMPOSE) --profile bench down
+	@echo "bench complete: report at stack/backend/vectorbench-report.md"
 
 crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
 	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
