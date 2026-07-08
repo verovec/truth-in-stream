@@ -64,7 +64,11 @@ FAKE
 
 	: >"$log"
 	local rc=0
-	env "$@" PATH="$bindir:$PATH" bash "$TRUST" >/dev/null 2>&1 || rc=$?
+	# Hermetic: unset the ambient variables the script defaults (CI always sets
+	# GITHUB_REPOSITORY; a developer may export AWS_PROFILE or APPLY_ROLE_NAME),
+	# so the cases below test the script's own defaults, then apply overrides.
+	env -u GITHUB_REPOSITORY -u AWS_PROFILE -u APPLY_ROLE_NAME "$@" \
+		PATH="$bindir:$PATH" bash "$TRUST" >/dev/null 2>&1 || rc=$?
 	rm -rf "$bindir"
 	return "$rc"
 }
@@ -80,8 +84,8 @@ assert_contains "$tmp/happy.log" "iam update-assume-role-policy --role-name test
 assert_contains "$tmp/happy.log" "arn:aws:iam::${STUB_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com" "provider ARN must be derived from the caller account"
 assert_contains "$tmp/happy.log" '"sts.amazonaws.com"' "aud must be pinned to sts.amazonaws.com"
 assert_contains "$tmp/happy.log" '"repo:verovec/truth-in-stream:ref:refs/heads/main"' "main-merge subject must be trusted"
-assert_contains "$tmp/happy.log" '"repo:verovec/truth-in-stream:pull_request"' "same-repo PR plan subject must be trusted"
 assert_contains "$tmp/happy.log" '"repo:verovec/truth-in-stream:environment:production"' "release production-environment subject must be trusted"
+assert_not_contains "$tmp/happy.log" "pull_request" "ungated PR code must never assume the prod-writing apply role"
 assert_contains "$tmp/happy.log" "StringEquals" "subjects are literal, matched with StringEquals"
 assert_not_contains "$tmp/happy.log" "StringLike" "no glob matching in the apply-role trust"
 assert_not_contains "$tmp/happy.log" ':*"' "no wildcard subject may be trusted"

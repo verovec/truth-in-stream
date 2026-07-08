@@ -96,17 +96,26 @@ and the repo default is `id-token: none`, so omitting it is a parse-time failure
 
 `_terraform.yml` runs, in order:
 
+0. Fail fast when `inputs.require_credentials` is true and `AWS_ROLE_ARN` is
+   empty (the release apply sets it so a missing secret never green-skips the
+   apply). An `environment` input binds the job to a GitHub Environment (the
+   release passes `production`), which also switches the OIDC subject to
+   `repo:<repo>:environment:<name>`.
 1. `terraform fmt -check -recursive` (always).
-2. Fork PRs without creds (`env.AWS_ROLE_ARN == ''`): `init -backend=false` +
-   `validate` only. No backend, no plan.
-3. With creds: OIDC `configure-aws-credentials` assume -> `init` -> `validate` ->
-   `plan -out=tfplan`.
+2. No creds (fork PRs, unbootstrapped account) OR any `pull_request` run:
+   `init -backend=false` + `validate` only. No backend, no plan — the
+   prod-writing apply role deliberately does not trust the ungated
+   `pull_request` OIDC subject (`scripts/apply-role-trust.sh`).
+3. With creds on a non-PR run: OIDC `configure-aws-credentials` assume ->
+   `init` -> `validate` -> `plan -lock-timeout=300s -out=tfplan`.
 4. IAM apply-guard: `terraform show -json tfplan` piped into
    `scripts/iam-apply-guard.sh` -- fails if the apply role lacks any action the
-   plan needs, on EVERY credentialed plan (PR and main), so a missing permission
-   is caught before merge, not mid-apply. See the `iam` skill.
-5. `apply tfplan` ONLY when `inputs.apply && env.AWS_ROLE_ARN != ''` -- applies
-   exactly the reviewed plan, never a re-plan. See the `terraform` skill.
+   plan needs, on EVERY credentialed plan (push to main, release), so a missing
+   permission is caught when the change lands on main, not mid-apply. See the
+   `iam` skill.
+5. `apply tfplan` ONLY when `inputs.apply` on a credentialed non-PR run --
+   applies exactly the reviewed plan, never a re-plan. See the `terraform`
+   skill.
 
 ## Deploy engine (`_deploy.yml`)
 

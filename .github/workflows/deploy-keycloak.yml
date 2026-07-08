@@ -21,3 +21,9 @@ jobs:
       # Create the keycloak role/database and re-sync its password before the
       # service rolls (Keycloak makes its own tables but not its database).
       db_bootstrap_task: keycloak-db-bootstrap
+      # Pin the service to this build's immutable sha-<7> revision. Once a tag
+      # release has pinned the service, a plain force-new-deployment would
+      # restart the old pinned revision and silently deploy nothing; pinning
+      # keeps this wrapper a working hotfix/rollback path (dispatch it from the
+      # commit you want live).
+      pin_image_tag: true

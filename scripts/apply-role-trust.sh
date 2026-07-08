@@ -14,13 +14,17 @@
 # never a wildcard):
 #   repo:<repo>:ref:refs/heads/main      terraform.yml plan + dev apply on merge
 #                                        to main
-#   repo:<repo>:pull_request             terraform.yml plan + pre-apply IAM
-#                                        guard on same-repo PRs (fork PRs get no
-#                                        secrets and stay on offline validate)
 #   repo:<repo>:environment:production   release.yml prod apply; the job binds
 #                                        the `production` GitHub Environment, so
 #                                        GitHub issues the environment subject,
 #                                        not the tag ref
+#
+# The ungated pull_request subject is deliberately NOT trusted: a PR can edit
+# its own pull_request-triggered workflows, so trusting it would let any
+# same-repo PR assume this prod-writing role and apply without the `production`
+# Environment approval. PR terraform runs validate offline instead
+# (_terraform.yml); the pre-apply IAM guard still runs on every credentialed
+# plan (merge to main, release).
 #
 # Env overrides:
 #   APPLY_ROLE_NAME    IAM role name of the CI apply role (required)
@@ -98,7 +102,6 @@ main() {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
           "token.actions.githubusercontent.com:sub": [
             "repo:${GITHUB_REPOSITORY}:ref:refs/heads/main",
-            "repo:${GITHUB_REPOSITORY}:pull_request",
             "repo:${GITHUB_REPOSITORY}:environment:production"
           ]
         }
@@ -116,7 +119,6 @@ JSON
 
 	log "Done. '$APPLY_ROLE_NAME' now trusts exactly:"
 	log "  repo:${GITHUB_REPOSITORY}:ref:refs/heads/main"
-	log "  repo:${GITHUB_REPOSITORY}:pull_request"
 	log "  repo:${GITHUB_REPOSITORY}:environment:production"
 }
 

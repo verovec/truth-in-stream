@@ -163,8 +163,15 @@ binding one swaps the subject to the environment form the deploy role does not t
 would add an approval click per service. The terraform job does bind it, so it presents
 `repo:<repo>:environment:production`; the apply role's trust must list that subject — run
 `scripts/apply-role-trust.sh` when wiring `AWS_ROLE_ARN` (see
-[the terraform README](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard)). An
-empty `AWS_ROLE_ARN` fails the terraform job fast rather than green-skipping the apply.
+[the terraform README](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard)). The
+`pull_request` subject is deliberately not trusted, so PR terraform runs validate offline instead of
+assuming the prod-writing role. An empty `AWS_ROLE_ARN` fails the terraform job fast rather than
+green-skipping the apply.
+
+The approval gate exists only if the `production` Environment is configured: GitHub auto-creates an
+environment a workflow references with **no protection rules**, so create it deliberately
+(Settings -> Environments -> `production`) and add a required reviewer. Without that reviewer, a
+tag applies and rolls with no approval beyond the tag push itself.
 
 Standing the stack up the first time (and granting the apply role permissions it lacks — the
 pre-apply guard names them) remains a deliberate human apply with elevated credentials:
@@ -176,7 +183,10 @@ cd stack/terraform/prod && terraform init && terraform apply   # bootstrap, huma
 **Manual dispatch (`deploy-*.yml`).** The per-service `workflow_dispatch` workflows
 (`deploy-backend`, `deploy-frontend`, `deploy-keycloak`, `deploy-backup`) remain for ad-hoc
 single-service rolls and **rollbacks**: to roll back, dispatch the relevant `deploy-*` workflow from
-the last-good commit (or re-push that commit's tag). See [Development -> CI](development.md#ci).
+the last-good commit (or re-push that commit's tag). The rolling wrappers pin the service to the
+dispatched build's `sha-<7>` revision, same as the release — a sha-pinned service cannot be moved
+by a plain force-new-deployment, and the pinned roll also picks up terraform-side task-definition
+changes the service resource no longer tracks. See [Development -> CI](development.md#ci).
 
 The tag is the gate: an ordinary merge to `main` never deploys and never applies prod (the
 `terraform.yml` prod job stays plan-only), and the main-account root is always a deliberate human

@@ -69,8 +69,11 @@ on:
           is_default_branch), so a force-new-deployment would redeploy the old
           image. Pinning the sha-<7> revision makes the release deterministic
           and immune to a later unrelated `latest` push. The workflow_dispatch
-          wrappers leave it false and keep the existing force-new-deployment
-          behaviour unchanged.
+          wrappers set it too: once a release has pinned a service, only a
+          pinned roll can move it, so pinning keeps them a working
+          hotfix/rollback path. It also picks up the newest task-definition
+          revision (terraform-side container changes), which the service
+          resource itself no longer tracks (ignore_changes, modules/service).
         type: boolean
         required: false
         default: false
@@ -276,9 +279,9 @@ jobs:
       # set on failure (when enabled on the service); wait services-stable blocks
       # until the rollout settles or fails, so a failed deploy fails this step.
       # Rolling deploy that re-pulls whatever image the task definition pins.
-      # Used by the workflow_dispatch wrappers: on the default branch the build
-      # also moved the `latest` tag, so a force-new-deployment picks up the new
-      # image. Unchanged from the original dispatch behaviour.
+      # No current caller uses it (the release and every dispatch wrapper pin);
+      # it remains for a caller that explicitly wants restart-current-revision
+      # semantics, but note it cannot move a sha-pinned service to a new image.
       - name: Roll service (rolling, force-new-deployment)
         if: inputs.deploy_mode == 'rolling' && !inputs.pin_image_tag
         env:
