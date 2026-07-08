@@ -698,6 +698,52 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Datastore scale benchmark (VER-173). bench-postgres pins the pgvector
+  # version RDS PostgreSQL 17 ships (0.8.2 on 17.10) so measured recall and
+  # latency transfer to prod, runs on tmpfs with no volume (every run starts
+  # clean), and carries the memory/parallelism settings an index build needs.
+  # vectorbench owns its own schema inside that throwaway database and never
+  # touches the app's postgres.
+  bench-postgres:
+    profiles: ["bench"]
+    image: pgvector/pgvector:0.8.2-pg17
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=1GB"
+      - "-c"
+      - "maintenance_work_mem=1GB"
+      - "-c"
+      - "max_parallel_maintenance_workers=4"
+      - "-c"
+      - "work_mem=64MB"
+    environment:
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bench"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  vectorbench:
+    profiles: ["bench"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/vectorbench"]
+    environment:
+      BENCH_DATABASE_URL: "postgres://postgres:bench@bench-postgres:5432/bench?sslmode=disable"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      bench-postgres:
+        condition: service_healthy
+
   # Analysis cache. Local mirror of the production managed Valkey cache, selected by
   # config (REDIS_URL). go-redis speaks a wire protocol both Redis OSS and Valkey
   # serve, so the same backend client drives this dev container and prod Valkey with
