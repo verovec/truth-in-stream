@@ -1,8 +1,14 @@
+import { Brand } from "@/components/marketing/brand";
+import { TricoloreRule } from "@/components/marketing/tricolore-rule";
+import { getDictionary } from "@/lib/i18n/dictionaries";
+import { resolveRequestLocale } from "@/lib/i18n/request";
 import { LoginForm } from "./_components/login-form";
 
-export const metadata = {
-  title: "Sign in - Truth in Stream",
-};
+export async function generateMetadata() {
+  const locale = await resolveRequestLocale();
+  const dict = await getDictionary(locale);
+  return { title: dict.login.metaTitle };
+}
 
 export default async function LoginPage({
   searchParams,
@@ -10,16 +16,22 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const { error } = await searchParams;
+  const locale = await resolveRequestLocale();
+  const dict = await getDictionary(locale);
   return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-4 dark:bg-zinc-900">
-      <div className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h1 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Truth in Stream
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Sign in to continue
-        </p>
-        <LoginForm error={error} />
+    <main
+      lang={locale}
+      className="flex flex-1 items-center justify-center bg-paper p-4 font-sans text-ink antialiased dark:bg-night dark:text-paper"
+    >
+      <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-black/10 bg-white shadow-xl shadow-bleu/5 dark:border-white/10 dark:bg-white/5 dark:shadow-black/40">
+        <TricoloreRule />
+        <div className="p-6">
+          <Brand locale={locale} name={dict.brand.name} />
+          <p className="mt-2 text-sm text-ink/60 dark:text-paper/60">
+            {dict.login.intro}
+          </p>
+          <LoginForm error={error} copy={dict.login} />
+        </div>
       </div>
     </main>
   );

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import ReactPlayer from "react-player";
 import { LoadingSpinner } from "@/components/loading-spinner";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 import {
   applyPlaybackCommand,
   resolvePlaybackCommand,
@@ -106,7 +107,7 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
       ref={containerRef}
       aria-label={title}
       aria-busy={playState === "buffering"}
-      className="relative overflow-hidden rounded-xl bg-black"
+      className="relative overflow-hidden rounded-2xl border border-black/10 bg-night shadow-lg shadow-bleu/5 dark:border-white/10 dark:shadow-black/40"
     >
       <ReactPlayer
         ref={mediaRef}
@@ -143,15 +144,14 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
 // PlayerErrorOverlay replaces a silently blank player when the media element
 // cannot load the source, so the operator sees a cause rather than a black box.
 function PlayerErrorOverlay() {
+  const { t } = useAppI18n();
   return (
     <div
       role="alert"
-      className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 p-4 text-center text-sm text-zinc-100"
+      className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-night/85 p-4 text-center text-sm text-paper"
     >
-      <p className="font-medium">This video could not be played.</p>
-      <p className="text-xs text-zinc-400">
-        The media source did not load. Try selecting it again.
-      </p>
+      <p className="font-medium">{t.player.playError}</p>
+      <p className="text-xs text-paper/60">{t.player.playErrorHint}</p>
     </div>
   );
 }

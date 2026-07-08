@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import type { FactCheckEntry } from "@/lib/live/fact-checks";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import { LiveFactCheckList } from "./live-fact-check-list";
 
 const claimEntry: FactCheckEntry = {
@@ -163,8 +164,6 @@ describe("LiveFactCheckList", () => {
       />,
     );
 
-    expect(
-      screen.getByText(/fact-checks appear here as claims are verified/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(fr.app.factChecks.empty)).toBeInTheDocument();
   });
 });

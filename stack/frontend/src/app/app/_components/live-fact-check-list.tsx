@@ -3,6 +3,7 @@
 import { memo } from "react";
 import type { FactCheckEntry } from "@/lib/live/fact-checks";
 import { formatTime } from "@/lib/playback/format-time";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 import { VerifiedClaim } from "./live-claim-verdict";
 import {
   LIVE_ROW_BASE_CLASS,
@@ -24,17 +25,18 @@ export const LiveFactCheckList = memo(function LiveFactCheckList({
   selectedStatementId: string | null;
   onSelect: (statementId: string) => void;
 }) {
+  const { t } = useAppI18n();
   if (entries.length === 0) {
     return (
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Fact-checks appear here as claims are verified.
+      <p className="text-sm text-ink/60 dark:text-paper/60">
+        {t.factChecks.empty}
       </p>
     );
   }
 
   return (
     <ol
-      aria-label="Fact-check results"
+      aria-label={t.factChecks.resultsAria}
       className="-mr-2 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-2"
     >
       {entries.map((entry) => {
@@ -50,16 +52,16 @@ export const LiveFactCheckList = memo(function LiveFactCheckList({
             <button
               type="button"
               onClick={() => onSelect(entry.statementId)}
-              className="flex w-full items-baseline gap-2 rounded-t-lg px-3 py-1.5 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+              className="flex w-full items-baseline gap-2 rounded-t-lg px-3 py-1.5 text-left hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-bleu-flag dark:hover:bg-white/5 dark:focus-visible:outline-paper/60"
             >
-              <span className="font-mono text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">
+              <span className="font-mono text-[11px] tabular-nums text-ink/50 dark:text-paper/50">
                 {formatTime(entry.start)}
               </span>
-              <span className="line-clamp-1 min-w-0 flex-1 text-xs italic text-zinc-500 dark:text-zinc-400">
+              <span className="line-clamp-1 min-w-0 flex-1 text-xs italic text-ink/50 dark:text-paper/50">
                 {entry.snippet}
               </span>
             </button>
-            <div className="border-t border-zinc-200 px-3 py-2 dark:border-zinc-800">
+            <div className="border-t border-black/10 px-3 py-2 dark:border-white/10">
               {entry.kind === "match" ? (
                 <MatchRow match={entry.match} />
               ) : (

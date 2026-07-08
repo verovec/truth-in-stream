@@ -4,17 +4,12 @@ import { memo, useCallback, useEffect, useRef } from "react";
 import { usePlayback } from "@/components/playback/playback-provider";
 import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
+import { formatTemplate, plural } from "@/lib/i18n/text";
 import type { LiveClaim } from "@/lib/live/claims";
 import { isScored, type LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
+import { useAppI18n, type AppDictionary } from "@/components/i18n/app-i18n";
 import { LiveClaimList } from "./live-claim-list";
-
-// speakerLabel renders the diarized speaker label as a reader-facing tag. The
-// provider emits a bare identifier (e.g. "A"); the "Speaker" prefix makes it
-// legible without the consumer knowing the provider's convention.
-function speakerLabel(speaker: string): string {
-  return `Speaker ${speaker}`;
-}
 
 // PIN_THRESHOLD_PX is how close to the top the list must be scrolled to count as
 // pinned. A few pixels of slack absorbs sub-pixel scroll positions and the
@@ -54,6 +49,7 @@ export const LiveStatementList = memo(function LiveStatementList({
   // entry highlight together. Optional so the list still renders standalone.
   onSelect?: (statementId: string) => void;
 }) {
+  const { t } = useAppI18n();
   const activeIndex = usePlayback((snapshot) =>
     findActiveSegmentIndex(statements, snapshot.currentTime),
   );
@@ -140,8 +136,8 @@ export const LiveStatementList = memo(function LiveStatementList({
     <ol
       ref={listRef}
       onScroll={handleScroll}
-      aria-label="Subtitle transcript"
-      className="-mr-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-2"
+      aria-label={t.subtitles.transcriptAria}
+      className="-mr-2 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-2"
     >
       {/* index stays the chronological position so active-segment tracking and
           selection keep matching; .reverse() then renders newest-first (top)
@@ -165,32 +161,32 @@ export const LiveStatementList = memo(function LiveStatementList({
               aria-current={active ? "true" : undefined}
               className={`border-l-2 pl-3 transition-colors ${
                 active
-                  ? "border-sky-400 dark:border-sky-500/70"
+                  ? "border-bleu-flag dark:border-sky-400/70"
                   : "border-transparent"
-              } ${selected ? "bg-sky-50/70 dark:bg-sky-500/10" : ""}`}
+              } ${selected ? "bg-bleu-flag/5 dark:bg-sky-400/10" : ""}`}
             >
               <button
                 type="button"
                 onClick={() => onSelect?.(statement.id)}
-                className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-zinc-900/5 focus-visible:outline-2 focus-visible:outline-sky-500 dark:hover:bg-white/5"
+                className="flex w-full flex-col gap-0.5 rounded-md py-1 pr-1 text-left hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-bleu-flag dark:hover:bg-white/5 dark:focus-visible:outline-paper/60"
               >
                 <span className="flex items-baseline gap-2 text-[11px]">
                   {statement.speaker ? (
-                    <span className="font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-300">
-                      {speakerLabel(statement.speaker)}
+                    <span className="font-semibold uppercase tracking-wide text-ink/70 dark:text-paper/70">
+                      {`${t.subtitles.speaker} ${statement.speaker}`}
                     </span>
                   ) : null}
                   <span
                     className={`font-mono tabular-nums ${
                       active
-                        ? "text-sky-700 dark:text-sky-300"
-                        : "text-zinc-400 dark:text-zinc-500"
+                        ? "text-bleu dark:text-sky-300"
+                        : "text-ink/40 dark:text-paper/40"
                     }`}
                   >
                     {formatTime(statement.start)} – {formatTime(statement.end)}
                   </span>
                 </span>
-                <span className="text-sm leading-6 break-words text-zinc-800 dark:text-zinc-200">
+                <span className="text-[0.9375rem] leading-6 break-words text-ink/90 dark:text-paper/90">
                   {statement.text}
                 </span>
               </button>
@@ -230,14 +226,15 @@ function InconsistencyFlag({
   inconsistency: NonNullable<LiveStatement["inconsistency"]>;
   onJumpToEarlier: (id: string) => void;
 }) {
+  const { t } = useAppI18n();
   return (
-    <p className="pb-1 text-xs text-rose-700 dark:text-rose-400">
-      <span className="font-semibold">Contradicts an earlier statement</span> by
-      this speaker:{" "}
+    <p className="pb-1 text-xs text-verdict-disputed">
+      <span className="font-semibold">{t.subtitles.contradictsEarlier}</span>{" "}
+      {t.subtitles.bySpeaker}{" "}
       <button
         type="button"
         onClick={() => onJumpToEarlier(inconsistency.earlierId)}
-        className="italic underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-rose-500"
+        className="italic underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-rouge"
       >
         “{inconsistency.earlierText}”
       </button>
@@ -246,31 +243,33 @@ function InconsistencyFlag({
   );
 }
 
-// SKIP_LABELS explains, per skip reason, why a statement was not fact-checked.
-const SKIP_LABELS: Record<SkipReason, string> = {
-  not_a_claim: "No verifiable claim",
-  not_covered: "Not covered by the reference corpus",
-  not_checked: "The live checker was busy",
+// SKIP_KEYS maps the wire's skip-reason vocabulary (which must not change) to
+// the dictionary's keys, so each reason renders in the active locale.
+const SKIP_KEYS: Record<
+  SkipReason,
+  keyof AppDictionary["subtitles"]["skipReasons"]
+> = {
+  not_a_claim: "notAClaim",
+  not_covered: "notCovered",
+  not_checked: "notChecked",
 };
 
 // skipLabel tolerates a skip reason the backend may add before the frontend
 // knows it. The parameter is widened to string on purpose: the value crosses the
 // wire unchecked. The fallback is a tail clause so the caller's "Not checked - "
 // prefix never reads as "Not checked - Not checked".
-function skipLabel(reason: string): string {
-  return SKIP_LABELS[reason as SkipReason] ?? "an unrecognised reason";
+function skipLabel(
+  reason: string,
+  labels: AppDictionary["subtitles"]["skipReasons"],
+): string {
+  const key = SKIP_KEYS[reason as SkipReason];
+  return key !== undefined ? labels[key] : labels.unknown;
 }
 
 // formatConfidence renders a corroboration score (a fraction in [0, 1]) as a
 // whole-number percentage, the form the operator reads.
 function formatConfidence(score: number): string {
   return `${Math.round(score * 100)}%`;
-}
-
-// formatEvidenceCount names how many matches carried stance-bearing weight into
-// the score, pluralised so a lone match reads "1 match".
-function formatEvidenceCount(items: number): string {
-  return `${items} ${items === 1 ? "match" : "matches"}`;
 }
 
 // formatWeight renders an aggregated corroboration weight to two decimals: the
@@ -293,18 +292,19 @@ function ConfidenceBreakdown({
   contradicting: number;
   evidenceItems: number;
 }) {
+  const { locale, t } = useAppI18n();
   return (
-    <p className="pb-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+    <p className="pb-1 text-[11px] text-ink/40 dark:text-paper/40">
       <span className="tabular-nums">
-        {formatEvidenceCount(evidenceItems)}
+        {`${evidenceItems} ${plural(locale, evidenceItems, t.subtitles.match)}`}
       </span>
       {" · "}
-      <span className="tabular-nums text-emerald-700 dark:text-emerald-400">
-        {formatWeight(supporting)} supporting
+      <span className="tabular-nums text-verdict-credible">
+        {formatWeight(supporting)} {t.subtitles.supporting}
       </span>
       {" · "}
-      <span className="tabular-nums text-rose-700 dark:text-rose-400">
-        {formatWeight(contradicting)} contradicting
+      <span className="tabular-nums text-verdict-disputed">
+        {formatWeight(contradicting)} {t.subtitles.contradicting}
       </span>
     </p>
   );
@@ -316,41 +316,44 @@ function ConfidenceBreakdown({
 // reference corpus corroborates it, so a row is never silently empty after
 // analysis.
 function SubtitleStatus({ statement }: { statement: LiveStatement }) {
+  const { t } = useAppI18n();
   if (statement.status === "analysing") {
     return (
       <p
         role="status"
-        className="flex items-center gap-2 pb-1 text-xs text-zinc-500 dark:text-zinc-400"
+        className="flex items-center gap-2 pb-1 text-xs text-ink/50 dark:text-paper/50"
       >
         <span
           aria-hidden="true"
-          className="size-1.5 animate-pulse rounded-full bg-sky-500"
+          className="size-1.5 animate-pulse rounded-full bg-bleu-flag dark:bg-sky-400"
         />
-        Checking this statement…
+        {t.subtitles.checking}
       </p>
     );
   }
 
   if (statement.error) {
     return (
-      <p className="pb-1 text-xs text-amber-700 dark:text-amber-400">
-        This statement could not be checked.
+      <p className="pb-1 text-xs text-verdict-flag dark:text-amber-300">
+        {t.subtitles.checkFailed}
       </p>
     );
   }
 
   if (statement.skipReason) {
     return (
-      <p className="pb-1 text-xs italic text-zinc-400 dark:text-zinc-500">
-        Not checked - {skipLabel(statement.skipReason)}.
+      <p className="pb-1 text-xs italic text-ink/40 dark:text-paper/40">
+        {formatTemplate(t.subtitles.notChecked, {
+          reason: skipLabel(statement.skipReason, t.subtitles.skipReasons),
+        })}
       </p>
     );
   }
 
   if (statement.matches.length === 0) {
     return (
-      <p className="pb-1 text-xs text-zinc-500 dark:text-zinc-400">
-        No confident match.
+      <p className="pb-1 text-xs text-ink/50 dark:text-paper/50">
+        {t.subtitles.noMatch}
       </p>
     );
   }
@@ -363,11 +366,11 @@ function SubtitleStatus({ statement }: { statement: LiveStatement }) {
       statement.confidence;
     return (
       <>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          <span className="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">
+        <p className="text-xs text-ink/50 dark:text-paper/50">
+          <span className="font-semibold tabular-nums text-ink/80 dark:text-paper/80">
             {formatConfidence(score)}
           </span>{" "}
-          corroborated by the reference corpus
+          {t.subtitles.corroborated}
         </p>
         <ConfidenceBreakdown
           supporting={supporting}

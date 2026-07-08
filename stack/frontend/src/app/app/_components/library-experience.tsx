@@ -15,6 +15,8 @@ import {
 import type { PutUploader } from "@/lib/video/upload";
 import { ExportControls } from "@/components/export/export-controls";
 import type { Role } from "@/lib/auth/token";
+import { formatTemplate } from "@/lib/i18n/text";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { LiveSpeakerCredibility } from "./live-speaker-credibility";
 import { LiveSummaryStrip } from "./live-summary-strip";
@@ -58,19 +60,21 @@ type ActiveState =
   | { status: "idle" }
   | { status: "loading"; video: LibraryVideo }
   | { status: "ready"; playable: PlayableVideo }
-  | { status: "error"; video: LibraryVideo; message: string };
+  | { status: "error"; video: LibraryVideo; message: string | null };
 
 // Resolved is the fetched outcome for one video id. Loading and idle are derived
 // from it during render rather than written into state, so the fetch effect only
-// ever sets state asynchronously.
+// ever sets state asynchronously. Error messages stay raw (or null when the
+// failure carried none) and are localized at render time, so a locale switch
+// re-labels an already-failed row.
 type Resolved =
   | { forId: string; status: "ready"; playable: PlayableVideo }
-  | { forId: string; status: "error"; message: string };
+  | { forId: string; status: "error"; message: string | null };
 
 type ListState =
   | { status: "loading" }
   | { status: "loaded" }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string | null };
 
 function resolveActive(
   selectedVideo: LibraryVideo | null,
@@ -179,8 +183,7 @@ export function LibraryExperience({
         }
         setListState({
           status: "error",
-          message:
-            err instanceof Error ? err.message : "Could not load the library.",
+          message: err instanceof Error ? err.message : null,
         });
       });
     return () => controller.abort();
@@ -221,7 +224,7 @@ export function LibraryExperience({
         setResolved({
           forId: selectedId,
           status: "error",
-          message: err instanceof Error ? err.message : "Could not load video.",
+          message: err instanceof Error ? err.message : null,
         });
       });
     return () => controller.abort();
@@ -260,6 +263,7 @@ export function LibraryExperience({
     };
   }, [hasPendingYoutube, pollIntervalMs]);
 
+  const { t } = useAppI18n();
   const active = resolveActive(selectedVideo, resolved);
   const activeVideoId = active.status === "ready" ? active.playable.id : null;
   // The title of the video on the player, surfaced above the library so the
@@ -289,12 +293,12 @@ export function LibraryExperience({
               <ExportControls role={role} videoId={activeVideoId} />
               <section className="flex flex-col gap-3">
                 {nowPlayingTitle ? (
-                  <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+                  <h2 className="font-display text-xl font-semibold tracking-tight text-ink dark:text-paper">
                     {nowPlayingTitle}
                   </h2>
                 ) : null}
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
-                  Library
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+                  {t.library.heading}
                 </h2>
                 <VideoUploader onFiles={startUploads} />
                 <YoutubeUrlForm
@@ -343,24 +347,26 @@ function LibrarySection({
   onSelect,
   onDismiss,
 }: LibrarySectionProps) {
+  const { t } = useAppI18n();
   if (listState.status === "loading") {
     return <LibrarySkeleton />;
   }
   if (listState.status === "error") {
     return (
       <div className="flex flex-col items-start gap-2">
-        <p
-          role="alert"
-          className="text-sm text-rose-700 dark:text-rose-300"
-        >
-          The library could not load: {listState.message}
+        <p role="alert" className="text-sm text-rouge dark:text-rose-300">
+          {listState.message === null
+            ? t.library.loadErrorFallback
+            : formatTemplate(t.library.loadError, {
+                message: listState.message,
+              })}
         </p>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm font-medium text-ink/80 hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:border-white/15 dark:bg-white/5 dark:text-paper/80 dark:hover:bg-white/10 dark:focus-visible:outline-paper/60"
         >
-          Try again
+          {t.library.retry}
         </button>
       </div>
     );
@@ -385,17 +391,22 @@ const LIBRARY_SKELETON_TILES = 6;
 // when the real tiles replace it. It is a status region so assistive tech hears
 // "Loading library" instead of nothing.
 function LibrarySkeleton() {
+  const { t } = useAppI18n();
   return (
-    <ul role="status" aria-label="Loading library" className={GALLERY_GRID_CLASS}>
+    <ul
+      role="status"
+      aria-label={t.library.loadingAria}
+      className={GALLERY_GRID_CLASS}
+    >
       {Array.from({ length: LIBRARY_SKELETON_TILES }, (_, index) => (
         <li
           key={index}
           aria-hidden
-          className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800"
+          className="overflow-hidden rounded-xl border border-black/10 dark:border-white/10"
         >
-          <div className="aspect-video w-full animate-pulse bg-zinc-200 dark:bg-zinc-800" />
+          <div className="aspect-video w-full animate-pulse bg-black/10 dark:bg-white/10" />
           <div className="px-3 py-2">
-            <div className="h-4 w-3/4 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+            <div className="h-4 w-3/4 animate-pulse rounded bg-black/10 dark:bg-white/10" />
           </div>
         </li>
       ))}
@@ -404,6 +415,7 @@ function LibrarySkeleton() {
 }
 
 function PlayerStage({ active }: { active: ActiveState }) {
+  const { t } = useAppI18n();
   switch (active.status) {
     case "ready":
       return (
@@ -415,24 +427,28 @@ function PlayerStage({ active }: { active: ActiveState }) {
     case "loading":
       return (
         <div
-          aria-label={`Loading ${active.video.title}`}
-          className="aspect-video w-full animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800"
+          aria-label={formatTemplate(t.player.loadingAria, {
+            title: active.video.title,
+          })}
+          className="aspect-video w-full animate-pulse rounded-2xl border border-black/10 bg-black/10 dark:border-white/10 dark:bg-white/10"
         />
       );
     case "error":
       return (
         <div
           role="alert"
-          className="flex aspect-video w-full flex-col items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 p-4 text-center text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
+          className="flex aspect-video w-full flex-col items-center justify-center gap-1 rounded-2xl border border-rouge/25 bg-rouge/5 p-4 text-center text-sm text-rouge dark:border-rouge/40 dark:bg-rouge/15 dark:text-rose-300"
         >
-          <p className="font-medium">This video could not be loaded.</p>
-          <p className="text-xs">{active.message}</p>
+          <p className="font-medium">{t.player.loadError}</p>
+          {active.message !== null ? (
+            <p className="text-xs">{active.message}</p>
+          ) : null}
         </div>
       );
     case "idle":
       return (
-        <div className="flex aspect-video w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 px-4 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-          Select a video from the library to play it.
+        <div className="flex aspect-video w-full items-center justify-center rounded-2xl border border-dashed border-black/15 px-4 text-center text-sm text-ink/50 dark:border-white/15 dark:text-paper/50">
+          {t.player.idle}
         </div>
       );
   }
@@ -442,16 +458,17 @@ function PlayerStage({ active }: { active: ActiveState }) {
 // upload has no batch fact-check source. Live verdicts arrive with the streaming
 // analysis path.
 function FactCheckPlaceholder() {
+  const { t } = useAppI18n();
   return (
     <aside
-      aria-label="Fact checks"
-      className="flex h-full flex-col gap-2 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
+      aria-label={t.panel.factChecks}
+      className="flex h-full flex-col gap-2 rounded-2xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-white/5"
     >
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100">
-        Fact checks
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+        {t.panel.factChecks}
       </h2>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Fact checks stream here while the video plays.
+      <p className="text-sm text-ink/60 dark:text-paper/60">
+        {t.factChecks.placeholderHint}
       </p>
     </aside>
   );

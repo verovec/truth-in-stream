@@ -1,11 +1,15 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
+import { en } from "@/lib/i18n/dictionaries/en";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import { json, stubBackend } from "@/test/fact-check";
 import { AppShell } from "./app-shell";
 
 vi.mock("react-player", () => import("@/test/react-player-mock"));
 
 vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
+
+vi.mock("next/link", () => import("@/test/next-link-mock"));
 
 class StubWebSocket {
   static readonly CONNECTING = 0;
@@ -28,30 +32,52 @@ function stubVideos() {
 }
 
 describe("AppShell", () => {
-  test("renders the header and the video library", async () => {
+  test("renders the jeminforme.fr brand, French chrome, and the library", async () => {
     stubVideos();
 
-    render(<AppShell role="guest" authenticated={false} />);
+    render(
+      <AppShell role="guest" authenticated={false} locale="fr" dict={fr} />,
+    );
 
+    expect(screen.getByText("jeminforme.fr")).toBeInTheDocument();
+    expect(screen.queryByText(/truth in stream/i)).not.toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 1, name: "Truth in Stream" }),
+      screen.getByRole("link", { name: fr.app.header.signOut }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: /sign out/i }),
+      screen.getByRole("button", { name: fr.langSwitch.toEnglish }),
     ).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+      expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
+    });
+  });
+
+  test("labels the content subtree with the active locale", async () => {
+    stubVideos();
+
+    const { container } = render(
+      <AppShell role="guest" authenticated={false} locale="en" dict={en} />,
+    );
+
+    expect(container.querySelector('[lang="en"]')).not.toBeNull();
+    expect(
+      screen.getByRole("link", { name: en.app.header.signOut }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(en.app.library.empty)).toBeInTheDocument();
     });
   });
 
   test("hides the debug surface from a guest", async () => {
     stubVideos();
 
-    render(<AppShell role="guest" authenticated={false} />);
+    render(
+      <AppShell role="guest" authenticated={false} locale="fr" dict={fr} />,
+    );
 
     await waitFor(() => {
-      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+      expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
     });
     expect(
       screen.queryByRole("button", { name: /^debug$/i }),
@@ -62,10 +88,12 @@ describe("AppShell", () => {
     vi.stubGlobal("WebSocket", StubWebSocket);
     stubVideos();
 
-    render(<AppShell role="admin" authenticated={true} />);
+    render(
+      <AppShell role="admin" authenticated={true} locale="fr" dict={fr} />,
+    );
 
     await waitFor(() => {
-      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+      expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
     });
     expect(
       screen.getByRole("button", { name: /^debug$/i }),

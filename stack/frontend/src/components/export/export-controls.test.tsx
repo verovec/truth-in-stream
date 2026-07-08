@@ -4,6 +4,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { ExportControls } from "./export-controls";
 import { ApiError } from "@/lib/http";
+import { fr } from "@/lib/i18n/dictionaries/fr";
+
+const copy = fr.app.exports;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -30,10 +33,10 @@ describe("ExportControls", () => {
     render(<ExportControls role="admin" videoId="vid-1" />);
 
     expect(
-      screen.getByRole("button", { name: /transcript.*srt/i }),
+      screen.getByRole("button", { name: copy.transcript }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /claims.*csv/i }),
+      screen.getByRole("button", { name: copy.claims }),
     ).toBeInTheDocument();
   });
 
@@ -44,7 +47,7 @@ describe("ExportControls", () => {
       <ExportControls role="admin" videoId="vid-1" download={download} />,
     );
 
-    await user.click(screen.getByRole("button", { name: /transcript.*srt/i }));
+    await user.click(screen.getByRole("button", { name: copy.transcript }));
 
     expect(download).toHaveBeenCalledWith("vid-1", "srt");
   });
@@ -58,10 +61,12 @@ describe("ExportControls", () => {
       <ExportControls role="admin" videoId="vid-1" download={download} />,
     );
 
-    await user.click(screen.getByRole("button", { name: /claims.*csv/i }));
+    await user.click(screen.getByRole("button", { name: copy.claims }));
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent(/re-run analysis/i);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        copy.missingSnapshot,
+      );
     });
   });
 });

@@ -2,9 +2,24 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { back } from "@/test/next-navigation-mock";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import { LoginModal } from "./login-modal";
 
 vi.mock("next/navigation", () => import("@/test/next-navigation-mock"));
+
+const copy = {
+  title: fr.login.modalTitle,
+  intro: fr.login.modalIntro,
+  close: fr.login.close,
+};
+
+function renderModal() {
+  return render(
+    <LoginModal copy={copy}>
+      <button type="button">inner control</button>
+    </LoginModal>,
+  );
+}
 
 beforeEach(() => {
   back.mockClear();
@@ -12,36 +27,25 @@ beforeEach(() => {
 
 describe("LoginModal", () => {
   test("renders a labelled modal dialog around its children", () => {
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveAttribute("aria-modal", "true");
-    expect(dialog).toHaveAccessibleName("Sign in");
+    expect(dialog).toHaveAccessibleName(fr.login.modalTitle);
+    expect(dialog).toHaveAccessibleDescription(fr.login.modalIntro);
     expect(
       screen.getByRole("button", { name: /inner control/i }),
     ).toBeInTheDocument();
   });
 
   test("moves focus into the dialog on open", () => {
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
     expect(screen.getByRole("dialog")).toHaveFocus();
   });
 
   test("closes on Escape", () => {
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
     fireEvent.keyDown(document, { key: "Escape" });
 
@@ -49,11 +53,7 @@ describe("LoginModal", () => {
   });
 
   test("closes when the backdrop is clicked", () => {
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
     const backdrop = screen.getByRole("dialog").parentElement as HTMLElement;
     fireEvent.mouseDown(backdrop);
@@ -62,11 +62,7 @@ describe("LoginModal", () => {
   });
 
   test("does not close when the dialog body is clicked", () => {
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
     fireEvent.mouseDown(screen.getByRole("dialog"));
 
@@ -75,13 +71,9 @@ describe("LoginModal", () => {
 
   test("closes from the close button", async () => {
     const user = userEvent.setup();
-    render(
-      <LoginModal>
-        <button type="button">inner control</button>
-      </LoginModal>,
-    );
+    renderModal();
 
-    await user.click(screen.getByRole("button", { name: /close/i }));
+    await user.click(screen.getByRole("button", { name: fr.login.close }));
 
     expect(back).toHaveBeenCalledTimes(1);
   });

@@ -1,39 +1,40 @@
+"use client";
+
 import type { Verdict } from "@/lib/fact-check/api";
 import type { LiteralVerdict, ManipulationFlag } from "@/lib/live/frames";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
+// The legacy evidence path's stance verdicts, tied to the shared semantic
+// verdict tokens: corroborates reads credible, contradicts reads disputed,
+// unclear reads as the nuance/flag tone. The wire vocabulary is untouched; only
+// the label is localized.
 const VERDICT_STYLES: Record<Verdict, string> = {
   corroborates:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
+    "bg-verdict-credible/10 text-verdict-credible dark:bg-verdict-credible/15",
   contradicts:
-    "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300",
-  unclear: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+    "bg-verdict-disputed/10 text-verdict-disputed dark:bg-verdict-disputed/15",
+  unclear:
+    "bg-verdict-flag/10 text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300",
 };
 
 export function VerdictBadge({ verdict }: { verdict: Verdict }) {
+  const { t } = useAppI18n();
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${VERDICT_STYLES[verdict]}`}
     >
-      {verdict}
+      {t.legacy.verdicts[verdict]}
     </span>
   );
 }
 
-// LITERAL_LABELS renders the political path's face-value verdict axis in French.
-// It is orthogonal to the framing flags: "Exact" means the claim is true as
-// stated, independent of whether its framing is honest.
-const LITERAL_LABELS: Record<LiteralVerdict, string> = {
-  accurate: "Exact",
-  inaccurate: "Inexact",
-  unverifiable: "Invérifiable",
-};
-
 const LITERAL_STYLES: Record<LiteralVerdict, string> = {
   accurate:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  inaccurate: "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300",
+    "bg-verdict-credible/10 text-verdict-credible dark:bg-verdict-credible/15",
+  inaccurate:
+    "bg-verdict-disputed/10 text-verdict-disputed dark:bg-verdict-disputed/15",
   unverifiable:
-    "bg-zinc-200 text-zinc-700 dark:bg-zinc-700/40 dark:text-zinc-300",
+    "bg-verdict-unverifiable/15 text-verdict-unverifiable dark:bg-verdict-unverifiable/15",
 };
 
 // LiteralBadge shows the face-value verdict (the political path's literal axis).
@@ -41,42 +42,36 @@ const LITERAL_STYLES: Record<LiteralVerdict, string> = {
 // true" separately from "can I trust the speaker", and apart from the flag chips
 // so an accurate-but-cherry-picked claim shows both at once.
 export function LiteralBadge({ literal }: { literal: LiteralVerdict }) {
+  const { t } = useAppI18n();
   return (
     <span
       className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${LITERAL_STYLES[literal]}`}
     >
-      {LITERAL_LABELS[literal]}
+      {t.claims.literal[literal]}
     </span>
   );
 }
 
-// FLAG_LABELS renders the closed manipulation-flag vocabulary in French. The map
-// is exhaustive over ManipulationFlag by construction: a new flag added to the
-// wire enum fails to compile here until it is given a label, so a flag can never
-// render as a raw slug.
-const FLAG_LABELS: Record<ManipulationFlag, string> = {
-  "missing-context": "Contexte manquant",
-  "cherry-picked": "Données triées",
-  outdated: "Périmé",
-  misattributed: "Mal attribué",
-  "misleading-causation": "Causalité trompeuse",
-};
-
 // FlagChips renders the manipulation flags a claim carries, orthogonal to its
 // literal verdict: a literally accurate claim can still be flagged. An empty list
-// renders nothing, so a flagless claim shows no chip row.
+// renders nothing, so a flagless claim shows no chip row. The dictionary's flag
+// map is keyed by the closed wire vocabulary, so a new flag added to the wire
+// enum fails to compile here until both locales give it a label - a flag can
+// never render as a raw slug.
 export function FlagChips({ flags }: { flags: readonly ManipulationFlag[] }) {
+  const { t } = useAppI18n();
   if (flags.length === 0) {
     return null;
   }
+  const labels: Record<ManipulationFlag, string> = t.claims.flags;
   return (
-    <ul aria-label="Drapeaux de manipulation" className="flex flex-wrap gap-1">
+    <ul aria-label={t.claims.flagsAria} className="flex flex-wrap gap-1">
       {flags.map((flag) => (
         <li
           key={flag}
-          className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+          className="inline-flex items-center rounded-full bg-verdict-flag/10 px-1.5 py-0.5 text-[10px] font-medium text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300"
         >
-          {FLAG_LABELS[flag]}
+          {labels[flag]}
         </li>
       ))}
     </ul>

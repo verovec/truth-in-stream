@@ -4,9 +4,15 @@ import { describe, expect, test, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { renderWithPlayback } from "@/test/playback";
 import type { SkipReason } from "@/lib/fact-check/api";
+import { fr } from "@/lib/i18n/dictionaries/fr";
+import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveStatement } from "@/lib/live/statements";
 import { stubScrollLayout } from "@/test/scroll-layout";
 import { LiveStatementList } from "./live-statement-list";
+
+// A provider-less render falls back to the French app dictionary, the product
+// default; the subtitle strings below come straight from it.
+const t = fr.app.subtitles;
 
 const analysing = (
   id: string,
@@ -30,7 +36,7 @@ const checked = (
 });
 
 function subtitleList() {
-  return screen.getByRole("list", { name: "Subtitle transcript" });
+  return screen.getByRole("list", { name: t.transcriptAria });
 }
 
 describe("LiveStatementList", () => {
@@ -55,12 +61,10 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/fiable/i)).toBeInTheDocument();
-    expect(screen.getByText(/vérifié sur preuves/i)).toBeInTheDocument();
-    // The per-statement "Checking this statement" marker yields to the claim list.
-    expect(
-      screen.queryByText(/checking this statement/i),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(fr.app.claims.verdicts.credible)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.claims.sources.verified)).toBeInTheDocument();
+    // The per-statement checking marker yields to the claim list.
+    expect(screen.queryByText(t.checking)).not.toBeInTheDocument();
   });
 
   test("a legacy statement with no claims renders the generic marker as before", () => {
@@ -71,7 +75,7 @@ describe("LiveStatementList", () => {
         claimsFor={() => []}
       />,
     );
-    expect(screen.getByText(/checking this statement/i)).toBeInTheDocument();
+    expect(screen.getByText(t.checking)).toBeInTheDocument();
   });
 
   test("shows an in-flight affordance for an analysing statement", () => {
@@ -83,7 +87,7 @@ describe("LiveStatementList", () => {
     );
 
     expect(screen.getByText(/the earth is round/i)).toBeInTheDocument();
-    expect(screen.getByText(/checking this statement/i)).toBeInTheDocument();
+    expect(screen.getByText(t.checking)).toBeInTheDocument();
   });
 
   test("labels a statement with its diarized speaker when present", () => {
@@ -103,7 +107,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/speaker a/i)).toBeInTheDocument();
+    expect(screen.getByText(`${t.speaker} A`)).toBeInTheDocument();
   });
 
   test("omits the speaker tag for an unattributed statement", () => {
@@ -114,7 +118,9 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.queryByText(/speaker/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(new RegExp(t.speaker, "i")),
+    ).not.toBeInTheDocument();
   });
 
   test("does not render verdicts inline; those live in the fact-check region", () => {
@@ -152,9 +158,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(
-      screen.getByText(/this statement could not be checked/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(t.checkFailed)).toBeInTheDocument();
   });
 
   test("notes a skipped statement's reason rather than a verdict", () => {
@@ -165,7 +169,13 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/no verifiable claim/i)).toBeInTheDocument();
+    // The wire's not_a_claim reason renders through the dictionary's
+    // notAClaim label inside the skipped template.
+    expect(
+      screen.getByText(
+        formatTemplate(t.notChecked, { reason: t.skipReasons.notAClaim }),
+      ),
+    ).toBeInTheDocument();
   });
 
   test("reads cleanly for a skip reason the frontend does not recognise", () => {
@@ -181,7 +191,9 @@ describe("LiveStatementList", () => {
     );
 
     expect(
-      screen.getByText(/not checked - an unrecognised reason/i),
+      screen.getByText(
+        formatTemplate(t.notChecked, { reason: t.skipReasons.unknown }),
+      ),
     ).toBeInTheDocument();
   });
 
@@ -193,7 +205,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/no confident match/i)).toBeInTheDocument();
+    expect(screen.getByText(t.noMatch)).toBeInTheDocument();
   });
 
   test("shows the corroboration percentage for a scored statement", () => {
@@ -223,9 +235,7 @@ describe("LiveStatementList", () => {
     );
 
     expect(screen.getByText(/82%/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/corroborated by the reference corpus/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(t.corroborated)).toBeInTheDocument();
   });
 
   test("breaks the score down into its supporting and contradicting evidence weights", () => {
@@ -254,9 +264,9 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/2 matches/i)).toBeInTheDocument();
-    expect(screen.getByText(/0\.90 supporting/i)).toBeInTheDocument();
-    expect(screen.getByText(/0\.30 contradicting/i)).toBeInTheDocument();
+    expect(screen.getByText(`2 ${t.match.other}`)).toBeInTheDocument();
+    expect(screen.getByText(`0.90 ${t.supporting}`)).toBeInTheDocument();
+    expect(screen.getByText(`0.30 ${t.contradicting}`)).toBeInTheDocument();
   });
 
   test("reads the breakdown's evidence count in the singular for a lone match", () => {
@@ -285,7 +295,9 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.getByText(/1 match\b/i)).toBeInTheDocument();
+    // French Intl.PluralRules reads 1 as singular; an exact match rejects the
+    // plural form.
+    expect(screen.getByText(`1 ${t.match.one}`)).toBeInTheDocument();
   });
 
   test("shows no breakdown for a skipped statement", () => {
@@ -301,8 +313,8 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.queryByText(/supporting/i)).toBeNull();
-    expect(screen.queryByText(/contradicting/i)).toBeNull();
+    expect(screen.queryByText(new RegExp(t.supporting, "i"))).toBeNull();
+    expect(screen.queryByText(new RegExp(t.contradicting, "i"))).toBeNull();
   });
 
   test("shows no percentage for a skipped statement", () => {
@@ -318,7 +330,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(screen.queryByText(/corroborated by the reference corpus/i)).toBeNull();
+    expect(screen.queryByText(t.corroborated)).toBeNull();
   });
 
   test("renders an inconsistency flag linking back to the earlier statement", () => {
@@ -338,9 +350,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(
-      screen.getByText(/contradicts an earlier statement/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(t.contradictsEarlier)).toBeInTheDocument();
     // The earlier statement is a navigable link, not just quoted text.
     expect(
       screen.getByRole("button", { name: /the bridge opened in 1937/i }),
@@ -391,9 +401,7 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    expect(
-      screen.queryByText(/contradicts an earlier statement/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(t.contradictsEarlier)).not.toBeInTheDocument();
   });
 
   test("renders the newest statement at the top, older ones below", () => {

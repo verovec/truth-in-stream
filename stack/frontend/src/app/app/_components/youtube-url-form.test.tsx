@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { ApiError } from "@/lib/http";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import type { LibraryVideo } from "@/lib/video/api";
 import { YoutubeUrlForm } from "./youtube-url-form";
 
@@ -27,9 +28,9 @@ describe("YoutubeUrlForm", () => {
 
     render(<YoutubeUrlForm submit={submit} onAdded={onAdded} />);
 
-    const input = screen.getByLabelText(/youtube url/i);
+    const input = screen.getByLabelText(fr.app.youtube.label);
     await userEvent.type(input, "https://www.youtube.com/watch?v=abc");
-    await userEvent.click(screen.getByRole("button", { name: /add/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
     await waitFor(() => expect(onAdded).toHaveBeenCalledWith(video));
     expect(submit).toHaveBeenCalledWith(
@@ -50,12 +51,14 @@ describe("YoutubeUrlForm", () => {
 
     render(<YoutubeUrlForm submit={submit} onAdded={vi.fn()} />);
 
-    const input = screen.getByLabelText(/youtube url/i);
+    const input = screen.getByLabelText(fr.app.youtube.label);
     await userEvent.type(input, "https://youtu.be/abc");
-    await userEvent.click(screen.getByRole("button", { name: /add/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
     await waitFor(() => expect(input).toBeDisabled());
-    expect(screen.getByRole("button", { name: /add/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: fr.app.youtube.adding }),
+    ).toBeDisabled();
 
     resolve(pendingYoutube());
     await waitFor(() => expect(input).toBeEnabled());
@@ -69,9 +72,9 @@ describe("YoutubeUrlForm", () => {
 
     render(<YoutubeUrlForm submit={submit} onAdded={onAdded} />);
 
-    const input = screen.getByLabelText(/youtube url/i);
+    const input = screen.getByLabelText(fr.app.youtube.label);
     await userEvent.type(input, "https://example.com/not-youtube");
-    await userEvent.click(screen.getByRole("button", { name: /add/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /not a valid youtube video url/i,
@@ -81,15 +84,33 @@ describe("YoutubeUrlForm", () => {
     expect(input).toHaveValue("https://example.com/not-youtube");
   });
 
+  test("falls back to the generic failure message when the error carries none", async () => {
+    const submit = vi.fn((): Promise<LibraryVideo> => Promise.reject("boom"));
+
+    render(<YoutubeUrlForm submit={submit} onAdded={vi.fn()} />);
+
+    await userEvent.type(
+      screen.getByLabelText(fr.app.youtube.label),
+      "https://youtu.be/abc",
+    );
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      fr.app.youtube.failed,
+    );
+  });
+
   test("rejects an empty or malformed link locally without calling the backend", async () => {
     const submit = vi.fn();
 
     render(<YoutubeUrlForm submit={submit} onAdded={vi.fn()} />);
 
-    await userEvent.type(screen.getByLabelText(/youtube url/i), "not a url");
-    await userEvent.click(screen.getByRole("button", { name: /add/i }));
+    await userEvent.type(screen.getByLabelText(fr.app.youtube.label), "not a url");
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      fr.app.youtube.invalid,
+    );
     expect(submit).not.toHaveBeenCalled();
   });
 });

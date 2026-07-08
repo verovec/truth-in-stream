@@ -2,6 +2,7 @@
 
 import { useId, useState, type DragEvent } from "react";
 import { ACCEPTED_VIDEO_TYPES } from "@/lib/video/api";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
 const ACCEPT = ACCEPTED_VIDEO_TYPES.join(",");
 
@@ -13,6 +14,7 @@ export function VideoUploader({
 }: {
   onFiles: (files: File[]) => void;
 }) {
+  const { t } = useAppI18n();
   const inputId = useId();
   const [dragging, setDragging] = useState(false);
 
@@ -39,24 +41,24 @@ export function VideoUploader({
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
-      className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed px-4 py-8 text-center transition focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-sky-500 ${
+      className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed px-4 py-8 text-center transition focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-bleu-flag dark:focus-within:outline-paper/60 ${
         dragging
-          ? "border-sky-500 bg-sky-50 dark:bg-sky-500/10"
-          : "border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600"
+          ? "border-bleu-flag bg-bleu/5 dark:border-sky-400 dark:bg-sky-400/10"
+          : "border-black/15 hover:border-black/30 dark:border-white/15 dark:hover:border-white/30"
       }`}
     >
-      <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-        Drag a video here, or click to choose
+      <span className="text-sm font-medium text-ink dark:text-paper">
+        {t.uploader.prompt}
       </span>
-      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-        MP4, WebM, OGG, or MOV
+      <span className="text-xs text-ink/50 dark:text-paper/50">
+        {t.uploader.formats}
       </span>
       <input
         id={inputId}
         type="file"
         accept={ACCEPT}
         multiple
-        aria-label="Upload a video"
+        aria-label={t.uploader.inputAria}
         className="sr-only"
         onChange={(event) => {
           emit(event.currentTarget.files);

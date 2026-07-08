@@ -9,11 +9,21 @@ const FOCUSABLE =
 const TITLE_ID = "login-modal-title";
 const DESCRIPTION_ID = "login-modal-description";
 
+// ModalCopy is the localized chrome the server parent resolves and passes in,
+// so the client modal never imports the dictionaries itself.
+export type ModalCopy = { title: string; intro: string; close: string };
+
 // LoginModal is the dialog chrome for the intercepted /login route: it overlays
 // the page it was opened from and closes back to it. The login form itself is
 // passed as children so the modal owns only presentation and focus management,
 // not the auth logic.
-export function LoginModal({ children }: { children: React.ReactNode }) {
+export function LoginModal({
+  copy,
+  children,
+}: {
+  copy: ModalCopy;
+  children: React.ReactNode;
+}) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +69,7 @@ export function LoginModal({ children }: { children: React.ReactNode }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-night/60 p-4 backdrop-blur-sm"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           router.back();
@@ -73,28 +83,28 @@ export function LoginModal({ children }: { children: React.ReactNode }) {
         aria-labelledby={TITLE_ID}
         aria-describedby={DESCRIPTION_ID}
         tabIndex={-1}
-        className="w-full max-w-sm rounded-lg border border-zinc-200 bg-white p-6 shadow-xl outline-none dark:border-zinc-800 dark:bg-zinc-950"
+        className="w-full max-w-sm rounded-2xl border border-black/10 bg-white p-6 font-sans text-ink shadow-xl shadow-bleu/5 outline-none dark:border-white/10 dark:bg-night dark:text-paper dark:shadow-black/40"
       >
         <div className="flex items-start justify-between">
           <div>
             <h2
               id={TITLE_ID}
-              className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50"
+              className="font-display text-lg font-semibold tracking-tight"
             >
-              Sign in
+              {copy.title}
             </h2>
             <p
               id={DESCRIPTION_ID}
-              className="mt-1 text-sm text-zinc-500 dark:text-zinc-400"
+              className="mt-1 text-sm text-ink/60 dark:text-paper/60"
             >
-              Sign in to open the analyser
+              {copy.intro}
             </p>
           </div>
           <button
             type="button"
             onClick={() => router.back()}
-            aria-label="Close"
-            className="-mr-1 -mt-1 rounded-md p-1 text-zinc-400 hover:text-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-300 dark:hover:text-zinc-200 dark:focus:ring-zinc-600"
+            aria-label={copy.close}
+            className="-mr-1 -mt-1 rounded-md p-1 text-ink/40 hover:text-ink focus:outline-none focus:ring-2 focus:ring-bleu/40 dark:text-paper/40 dark:hover:text-paper dark:focus:ring-paper/30"
           >
             <svg
               viewBox="0 0 20 20"

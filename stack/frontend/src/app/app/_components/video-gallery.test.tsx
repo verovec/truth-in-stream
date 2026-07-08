@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import type { LibraryVideo } from "@/lib/video/api";
 import type { UploadJob } from "@/hooks/use-video-uploads";
 import { VideoGallery } from "./video-gallery";
@@ -36,9 +37,9 @@ describe("VideoGallery", () => {
 
     expect(screen.getByText("Common Myths")).toBeInTheDocument();
     expect(screen.getByText("My Upload")).toBeInTheDocument();
-    expect(screen.getByText("Sample")).toBeInTheDocument();
-    expect(screen.getByText("Upload")).toBeInTheDocument();
-    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.getByText(fr.app.library.kind.sample)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.library.kind.upload)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.library.status.pending)).toBeInTheDocument();
   });
 
   test("selecting a ready video reports it; a pending one is not selectable", async () => {
@@ -132,6 +133,6 @@ describe("VideoGallery", () => {
         onDismiss={() => {}}
       />,
     );
-    expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
   });
 });

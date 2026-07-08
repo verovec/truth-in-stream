@@ -110,6 +110,192 @@ export const fr = {
       { label: "Ouvrir l'application", href: "/login" },
     ],
   },
+  // The authenticated analyser at /app. Templates use {name} placeholders
+  // resolved by formatTemplate; countable nouns carry one/other forms picked by
+  // the plural helper with the locale's own rule (French counts zero as
+  // singular, English does not).
+  app: {
+    header: {
+      signOut: "Se déconnecter",
+    },
+    summary: {
+      heading: "Constats en direct",
+      ariaLabel: "Résumé des constats en direct",
+      idleHint: "Les constats apparaissent ici pendant l'analyse de la vidéo.",
+      inProgress: "{count} en cours",
+      stats: {
+        checked: "Vérifiées",
+        corroborates: "Corroborées",
+        contradicts: "Contredites",
+        unclear: "Incertaines",
+        unverifiable: "Invérifiables",
+        evidence: "Preuves",
+        skipped: "Non vérifiées",
+      },
+    },
+    connection: {
+      live: "En direct",
+      reconnecting: "Reconnexion",
+      interrupted: "Interrompue",
+    },
+    speakers: {
+      heading: "Fiabilité des intervenants",
+      speaker: "Intervenant",
+      claim: { one: "affirmation vérifiable", other: "affirmations vérifiables" },
+      credible: { one: "crédible", other: "crédibles" },
+      disputed: { one: "contestée", other: "contestées" },
+      unverifiable: { one: "invérifiable", other: "invérifiables" },
+      framing: { one: "cadrage trompeur", other: "cadrages trompeurs" },
+    },
+    panel: {
+      heading: "Analyse en direct",
+      subtitles: "Sous-titres",
+      factChecks: "Vérifications",
+      subtitlesAria: "Sous-titres en direct",
+      separator: "Redimensionner les sous-titres et les vérifications",
+      interrupted:
+        "L'analyse en direct a été interrompue. La lecture continue ; relancez la lecture pour réessayer.",
+      reconnecting: "Connexion perdue. Reconnexion…",
+      hints: {
+        connecting: "Connexion à l'analyse en direct…",
+        listening: "En écoute des affirmations prononcées…",
+        ended: "Le direct s'est terminé sans déclaration vérifiée.",
+        idle: "Les vérifications apparaissent ici pendant la lecture de la vidéo.",
+      },
+    },
+    subtitles: {
+      transcriptAria: "Transcription des sous-titres",
+      speaker: "Intervenant",
+      checking: "Vérification de cette déclaration…",
+      checkFailed: "Cette déclaration n'a pas pu être vérifiée.",
+      notChecked: "Non vérifiée - {reason}.",
+      skipReasons: {
+        notAClaim: "aucune affirmation vérifiable",
+        notCovered: "hors du corpus de référence",
+        notChecked: "le vérificateur en direct était occupé",
+        unknown: "raison inconnue",
+      },
+      noMatch: "Aucune correspondance fiable.",
+      corroborated: "corroborée par le corpus de référence",
+      match: { one: "correspondance", other: "correspondances" },
+      supporting: "pour",
+      contradicting: "contre",
+      contradictsEarlier: "Contredit une déclaration antérieure",
+      bySpeaker: "du même intervenant :",
+    },
+    factChecks: {
+      resultsAria: "Résultats des vérifications",
+      empty:
+        "Les vérifications apparaissent ici à mesure que les affirmations sont contrôlées.",
+      placeholderHint:
+        "Les vérifications défilent ici pendant la lecture de la vidéo.",
+    },
+    claims: {
+      listAria: "Affirmations atomiques",
+      pending: "En attente de vérification…",
+      checking: "Vérification…",
+      unchecked: "Non vérifiée — le vérificateur était à pleine capacité.",
+      error: "Cette affirmation n'a pas pu être vérifiée.",
+      showDetail: "Voir le détail",
+      hideDetail: "Masquer le détail",
+      verdicts: {
+        credible: "Fiable",
+        disputed: "Contesté",
+        unverifiable: "Invérifiable",
+      },
+      literal: {
+        accurate: "Exact",
+        inaccurate: "Inexact",
+        unverifiable: "Invérifiable",
+      },
+      flagsAria: "Drapeaux de manipulation",
+      flags: {
+        "missing-context": "Contexte manquant",
+        "cherry-picked": "Données triées",
+        outdated: "Périmé",
+        misattributed: "Mal attribué",
+        "misleading-causation": "Causalité trompeuse",
+      },
+      sources: {
+        curated: "source vérifiée",
+        verified: "vérifié sur preuves",
+      },
+      noDirectSource: "sans source directe",
+      sourcePrefix: "Source : {label}",
+      primarySourceAria: "Source principale",
+    },
+    legacy: {
+      verdicts: {
+        corroborates: "Corrobore",
+        contradicts: "Contredit",
+        unclear: "Incertain",
+      },
+      evidence: "Preuve",
+      similarity: "{percent}% de similarité",
+      wikipedia: "Wikipédia",
+    },
+    player: {
+      playError: "Cette vidéo n'a pas pu être lue.",
+      playErrorHint:
+        "La source média ne s'est pas chargée. Essayez de la sélectionner à nouveau.",
+      loadingAria: "Chargement de {title}",
+      loadError: "Cette vidéo n'a pas pu être chargée.",
+      idle: "Sélectionnez une vidéo de la bibliothèque pour la lire.",
+    },
+    library: {
+      heading: "Bibliothèque",
+      loadingAria: "Chargement de la bibliothèque",
+      loadError: "La bibliothèque n'a pas pu se charger : {message}",
+      loadErrorFallback: "La bibliothèque n'a pas pu se charger.",
+      retry: "Réessayer",
+      empty: "Aucune vidéo pour le moment. Importez-en une pour commencer.",
+      status: { ready: "Prête", pending: "En cours", failed: "Échec" },
+      kind: { sample: "Exemple", upload: "Import", youtube: "YouTube" },
+    },
+    uploader: {
+      prompt: "Déposez une vidéo ici, ou cliquez pour choisir",
+      formats: "MP4, WebM, OGG ou MOV",
+      inputAria: "Importer une vidéo",
+      preparing: "Préparation…",
+      finalizing: "Finalisation…",
+      dismiss: "Fermer",
+      uploadingAria: "Envoi de {title}",
+    },
+    youtube: {
+      label: "URL YouTube",
+      placeholder: "https://youtu.be/…",
+      add: "Ajouter",
+      adding: "Ajout…",
+      invalid: "Saisissez un lien YouTube, p. ex. https://youtu.be/…",
+      failed: "Cette vidéo n'a pas pu être ajoutée.",
+    },
+    exports: {
+      heading: "Exports administrateur",
+      transcript: "Transcription (.srt)",
+      transcriptPending: "Préparation de la transcription…",
+      claims: "Affirmations (.csv)",
+      claimsPending: "Préparation des affirmations…",
+      missingSnapshot:
+        "Aucune analyse en cache pour cette vidéo. Relancez l'analyse pour regénérer l'export.",
+      failed: "L'export a échoué. Veuillez réessayer.",
+    },
+    debug: {
+      show: "Debug",
+      hide: "Masquer le debug",
+    },
+  },
+  login: {
+    metaTitle: "Connexion - jeminforme.fr",
+    intro: "Connectez-vous pour continuer",
+    signIn: "Se connecter avec Keycloak",
+    modalTitle: "Connexion",
+    modalIntro: "Connectez-vous pour ouvrir l'analyseur",
+    close: "Fermer",
+    errors: {
+      session: "Votre session de connexion a expiré. Veuillez réessayer.",
+      exchange: "La connexion n'a pas pu aboutir. Veuillez réessayer.",
+    },
+  },
 };
 
 export type Dictionary = typeof fr;

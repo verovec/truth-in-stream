@@ -1,7 +1,9 @@
 "use client";
 
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
+import { plural } from "@/lib/i18n/text";
 import type { SpeakerTally } from "@/lib/live/speakers";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
 // LiveSpeakerCredibility is the per-speaker breakdown panel on the
 // retrieve-then-verify path. It reads the shared live snapshot through a selector
@@ -22,16 +24,17 @@ export function SpeakerCredibilityView({
 }: {
   speakers: SpeakerTally[] | null;
 }) {
+  const { t } = useAppI18n();
   if (speakers === null || speakers.length === 0) {
     return null;
   }
   return (
     <section
-      aria-label="Fiabilité des intervenants"
-      className="flex w-full flex-col gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950"
+      aria-label={t.speakers.heading}
+      className="flex w-full flex-col gap-2 rounded-2xl border border-black/10 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/5"
     >
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100">
-        Fiabilité des intervenants
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+        {t.speakers.heading}
       </h2>
       <ul className="flex flex-wrap gap-x-6 gap-y-2">
         {speakers.map((speaker) => (
@@ -48,34 +51,40 @@ export function SpeakerCredibilityView({
 // for themselves. The misleading-framing count is a separate affordance, since a
 // speaker can make credible claims yet repeatedly frame true facts dishonestly.
 function SpeakerRow({ speaker }: { speaker: SpeakerTally }) {
+  const { locale, t } = useAppI18n();
   const checkable =
     speaker.credible + speaker.disputed + speaker.unverifiable;
-  const parts = [`${speaker.credible} crédibles`, `${speaker.disputed} contestées`];
+  const parts = [
+    `${speaker.credible} ${plural(locale, speaker.credible, t.speakers.credible)}`,
+    `${speaker.disputed} ${plural(locale, speaker.disputed, t.speakers.disputed)}`,
+  ];
   if (speaker.unverifiable > 0) {
-    parts.push(`${speaker.unverifiable} invérifiables`);
+    parts.push(
+      `${speaker.unverifiable} ${plural(locale, speaker.unverifiable, t.speakers.unverifiable)}`,
+    );
   }
   const breakdown = parts.join(" · ");
   const framing =
     speaker.misleadingFraming > 0
-      ? `${speaker.misleadingFraming} cadrage${speaker.misleadingFraming > 1 ? "s" : ""} trompeur${speaker.misleadingFraming > 1 ? "s" : ""}`
+      ? `${speaker.misleadingFraming} ${plural(locale, speaker.misleadingFraming, t.speakers.framing)}`
       : null;
-  const claimsLabel = `${checkable} affirmation${checkable > 1 ? "s" : ""} vérifiable${checkable > 1 ? "s" : ""}`;
+  const claimsLabel = `${checkable} ${plural(locale, checkable, t.speakers.claim)}`;
   const label =
-    `Intervenant ${speaker.speaker} : ${claimsLabel}, ${breakdown}` +
+    `${t.speakers.speaker} ${speaker.speaker} : ${claimsLabel}, ${breakdown}` +
     (framing ? `, ${framing}` : "");
   return (
     <li aria-label={label} className="flex items-baseline gap-2">
-      <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+      <span className="text-xs font-semibold text-ink/80 dark:text-paper/80">
         {speaker.speaker}
       </span>
-      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+      <span className="text-xs text-ink/50 dark:text-paper/50">
         {claimsLabel}
       </span>
-      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+      <span className="text-[11px] text-ink/50 dark:text-paper/50">
         {breakdown}
       </span>
       {framing ? (
-        <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+        <span className="inline-flex items-center rounded-full bg-verdict-flag/10 px-1.5 py-0.5 text-[10px] font-medium text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300">
           {framing}
         </span>
       ) : null}
