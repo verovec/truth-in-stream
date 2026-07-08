@@ -29,38 +29,51 @@ jobs:
     defaults: { run: { working-directory: "${{ inputs.path }}" } }
     env:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      # Single source of the credentialed-run predicate every AWS-touching step
+      # branches on. pull_request runs never assume the apply role even when
+      # the secret is available — the role can write prod, and a PR can edit
+      # its own workflows, so the role's trust deliberately excludes the
+      # ungated pull_request subject (scripts/apply-role-trust.sh). The
+      # credentialed plan + pre-apply IAM guard run on push to main and on the
+      # tag release.
+      CREDENTIALED: ${{ secrets.AWS_ROLE_ARN != '' && github.event_name != 'pull_request' }}
     steps:
-      # Runs before checkout, so the job default working-directory (the
-      # terraform root) does not exist yet; override it to the workspace root.
+      # Fail-fast contract checks run before checkout, so the job default
+      # working-directory (the terraform root) does not exist yet; override it
+      # to the workspace root.
       - if: ${{ inputs.require_credentials && env.AWS_ROLE_ARN == '' }}
         working-directory: .
         run: |
           echo "AWS_ROLE_ARN is empty but this call requires credentials (apply). Set the AWS_ROLE_ARN repository secret to the CI apply role." >&2
           exit 1
+      # An apply can never run on a pull_request event (see CREDENTIALED); fail
+      # loudly rather than green-skipping an apply the caller asked for.
+      - if: ${{ inputs.apply && github.event_name == 'pull_request' }}
+        working-directory: .
+        run: |
+          echo "apply: true is not honoured on pull_request events; call this workflow with apply from a push/tag context." >&2
+          exit 1
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive
 
-      # Offline validate, no backend access: no credentials (e.g. fork PRs, an
-      # account not yet bootstrapped), or any pull_request run. PR runs never
-      # assume the apply role even when the secret is available — the role can
-      # write prod, and a PR can edit its own workflows, so the role's trust
-      # deliberately excludes the ungated pull_request subject
-      # (scripts/apply-role-trust.sh). The credentialed plan + pre-apply IAM
-      # guard run on push to main and on the tag release.
-      - if: ${{ env.AWS_ROLE_ARN == '' || github.event_name == 'pull_request' }}
+      # Offline validate, no backend access: any run that may not assume the
+      # apply role (fork PRs and unbootstrapped accounts with no secret, and
+      # every pull_request run — see CREDENTIALED above).
+      - if: env.CREDENTIALED != 'true'
         run: |
           terraform init -backend=false -input=false
           terraform validate
 
-      # With credentials on a non-PR run: real backend, then validate and plan.
-      # -lock-timeout tolerates a concurrent plan on the same state (e.g. the
-      # release racing terraform.yml's push-triggered plan) instead of failing
-      # on first contention.
-      - if: ${{ env.AWS_ROLE_ARN != '' && github.event_name != 'pull_request' }}
+      # Credentialed run: real backend, then validate and plan. -lock-timeout
+      # tolerates a concurrent plan on the same state (e.g. the release racing
+      # terraform.yml's push-triggered plan) instead of failing on first
+      # contention. (A shared concurrency group would be stricter, but GitHub
+      # replaces queued runs in a group, which could evict a release.)
+      - if: env.CREDENTIALED == 'true'
         uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with: { role-to-assume: "${{ env.AWS_ROLE_ARN }}", aws-region: eu-west-3 }
-      - if: ${{ env.AWS_ROLE_ARN != '' && github.event_name != 'pull_request' }}
+      - if: env.CREDENTIALED == 'true'
         run: |
           terraform init -input=false
           terraform validate
@@ -72,7 +85,7 @@ jobs:
       # manual apply to run with elevated credentials. It runs on every
       # credentialed plan (push to main, release), so a missing permission is
       # caught when the change lands on main, not only at the release apply.
-      - if: ${{ env.AWS_ROLE_ARN != '' && github.event_name != 'pull_request' }}
+      - if: env.CREDENTIALED == 'true'
         env:
           ENV_DIR: ${{ inputs.path }}
         run: |
@@ -80,5 +93,5 @@ jobs:
           bash "$GITHUB_WORKSPACE/scripts/iam-apply-guard.sh" tfplan.json "$AWS_ROLE_ARN" "$ENV_DIR"
 
       # Apply exactly the plan produced above.
-      - if: ${{ inputs.apply && env.AWS_ROLE_ARN != '' && github.event_name != 'pull_request' }}
+      - if: ${{ inputs.apply && env.CREDENTIALED == 'true' }}
         run: terraform apply -input=false -lock-timeout=300s tfplan

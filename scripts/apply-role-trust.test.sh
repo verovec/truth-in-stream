@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Unit test for apply-role-trust.sh. Stubs the aws CLI on PATH and asserts the
-# trust policy written to the CI apply role: the exact least-privilege OIDC
-# subjects, the aud condition, the account-derived provider ARN, and the
-# fail-fast on a missing role name. No AWS account or credentials are involved.
+# trust policy written to the CI apply role: the two least-privilege OIDC
+# subjects (and that the ungated pull_request subject is absent), the aud
+# condition, the account-derived provider ARN, and the fail-fast on a missing
+# role name. No AWS account or credentials are involved.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,8 +78,9 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 # Case 1: happy path -> the trust policy is written to the given role with the
-# three literal CI subjects, the aud condition, and the provider ARN derived
-# from the caller's account.
+# two literal CI subjects (main ref + production environment, never the ungated
+# pull_request), the aud condition, and the provider ARN derived from the
+# caller's account.
 run_trust "$tmp/happy.log" APPLY_ROLE_NAME=test-apply-role || fail "happy path must exit 0"
 assert_contains "$tmp/happy.log" "iam update-assume-role-policy --role-name test-apply-role" "trust policy must target the given role"
 assert_contains "$tmp/happy.log" "arn:aws:iam::${STUB_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com" "provider ARN must be derived from the caller account"

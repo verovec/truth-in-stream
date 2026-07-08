@@ -274,14 +274,13 @@ jobs:
             echo "Keycloak DB bootstrap failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
           fi
           echo "Keycloak DB bootstrap applied"
-      # Rolling ECS deploy for ALB-fronted services (backend, frontend). The
-      # service's deployment circuit breaker rolls back to the last good task
-      # set on failure (when enabled on the service); wait services-stable blocks
-      # until the rollout settles or fails, so a failed deploy fails this step.
       # Rolling deploy that re-pulls whatever image the task definition pins.
       # No current caller uses it (the release and every dispatch wrapper pin);
       # it remains for a caller that explicitly wants restart-current-revision
       # semantics, but note it cannot move a sha-pinned service to a new image.
+      # Like the pinned roll, wait services-stable blocks until the rollout
+      # settles or fails (the circuit breaker rolls back on failure when
+      # enabled), so a failed deploy fails this step.
       - name: Roll service (rolling, force-new-deployment)
         if: inputs.deploy_mode == 'rolling' && !inputs.pin_image_tag
         env:
@@ -344,6 +343,16 @@ jobs:
                     .containerDefinitions[]
                     | if .name == $NAME then .image = $IMAGE else . end
                   ]')"
+          # Postcondition: a container must now reference the new image. The jq
+          # match is by container name; if a rename ever breaks the
+          # name-equals-service contract, fail loudly here instead of
+          # registering an unchanged revision and reporting a green deploy that
+          # shipped nothing.
+          if ! echo "$NEW_DEF" | jq -e --arg IMAGE "$IMAGE" \
+              '[.containerDefinitions[].image] | index($IMAGE) != null' >/dev/null; then
+            echo "No container named ${ECS_SERVICE} in ${FAMILY}; refusing a no-op roll" >&2
+            exit 1
+          fi
           NEW_ARN="$(aws ecs register-task-definition --cli-input-json "$NEW_DEF" \
             --query 'taskDefinition.taskDefinitionArn' --output text)"
           echo "Registered ${NEW_ARN}"
