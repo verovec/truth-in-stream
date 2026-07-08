@@ -444,11 +444,17 @@ terraform apply
 ## CI
 
 `.github/workflows/terraform.yml` runs fmt/validate/plan on PRs and plan+apply for
-`dev` on merge to `main`. CI authenticates to AWS via GitHub OIDC; set the
-`AWS_ROLE_ARN` repository secret to an IAM role whose trust policy is scoped to this
-repo. The state-bucket bootstrap script and the pre-apply IAM guard are unit-tested
-with a stubbed `aws` CLI in the `pr.yml` `bootstrap-script` and
-`iam-apply-guard-script` jobs. The per-service application deploy workflows use
+`dev` on merge to `main`; the `prod` root is plan-only there and is applied by the
+tag-triggered release (`release.yml` calls `_terraform.yml` with `apply: true`,
+bound to the `production` GitHub Environment approval). CI authenticates to AWS
+via GitHub OIDC; set the `AWS_ROLE_ARN` repository secret to the CI apply role and
+write that role's trust policy with `scripts/apply-role-trust.sh` — it pins the
+exact workflow subjects (`ref:refs/heads/main`, `environment:production`; never
+the ungated `pull_request` subject, so PR runs validate offline instead of
+assuming the prod-writing role). The state-bucket bootstrap script, the pre-apply IAM
+guard, and the trust-policy bootstrap are unit-tested with a stubbed `aws` CLI in
+the `pr.yml` `bootstrap-script`, `iam-apply-guard-script`, and
+`apply-role-trust-script` jobs. The per-service application deploy workflows use
 the separate, narrower `AWS_DEPLOY_ROLE_ARN` (a repository variable) created by
 the `iam` module. See `.github/workflows/_terraform.yml`, the reusable
 `.github/workflows/_deploy.yml`, and its per-service callers `deploy-backend.yml`,
@@ -458,10 +464,18 @@ the `iam` module. See `.github/workflows/_terraform.yml`, the reusable
 
 Two CI roles, each least-privilege and scoped per concern:
 
-- **Apply role** (`AWS_ROLE_ARN`) — assumed by `terraform.yml` to plan/apply.
-  Bootstrapped out of band (it cannot be managed by the terraform it runs without
-  a chicken-and-egg), so its policy lives next to the bootstrap procedure, not in
-  a module it would have to create before it can act.
+- **Apply role** (`AWS_ROLE_ARN`) — assumed by `terraform.yml` to plan/apply and
+  by the release's prod apply. Bootstrapped out of band (it cannot be managed by
+  the terraform it runs without a chicken-and-egg), so its policy lives next to
+  the bootstrap procedure, not in a module it would have to create before it can
+  act. Its OIDC trust is written by `scripts/apply-role-trust.sh` (idempotent;
+  re-run it whenever a workflow's subject changes): merge-to-main plans/applies
+  authenticate with the `ref:refs/heads/main` subject, and the release's apply
+  job binds the `production` GitHub Environment, so it authenticates as
+  `repo:<org/repo>:environment:production` — an environment binding replaces the
+  ref in the OIDC subject. The ungated `pull_request` subject is deliberately
+  not trusted (a PR can edit its own workflows, which would bypass the
+  environment approval on a prod-writing role); PR runs validate offline.
 - **Deploy role** (`AWS_DEPLOY_ROLE_ARN`) — created by `modules/iam`, narrow:
   ECR push, ECS deploy, run the migrate task, read the deploy SSM parameters. Its
   trust is pinned to `repo:<org/repo>:ref:refs/heads/main` — PR branches and forks
@@ -498,9 +512,11 @@ terraform apply
 ```
 
 When the change needs no new permissions, the guard passes and the normal
-auto-apply proceeds — no false positives. It runs on every plan that has AWS
-credentials (PRs and `main`), so a missing permission surfaces before merge, not
-only at the apply step. The apply role must itself hold
+auto-apply proceeds — no false positives. It runs on every credentialed plan
+(push to `main`, and the release's prod apply), so a missing permission surfaces
+when the change lands on `main`, before any tag is cut. PR runs validate offline
+— the prod-writing apply role deliberately does not trust the ungated
+`pull_request` OIDC subject, so a PR cannot assume it. The apply role must itself hold
 `iam:SimulatePrincipalPolicy` and `iam:GetRole` for the guard to run (declared in
 the manifest); if it does not, the guard says so explicitly.
 

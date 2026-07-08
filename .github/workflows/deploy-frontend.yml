@@ -16,3 +16,9 @@ jobs:
       dockerfile: stack/frontend/Dockerfile
       deploy_mode: rolling
       ecs_service: frontend
+      # Pin the service to this build's immutable sha-<7> revision. Once a tag
+      # release has pinned the service, a plain force-new-deployment would
+      # restart the old pinned revision and silently deploy nothing; pinning
+      # keeps this wrapper a working hotfix/rollback path (dispatch it from the
+      # commit you want live).
+      pin_image_tag: true

@@ -1,35 +1,42 @@
 name: release
 # Tag-triggered production release. Pushing a semver tag (v*) whose commit is on
-# main rolls the prod services automatically: backend (with migrations), the
-# self-hosted Keycloak (with its DB bootstrap), and frontend. The tag is the
-# deliberate release gesture and stands in for the human approval the
-# workflow_dispatch deploy wrappers otherwise require: an ordinary merge to main
-# never deploys, only a tag does. The workflow_dispatch deploy-* wrappers stay in
-# place untouched for ad-hoc single-service rolls and rollbacks (see
-# docs/infrastructure.md).
+# main deploys everything: it first applies stack/terraform/prod, then rolls the
+# prod services: backend (with migrations), the self-hosted Keycloak (with its
+# DB bootstrap), and frontend. The tag is the deliberate release gesture and
+# stands in for the human approval the workflow_dispatch deploy wrappers
+# otherwise require: an ordinary merge to main never deploys, only a tag does.
+# The workflow_dispatch deploy-* wrappers stay in place untouched for ad-hoc
+# single-service rolls and rollbacks (see docs/infrastructure.md).
 #
-# Scope: this rolls the SERVICES (build/scan/push/roll in _deploy.yml). It does
-# NOT run `terraform apply` - infrastructure changes to stack/terraform/prod
-# (including standing the stack up the first time) are a separate, deliberate
-# human apply, kept out of the tag path on purpose: the apply role's OIDC trust is
-# ref-scoped (not tag/environment) and applying would revert the ECS services off
-# their pinned sha-<7> task definitions back to :latest. So apply prod first, then
-# tag to roll the images.
+# The terraform job is the one job bound to the `production` GitHub
+# Environment: give that environment a required reviewer and the whole release
+# is gated behind a single approval click before anything is applied or rolled.
+# The deploy jobs deliberately do NOT bind it — binding an environment swaps the
+# OIDC subject from the tag ref to repo:<repo>:environment:production, which the
+# deploy role's ref-scoped trust (refs/tags/v*, see modules/iam) does not accept,
+# and it would multiply the approval clicks per release. The apply role's trust
+# DOES accept the environment subject (scripts/apply-role-trust.sh). The apply
+# cannot revert the services off their pinned sha-<7> task definitions: the
+# service modules ignore task_definition drift (modules/service,
+# modules/keycloak), and the job fails fast if AWS_ROLE_ARN is unset instead of
+# skipping the apply silently.
 #
-# Order (needs:): guard -> backend -> {keycloak, frontend}. backend runs first so
-# migrations land before the app serves; keycloak and frontend then roll in
-# parallel (frontend does not need keycloak, so a keycloak issue never blocks the
-# frontend roll). Every deploy job binds to the `production` GitHub Environment and
-# pins the service to this build's immutable sha-<7> task-definition revision
-# (pin_image_tag) because on a tag ref the moving `latest` tag is not advanced; see
-# _deploy.yml for the rationale.
+# Order (needs:): guard -> terraform -> backend -> {keycloak, frontend}. The
+# apply runs first so the infrastructure the images roll onto exists and is
+# current; backend then runs before the others so migrations land before the
+# app serves; keycloak and frontend roll in parallel (frontend does not need
+# keycloak, so a keycloak issue never blocks the frontend roll). Every deploy
+# job pins the service to this build's immutable sha-<7> task-definition
+# revision (pin_image_tag) because on a tag ref the moving `latest` tag is not
+# advanced; see _deploy.yml for the rationale.
 on:
   push:
     tags:
       - "v*"
 # A called workflow only receives permissions the caller already holds, and the
 # repo default is id-token: none, so id-token: write must be granted here for the
-# OIDC AssumeRole in _deploy.yml. contents: read lets the guard read the graph.
+# OIDC AssumeRole in _terraform.yml and _deploy.yml. contents: read lets the
+# guard read the graph.
 permissions:
   contents: read
   id-token: write
@@ -55,9 +62,29 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           bash scripts/release-guard.sh "$TAG_SHA" origin/main
+  # Apply the prod infrastructure before any image rolls, so the release lands
+  # on current infra. Plan + pre-apply IAM guard + apply of that exact plan
+  # (_terraform.yml). Bound to the `production` Environment: the required
+  # reviewer's one approval gates the whole release. require_credentials makes
+  # an empty AWS_ROLE_ARN fail the release fast instead of green-skipping the
+  # apply.
+  terraform:
+    name: Apply prod infrastructure
+    needs: guard
+    uses: ./.github/workflows/_terraform.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      path: stack/terraform/prod
+      apply: true
+      environment: production
+      require_credentials: true
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
   backend:
     name: Deploy backend (rolling + migrate)
-    needs: guard
+    needs: terraform
     uses: ./.github/workflows/_deploy.yml
     permissions:
       contents: read
@@ -71,16 +98,17 @@ jobs:
       ecs_service: backend
       migrate_dockerfile: stack/backend/Dockerfile.migrate
       pin_image_tag: true
-      environment: production
   # Deploy the self-hosted Keycloak after the backend. db_bootstrap_task runs the
   # keycloak-db-bootstrap one-shot task (creates its role/database, re-syncs the
   # password) before the service rolls; idempotent, so it is safe on every
-  # release. Pinned to this build's sha-<7> revision like the others. This job
-  # assumes Keycloak is provisioned (enable_keycloak=true, the prod default); if
-  # you gate Keycloak off to run it out of band, its ECR repo and service do not
-  # exist, so remove this job (the release would otherwise fail pushing its image).
+  # release. Pinned to this build's sha-<7> revision like the others. The job is
+  # gated on Keycloak being provisioned (enable_keycloak=true, the prod
+  # default): when you gate Keycloak off to run it out of band, its ECR repo and
+  # service do not exist, so set the DEPLOY_KEYCLOAK repository variable to
+  # 'false' and the release skips this job instead of failing to push its image.
   keycloak:
     name: Deploy keycloak (bootstrap DB + rolling)
+    if: vars.DEPLOY_KEYCLOAK != 'false'
     needs: backend
     uses: ./.github/workflows/_deploy.yml
     permissions:
@@ -95,7 +123,6 @@ jobs:
       ecs_service: keycloak
       db_bootstrap_task: keycloak-db-bootstrap
       pin_image_tag: true
-      environment: production
   frontend:
     name: Deploy frontend (rolling)
     needs: backend
@@ -111,4 +138,3 @@ jobs:
       deploy_mode: rolling
       ecs_service: frontend
       pin_image_tag: true
-      environment: production

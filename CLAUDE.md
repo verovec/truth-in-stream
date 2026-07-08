@@ -16,14 +16,15 @@ lives under `stack/`.
 - Local dev: `docker-compose.yml` (postgres :5432, backend :8080, frontend :3000)
 
 ## Always-on rules
-- Deploys stay human-gated. Rolling the prod services is done by pushing a semver tag (`v*`) whose
-  commit is on `main`: that fires `release.yml`, which rolls backend (with migrations), Keycloak
-  (with its DB bootstrap), and frontend. Applying the prod infrastructure
-  (`terraform apply stack/terraform/prod`, including standing the stack up the first time) is a
-  separate, deliberate human step, kept out of the tag path on purpose. Never run `terraform apply`
-  by hand, dispatch a `deploy-*.yml` workflow, push a deploy tag, or take any other
-  production-affecting action on the user's behalf without explicit approval; an agent delivers to
-  `main` but never tags a release or applies prod.
+- Deploys stay human-gated. A production release is done by pushing a semver tag (`v*`) whose
+  commit is on `main`: that fires `release.yml`, which applies `stack/terraform/prod` (the one job
+  bound to the `production` GitHub Environment, so its required reviewer gates the release with a
+  single approval) and then rolls backend (with migrations), Keycloak (with its DB bootstrap), and
+  frontend. Standing the stack up the first time — and any apply needing IAM permissions the apply
+  role lacks (the pre-apply guard names them) — remains a separate, deliberate human
+  `terraform apply`. Never run `terraform apply` by hand, dispatch a `deploy-*.yml` workflow, push
+  a deploy tag, or take any other production-affecting action on the user's behalf without explicit
+  approval; an agent delivers to `main` but never tags a release or applies prod.
 - Merging a card's PR to `main` is automatic in this workspace once the PR's CI is green. After a
   passing code-review and a green end-to-end check, the delivering agent rebases on `main`, opens
   the PR, waits for CI to pass, merges, and moves the card to Done (see the `delivering-linear-cards`

@@ -5,7 +5,7 @@ name: _deploy
 # deploy-backup) and the tag release (release.yml); never triggered directly. AWS
 # auth is GitHub OIDC role
 # assumption (no static keys, no secrets in YAML); the role ARN, region, ECR
-# repos, and ECS cluster/service names come from repo/environment variables.
+# repos, and ECS cluster/service names come from repository variables.
 on:
   workflow_call:
     inputs:
@@ -69,32 +69,26 @@ on:
           is_default_branch), so a force-new-deployment would redeploy the old
           image. Pinning the sha-<7> revision makes the release deterministic
           and immune to a later unrelated `latest` push. The workflow_dispatch
-          wrappers leave it false and keep the existing force-new-deployment
-          behaviour unchanged.
+          wrappers set it too: once a release has pinned a service, only a
+          pinned roll can move it, so pinning keeps them a working
+          hotfix/rollback path. It also picks up the newest task-definition
+          revision (terraform-side container changes), which the service
+          resource itself no longer tracks (ignore_changes, modules/service).
         type: boolean
         required: false
         default: false
-      environment:
-        description: >-
-          Optional GitHub Environment to bind the deploy job to (isolates
-          environment-scoped variables and any protection rules). The
-          tag-triggered release path passes "production"; the workflow_dispatch
-          wrappers leave it empty so their behaviour is unchanged. An empty
-          string means no environment binding.
-        type: string
-        required: false
-        default: ""
 permissions:
   contents: read
   id-token: write
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # No environment binding for the dispatch wrappers (empty input); the
-    # release path passes "production" to isolate prod-scoped variables. The
-    # explicit null (rather than an empty string) makes "unset" intentional and
-    # immune to a runtime change in how an empty environment name is treated.
-    environment: ${{ inputs.environment != '' && inputs.environment || null }}
+    # No GitHub Environment binding, deliberately: binding one would swap the
+    # OIDC subject from the ref (refs/heads/main, refs/tags/v*) to
+    # repo:<repo>:environment:<name>, which the deploy role's ref-scoped trust
+    # (modules/iam) does not accept, and on the release it would add an approval
+    # click per service. Only the release's terraform apply binds `production`
+    # (see release.yml).
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       PROJECT: ${{ vars.DEPLOY_PROJECT }}
@@ -280,14 +274,13 @@ jobs:
             echo "Keycloak DB bootstrap failed (exit=$EXIT_CODE, reason=$STOP_REASON)"; exit 1
           fi
           echo "Keycloak DB bootstrap applied"
-      # Rolling ECS deploy for ALB-fronted services (backend, frontend). The
-      # service's deployment circuit breaker rolls back to the last good task
-      # set on failure (when enabled on the service); wait services-stable blocks
-      # until the rollout settles or fails, so a failed deploy fails this step.
       # Rolling deploy that re-pulls whatever image the task definition pins.
-      # Used by the workflow_dispatch wrappers: on the default branch the build
-      # also moved the `latest` tag, so a force-new-deployment picks up the new
-      # image. Unchanged from the original dispatch behaviour.
+      # No current caller uses it (the release and every dispatch wrapper pin);
+      # it remains for a caller that explicitly wants restart-current-revision
+      # semantics, but note it cannot move a sha-pinned service to a new image.
+      # Like the pinned roll, wait services-stable blocks until the rollout
+      # settles or fails (the circuit breaker rolls back on failure when
+      # enabled), so a failed deploy fails this step.
       - name: Roll service (rolling, force-new-deployment)
         if: inputs.deploy_mode == 'rolling' && !inputs.pin_image_tag
         env:
@@ -350,6 +343,16 @@ jobs:
                     .containerDefinitions[]
                     | if .name == $NAME then .image = $IMAGE else . end
                   ]')"
+          # Postcondition: a container must now reference the new image. The jq
+          # match is by container name; if a rename ever breaks the
+          # name-equals-service contract, fail loudly here instead of
+          # registering an unchanged revision and reporting a green deploy that
+          # shipped nothing.
+          if ! echo "$NEW_DEF" | jq -e --arg IMAGE "$IMAGE" \
+              '[.containerDefinitions[].image] | index($IMAGE) != null' >/dev/null; then
+            echo "No container named ${ECS_SERVICE} in ${FAMILY}; refusing a no-op roll" >&2
+            exit 1
+          fi
           NEW_ARN="$(aws ecs register-task-definition --cli-input-json "$NEW_DEF" \
             --query 'taskDefinition.taskDefinitionArn' --output text)"
           echo "Registered ${NEW_ARN}"

@@ -29,12 +29,16 @@ pass under `-race`; the frontend uses Vitest. See the `testing` skill for the fu
   ingestion is not a deploy: the EC2 hosts pull the current backend image and are driven on demand
   by `/crawler` and `/consumer` (see [`docs/ingestion-hosts.md`](ingestion-hosts.md)).
 - `release.yml` - tag-triggered production release. Pushing a `v*` tag whose commit is on `main`
-  deploys backend (rolling + migrate) then frontend (`needs: backend`) via `_deploy.yml`, binding the
-  jobs to the `production` GitHub Environment. A guard job fails fast if the tagged commit is not an
-  ancestor of `origin/main`, so a tag cut from a side branch deploys nothing; an ordinary merge to
-  `main` (no tag) deploys nothing. The roll pins each service to a fresh task-definition revision on
-  the build's immutable `sha-<7>` image (the moving `latest` tag is not advanced on a tag ref), so a
-  later unrelated `latest` push cannot drift prod. The tag is the deliberate human approval; see
+  applies `stack/terraform/prod` (via `_terraform.yml`; the one job bound to the `production` GitHub
+  Environment, so a required reviewer gates the whole release with a single click), then deploys
+  backend (rolling + migrate), keycloak (DB bootstrap + rolling, skipped when the `DEPLOY_KEYCLOAK`
+  repository variable is `false`), and frontend via `_deploy.yml`. A guard job fails fast if the
+  tagged commit is not an ancestor of `origin/main`, so a tag cut from a side branch deploys
+  nothing; an ordinary merge to `main` (no tag) deploys nothing. The roll pins each service to a
+  fresh task-definition revision on the build's immutable `sha-<7>` image (the moving `latest` tag
+  is not advanced on a tag ref), so a later unrelated `latest` push cannot drift prod, and the apply
+  cannot revert the pin (the service modules ignore `task_definition` drift). The tag is the
+  deliberate human approval; see
   [Infrastructure -> Deploys](infrastructure.md#deploys-human-gated).
 
 ## Claude workflow
