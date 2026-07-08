@@ -208,7 +208,7 @@ variable "embed_worker_max_attempts" {
 variable "enable_crawl_worker" {
   type        = bool
   default     = false
-  description = "Create the crawl-worker service (crawlworker), mirroring embedworker for the category-crawl ingestion path. Drains the crawl queue and upserts embedded chunks, so it requires enable_rds, and like embedworker it runs under an EXTERNAL deployment controller that prod does not yet provision (no worker-lifecycle module here), so it stays foundation-only until that is added. Default false."
+  description = "Create the crawl-worker service (crawlworker), mirroring embedworker for the category-crawl ingestion path. Drains the crawl queue and upserts embedded chunks, so it requires enable_rds, and like embedworker it runs under an EXTERNAL deployment controller that prod does not provision (dev's on-demand ingestion moved to EC2 hosts), so it stays foundation-only until one is added. Default false."
 }
 
 variable "crawl_worker_cpu" {
@@ -310,7 +310,7 @@ variable "scrutins_producer_memory" {
 variable "enable_factcheck_worker" {
   type        = bool
   default     = false
-  description = "Create the fact-check-worker service (factcheckworker), draining the factcheck.claims queue and upserting curated claims. Requires enable_rds, and like the other worker fleets it runs under an EXTERNAL deployment controller that prod does not yet provision (no worker-lifecycle module here), so it stays foundation-only until that is added. Default false."
+  description = "Create the fact-check-worker service (factcheckworker), draining the factcheck.claims queue and upserting curated claims. Requires enable_rds, and like the other worker fleets it runs under an EXTERNAL deployment controller that prod does not provision (dev's on-demand ingestion moved to EC2 hosts), so it stays foundation-only until one is added. Default false."
 }
 
 variable "factcheck_worker_cpu" {
@@ -346,7 +346,7 @@ variable "factcheck_worker_max_attempts" {
 variable "enable_scrutins_worker" {
   type        = bool
   default     = false
-  description = "Create the scrutins-worker service (scrutinsworker), draining the scrutins.votes queue and upserting vote records. Requires enable_rds, and like the other worker fleets it runs under an EXTERNAL deployment controller that prod does not yet provision (no worker-lifecycle module here), so it stays foundation-only until that is added. Default false."
+  description = "Create the scrutins-worker service (scrutinsworker), draining the scrutins.votes queue and upserting vote records. Requires enable_rds, and like the other worker fleets it runs under an EXTERNAL deployment controller that prod does not provision (dev's on-demand ingestion moved to EC2 hosts), so it stays foundation-only until one is added. Default false."
 }
 
 variable "scrutins_worker_cpu" {

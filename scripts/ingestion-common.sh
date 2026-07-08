@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Shared configuration resolution for the on-demand ingestion control scripts
-# (worker-fleet.sh and run-ingest-task.sh). Sourced, never executed directly.
+# (aws-target-guard.sh, ingest-host.sh, insee-idempotency-check.sh). Sourced,
+# never executed directly.
 #
 # Everything is sourced from terraform outputs, SSM, or the environment - never
 # hard-coded - so the same scripts drive any environment the infra publishes:
@@ -93,8 +94,8 @@ ig_resolve_security_group() {
 }
 
 # ig_aws ARGS...: run an AWS CLI call, or, under DRY_RUN, print it and skip. A
-# mutating call (update-service, run-task, lambda invoke) routes through here so
-# the targets are dry-runnable without infra. Read-only calls (describe, wait,
+# mutating call (ec2 start/stop-instances, ssm send-command) routes through here
+# so the targets are dry-runnable without infra. Read-only calls (describe, wait,
 # ssm get-parameter) call aws directly so a dry run still resolves real state
 # when credentials are present, and is harmless when they are not.
 ig_aws() {

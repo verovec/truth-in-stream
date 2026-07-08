@@ -57,13 +57,13 @@ resource "aws_ecs_task_definition" "main" {
   ])
 }
 
-# EXTERNAL deployment controller: the worker-lifecycle lambda owns rollout (task
+# EXTERNAL deployment controller: an external controller owns rollout (task
 # sets) and scale (desired count), so terraform provisions only the service shell.
 # task_definition, network_configuration and the rolling-deploy percentages move
 # off the service - a task set carries the task definition and network, and the
-# lambda creates and promotes it. The aws_ecs_task_definition above stays as the
-# base family the lambda registers new image revisions from; the service does not
-# reference it directly. On the very first deploy the service has no task set
+# controller creates and promotes it. The aws_ecs_task_definition above stays as
+# the base family the controller registers new image revisions from; the service
+# does not reference it directly. On the very first deploy the service has no task set
 # until the lambda bootstraps one. See stack/terraform/README.md for the bootstrap
 # order.
 resource "aws_ecs_service" "main" {

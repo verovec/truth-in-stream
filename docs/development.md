@@ -20,13 +20,14 @@ pass under `-race`; the frontend uses Vitest. See the `testing` skill for the fu
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.
 - `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on merge to
   `main` (GitHub OIDC, `AWS_ROLE_ARN`).
-- Per-service deploy workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-workers.yml`,
-  `deploy-backup.yml`), each `workflow_dispatch`-only (human-gated) and calling the reusable
-  `_deploy.yml`. A pipeline builds, Trivy-scans, and pushes one service's image to ECR with an
-  immutable `sha-<short>` tag, then rolls that service alone and waits for stability (backend also
-  builds/scans the migrate image and runs migrations; workers roll the ingestion fleet via the
-  worker-lifecycle lambda; backup is image-only, picked up by the scheduled task on its next run).
-  No long-lived AWS credentials (GitHub OIDC). Use these for ad-hoc deploys and rollbacks.
+- Per-service deploy workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-backup.yml`),
+  each `workflow_dispatch`-only (human-gated) and calling the reusable `_deploy.yml`. A pipeline
+  builds, Trivy-scans, and pushes one service's image to ECR with an immutable `sha-<short>` tag,
+  then rolls that service alone and waits for stability (backend also builds/scans the migrate image
+  and runs migrations; backup is image-only, picked up by the scheduled task on its next run).
+  No long-lived AWS credentials (GitHub OIDC). Use these for ad-hoc deploys and rollbacks. Cloud
+  ingestion is not a deploy: the EC2 hosts pull the current backend image and are driven on demand
+  by `/crawler` and `/consumer` (see [`docs/ingestion-hosts.md`](ingestion-hosts.md)).
 - `release.yml` - tag-triggered production release. Pushing a `v*` tag whose commit is on `main`
   deploys backend (rolling + migrate) then frontend (`needs: backend`) via `_deploy.yml`, binding the
   jobs to the `production` GitHub Environment. A guard job fails fast if the tagged commit is not an

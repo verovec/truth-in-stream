@@ -409,11 +409,5 @@ locals {
     # (metrics_lambda_actions covers the function lifecycle), the health
     # dashboard, and the alarm/SNS/lambda-permission actions in observability_actions.
     var.include_observability ? concat(local.observability_actions, local.metrics_lambda_actions, local.dashboard_actions) : [],
-    # Worker-lifecycle lambda: the three handler functions (lambda lifecycle) and
-    # their EventBridge Scheduler schedules. Its execution role/policy are covered
-    # by iam_actions, its log groups by logs_actions, and its scaling-config
-    # parameter by ssm_actions; the runtime ECS/task-set permissions ride on the
-    # function's own role, not the apply role.
-    var.include_worker_lifecycle ? concat(local.metrics_lambda_actions, local.scheduled_task_actions) : [],
   )
 }

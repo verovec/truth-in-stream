@@ -55,49 +55,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/db-push.test.sh
-  # Unit-test the ingestion deploy helper (producer repin, worker fleet roll via
-  # the lifecycle lambda, queue-version roll) with a stubbed aws CLI (no AWS
-  # account, no real ECS or lambda).
-  deploy-ingestion-script:
-    runs-on: ubuntu-latest
-    permissions: { contents: read }
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/deploy-ingestion.test.sh
-  # Unit-test the on-demand worker fleet scale control (up/down/status via
-  # update-service) with a stubbed aws CLI (no AWS account, no real ECS).
-  worker-fleet-script:
-    runs-on: ubuntu-latest
-    permissions: { contents: read }
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/worker-fleet.test.sh
-  # Unit-test the one-shot ingest runner (run-task with command override, wait,
-  # exit-code report) with a stubbed aws CLI (no AWS account, no real ECS).
-  run-ingest-task-script:
-    runs-on: ubuntu-latest
-    permissions: { contents: read }
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/run-ingest-task.test.sh
-  # Unit-test the /ingest account guard (live sts identity vs the committed
-  # deploy/targets.json expected account; refuse on mismatch) with a stubbed aws
-  # CLI (no AWS account, no real credentials).
+  # Unit-test the /crawler and /consumer account guard (live sts identity vs the
+  # committed deploy/targets.json expected account; refuse on mismatch) with a
+  # stubbed aws CLI (no AWS account, no real credentials).
   aws-target-guard-script:
     runs-on: ubuntu-latest
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/aws-target-guard.test.sh
-  # Unit-test the /ingest orchestrator (guard -> validate env -> family/service
-  # preflight -> fleet up -> producer -> drain -> fleet down, with trap-teardown)
-  # with a stubbed aws CLI and DRY_RUN (no AWS account, no real ECS/CloudWatch).
-  ingest-run-script:
-    runs-on: ubuntu-latest
-    permissions: { contents: read }
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/ingest-run.test.sh
   # Unit-test the /crawler and /consumer ingestion-host orchestrator (guard ->
   # required-env validation -> resolve by Name tag -> start-if-stopped -> ssm
   # send-command -> get-command-invocation poll -> optional stop) with a stubbed

@@ -750,11 +750,12 @@ module "db_backup" {
 
 # Embedding-worker fleet. A headless ECS service that drains the broker queue and
 # embeds chunks into the staging corpus. It runs under an EXTERNAL deployment
-# controller, so a worker-lifecycle lambda must create and scale its task sets -
-# that lambda is wired in dev (enable_worker_lifecycle) but not yet in prod, so
-# enabling this fleet in prod requires adding the worker-lifecycle module here
-# first; without it the service has no task set and runs nothing. Gated off by
-# default. Outbound-only (broker, RDS, Voyage) on the shared tasks SG.
+# controller, so an external controller must create and scale its task sets;
+# prod provisions none, so without one the service has no task set and runs
+# nothing. Dormant foundation, gated off by default: dev's on-demand ingestion
+# moved to EC2 hosts (docs/ingestion-hosts.md), so a future card should converge
+# prod onto that model or remove this fleet. Outbound-only (broker, RDS, Voyage)
+# on the shared tasks SG.
 module "embed_worker" {
   source = "../modules/worker"
   # Writes embeddings to the database, so it requires RDS as well as its own
@@ -792,9 +793,9 @@ module "embed_worker" {
 
 # Crawl-worker fleet, the category-crawl counterpart to embed_worker. It drains
 # the crawl queue and upserts embedded chunks into the live corpus. Like
-# embed_worker it runs under an EXTERNAL deployment controller, so it needs a
-# worker-lifecycle lambda to create and scale its task sets - not yet provisioned
-# in prod - so enabling it here is foundation-only until that lambda is added.
+# embed_worker it runs under an EXTERNAL deployment controller, so it needs an
+# external controller to create and scale its task sets - none is provisioned
+# in prod - so enabling it here is foundation-only until one is added.
 # Writes to the database, so it requires RDS. Gated off by default.
 module "crawl_worker" {
   source = "../modules/worker"
@@ -836,8 +837,8 @@ module "crawl_worker" {
 # touches the database (every field a chunk needs travels in the message), so it
 # is NOT gated on enable_rds - only on enable_crawl_producer. Launch it with
 # `aws ecs run-task` against the family this module outputs, overriding
-# CRAWL_CATEGORIES per run. Container name = the bare suffix wikicrawl, so the
-# run-ingest-task command override targets it unchanged. Gated off by default.
+# CRAWL_CATEGORIES per run. Container name = the bare suffix wikicrawl, so an
+# `aws ecs run-task --overrides` targets it unchanged. Gated off by default.
 module "crawl_producer" {
   source = "../modules/scheduled-task"
   count  = var.enable_crawl_producer ? 1 : 0
@@ -971,9 +972,9 @@ module "scrutins_producer" {
 # Fact-check-worker fleet. A headless ECS service that drains the fact-check queue
 # (factcheck.claims), embeds each claim's text through Voyage, and upserts the
 # curated claim record into the political claim DB. It mirrors the embedding and
-# crawl workers: same EXTERNAL deployment controller (so a worker-lifecycle lambda
-# must create and scale its task sets - not yet provisioned in prod, so enabling it
-# here is foundation-only until that lambda is added), outbound-only on the shared
+# crawl workers: same EXTERNAL deployment controller (which must create and scale
+# its task sets - none is provisioned in prod, so enabling it here is
+# foundation-only until one is added), outbound-only on the shared
 # tasks SG. It reuses the CRAWL_WORKER_* tuning the binary reads. Writes to the
 # database, so it requires RDS as well as its own enable flag; gated off by default.
 module "factcheck_worker" {
@@ -1015,7 +1016,7 @@ module "factcheck_worker" {
 # Scrutins-worker fleet. A headless ECS service that drains the scrutins queue
 # (scrutins.votes), parses each scrutin job, and upserts the vote record into the
 # database. It mirrors the other worker fleets: same EXTERNAL deployment controller
-# (foundation-only in prod until a worker-lifecycle lambda is added),
+# (foundation-only in prod until such a controller is added),
 # outbound-only on the shared tasks SG. The scrutins worker parses and upserts and
 # never embeds, so it needs no embedding key (it reads SCRUTINS_WORKER_* tuning).
 # Writes to the database, so it requires RDS as well as its own enable flag; gated
@@ -1083,8 +1084,8 @@ module "observability" {
 
   cluster_name = module.ecs.cluster_name
   # Only the always-on serving services get a running-task floor alarm. The embed
-  # and crawl worker fleets are scale-to-zero by design (the worker-lifecycle
-  # controller drops desired count to 0 when their queue is idle), so a min-task
+  # and crawl worker fleets are scale-to-zero foundation (an external controller
+  # would drop desired count to 0 when their queue is idle), so a min-task
   # floor would false-page an idle-but-healthy worker; they are deliberately
   # excluded from this alarm.
   ecs_service_names = [module.backend.service_name, module.frontend.service_name]

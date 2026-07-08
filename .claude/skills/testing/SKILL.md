@@ -9,7 +9,7 @@ Core rule: **integrating a feature card means the entire suite is green on BOTH 
 
 ## The gate
 
-Every PR runs four jobs (`.github/workflows/pr.yml`): `frontend-lint`, `frontend-test`, `backend-lint`, `backend-test`. The green PR CI is the merge gate. Deploys are separate, human-gated, per-service workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-workers.yml`, all `workflow_dispatch`-only, calling the reusable `_deploy.yml`); each Trivy-scans its image and blocks on HIGH/CRITICAL vulnerabilities before pushing it. They build one service alone and do not re-run the cross-stack suite, so the PR gate is the test/lint authority - never merge on red CI expecting a deploy to re-check.
+Every PR runs four jobs (`.github/workflows/pr.yml`): `frontend-lint`, `frontend-test`, `backend-lint`, `backend-test`. The green PR CI is the merge gate. Deploys are separate, human-gated, per-service workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-backup.yml`, all `workflow_dispatch`-only, calling the reusable `_deploy.yml`); each Trivy-scans its image and blocks on HIGH/CRITICAL vulnerabilities before pushing it. They build one service alone and do not re-run the cross-stack suite, so the PR gate is the test/lint authority - never merge on red CI expecting a deploy to re-check.
 
 A red job means the card is not done. Banned responses to red: merging anyway, `t.Skip`/`it.skip` to get green, deleting or loosening the failing test in the same diff as the feature that broke it, re-running until a flaky test passes. A flaky test is a bug - file a card and fix the root cause (Go: `-race` + `testing/synctest`; frontend: no timing-based assertions).
 

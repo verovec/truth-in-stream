@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Method:
 #   1. count INSEE passages in wiki_chunks now            (baseline)
-#   2. re-run the statsingest ingest                       (run-ingest-task.sh)
+#   2. re-run the statsingest ingest                       (INSEE_REINGEST_CMD)
 #   3. count INSEE passages again                          (after)
 #   4. assert after == baseline                            (no growth = idempotent)
 #
@@ -36,7 +36,13 @@ set -euo pipefail
 #   SKIP_INGEST=1   only count baseline and after WITHOUT re-running the ingest
 #                   (e.g. to re-check after a manual ingest); both counts run
 #                   back to back so they must match trivially - used by the test.
-#   DRY_RUN=1   passed through to run-ingest-task.sh (prints the run-task, skips it)
+#   INSEE_REINGEST_CMD  the re-ingest command run between the two counts. Defaults
+#                   to the on-demand EC2 crawler host running the stats producer
+#                   (scripts/ingest-host.sh crawler stats up --stop-after), the
+#                   single cloud ingestion model; override it to point elsewhere
+#                   or, in the test, at a stub.
+#   DRY_RUN=1   honoured by the default re-ingest command (ingest-host.sh prints
+#               the mutating AWS calls and skips the real waits)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ingestion-common.sh
@@ -46,6 +52,12 @@ PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-postgres}"
 PGDATABASE="${PGDATABASE:-truthinstream}"
+
+# The re-ingest command run between the two counts (unless SKIP_INGEST). The stats
+# producer re-upserts the INSEE passages, so a second run must add no rows. It runs
+# through the on-demand EC2 crawler host - the single cloud ingestion model - so
+# this checkpoint drives the same path an operator uses; override for a stub/test.
+INSEE_REINGEST_CMD="${INSEE_REINGEST_CMD:-$SCRIPT_DIR/ingest-host.sh crawler stats up --stop-after}"
 
 # pg_conn: echo the connection string psql connects with. PGURL wins; otherwise
 # assemble the localhost-tunnel form. The password rides in PGPASSWORD in the
@@ -87,8 +99,10 @@ main() {
   echo "baseline INSEE passages: ${baseline}" >&2
 
   if [[ -z "${SKIP_INGEST:-}" ]]; then
-    echo "re-running statsingest (this re-ingests INSEE; an idempotent ingest must not duplicate)" >&2
-    "$SCRIPT_DIR/run-ingest-task.sh" statsingest
+    echo "re-running statsingest via the crawler host (this re-ingests INSEE; an idempotent ingest must not duplicate)" >&2
+    # Word-split intended: INSEE_REINGEST_CMD is a command plus its arguments.
+    # shellcheck disable=SC2086
+    $INSEE_REINGEST_CMD
   else
     echo "SKIP_INGEST set: not re-running the ingest; counting again for a back-to-back equality check" >&2
   fi

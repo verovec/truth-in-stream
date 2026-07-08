@@ -61,7 +61,7 @@ Both the `aud` and `sub` `StringEquals` conditions are required; the federated p
 | `EcsDeploy` | `ecs:DescribeServices`, `UpdateService`, `RunTask`, `DescribeTasks`, `DescribeTaskDefinition` | `*` gated by `ArnEquals` on `ecs:cluster` = `var.cluster_arn` |
 | `EcsTaskDefinition` | `ecs:DescribeTaskDefinition`, `RunTask` | `task-definition/${local.name}-*` (family carries no cluster condition key) |
 | `EcsRegisterTaskDefinition` | `ecs:RegisterTaskDefinition` | `*` — AWS offers no resource-level ARN or family/cluster condition key; document this in-code |
-| `InvokeWorkerLifecycle` | `lambda:InvokeFunction` | `function:${local.name}-*` (this env's functions only) |
+| `InvokeEnvironmentLambda` | `lambda:InvokeFunction` | `function:${local.name}-*` (this env's functions only; currently unused, retained after the Fargate worker-fleet roll was retired) |
 | `PassTaskRoles` | `iam:PassRole` | the two task-role ARNs, gated by `iam:PassedToService` = `ecs-tasks.amazonaws.com` |
 | `ReadDeployParameters` | `ssm:GetParameter`, `GetParameters` | `var.ssm_parameter_arns`, in a `dynamic` block keyed on a non-empty list |
 
