@@ -25,11 +25,16 @@ type Querier interface {
 	// corpus: every statistical corpus (separate corpora that share this table) is
 	// excluded so its rows never skew the wiki change-fraction guard.
 	CountWikiPages(ctx context.Context, excludeCorpora []string) (int64, error)
+	// The id is caller-minted (the object key embeds it), unlike videos whose id
+	// the database assigns.
+	CreateDocument(ctx context.Context, arg CreateDocumentParams) (Document, error)
 	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
 	// Insert a pending YouTube ingest. source_id is the canonical video id; the
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
 	// row and the caller resolves the existing record by source id instead.
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
+	// Sentences and claims go with the document via ON DELETE CASCADE.
+	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteWikiPage(ctx context.Context, pageID int64) error
 	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
 	// deletion with page id 0, so the stored page can only be found by its title.
@@ -40,11 +45,18 @@ type Querier interface {
 	// corpus filter keeps statistical evidence (separate corpora sharing this
 	// table) out of the encyclopedic clustering it does not belong to.
 	EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error)
+	GetDocument(ctx context.Context, id uuid.UUID) (Document, error)
 	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
+	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
+	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]DocumentClaim, error)
+	ListDocumentSentences(ctx context.Context, documentID uuid.UUID) ([]DocumentSentence, error)
+	// Library rows, newest first, each with its verdict summary counts. The FILTER
+	// counts read stored claims only; a document with no claims counts zero.
+	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	ListVideos(ctx context.Context) ([]Video, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an
@@ -71,6 +83,10 @@ type Querier interface {
 	// referenced twice but sqlc collapses it to one parameter, so the index still
 	// drives the ORDER BY.
 	SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error)
+	// Flip a pending document to ready with its extraction metadata. The status
+	// guard makes extraction exactly-once: a non-pending document returns no row
+	// and the store maps that to a conflict.
+	SetDocumentExtracted(ctx context.Context, arg SetDocumentExtractedParams) (Document, error)
 	// A failed ingest: record the reason and flip the record to failed.
 	SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error)
 	// A completed ingest: record the probed title, size, and duration, clear any

@@ -189,6 +189,20 @@ func (s *S3Store) Download(ctx context.Context, key string) (io.ReadCloser, erro
 	return out.Body, nil
 }
 
+// Delete removes key from the bucket. S3 DeleteObject is idempotent - removing
+// an absent key succeeds - so a retried document deletion never fails on an
+// object that is already gone.
+func (s *S3Store) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("storage: delete object %q: %w", key, err)
+	}
+	return nil
+}
+
 // Exists reports whether key is present in the bucket. A missing object is not
 // an error; any other failure is returned wrapped.
 func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {

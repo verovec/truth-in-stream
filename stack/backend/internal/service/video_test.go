@@ -181,11 +181,13 @@ type fakeMediaStore struct {
 	existsErr          error
 	presignUploadErr   error
 	presignDownloadErr error
+	deleteErr          error
 
 	uploadKey   string
 	downloadKey string
 	existsKey   string
 	existsCalls int
+	deletedKeys []string
 }
 
 func (f *fakeMediaStore) PresignUpload(_ context.Context, key string) (domain.PresignedRequest, error) {
@@ -211,6 +213,14 @@ func (f *fakeMediaStore) Exists(_ context.Context, key string) (bool, error) {
 		return false, f.existsErr
 	}
 	return f.exists, nil
+}
+
+func (f *fakeMediaStore) Delete(_ context.Context, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedKeys = append(f.deletedKeys, key)
+	return nil
 }
 
 const testMaxUpload = 1 << 20

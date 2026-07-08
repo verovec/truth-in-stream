@@ -27,4 +27,7 @@ type MediaStore interface {
 	PresignDownload(ctx context.Context, key string) (PresignedRequest, error)
 	// Exists reports whether an object with key is present.
 	Exists(ctx context.Context, key string) (bool, error)
+	// Delete removes the object with key. Deleting an absent key succeeds (S3
+	// semantics), so callers can retry a partial deletion safely.
+	Delete(ctx context.Context, key string) error
 }
