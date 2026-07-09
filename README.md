@@ -106,6 +106,7 @@ Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observabilit
 
 | Topic | Where |
 |-------|-------|
+| First production setup (AWS bootstrap through first ingested data) | [`docs/first-setup.md`](docs/first-setup.md) |
 | Configuration, auth secrets, local seeded data | [`docs/configuration.md`](docs/configuration.md) |
 | Tests, CI, and the Claude delivery workflow | [`docs/development.md`](docs/development.md) |
 | Infrastructure & operations (AWS edge, deploy, backups, observability) | [`docs/infrastructure.md`](docs/infrastructure.md) |
