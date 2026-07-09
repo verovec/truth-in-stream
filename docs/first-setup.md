@@ -103,8 +103,8 @@ cd stack/terraform/prod && terraform init && terraform apply
   until step 8 publishes its validation records.
 - After the apply, extend the CI apply role's policy with the `prod` root's
   `terraform output apply_required_actions` — it differs from dev's. CI plans
-  `prod` (guard included) on every push to `main` and the release applies it, so
-  a missing grant turns both red.
+  `prod` (guard included) on every push to `main` that touches `stack/terraform`,
+  and the release applies it, so a missing grant turns both red.
 
 ### 6. Point the deploy engine at production
 
@@ -120,11 +120,12 @@ so the set targets exactly one environment at a time. For the production bring-u
   terraform but push images to and roll the dev services.
 - Optional: `DEPLOY_KEYCLOAK=false` skips the release's Keycloak job.
 
-To roll dev images (step 3's flapping services), temporarily point
-`AWS_DEPLOY_ROLE_ARN` at the dev root's output and `DEPLOY_ENVIRONMENT` at `dev`,
-dispatch `deploy-backend` and `deploy-frontend` (dev runs no Keycloak service),
-then point the set back at prod. The deploy engine fails fast, naming any
-variable left unset.
+To roll dev images (step 3's flapping services), first fill the dev app secrets
+(`make push-secrets ENV=dev` — the backend task will not stabilize without them),
+then temporarily point `AWS_DEPLOY_ROLE_ARN` at the dev root's output and
+`DEPLOY_ENVIRONMENT` at `dev`, dispatch `deploy-backend` and `deploy-frontend`
+(dev runs no Keycloak service), and point the set back at prod afterwards. The
+deploy engine fails fast, naming any variable left unset.
 
 ### 7. Fill the application secrets
 
@@ -136,10 +137,12 @@ make push-secrets ENV=prod    # pushes the allowlisted keys from .env; asks to t
 ```
 
 The allowlist lives in `scripts/push-secrets.sh`: the embedding, transcription,
-LLM, and Slack keys, plus the retired legacy login keys. Leave the legacy keys
-unset in `.env` — with `enable_legacy_password_login` off (the prod default)
-terraform creates no containers for them, and a push would create unmanaged
-secrets. Three secrets are outside the allowlist and are set by hand with
+LLM, and Slack keys, plus the retired legacy login keys. With
+`enable_legacy_password_login` off (the prod default) terraform creates no
+containers for the legacy trio, so clear `AUTH_PASSWORD_HASH` in `.env` before
+pushing — `.env.example` ships a demo value, and a non-empty key makes
+`push-secrets` create an unmanaged secret holding that committed hash. Three
+secrets are outside the allowlist and are set by hand with
 `aws secretsmanager put-secret-value`:
 
 - `truth-in-stream/prod/app/checkworthy-api-key` (crawl check-worthiness gate)
