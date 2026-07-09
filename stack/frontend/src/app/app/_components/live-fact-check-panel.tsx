@@ -10,6 +10,7 @@ import type { LiveClaim } from "@/lib/live/claims";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveStatement } from "@/lib/live/statements";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 import { LiveFactCheckList } from "./live-fact-check-list";
 import { LiveStatementList } from "./live-statement-list";
 import { PlaybackClock } from "./playback-clock";
@@ -79,11 +80,13 @@ export function LiveFactCheckPanel() {
     [statements, claimsFor],
   );
 
+  const { t } = useAppI18n();
+
   // The operator can drag (or arrow-key) the divider to trade height between the
   // transcript and the fact-check list, so a long transcript and a long verdict
   // list can each be given room without the panel growing.
   const { containerRef, topGrow, bottomGrow, separatorProps } =
-    useVerticalSplit("Resize subtitles and fact checks");
+    useVerticalSplit(t.panel.separator);
 
   return (
     <aside
@@ -97,15 +100,15 @@ export function LiveFactCheckPanel() {
       // small top inset, the same height keeps it within the viewport. Works
       // because the grid is items-start, so the taller left column gives this
       // column travel to stick.
-      className="sticky top-4 flex h-[calc(100svh-16rem)] flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
+      className="sticky top-4 flex h-[calc(100svh-16rem)] flex-col gap-3 rounded-2xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-white/5"
     >
       <header className="flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-2">
           <h2
             id="live-analysis-heading"
-            className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
+            className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60"
           >
-            Live analysis
+            {t.panel.heading}
           </h2>
           <LiveStatusPill status={status} />
         </div>
@@ -119,11 +122,11 @@ export function LiveFactCheckPanel() {
           classes. */}
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col">
         <section
-          aria-label="Live subtitles"
+          aria-label={t.panel.subtitlesAria}
           style={{ flexGrow: topGrow, flexBasis: 0 }}
           className="flex min-h-0 flex-col gap-2 overflow-hidden"
         >
-          <RegionHeading>Subtitles</RegionHeading>
+          <RegionHeading>{t.panel.subtitles}</RegionHeading>
           {/* The interim caption is the live utterance, newer than any committed
               statement, so it sits at the top above the newest-first list. */}
           <LiveCaption text={caption} />
@@ -147,11 +150,11 @@ export function LiveFactCheckPanel() {
             negative margins cancel the panel's padding so the tint reaches the
             border; the padding is added back so the content keeps its inset. */}
         <section
-          aria-label="Fact checks"
+          aria-label={t.panel.factChecks}
           style={{ flexGrow: bottomGrow, flexBasis: 0 }}
-          className="-mx-4 -mb-4 flex min-h-0 flex-col gap-2 overflow-hidden rounded-b-xl bg-zinc-50/80 px-4 pb-4 pt-3 dark:bg-zinc-900/40"
+          className="-mx-4 -mb-4 flex min-h-0 flex-col gap-2 overflow-hidden rounded-b-2xl bg-ink/[0.03] px-4 pb-4 pt-3 dark:bg-night/40"
         >
-          <RegionHeading>Fact checks</RegionHeading>
+          <RegionHeading>{t.panel.factChecks}</RegionHeading>
           <LiveFactCheckList
             entries={entries}
             selectedStatementId={selection?.id ?? null}
@@ -170,10 +173,10 @@ function PanelSeparator(props: SeparatorProps) {
   return (
     <div
       {...props}
-      className="group relative flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sky-500"
+      className="group relative flex h-3 shrink-0 cursor-row-resize touch-none items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-bleu-flag dark:focus-visible:outline-paper/60"
     >
-      <span className="h-px w-full bg-zinc-200 transition-colors group-hover:bg-sky-400 dark:bg-zinc-800 dark:group-hover:bg-sky-500/60" />
-      <span className="absolute h-1 w-12 rounded-full bg-zinc-300 transition-colors group-hover:bg-sky-400 group-focus-visible:bg-sky-400 dark:bg-zinc-700 dark:group-hover:bg-sky-500/60" />
+      <span className="h-px w-full bg-black/10 transition-colors group-hover:bg-bleu-flag dark:bg-white/10 dark:group-hover:bg-sky-400/60" />
+      <span className="absolute h-1 w-12 rounded-full bg-black/15 transition-colors group-hover:bg-bleu-flag group-focus-visible:bg-bleu-flag dark:bg-white/15 dark:group-hover:bg-sky-400/60" />
     </div>
   );
 }
@@ -182,7 +185,7 @@ function PanelSeparator(props: SeparatorProps) {
 // the label from being squeezed when its region is dragged to the minimum.
 function RegionHeading({ children }: { children: string }) {
   return (
-    <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+    <h3 className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-ink/50 dark:text-paper/50">
       {children}
     </h3>
   );
@@ -199,11 +202,11 @@ function LiveCaption({ text }: { text: string }) {
   return (
     <p
       aria-live="polite"
-      className="flex items-start gap-2 border-b border-dashed border-zinc-200 pb-2 text-sm italic leading-5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+      className="flex items-start gap-2 border-b border-dashed border-black/10 pb-2 text-sm italic leading-5 text-ink/50 dark:border-white/10 dark:text-paper/50"
     >
       <span
         aria-hidden="true"
-        className="mt-1.5 size-1.5 shrink-0 animate-pulse rounded-full bg-rose-500"
+        className="mt-1.5 size-1.5 shrink-0 animate-pulse rounded-full bg-rouge dark:bg-rouge-flag"
       />
       {text}
     </p>
@@ -212,18 +215,19 @@ function LiveCaption({ text }: { text: string }) {
 
 // LiveStatusPill is the small live/reconnecting indicator next to the heading.
 function LiveStatusPill({ status }: { status: LiveStatus }) {
+  const { t } = useAppI18n();
   if (status === "live") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
-        <span className="size-1.5 animate-pulse rounded-full bg-rose-500" />
-        Live
+      <span className="inline-flex items-center gap-1 rounded-full bg-rouge/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rouge dark:bg-rouge/15 dark:text-rouge-flag">
+        <span className="size-1.5 animate-pulse rounded-full bg-rouge dark:bg-rouge-flag" />
+        {t.connection.live}
       </span>
     );
   }
   if (status === "reconnecting") {
     return (
-      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
-        Reconnecting
+      <span className="inline-flex items-center rounded-full bg-verdict-flag/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300">
+        {t.connection.reconnecting}
       </span>
     );
   }
@@ -233,21 +237,21 @@ function LiveStatusPill({ status }: { status: LiveStatus }) {
 // ConnectionNotice surfaces interruptions without blocking playback or hiding
 // the verdicts already on screen.
 function ConnectionNotice({ status }: { status: LiveStatus }) {
+  const { t } = useAppI18n();
   if (status === "error") {
     return (
       <p
         role="alert"
-        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
+        className="rounded-lg border border-rouge/25 bg-rouge/5 px-3 py-2 text-sm text-rouge dark:border-rouge/40 dark:bg-rouge/15 dark:text-rose-300"
       >
-        Live analysis was interrupted. Playback continues; press play again to
-        retry.
+        {t.panel.interrupted}
       </p>
     );
   }
   if (status === "reconnecting") {
     return (
-      <p className="text-xs text-amber-700 dark:text-amber-400">
-        Connection lost. Reconnecting…
+      <p className="text-xs text-verdict-flag dark:text-amber-300">
+        {t.panel.reconnecting}
       </p>
     );
   }
@@ -256,13 +260,14 @@ function ConnectionNotice({ status }: { status: LiveStatus }) {
 
 // EmptyHint explains, per status, why no subtitles are shown yet.
 function EmptyHint({ status }: { status: LiveStatus }) {
+  const { t } = useAppI18n();
   const message =
     status === "connecting"
-      ? "Connecting to live analysis…"
+      ? t.panel.hints.connecting
       : status === "live"
-        ? "Listening for spoken claims…"
+        ? t.panel.hints.listening
         : status === "ended"
-          ? "The stream ended with no checked statements."
-          : "Fact checks stream here while the video plays.";
-  return <p className="text-sm text-zinc-600 dark:text-zinc-400">{message}</p>;
+          ? t.panel.hints.ended
+          : t.panel.hints.idle;
+  return <p className="text-sm text-ink/60 dark:text-paper/60">{message}</p>;
 }

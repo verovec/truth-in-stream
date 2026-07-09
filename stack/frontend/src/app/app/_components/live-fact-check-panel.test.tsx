@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import type { LiveStatement } from "@/lib/live/statements";
 import { summarizeStatements } from "@/lib/live/summary";
 import { stubScrollLayout } from "@/test/scroll-layout";
@@ -63,10 +64,10 @@ describe("LiveFactCheckPanel", () => {
   test("separates the panel into a subtitles region and a fact-checks region", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     expect(
-      screen.getByRole("region", { name: "Live subtitles" }),
+      screen.getByRole("region", { name: fr.app.panel.subtitlesAria }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: "Fact checks" }),
+      screen.getByRole("region", { name: fr.app.panel.factChecks }),
     ).toBeInTheDocument();
   });
 
@@ -74,7 +75,7 @@ describe("LiveFactCheckPanel", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     expect(
       screen.getByRole("separator", {
-        name: /resize subtitles and fact checks/i,
+        name: fr.app.panel.separator,
       }),
     ).toBeInTheDocument();
   });
@@ -82,7 +83,7 @@ describe("LiveFactCheckPanel", () => {
   test("defaults the fact-checks region to the minority of the panel height", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     const separator = screen.getByRole("separator", {
-      name: /resize subtitles and fact checks/i,
+      name: fr.app.panel.separator,
     });
     // aria-valuenow is the subtitles share; a value above 50 means the
     // transcript holds the majority and the fact-checks region is the minority.
@@ -97,10 +98,10 @@ describe("LiveFactCheckPanel", () => {
       caption: "and this is still being spoken",
       status: "live",
     });
-    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    const subtitles = screen.getByRole("region", { name: fr.app.panel.subtitlesAria });
     const caption = within(subtitles).getByText(/still being spoken/i);
     const transcript = within(subtitles).getByRole("list", {
-      name: /subtitle transcript/i,
+      name: fr.app.subtitles.transcriptAria,
     });
     // The live utterance is the newest speech, so it sits above the committed
     // statements rather than at the bottom of the region.
@@ -113,7 +114,7 @@ describe("LiveFactCheckPanel", () => {
   test("arrow keys repartition the two regions through the divider", async () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     const separator = screen.getByRole("separator", {
-      name: /resize subtitles and fact checks/i,
+      name: fr.app.panel.separator,
     });
     const before = Number(separator.getAttribute("aria-valuenow"));
     separator.focus();
@@ -125,9 +126,7 @@ describe("LiveFactCheckPanel", () => {
 
   test("shows the idle hint before the stream starts", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
-    expect(
-      screen.getByText(/fact checks stream here while the video plays/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(fr.app.panel.hints.idle)).toBeInTheDocument();
   });
 
   test("shows a live indicator and renders statements once streaming", () => {
@@ -136,7 +135,7 @@ describe("LiveFactCheckPanel", () => {
       caption: "",
       status: "live",
     });
-    expect(screen.getByText(/^live$/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.connection.live)).toBeInTheDocument();
     expect(screen.getByText(/a checked claim/i)).toBeInTheDocument();
   });
 
@@ -145,9 +144,7 @@ describe("LiveFactCheckPanel", () => {
     // The interim caption shows even with no checked statements, and the idle
     // hint is suppressed so the transcript is visible word by word.
     expect(screen.getByText(/the earth is/i)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/fact checks stream here while the video plays/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(fr.app.panel.hints.idle)).not.toBeInTheDocument();
   });
 
   test("renders verdicts in the fact-check region and scrolls the origin subtitle into the list", async () => {
@@ -171,7 +168,7 @@ describe("LiveFactCheckPanel", () => {
         status: "live",
       });
 
-      const factChecks = screen.getByRole("region", { name: "Fact checks" });
+      const factChecks = screen.getByRole("region", { name: fr.app.panel.factChecks });
       expect(
         within(factChecks).getByText(/apollo 11 landed in 1969/i),
       ).toBeInTheDocument();
@@ -183,9 +180,9 @@ describe("LiveFactCheckPanel", () => {
         }),
       );
 
-      const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+      const subtitles = screen.getByRole("region", { name: fr.app.panel.subtitlesAria });
       const list = within(subtitles).getByRole("list", {
-        name: "Subtitle transcript",
+        name: fr.app.subtitles.transcriptAria,
       });
       // Selecting a fact-check reveals its origin by scrolling the subtitle list,
       // never the page.
@@ -215,13 +212,13 @@ describe("LiveFactCheckPanel", () => {
       status: "live",
     });
 
-    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    const subtitles = screen.getByRole("region", { name: fr.app.panel.subtitlesAria });
     // Clicking the transcript line selects it for inspection; this must not seek.
     await userEvent.click(
       within(subtitles).getByText(/the moon landing happened/i),
     );
 
-    const factChecks = screen.getByRole("region", { name: "Fact checks" });
+    const factChecks = screen.getByRole("region", { name: fr.app.panel.factChecks });
     const entry = within(factChecks)
       .getByRole("button", { name: /the moon landing happened/i })
       .closest("li");
@@ -258,14 +255,14 @@ describe("LiveFactCheckPanel", () => {
           : [],
     });
 
-    const factChecks = screen.getByRole("region", { name: "Fact checks" });
+    const factChecks = screen.getByRole("region", { name: fr.app.panel.factChecks });
     expect(within(factChecks).getByText(/fiable/i)).toBeInTheDocument();
     expect(
       within(factChecks).getByText(/vérifié sur preuves/i),
     ).toBeInTheDocument();
     // The empty hint is gone once a verdict resolves.
     expect(
-      within(factChecks).queryByText(/fact-checks appear here/i),
+      within(factChecks).queryByText(fr.app.factChecks.empty),
     ).not.toBeInTheDocument();
   });
 
@@ -273,7 +270,9 @@ describe("LiveFactCheckPanel", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
     // The panel is sticky so the speaker-credibility strip pushing the column
     // down never leaves its bottom below the fold; it pins as the page scrolls.
-    const panel = screen.getByRole("complementary", { name: /live analysis/i });
+    const panel = screen.getByRole("complementary", {
+      name: fr.app.panel.heading,
+    });
     expect(panel.className).toContain("sticky");
     expect(panel.className).toContain("top-4");
   });
@@ -299,7 +298,7 @@ describe("LiveFactCheckPanel", () => {
         status: "live",
       });
 
-      const factChecks = screen.getByRole("region", { name: "Fact checks" });
+      const factChecks = screen.getByRole("region", { name: fr.app.panel.factChecks });
       const entry = within(factChecks).getByRole("button", {
         name: /the moon landing happened/i,
       });
@@ -310,9 +309,9 @@ describe("LiveFactCheckPanel", () => {
       // scroll effect would not re-run.
       await userEvent.click(entry);
 
-      const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+      const subtitles = screen.getByRole("region", { name: fr.app.panel.subtitlesAria });
       const list = within(subtitles).getByRole("list", {
-        name: "Subtitle transcript",
+        name: fr.app.subtitles.transcriptAria,
       });
       expect(scrollTo.mock.instances).toContain(list);
       expect(scrollIntoView).not.toHaveBeenCalled();
@@ -332,7 +331,7 @@ describe("LiveFactCheckPanel", () => {
       status: "live",
     });
 
-    const subtitles = screen.getByRole("region", { name: "Live subtitles" });
+    const subtitles = screen.getByRole("region", { name: fr.app.panel.subtitlesAria });
     const rows = within(subtitles).getAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("the latest thing said");
     expect(rows[rows.length - 1]).toHaveTextContent("the first thing said");
@@ -344,14 +343,14 @@ describe("LiveFactCheckPanel", () => {
       caption: "",
       status: "reconnecting",
     });
-    expect(screen.getByText(/connection lost\. reconnecting/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.panel.reconnecting)).toBeInTheDocument();
     expect(screen.getByText(/earlier verdict/i)).toBeInTheDocument();
   });
 
   test("surfaces a non-blocking error alert when analysis fails", () => {
     renderPanel({ statements: [], caption: "", status: "error" });
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /live analysis was interrupted/i,
+      fr.app.panel.interrupted,
     );
   });
 });

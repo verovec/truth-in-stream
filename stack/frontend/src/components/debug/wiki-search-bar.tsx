@@ -15,26 +15,29 @@ export function WikiSearchBar() {
   return <WikiSearchPanel />;
 }
 
+// The panel's copy stays in English on purpose: it is developer tooling, gated
+// out of production builds above, so it is not part of the localized viewer
+// chrome.
 function WikiSearchPanel() {
   const { query, hits, error, connected, setQuery } = useDebugWikiSearch();
 
   return (
     <aside
       aria-label="Debug wiki search"
-      className="fixed bottom-3 right-3 z-50 flex w-96 max-w-[calc(100vw-1.5rem)] flex-col gap-2 rounded-lg border border-amber-400/60 bg-white/95 p-3 shadow-xl backdrop-blur dark:border-amber-500/40 dark:bg-zinc-900/95"
+      className="fixed bottom-3 right-3 z-50 flex w-96 max-w-[calc(100vw-1.5rem)] flex-col gap-2 rounded-lg border border-verdict-flag/50 bg-paper/95 p-3 shadow-xl backdrop-blur dark:border-verdict-flag/40 dark:bg-night/95"
     >
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+        <span className="text-xs font-semibold uppercase tracking-wide text-verdict-flag dark:text-amber-300">
           Debug · embedded wiki search
         </span>
         <span
-          className="flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400"
+          className="flex items-center gap-1 text-xs text-ink/50 dark:text-paper/50"
           title={connected ? "connected" : "disconnected"}
         >
           <span
             aria-hidden
             className={`inline-block h-2 w-2 rounded-full ${
-              connected ? "bg-green-500" : "bg-zinc-400"
+              connected ? "bg-verdict-credible" : "bg-verdict-unverifiable"
             }`}
           />
           {connected ? "live" : "offline"}
@@ -47,40 +50,40 @@ function WikiSearchPanel() {
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Search the embedded corpus…"
         aria-label="Wiki search query"
-        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-amber-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+        className="w-full rounded-md border border-black/15 bg-white px-2 py-1.5 text-sm text-ink outline-none focus:border-verdict-flag dark:border-white/15 dark:bg-white/5 dark:text-paper"
       />
 
       {error && (
-        <p role="alert" className="text-xs text-red-700 dark:text-red-300">
+        <p role="alert" className="text-xs text-rouge dark:text-rose-300">
           {error}
         </p>
       )}
 
       <ul className="flex max-h-80 flex-col gap-2 overflow-y-auto">
         {hits.length === 0 ? (
-          <li className="py-2 text-center text-xs text-zinc-400 dark:text-zinc-500">
+          <li className="py-2 text-center text-xs text-ink/40 dark:text-paper/40">
             {query.trim() === "" ? "Type to search" : "No matches"}
           </li>
         ) : (
           hits.map((hit, index) => (
             <li
               key={`${hit.url}:${index}`}
-              className="rounded-md border border-zinc-200 p-2 dark:border-zinc-800"
+              className="rounded-md border border-black/10 p-2 dark:border-white/10"
             >
               <div className="flex items-baseline justify-between gap-2">
                 <a
                   href={hit.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="truncate text-sm font-medium text-blue-700 hover:underline dark:text-blue-400"
+                  className="truncate text-sm font-medium text-bleu hover:underline dark:text-sky-300"
                 >
                   {hit.title}
                 </a>
-                <span className="shrink-0 font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="shrink-0 font-mono text-xs text-ink/50 dark:text-paper/50">
                   {hit.similarity.toFixed(3)}
                 </span>
               </div>
-              <p className="mt-1 line-clamp-3 text-xs text-zinc-600 dark:text-zinc-300">
+              <p className="mt-1 line-clamp-3 text-xs text-ink/60 dark:text-paper/70">
                 {hit.snippet}
               </p>
             </li>

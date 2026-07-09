@@ -2,6 +2,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { json, stubBackend, type BackendRoute } from "@/test/fact-check";
+import { fr } from "@/lib/i18n/dictionaries/fr";
+import { formatTemplate } from "@/lib/i18n/text";
 import type { LibraryVideo } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
 import { LibraryExperience } from "./library-experience";
@@ -64,18 +66,18 @@ describe("LibraryExperience", () => {
     });
     // The live analysis panel mounts for the ready video, waiting to stream.
     expect(
-      screen.getByRole("complementary", { name: /live analysis/i }),
+      screen.getByRole("complementary", { name: fr.app.panel.heading }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByText(/fact checks stream here while the video plays/i),
+      await screen.findByText(fr.app.panel.hints.idle),
     ).toBeInTheDocument();
     // The running-findings strip sits above the grid, idle until playback starts.
     const summary = screen.getByRole("region", {
-      name: /live findings summary/i,
+      name: fr.app.summary.ariaLabel,
     });
     expect(summary).toBeInTheDocument();
     expect(
-      within(summary).getByText(/findings appear here/i),
+      within(summary).getByText(fr.app.summary.idleHint),
     ).toBeInTheDocument();
     // The playing video's title is surfaced as a heading above the library.
     expect(
@@ -93,7 +95,7 @@ describe("LibraryExperience", () => {
     );
 
     expect(
-      screen.getByRole("status", { name: "Loading library" }),
+      screen.getByRole("status", { name: fr.app.library.loadingAria }),
     ).toBeInTheDocument();
   });
 
@@ -133,9 +135,7 @@ describe("LibraryExperience", () => {
         "https://storage/play/vid-2",
       );
     });
-    expect(
-      screen.getByText(/fact checks stream here while the video plays/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(fr.app.panel.hints.idle)).toBeInTheDocument();
   });
 
   test("an uploaded file appears in the library as a ready video", async () => {
@@ -179,11 +179,11 @@ describe("LibraryExperience", () => {
     render(<LibraryExperience loadVideos={async () => []} uploader={uploader} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+      expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
     });
 
     await userEvent.upload(
-      screen.getByLabelText(/upload a video/i),
+      screen.getByLabelText(fr.app.uploader.inputAria),
       new File(["x".repeat(20)], "Holiday.mp4", { type: "video/mp4" }),
     );
 
@@ -245,7 +245,7 @@ describe("LibraryExperience", () => {
     });
 
     await userEvent.upload(
-      screen.getByLabelText(/upload a video/i),
+      screen.getByLabelText(fr.app.uploader.inputAria),
       new File(["x".repeat(20)], "Holiday.mp4", { type: "video/mp4" }),
     );
 
@@ -297,14 +297,14 @@ describe("LibraryExperience", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/no videos yet/i)).toBeInTheDocument();
+      expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
     });
 
     await userEvent.type(
-      screen.getByLabelText(/youtube url/i),
+      screen.getByLabelText(fr.app.youtube.label),
       "https://youtu.be/townhall",
     );
-    await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
     // The pending entry appears immediately, disabled until it is ready.
     await waitFor(() => {
@@ -353,10 +353,10 @@ describe("LibraryExperience", () => {
     });
 
     await userEvent.type(
-      screen.getByLabelText(/youtube url/i),
+      screen.getByLabelText(fr.app.youtube.label),
       "https://youtu.be/townhall",
     );
-    await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.youtube.add }));
 
     // Selection moves to the existing video; no second tile is created.
     await waitFor(() => {
@@ -385,10 +385,15 @@ describe("LibraryExperience", () => {
     render(<LibraryExperience loadVideos={loadVideos} />);
 
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/backend unavailable/i);
+      // The raw API message is interpolated into the localized template.
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        formatTemplate(fr.app.library.loadError, {
+          message: "backend unavailable",
+        }),
+      );
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await userEvent.click(screen.getByRole("button", { name: fr.app.library.retry }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /common myths/i })).toBeInTheDocument();

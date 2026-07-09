@@ -1,13 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
+import type { Verdict } from "@/lib/fact-check/api";
 import type { LiteralVerdict, ManipulationFlag } from "@/lib/live/frames";
 import { FlagChips, LiteralBadge, VerdictBadge } from "./verdict-badge";
 
 describe("VerdictBadge", () => {
-  test("renders the curated verdict label", () => {
-    render(<VerdictBadge verdict="corroborates" />);
-    expect(screen.getByText("corroborates")).toBeInTheDocument();
-  });
+  // The wire vocabulary stays corroborates/contradicts/unclear; only the
+  // displayed label is localized.
+  const cases: [Verdict, string][] = [
+    ["corroborates", "Corrobore"],
+    ["contradicts", "Contredit"],
+    ["unclear", "Incertain"],
+  ];
+
+  test.each(cases)(
+    "renders the French label for the %s verdict",
+    (verdict, label) => {
+      render(<VerdictBadge verdict={verdict} />);
+      expect(screen.getByText(label)).toBeInTheDocument();
+    },
+  );
 });
 
 describe("LiteralBadge", () => {

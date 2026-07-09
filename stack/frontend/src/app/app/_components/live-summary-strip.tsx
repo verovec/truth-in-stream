@@ -1,8 +1,10 @@
 "use client";
 
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
+import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveSummary } from "@/lib/live/summary";
+import { useAppI18n, type AppDictionary } from "@/components/i18n/app-i18n";
 
 // LiveSummaryStrip is the full-width running-findings bar at the very top of the
 // analyser. It reads the shared live snapshot through a selector, so it tracks
@@ -16,31 +18,31 @@ export function LiveSummaryStrip() {
   return <SummaryStripView summary={summary} status={status} />;
 }
 
-// Each running count, its label, and the tone that ties claim verdicts to the
-// same colours the verdict badges use. Rendering from this config keeps the
-// strip data-driven: a new stat is a new row here, not copied markup.
+// Each running count and the tone that ties claim verdicts to the same semantic
+// verdict tokens the badges use. Labels come from the dictionary at render
+// time; rendering from this config keeps the strip data-driven: a new stat is a
+// new row here, not copied markup.
 const STAT_TONES = {
-  neutral: "text-zinc-900 dark:text-zinc-100",
-  positive: "text-emerald-700 dark:text-emerald-300",
-  negative: "text-rose-700 dark:text-rose-300",
-  unclear: "text-amber-700 dark:text-amber-300",
-  unverifiable: "text-zinc-700 dark:text-zinc-300",
-  evidence: "text-sky-700 dark:text-sky-300",
-  muted: "text-zinc-500 dark:text-zinc-400",
+  neutral: "text-ink dark:text-paper",
+  positive: "text-verdict-credible",
+  negative: "text-verdict-disputed",
+  unclear: "text-verdict-flag dark:text-amber-300",
+  unverifiable: "text-verdict-unverifiable",
+  evidence: "text-bleu dark:text-sky-300",
+  muted: "text-ink/50 dark:text-paper/50",
 } as const;
 
 const STATS: {
-  key: keyof LiveSummary;
-  label: string;
+  key: keyof LiveSummary & keyof AppDictionary["summary"]["stats"];
   tone: keyof typeof STAT_TONES;
 }[] = [
-  { key: "checked", label: "Checked", tone: "neutral" },
-  { key: "corroborates", label: "Corroborated", tone: "positive" },
-  { key: "contradicts", label: "Contradicted", tone: "negative" },
-  { key: "unclear", label: "Unclear", tone: "unclear" },
-  { key: "unverifiable", label: "Unverifiable", tone: "unverifiable" },
-  { key: "evidence", label: "Evidence", tone: "evidence" },
-  { key: "skipped", label: "Not checked", tone: "muted" },
+  { key: "checked", tone: "neutral" },
+  { key: "corroborates", tone: "positive" },
+  { key: "contradicts", tone: "negative" },
+  { key: "unclear", tone: "unclear" },
+  { key: "unverifiable", tone: "unverifiable" },
+  { key: "evidence", tone: "evidence" },
+  { key: "skipped", tone: "muted" },
 ];
 
 // SummaryStripView is the presentational strip. A null summary is the idle state
@@ -53,6 +55,7 @@ export function SummaryStripView({
   summary: LiveSummary | null;
   status: LiveStatus;
 }) {
+  const { t } = useAppI18n();
   // Quiet only when there is no active session, or a selected video that has not
   // started playing and produced nothing yet. Once the session leaves idle -
   // playing, paused after playing, reconnecting, ended, or interrupted - show
@@ -65,12 +68,12 @@ export function SummaryStripView({
 
   return (
     <section
-      aria-label="Live findings summary"
-      className="flex w-full flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950"
+      aria-label={t.summary.ariaLabel}
+      className="flex w-full flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-black/10 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/5"
     >
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100">
-          Live findings
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+          {t.summary.heading}
         </h2>
         <ConnectionIndicator status={status} active={!idle} />
       </div>
@@ -82,20 +85,22 @@ export function SummaryStripView({
           {STATS.map((stat) => (
             <Stat
               key={stat.key}
-              label={stat.label}
+              label={t.summary.stats[stat.key]}
               value={summary[stat.key]}
               tone={stat.tone}
             />
           ))}
           {summary.analysing > 0 && (
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              {summary.analysing} in progress
+            <span className="text-xs text-ink/50 dark:text-paper/50">
+              {formatTemplate(t.summary.inProgress, {
+                count: summary.analysing,
+              })}
             </span>
           )}
         </div>
       ) : (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Findings appear here as the video is analysed.
+        <p className="text-sm text-ink/50 dark:text-paper/50">
+          {t.summary.idleHint}
         </p>
       )}
     </section>
@@ -121,7 +126,7 @@ function Stat({
       <span className={`text-base font-semibold tabular-nums ${STAT_TONES[tone]}`}>
         {value}
       </span>
-      <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
+      <span className="text-xs text-ink/50 dark:text-paper/50">{label}</span>
     </div>
   );
 }
@@ -135,28 +140,29 @@ function ConnectionIndicator({
   status: LiveStatus;
   active: boolean;
 }) {
+  const { t } = useAppI18n();
   if (!active) {
     return null;
   }
   if (status === "reconnecting") {
     return (
-      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
-        Reconnecting
+      <span className="inline-flex items-center rounded-full bg-verdict-flag/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300">
+        {t.connection.reconnecting}
       </span>
     );
   }
   if (status === "error") {
     return (
-      <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
-        Interrupted
+      <span className="inline-flex items-center rounded-full bg-rouge/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rouge dark:bg-rouge/15 dark:text-rose-300">
+        {t.connection.interrupted}
       </span>
     );
   }
   if (status === "live") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
-        <span className="size-1.5 animate-pulse rounded-full bg-rose-500" />
-        Live
+      <span className="inline-flex items-center gap-1 rounded-full bg-rouge/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rouge dark:bg-rouge/15 dark:text-rouge-flag">
+        <span className="size-1.5 animate-pulse rounded-full bg-rouge dark:bg-rouge-flag" />
+        {t.connection.live}
       </span>
     );
   }

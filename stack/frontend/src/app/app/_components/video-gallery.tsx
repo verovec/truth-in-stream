@@ -1,5 +1,8 @@
+"use client";
+
 import type { LibraryVideo } from "@/lib/video/api";
 import type { UploadJob } from "@/hooks/use-video-uploads";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 import { UploadTile } from "./upload-tile";
 import { VideoTile } from "./video-tile";
 
@@ -25,12 +28,13 @@ export function VideoGallery({
   onSelect,
   onDismiss,
 }: VideoGalleryProps) {
+  const { t } = useAppI18n();
   const inFlight = jobs.filter((job) => job.state.status !== "ready");
 
   if (videos.length === 0 && inFlight.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-        No videos yet. Upload one to get started.
+      <p className="rounded-xl border border-dashed border-black/15 px-4 py-8 text-center text-sm text-ink/50 dark:border-white/15 dark:text-paper/50">
+        {t.library.empty}
       </p>
     );
   }

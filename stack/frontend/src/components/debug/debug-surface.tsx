@@ -10,12 +10,14 @@ import { useState } from "react";
 
 import { WikiSearchBar } from "./wiki-search-bar";
 import type { Role } from "@/lib/auth/token";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
 // DebugSurface renders nothing for a guest and, for an admin, a toggle that
 // reveals the wiki-search probe. The probe itself is also dead-code-eliminated in
 // production builds (it checks NODE_ENV), so the surface is admin-gated at
 // runtime and absent from production bundles by construction.
 export function DebugSurface({ role }: { role: Role }) {
+  const { t } = useAppI18n();
   const [open, setOpen] = useState(false);
 
   if (role !== "admin") {
@@ -28,9 +30,9 @@ export function DebugSurface({ role }: { role: Role }) {
         type="button"
         aria-pressed={open}
         onClick={() => setOpen((value) => !value)}
-        className="fixed bottom-3 left-3 z-50 rounded-md border border-amber-400/60 bg-white/95 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700 shadow-lg backdrop-blur hover:bg-amber-50 dark:border-amber-500/40 dark:bg-zinc-900/95 dark:text-amber-400 dark:hover:bg-zinc-800"
+        className="fixed bottom-3 left-3 z-50 rounded-md border border-verdict-flag/50 bg-paper/95 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-verdict-flag shadow-lg backdrop-blur hover:bg-verdict-flag/10 dark:border-verdict-flag/40 dark:bg-night/95 dark:text-amber-300 dark:hover:bg-white/5"
       >
-        {open ? "Hide debug" : "Debug"}
+        {open ? t.debug.hide : t.debug.show}
       </button>
       {open && <WikiSearchBar />}
     </>

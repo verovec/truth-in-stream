@@ -26,10 +26,10 @@ export function VideoTile({
       onClick={onSelect}
       disabled={!selectable}
       aria-pressed={selected}
-      className={`group flex h-full w-full flex-col overflow-hidden rounded-xl border text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed ${
+      className={`group flex h-full w-full flex-col overflow-hidden rounded-xl border bg-white text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag disabled:cursor-not-allowed dark:bg-white/5 dark:focus-visible:outline-paper/60 ${
         selected
-          ? "border-sky-500 ring-2 ring-sky-500/40"
-          : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
+          ? "border-bleu-flag ring-2 ring-bleu-flag/40 dark:border-sky-400 dark:ring-sky-400/40"
+          : "border-black/10 hover:border-black/25 dark:border-white/10 dark:hover:border-white/25"
       }`}
     >
       <VideoPoster seed={video.id} title={video.title} frameSrc={src}>
@@ -40,7 +40,7 @@ export function VideoTile({
           <VideoStatusBadge status={video.status} />
         </span>
       </VideoPoster>
-      <span className="truncate px-3 py-2 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+      <span className="truncate px-3 py-2 text-sm font-medium text-ink dark:text-paper">
         {video.title}
       </span>
     </button>

@@ -2,6 +2,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import { renderWithPlayback } from "@/test/playback";
 import { lastPlayerProps } from "@/test/react-player-mock";
+import { fr } from "@/lib/i18n/dictionaries/fr";
 import { VideoPlayer } from "./video-player";
 
 vi.mock("react-player", () => import("@/test/react-player-mock"));
@@ -174,9 +175,9 @@ describe("VideoPlayer", () => {
 
     fireEvent.error(media);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "This video could not be played.",
-    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(fr.app.player.playError);
+    expect(alert).toHaveTextContent(fr.app.player.playErrorHint);
     expect(region).toHaveAttribute("aria-busy", "false");
 
     // An error is terminal for the source: a late stall event must not revert it

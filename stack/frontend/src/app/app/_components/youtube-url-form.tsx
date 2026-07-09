@@ -5,6 +5,7 @@ import {
   type LibraryVideo,
   submitYoutubeUrl as defaultSubmit,
 } from "@/lib/video/api";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
 // looksLikeUrl is a light client gate: a non-empty token with a host and a dot,
 // optionally scheme-prefixed. The backend stays the authority on what is a valid
@@ -13,11 +14,14 @@ function looksLikeUrl(value: string): boolean {
   return /^(https?:\/\/)?[^\s.]+\.[^\s]+$/.test(value);
 }
 
-const INVALID_MESSAGE = "Enter a YouTube link, e.g. https://youtu.be/…";
-
 // YoutubeUrlForm lets the operator add a video by pasting a YouTube link. It owns
 // only the input, the in-flight flag, and the inline error; submit is injected so
 // the data call is testable, and onAdded hands the returned record to the library.
+// FormError keeps the failure as data (not a rendered string), so an
+// already-shown error re-labels itself when the operator switches locales. A
+// failed submit keeps the API's own message when it carried one.
+type FormError = { kind: "invalid" } | { kind: "failed"; message: string | null };
+
 export function YoutubeUrlForm({
   onAdded,
   submit = defaultSubmit,
@@ -25,11 +29,12 @@ export function YoutubeUrlForm({
   onAdded: (video: LibraryVideo) => void;
   submit?: (url: string, signal?: AbortSignal) => Promise<LibraryVideo>;
 }) {
+  const { t } = useAppI18n();
   const inputId = useId();
   const errorId = useId();
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FormError | null>(null);
 
   // Abort an in-flight submit on unmount so it cannot write state after the form
   // is gone.
@@ -40,7 +45,7 @@ export function YoutubeUrlForm({
     event.preventDefault();
     const trimmed = url.trim();
     if (!trimmed || !looksLikeUrl(trimmed)) {
-      setError(INVALID_MESSAGE);
+      setError({ kind: "invalid" });
       return;
     }
     const controller = new AbortController();
@@ -60,7 +65,10 @@ export function YoutubeUrlForm({
         return;
       }
       setSubmitting(false);
-      setError(err instanceof Error ? err.message : "Could not add this video.");
+      setError({
+        kind: "failed",
+        message: err instanceof Error ? err.message : null,
+      });
     }
   };
 
@@ -71,9 +79,9 @@ export function YoutubeUrlForm({
     <form onSubmit={onSubmit} noValidate className="flex flex-col gap-1.5">
       <label
         htmlFor={inputId}
-        className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
+        className="text-xs font-medium text-ink/70 dark:text-paper/70"
       >
-        YouTube URL
+        {t.youtube.label}
       </label>
       <div className="flex gap-2">
         <input
@@ -81,29 +89,31 @@ export function YoutubeUrlForm({
           type="url"
           inputMode="url"
           autoComplete="off"
-          placeholder="https://youtu.be/…"
+          placeholder={t.youtube.placeholder}
           value={url}
           disabled={submitting}
           aria-invalid={error !== null}
           aria-describedby={error ? errorId : undefined}
           onChange={(event) => setUrl(event.currentTarget.value)}
-          className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          className="min-w-0 flex-1 rounded-md border border-black/15 bg-white px-3 py-1.5 text-sm text-ink placeholder:text-ink/35 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag disabled:opacity-60 dark:border-white/15 dark:bg-white/5 dark:text-paper dark:placeholder:text-paper/35 dark:focus-visible:outline-paper/60"
         />
         <button
           type="submit"
           disabled={submitting}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          className="rounded-md bg-bleu px-3 py-1.5 text-sm font-semibold text-paper transition-colors hover:bg-bleu/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag disabled:cursor-not-allowed disabled:opacity-60 dark:focus-visible:outline-paper/60"
         >
-          {submitting ? "Adding…" : "Add"}
+          {submitting ? t.youtube.adding : t.youtube.add}
         </button>
       </div>
       {error ? (
         <p
           id={errorId}
           role="alert"
-          className="text-xs text-rose-700 dark:text-rose-300"
+          className="text-xs text-rouge dark:text-rose-300"
         >
-          {error}
+          {error.kind === "invalid"
+            ? t.youtube.invalid
+            : (error.message ?? t.youtube.failed)}
         </p>
       ) : null}
     </form>

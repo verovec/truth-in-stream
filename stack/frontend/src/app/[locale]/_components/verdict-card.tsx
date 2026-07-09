@@ -30,7 +30,7 @@ export function VerdictCard({ demo }: { demo: Dictionary["hero"]["demo"] }) {
           <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-ink/40 dark:text-paper/40">
             {demo.verdictLabel}
           </span>
-          <span className="rounded-full bg-verdict-nuance/10 px-2.5 py-1 text-xs font-semibold text-verdict-nuance">
+          <span className="rounded-full bg-verdict-flag/10 px-2.5 py-1 text-xs font-semibold text-verdict-flag">
             {demo.verdict}
           </span>
         </div>

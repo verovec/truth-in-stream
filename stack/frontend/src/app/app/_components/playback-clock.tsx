@@ -9,7 +9,7 @@ export function PlaybackClock() {
   );
 
   return (
-    <p className="font-mono text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+    <p className="font-mono text-sm tabular-nums text-ink/50 dark:text-paper/50">
       {formatTime(currentTime)}
     </p>
   );

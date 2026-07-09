@@ -2,40 +2,34 @@
 
 import { useState } from "react";
 import type { SegmentMatch } from "@/lib/fact-check/api";
+import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveClaim } from "@/lib/live/claims";
 import type { ClaimVerdict, VerdictSource } from "@/lib/live/frames";
+import { useAppI18n } from "@/components/i18n/app-i18n";
+import { SOURCE_LINK_CLASS } from "./live-row-classes";
 import { MatchRow } from "./match-row";
 import { FlagChips, LiteralBadge } from "./verdict-badge";
 
-// VERDICT_LABELS renders the verify path's credibility verdict enum in French.
-// unverifiable is a first-class verdict, shown as "Invérifiable" rather than an
-// error or an empty row.
-const VERDICT_LABELS: Record<ClaimVerdict, string> = {
-  credible: "Fiable",
-  disputed: "Contesté",
-  unverifiable: "Invérifiable",
-};
-
+// The verify path's credibility verdicts on the shared semantic verdict tokens.
+// unverifiable is a first-class verdict, shown as its own label rather than an
+// error or an empty row; labels come from the active locale's dictionary.
 const VERDICT_STYLES: Record<ClaimVerdict, string> = {
   credible:
-    "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  disputed: "bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300",
+    "bg-verdict-credible/10 text-verdict-credible dark:bg-verdict-credible/15",
+  disputed:
+    "bg-verdict-disputed/10 text-verdict-disputed dark:bg-verdict-disputed/15",
   unverifiable:
-    "bg-zinc-200 text-zinc-700 dark:bg-zinc-700/40 dark:text-zinc-300",
+    "bg-verdict-unverifiable/15 text-verdict-unverifiable dark:bg-verdict-unverifiable/15",
 };
 
-// SOURCE_LABELS distinguishes a verdict borrowed from a curated near-match
+// Source chips distinguish a verdict borrowed from a curated near-match
 // (instant, no model) from one the evidence verifier reasoned out, so the viewer
-// can weigh a borrowed verdict against a reasoned one.
-const SOURCE_LABELS: Record<VerdictSource, string> = {
-  curated: "source vérifiée",
-  verified: "vérifié sur preuves",
-};
-
+// can weigh a borrowed verdict against a reasoned one: curated leans on the
+// brand bleu, verified stays a neutral bordered chip.
 const SOURCE_STYLES: Record<VerdictSource, string> = {
-  curated:
-    "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
-  verified: "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
+  curated: "bg-bleu/10 text-bleu dark:bg-sky-400/15 dark:text-sky-300",
+  verified:
+    "border border-black/10 bg-ink/5 text-ink/70 dark:border-white/10 dark:bg-white/10 dark:text-paper/70",
 };
 
 // PrimarySource is the name, url, and quoted span of one cited passage, the
@@ -86,6 +80,7 @@ function primarySourceOf(matches: readonly SegmentMatch[]): PrimarySource | null
 // two render one claim identically. A degenerate verified frame with no verdict
 // (defensive) reads as invérifiable rather than a blank row.
 export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
+  const { t } = useAppI18n();
   const [expanded, setExpanded] = useState(false);
   const verdict = claim.verdict ?? "unverifiable";
   const flags = claim.flags ?? [];
@@ -107,29 +102,29 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
           <span
             className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${VERDICT_STYLES[verdict]}`}
           >
-            {VERDICT_LABELS[verdict]}
+            {t.claims.verdicts[verdict]}
           </span>
         ) : null}
         {claim.basis === "knowledge" ? (
           // A knowledge-basis verdict rests on the model's general knowledge, not a
           // retrieved passage, so it is marked as having no direct sources and the
           // viewer can weigh it as lower-confidence.
-          <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
-            sans source directe
+          <span className="inline-flex items-center rounded-full bg-verdict-flag/10 px-1.5 py-0.5 text-[10px] font-medium text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300">
+            {t.claims.noDirectSource}
           </span>
         ) : null}
         {claim.source ? (
           <span
             className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${SOURCE_STYLES[claim.source]}`}
           >
-            {SOURCE_LABELS[claim.source]}
+            {t.claims.sources[claim.source]}
           </span>
         ) : null}
         {claim.sourceLabel ? (
           <SourceLabelChip label={claim.sourceLabel} url={claim.sourceUrl} />
         ) : null}
         {typeof claim.confidence === "number" ? (
-          <span className="font-mono text-[10px] tabular-nums text-zinc-400 dark:text-zinc-500">
+          <span className="font-mono text-[10px] tabular-nums text-ink/40 dark:text-paper/40">
             {Math.round(claim.confidence * 100)}%
           </span>
         ) : null}
@@ -141,22 +136,22 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((prev) => !prev)}
-          className="self-start text-[11px] font-medium text-sky-700 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-sky-400"
+          className="self-start text-[11px] font-medium text-bleu underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-bleu-flag dark:text-sky-300 dark:focus-visible:outline-paper/60"
         >
-          {expanded ? "Masquer le détail" : "Voir le détail"}
+          {expanded ? t.claims.hideDetail : t.claims.showDetail}
         </button>
       ) : null}
       {expanded ? (
         <div className="flex flex-col gap-2 pt-1">
           {claim.rationale ? (
-            <p className="text-[11px] leading-5 text-zinc-600 dark:text-zinc-400">
+            <p className="text-[11px] leading-5 text-ink/60 dark:text-paper/60">
               {claim.rationale}
             </p>
           ) : null}
           {matches.map((match, index) => (
             <div
               key={`${claim.claimId}:${index}`}
-              className="rounded-md border border-zinc-200 px-2 py-1.5 dark:border-zinc-800"
+              className="rounded-md border border-black/10 px-2 py-1.5 dark:border-white/10"
             >
               <MatchRow match={match} />
             </div>
@@ -174,16 +169,17 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
 // provider when a url is present and is otherwise a plain chip. It is rendered
 // only when a label exists, so a knowledge-only verdict shows no empty chip.
 function SourceLabelChip({ label, url }: { label: string; url?: string }) {
+  const { t } = useAppI18n();
   const base =
-    "inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:bg-slate-500/15 dark:text-slate-300";
-  const text = `Source : ${label}`;
+    "inline-flex items-center rounded-full bg-ink/5 px-1.5 py-0.5 text-[10px] font-medium text-ink/70 dark:bg-white/10 dark:text-paper/70";
+  const text = formatTemplate(t.claims.sourcePrefix, { label });
   if (url) {
     return (
       <a
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className={`${base} underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-sky-500`}
+        className={`${base} underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-2 focus-visible:outline-bleu-flag dark:focus-visible:outline-paper/60`}
       >
         {text}
       </a>
@@ -197,16 +193,17 @@ function SourceLabelChip({ label, url }: { label: string; url?: string }) {
 // (and independently of) expanding the full citation list. The span is quoted so
 // it reads as the cited words, not the UI's own claim.
 function PrimarySourceRow({ source }: { source: PrimarySource }) {
+  const { t } = useAppI18n();
   return (
     <p
-      aria-label="Source principale"
-      className="text-[11px] leading-5 text-zinc-600 dark:text-zinc-400"
+      aria-label={t.claims.primarySourceAria}
+      className="text-[11px] leading-5 text-ink/60 dark:text-paper/60"
     >
       <a
         href={source.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:decoration-sky-600 dark:text-sky-400 dark:decoration-sky-700 dark:hover:decoration-sky-400"
+        className={SOURCE_LINK_CLASS}
       >
         {source.title}
       </a>

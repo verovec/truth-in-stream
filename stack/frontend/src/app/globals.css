@@ -24,13 +24,42 @@
   --color-paper: #fbfbf9;
   --color-ink: #12151d;
   --color-night: #0b0e14;
-  --color-verdict-nuance: #b45309;
 }
 
+/* Semantic verdict palette shared by the analyser's two verdict systems and the
+   landing's demo card, so a verdict color means the same thing everywhere.
+   credible/disputed/unverifiable swap by color scheme for text contrast on
+   paper and night; flag keeps one value in both schemes because the landing's
+   demo verdict chip renders with it today and must not change. Verdicts never
+   rely on color alone: every colored chip carries a text label. */
+:root {
+  --verdict-credible: #047857;
+  --verdict-disputed: #c8102e;
+  --verdict-unverifiable: #52525c;
+}
+
+@theme inline {
+  --color-verdict-credible: var(--verdict-credible);
+  --color-verdict-disputed: var(--verdict-disputed);
+  --color-verdict-unverifiable: var(--verdict-unverifiable);
+}
+
+@theme {
+  --color-verdict-flag: #b45309;
+}
+
+/* One dark-scheme block mutates every scheme-swapped :root variable, so a future
+   manual-theme override has a single place to mirror. verdict-flag stays static
+   (defined in @theme above) because the landing's demo chip renders with it and
+   must not shift in dark mode; the app pairs text-verdict-flag with an explicit
+   dark: amber for contrast on the night surface. */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --verdict-credible: #6ee7b7;
+    --verdict-disputed: #fda4af;
+    --verdict-unverifiable: #d4d4d8;
   }
 }
 

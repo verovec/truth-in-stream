@@ -11,15 +11,13 @@ import { useState } from "react";
 import { downloadExport, type ExportFormat } from "@/lib/video/export";
 import { ApiError } from "@/lib/http";
 import type { Role } from "@/lib/auth/token";
+import { useAppI18n } from "@/components/i18n/app-i18n";
 
 type DownloadFn = (
   videoId: string,
   format: ExportFormat,
   signal?: AbortSignal,
 ) => Promise<string>;
-
-const MISSING_SNAPSHOT_MESSAGE =
-  "No cached analysis for this video. Re-run analysis to repopulate the export cache.";
 
 // ExportControls renders the SRT and CSV download buttons for an admin viewing a
 // ready video. download is an injection seam for tests; production uses the real
@@ -33,8 +31,9 @@ export function ExportControls({
   videoId: string | null;
   download?: DownloadFn;
 }) {
+  const { t } = useAppI18n();
   const [pending, setPending] = useState<ExportFormat | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<"missing" | "failed" | null>(null);
 
   if (role !== "admin" || !videoId) {
     return null;
@@ -47,44 +46,47 @@ export function ExportControls({
       await download(videoId, format);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
-        setError(MISSING_SNAPSHOT_MESSAGE);
+        setError("missing");
       } else {
-        setError("Export failed. Please try again.");
+        setError("failed");
       }
     } finally {
       setPending(null);
     }
   };
 
+  const buttonClass =
+    "rounded border border-black/10 bg-white px-2.5 py-1 font-medium text-ink/80 hover:bg-black/5 disabled:opacity-60 dark:border-white/15 dark:bg-white/5 dark:text-paper/80 dark:hover:bg-white/10";
+
   return (
     <section
-      aria-label="Admin exports"
-      className="flex flex-col gap-2 rounded-md border border-amber-400/60 bg-amber-50/60 p-3 text-xs dark:border-amber-500/40 dark:bg-zinc-900/60"
+      aria-label={t.exports.heading}
+      className="flex flex-col gap-2 rounded-xl border border-verdict-flag/40 bg-verdict-flag/5 p-3 text-xs dark:border-verdict-flag/30 dark:bg-verdict-flag/10"
     >
-      <h3 className="font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
-        Admin exports
+      <h3 className="font-semibold uppercase tracking-wide text-verdict-flag dark:text-amber-300">
+        {t.exports.heading}
       </h3>
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           disabled={pending !== null}
           onClick={() => run("srt")}
-          className="rounded border border-zinc-300 bg-white px-2.5 py-1 font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+          className={buttonClass}
         >
-          {pending === "srt" ? "Preparing transcript…" : "Transcript (.srt)"}
+          {pending === "srt" ? t.exports.transcriptPending : t.exports.transcript}
         </button>
         <button
           type="button"
           disabled={pending !== null}
           onClick={() => run("csv")}
-          className="rounded border border-zinc-300 bg-white px-2.5 py-1 font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+          className={buttonClass}
         >
-          {pending === "csv" ? "Preparing claims…" : "Claims (.csv)"}
+          {pending === "csv" ? t.exports.claimsPending : t.exports.claims}
         </button>
       </div>
       {error ? (
-        <p role="status" className="text-amber-700 dark:text-amber-400">
-          {error}
+        <p role="status" className="text-verdict-flag dark:text-amber-300">
+          {error === "missing" ? t.exports.missingSnapshot : t.exports.failed}
         </p>
       ) : null}
     </section>

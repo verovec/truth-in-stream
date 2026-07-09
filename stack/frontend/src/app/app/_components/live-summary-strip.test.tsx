@@ -11,6 +11,8 @@ import { parseLiveFrame } from "@/lib/live/frames";
 import type { LiveStatement } from "@/lib/live/statements";
 import type { LiveSummary } from "@/lib/live/summary";
 import { emptySummary, summarizeStatements } from "@/lib/live/summary";
+import { fr } from "@/lib/i18n/dictionaries/fr";
+import { formatTemplate } from "@/lib/i18n/text";
 import { LiveSummaryStrip, SummaryStripView } from "./live-summary-strip";
 
 const mockUseLiveAnalysis = vi.hoisted(() => vi.fn<() => LiveAnalysis>());
@@ -28,13 +30,21 @@ const summary = (overrides: Partial<LiveSummary> = {}): LiveSummary => ({
   ...overrides,
 });
 
+// Each stat labels itself "<label>: <value>". The labels come from the French
+// app dictionary, the default a provider-less render falls back to.
+const stats = fr.app.summary.stats;
+const statLabel = (key: keyof typeof stats, value: number) =>
+  `${stats[key]}: ${value}`;
+
 describe("SummaryStripView", () => {
   test("shows an idle hint when no video is being analysed", () => {
     render(<SummaryStripView summary={null} status="idle" />);
 
-    expect(screen.getByText(/findings appear here/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.summary.idleHint)).toBeInTheDocument();
     // No counts are shown in the idle state.
-    expect(screen.queryByLabelText(/checked:/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(new RegExp(`^${stats.checked}:`)),
+    ).not.toBeInTheDocument();
   });
 
   test("stays quiet for a selected video before analysis has started", () => {
@@ -42,8 +52,10 @@ describe("SummaryStripView", () => {
     // is playing yet, so the strip shows the idle hint, not a row of zeros.
     render(<SummaryStripView summary={summary()} status="idle" />);
 
-    expect(screen.getByText(/findings appear here/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/checked:/i)).not.toBeInTheDocument();
+    expect(screen.getByText(fr.app.summary.idleHint)).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(new RegExp(`^${stats.checked}:`)),
+    ).not.toBeInTheDocument();
   });
 
   test("renders the running counts once analysis is live", () => {
@@ -62,22 +74,30 @@ describe("SummaryStripView", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Checked: 5")).toBeInTheDocument();
-    expect(screen.getByLabelText("Corroborated: 3")).toBeInTheDocument();
-    expect(screen.getByLabelText("Contradicted: 1")).toBeInTheDocument();
-    expect(screen.getByLabelText("Unclear: 1")).toBeInTheDocument();
-    // The verify path's unverifiable verdict reads "Unverifiable", matching the
-    // per-claim list, instead of being folded into the curated "Unclear" count.
-    expect(screen.getByLabelText("Unverifiable: 2")).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("checked", 5))).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(statLabel("corroborates", 3)),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(statLabel("contradicts", 1)),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("unclear", 1))).toBeInTheDocument();
+    // The verify path's unverifiable verdict reads "Invérifiables", matching the
+    // per-claim list, instead of being folded into the curated "Incertaines" count.
+    expect(
+      screen.getByLabelText(statLabel("unverifiable", 2)),
+    ).toBeInTheDocument();
     // Supporting evidence is distinguishable from claim verdicts.
-    expect(screen.getByLabelText("Evidence: 2")).toBeInTheDocument();
-    expect(screen.getByLabelText("Not checked: 4")).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("evidence", 2))).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("skipped", 4))).toBeInTheDocument();
   });
 
   test("marks the counts as a polite live region for assistive tech", () => {
     render(<SummaryStripView summary={summary({ checked: 1 })} status="live" />);
 
-    const region = screen.getByLabelText("Checked: 1").closest("[aria-live]");
+    const region = screen
+      .getByLabelText(statLabel("checked", 1))
+      .closest("[aria-live]");
     expect(region).toHaveAttribute("aria-live", "polite");
   });
 
@@ -89,9 +109,9 @@ describe("SummaryStripView", () => {
       />,
     );
 
-    expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.connection.reconnecting)).toBeInTheDocument();
     // Counts accumulated before the drop are preserved through a reconnect.
-    expect(screen.getByLabelText("Checked: 7")).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("checked", 7))).toBeInTheDocument();
   });
 
   test("flags an interrupted session instead of reading all-clear", () => {
@@ -102,9 +122,9 @@ describe("SummaryStripView", () => {
       <SummaryStripView summary={summary({ checked: 2 })} status="error" />,
     );
 
-    expect(screen.getByText(/interrupted/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("Checked: 2")).toBeInTheDocument();
-    expect(screen.queryByText(/findings appear here/i)).not.toBeInTheDocument();
+    expect(screen.getByText(fr.app.connection.interrupted)).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("checked", 2))).toBeInTheDocument();
+    expect(screen.queryByText(fr.app.summary.idleHint)).not.toBeInTheDocument();
   });
 
   test("shows in-progress statements while live", () => {
@@ -112,7 +132,9 @@ describe("SummaryStripView", () => {
       <SummaryStripView summary={summary({ analysing: 2 })} status="live" />,
     );
 
-    expect(screen.getByText(/2 in progress/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(formatTemplate(fr.app.summary.inProgress, { count: 2 })),
+    ).toBeInTheDocument();
   });
 });
 
@@ -153,8 +175,10 @@ describe("verify-path unverifiable verdict end to end", () => {
 
     render(<SummaryStripView summary={summary} status="live" />);
 
-    expect(screen.getByLabelText("Unverifiable: 1")).toBeInTheDocument();
-    expect(screen.getByLabelText("Unclear: 0")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(statLabel("unverifiable", 1)),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("unclear", 0))).toBeInTheDocument();
   });
 });
 
@@ -175,8 +199,10 @@ describe("LiveSummaryStrip", () => {
       </LiveAnalysisProvider>,
     );
 
-    expect(screen.getByLabelText("Checked: 9")).toBeInTheDocument();
-    expect(screen.getByLabelText("Contradicted: 2")).toBeInTheDocument();
+    expect(screen.getByLabelText(statLabel("checked", 9))).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(statLabel("contradicts", 2)),
+    ).toBeInTheDocument();
   });
 
   test("idles when no video is active", () => {
@@ -186,6 +212,6 @@ describe("LiveSummaryStrip", () => {
       </LiveAnalysisProvider>,
     );
 
-    expect(screen.getByText(/findings appear here/i)).toBeInTheDocument();
+    expect(screen.getByText(fr.app.summary.idleHint)).toBeInTheDocument();
   });
 });
