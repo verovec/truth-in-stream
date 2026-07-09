@@ -78,7 +78,10 @@ type Querier interface {
 	// Library rows, newest first, each with its verdict summary counts. The FILTER
 	// counts read stored claims only; a document with no claims counts zero.
 	// sqlc.embed keeps the row a real db.Document, so a future documents column
-	// cannot silently drop out of the list mapping.
+	// cannot silently drop out of the list mapping. Pending documents are excluded:
+	// a pending row is an upload whose extraction was never ingested (an over-cap
+	// rejection, an abandoned or failed upload), so it is not a real library
+	// document and must not surface as a permanent "Pending" ghost card.
 	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	ListVideos(ctx context.Context) ([]Video, error)
 	// Claim a ready document for a fresh analysis run: flip it to analysing (the

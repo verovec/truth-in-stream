@@ -46,17 +46,25 @@ export function AppHeader({
           >
             {NAV.map((item) => {
               const active = item.section === currentSection;
-              return (
-                <Link
+              const className = `rounded-full px-3 py-1.5 text-sm font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:focus-visible:outline-paper/60 ${
+                active
+                  ? "bg-bleu/10 text-bleu dark:bg-sky-400/15 dark:text-sky-300"
+                  : "text-ink/70 hover:bg-black/5 hover:text-ink dark:text-paper/70 dark:hover:bg-white/10 dark:hover:text-paper"
+              }`;
+              // The current section renders as an inert span, not a link: a click
+              // on the page you are already on must not hard-navigate and tear
+              // down an in-progress live-analysis session (the /app WebSocket).
+              // Only the other section is a real navigating link.
+              return active ? (
+                <span
                   key={item.section}
-                  href={item.href}
-                  aria-current={active ? "page" : undefined}
-                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:focus-visible:outline-paper/60 ${
-                    active
-                      ? "bg-bleu/10 text-bleu dark:bg-sky-400/15 dark:text-sky-300"
-                      : "text-ink/70 hover:bg-black/5 hover:text-ink dark:text-paper/70 dark:hover:bg-white/10 dark:hover:text-paper"
-                  }`}
+                  aria-current="page"
+                  className={className}
                 >
+                  {dict.app.nav[item.labelKey]}
+                </span>
+              ) : (
+                <Link key={item.section} href={item.href} className={className}>
                   {dict.app.nav[item.labelKey]}
                 </Link>
               );

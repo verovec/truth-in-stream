@@ -32,6 +32,21 @@ export function isAcceptedDocumentType(type: string): boolean {
   return type === DOCUMENT_CONTENT_TYPE;
 }
 
+// A browser sometimes reports no MIME (or a generic application/octet-stream) for
+// a file dragged from certain OS/file-manager contexts, so a drag-dropped PDF
+// with an empty type must still be accepted. isAcceptedDocumentFile falls back to
+// the .pdf extension in that case; a non-PDF that slips through is still caught
+// downstream when browser extraction yields no text (ScannedPdfError). A file
+// that positively declares a different type (e.g. image/png) is rejected.
+const GENERIC_BINARY_TYPES = new Set(["", "application/octet-stream"]);
+
+export function isAcceptedDocumentFile(name: string, type: string): boolean {
+  if (isAcceptedDocumentType(type)) {
+    return true;
+  }
+  return GENERIC_BINARY_TYPES.has(type) && name.toLowerCase().endsWith(".pdf");
+}
+
 // DocumentRecord is one document's metadata and analysis state, as returned by
 // the upload and extraction endpoints.
 export type DocumentRecord = {

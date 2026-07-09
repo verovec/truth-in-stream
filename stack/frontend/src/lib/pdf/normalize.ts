@@ -8,16 +8,20 @@
 //   1. NFKC - folds ligatures (ﬁ -> fi), compatibility forms, and composed
 //      diacritics to a single canonical code-point sequence, so the two engines
 //      never disagree on the bytes of a character.
-//   2. De-hyphenation - a word split across a line break appears as a trailing
-//      hyphen, whitespace, then the continuation ("inter-\nnational"); the hyphen
-//      and the break are removed to rejoin the word. A genuine compound
-//      ("arc-en-ciel") has no whitespace around its hyphens, so it is untouched;
-//      requiring whitespace AFTER the hyphen (and a letter before and after) is
-//      what tells a line break from a real hyphen.
+//   2. Soft-hyphen removal - U+00AD is the invisible line-break hyphenation
+//      marker PDFs insert to justify text; stripping it rejoins the word
+//      ("inter{SHY}national" -> "international"). A hard hyphen (U+002D) is left
+//      alone: in French it carries meaning (peut-être, arc-en-ciel, c'est-à-dire)
+//      and joining a hyphen-broken compound would corrupt far more words than the
+//      rare born-digital hard line-break hyphen it would fix - and born-digital
+//      PDFs, the only kind accepted here, break with soft hyphens, not hard ones.
 //   3. Whitespace collapse - every run of whitespace becomes one space and the
-//      ends are trimmed, so line and item boundaries from extraction do not
-//      leak into the stored text.
-const LINE_BROKEN_WORD = /(\p{L})-\s+(?=\p{L})/gu;
+//      ends are trimmed, so line and item boundaries from extraction do not leak
+//      into the stored text.
+// A soft hyphen plus any whitespace that follows it: at a line break the PDF
+// emits the marker then a newline, so consuming the trailing whitespace rejoins
+// the word rather than leaving a space where the break was.
+const SOFT_HYPHEN = /\u00AD\s*/g;
 const WHITESPACE_RUN = /\s+/g;
 // The single-character forms of the classes the two rules above match, used by
 // the provenance-tracking pass so it applies the exact same rules character by
@@ -31,7 +35,7 @@ const COMBINING_MARK = /\p{M}/u;
 export function normalizeText(raw: string): string {
   return raw
     .normalize("NFKC")
-    .replace(LINE_BROKEN_WORD, "$1")
+    .replace(SOFT_HYPHEN, "")
     .replace(WHITESPACE_RUN, " ")
     .trim();
 }
@@ -40,20 +44,20 @@ export function normalizeText(raw: string): string {
 // every character of `text`, `sourceIndex[i]` is the UTF-16 index into `raw` of
 // the character that produced it. A character expanded by NFKC (a ligature) maps
 // each of its outputs back to the one source character; a character dropped by
-// de-hyphenation or whitespace collapse simply has no output and no entry. The
-// map is what lets the highlight overlay walk a matched sentence back to the
+// soft-hyphen removal or whitespace collapse simply has no output and no entry.
+// The map is what lets the highlight overlay walk a matched sentence back to the
 // exact text-layer items and offsets it spans.
 export type NormalizedText = {
   text: string;
   sourceIndex: number[];
 };
 
-// normalizeWithMap runs the identical NFKC -> de-hyphenation -> whitespace-collapse
-// -> trim pipeline as normalizeText while tracking each output character back to
-// its source, so anchoring reads the exact same normalized text extraction stored
-// (an equivalence the tests pin: normalizeWithMap(raw).text === normalizeText(raw)).
-// It stays here, next to normalizeText and reusing its rule definitions, so there
-// is only ever one normalization in the codebase.
+// normalizeWithMap runs the identical NFKC -> soft-hyphen-removal ->
+// whitespace-collapse -> trim pipeline as normalizeText while tracking each output
+// character back to its source, so anchoring reads the exact same normalized text
+// extraction stored (an equivalence the tests pin: normalizeWithMap(raw).text ===
+// normalizeText(raw)). It stays here, next to normalizeText and reusing its rule
+// definitions, so there is only ever one normalization in the codebase.
 export function normalizeWithMap(raw: string): NormalizedText {
   // Stage 1 - NFKC folding per starter-plus-combining-marks cluster, recording
   // each output code unit's source. Clustering on combining marks keeps the
@@ -104,18 +108,23 @@ export function normalizeWithMap(raw: string): NormalizedText {
   }
   flushCluster();
 
-  // Stage 2 - de-hyphenation. The exact LINE_BROKEN_WORD rule finds each
-  // letter-hyphen-break span; the hyphen and the whitespace are dropped and the
-  // preceding letter kept, so provenance rides along untouched.
-  const droppedByHyphen = new Array<boolean>(folded.length).fill(false);
-  LINE_BROKEN_WORD.lastIndex = 0;
-  for (
-    let match = LINE_BROKEN_WORD.exec(folded);
-    match !== null;
-    match = LINE_BROKEN_WORD.exec(folded)
-  ) {
-    for (let k = match.index + 1; k < match.index + match[0].length; k += 1) {
-      droppedByHyphen[k] = true;
+  // Stage 2 - soft-hyphen removal. The exact SOFT_HYPHEN rule (U+00AD plus any
+  // whitespace that follows it) is mirrored character by character: each soft
+  // hyphen and the line break trailing it are dropped so the word rejoins, while
+  // the surviving characters keep their own provenance. A hard hyphen is left
+  // untouched, matching normalizeText.
+  const droppedBySoftHyphen = new Array<boolean>(folded.length).fill(false);
+  for (let j = 0; j < folded.length; j += 1) {
+    if (folded[j] !== "\u00AD") {
+      continue;
+    }
+    droppedBySoftHyphen[j] = true;
+    for (
+      let k = j + 1;
+      k < folded.length && WHITESPACE_CHAR.test(folded[k]);
+      k += 1
+    ) {
+      droppedBySoftHyphen[k] = true;
     }
   }
 
@@ -126,7 +135,7 @@ export function normalizeWithMap(raw: string): NormalizedText {
   const sourceIndex: number[] = [];
   let pendingSpaceSource = -1;
   for (let j = 0; j < folded.length; j += 1) {
-    if (droppedByHyphen[j]) {
+    if (droppedBySoftHyphen[j]) {
       continue;
     }
     const char = folded[j];

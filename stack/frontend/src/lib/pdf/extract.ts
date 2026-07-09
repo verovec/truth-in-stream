@@ -20,25 +20,34 @@ export type ExtractionResult = {
 
 // PdfPageReader returns one raw text string per page. It is the seam between the
 // pure segmentation logic and the browser-only pdf.js engine, so tests inject a
-// fake and never load pdf.js.
-export type PdfPageReader = (data: ArrayBuffer) => Promise<string[]>;
+// fake and never load pdf.js. The optional signal lets a caller cancel a long
+// parse (dismiss/unmount) so the reader stops between pages instead of running
+// the whole document to completion in the background.
+export type PdfPageReader = (
+  data: ArrayBuffer,
+  signal?: AbortSignal,
+) => Promise<string[]>;
 
 // defaultPageReader lazy-loads pdf.js only when a real extraction runs, so
 // importing this module (a test, or a server bundle that never calls it) does
 // not pull in the browser-only engine or its worker.
-const defaultPageReader: PdfPageReader = (data) =>
-  import("./pdfjs").then((module) => module.readPdfPages(data));
+const defaultPageReader: PdfPageReader = (data, signal) =>
+  import("./pdfjs").then((module) => module.readPdfPages(data, signal));
 
 // extractDocument reads a PDF's per-page text in the browser, normalizes and
 // segments it into ordered sentences, and reports the page count. A document
 // with no extractable text is rejected with ScannedPdfError before it is
-// returned, so a scanned PDF never reaches the server.
+// returned, so a scanned PDF never reaches the server. The signal aborts the
+// parse - the longest pipeline step - so a dismissed upload does not keep pdf.js
+// churning after its tile is gone.
 export async function extractDocument(
   file: File,
   readPages: PdfPageReader = defaultPageReader,
+  signal?: AbortSignal,
 ): Promise<ExtractionResult> {
+  signal?.throwIfAborted();
   const data = await file.arrayBuffer();
-  const pageTexts = await readPages(data);
+  const pageTexts = await readPages(data, signal);
   const sentences = segmentPages(pageTexts);
   if (sentences.length === 0) {
     throw new ScannedPdfError();
