@@ -928,6 +928,11 @@ services:
       STORAGE_ACCESS_KEY: "minioadmin"
       STORAGE_SECRET_KEY: "minioadmin"
       STORAGE_USE_PATH_STYLE: "true"
+      # PDF document API caps (empty keeps the backend defaults: 30 MB, 1500
+      # sentences). Forwarded explicitly - a variable in .env does nothing
+      # unless compose passes it through.
+      DOCUMENT_MAX_SIZE_BYTES: "${DOCUMENT_MAX_SIZE_BYTES:-}"
+      DOCUMENT_MAX_SENTENCES: "${DOCUMENT_MAX_SENTENCES:-}"
       # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
       # yt-dlp and ffmpeg, so the defaults work as-is. Optional overrides:
       # YOUTUBE_DOWNLOADER_PATH (default "yt-dlp"), YOUTUBE_MAX_DOWNLOAD_BYTES

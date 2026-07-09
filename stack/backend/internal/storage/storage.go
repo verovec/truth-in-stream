@@ -143,6 +143,33 @@ func (s *S3Store) PresignUpload(ctx context.Context, key string) (domain.Presign
 	return toPresigned(req), nil
 }
 
+// PresignUploadOnce returns a presigned PUT request that additionally signs the
+// declared Content-Type, the exact Content-Length, and If-None-Match: * into
+// the signature. The uploader must replay those headers verbatim, so the
+// object's real type and size cannot diverge from what was declared and an
+// existing object cannot be overwritten - a completed upload's URL is dead for
+// the rest of its TTL (a retry after a lost response gets 412 and treats it as
+// already uploaded).
+func (s *S3Store) PresignUploadOnce(ctx context.Context, key, contentType string, sizeBytes int64) (domain.PresignedRequest, error) {
+	if contentType == "" {
+		return domain.PresignedRequest{}, fmt.Errorf("storage: presign upload once %q: content type is required", key)
+	}
+	if sizeBytes <= 0 {
+		return domain.PresignedRequest{}, fmt.Errorf("storage: presign upload once %q: size must be positive, got %d", key, sizeBytes)
+	}
+	req, err := s.presigner.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(key),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(sizeBytes),
+		IfNoneMatch:   aws.String("*"),
+	}, s3.WithPresignExpires(s.putTTL))
+	if err != nil {
+		return domain.PresignedRequest{}, fmt.Errorf("storage: presign upload once %q: %w", key, err)
+	}
+	return toPresigned(req), nil
+}
+
 // PresignDownload returns a presigned GET request the browser uses to stream an
 // object directly from storage, including range requests for playback.
 func (s *S3Store) PresignDownload(ctx context.Context, key string) (domain.PresignedRequest, error) {
@@ -187,6 +214,20 @@ func (s *S3Store) Download(ctx context.Context, key string) (io.ReadCloser, erro
 		return nil, fmt.Errorf("storage: get object %q: %w", key, err)
 	}
 	return out.Body, nil
+}
+
+// Delete removes key from the bucket. S3 DeleteObject is idempotent - removing
+// an absent key succeeds - so a retried document deletion never fails on an
+// object that is already gone.
+func (s *S3Store) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("storage: delete object %q: %w", key, err)
+	}
+	return nil
 }
 
 // Exists reports whether key is present in the bucket. A missing object is not

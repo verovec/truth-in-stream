@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	pgvector "github.com/pgvector/pgvector-go"
 )
@@ -16,6 +17,62 @@ import (
 var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
+
+const insertDocumentSentence = `-- name: InsertDocumentSentence :batchexec
+INSERT INTO document_sentences (document_id, seq, page, text, occurrence)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertDocumentSentenceBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDocumentSentenceParams struct {
+	DocumentID uuid.UUID
+	Seq        int32
+	Page       int32
+	Text       string
+	Occurrence int32
+}
+
+func (q *Queries) InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.DocumentID,
+			a.Seq,
+			a.Page,
+			a.Text,
+			a.Occurrence,
+		}
+		batch.Queue(insertDocumentSentence, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDocumentSentenceBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDocumentSentenceBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDocumentSentenceBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
 
 const setWikiChunkClustering = `-- name: SetWikiChunkClustering :batchexec
 UPDATE wiki_chunks

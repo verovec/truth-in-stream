@@ -152,6 +152,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	documentsCfg, err := config.LoadDocuments()
+	if err != nil {
+		return err
+	}
 	youtubeCfg, err := config.LoadYouTube()
 	if err != nil {
 		return err
@@ -205,6 +209,14 @@ func run(logger *slog.Logger) error {
 
 	videoSvc, err := service.NewVideoService(pgStore, mediaStore, service.VideoConfig{
 		MaxUploadBytes: uploadCfg.MaxBytes,
+	})
+	if err != nil {
+		return err
+	}
+
+	documentSvc, err := service.NewDocumentService(pgStore, mediaStore, service.DocumentConfig{
+		MaxSizeBytes: documentsCfg.MaxSizeBytes,
+		MaxSentences: documentsCfg.MaxSentences,
 	})
 	if err != nil {
 		return err
@@ -295,7 +307,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, youtubeSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, documentSvc, youtubeSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

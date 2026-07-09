@@ -1490,6 +1490,50 @@ func LoadUpload() (Upload, error) {
 	return Upload{MaxBytes: maxBytes}, nil
 }
 
+// Document API defaults: a 30 MB PDF covers long reports while bounding
+// storage and abuse; 1500 sentences bounds the LLM cost of one analysis run.
+const (
+	defaultDocumentMaxSizeBytes int64 = 30 << 20
+	defaultDocumentMaxSentences       = 1500
+)
+
+// Documents holds the PDF document constraints applied by the documents API.
+type Documents struct {
+	MaxSizeBytes int64
+	MaxSentences int
+}
+
+// LoadDocuments reads the document configuration from the environment.
+// DOCUMENT_MAX_SIZE_BYTES and DOCUMENT_MAX_SENTENCES override the defaults and
+// must be positive integers.
+func LoadDocuments() (Documents, error) {
+	cfg := Documents{
+		MaxSizeBytes: defaultDocumentMaxSizeBytes,
+		MaxSentences: defaultDocumentMaxSentences,
+	}
+	if raw := os.Getenv("DOCUMENT_MAX_SIZE_BYTES"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_MAX_SIZE_BYTES %q: %w", raw, err)
+		}
+		if v <= 0 {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_MAX_SIZE_BYTES must be positive, got %d", v)
+		}
+		cfg.MaxSizeBytes = v
+	}
+	if raw := os.Getenv("DOCUMENT_MAX_SENTENCES"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_MAX_SENTENCES %q: %w", raw, err)
+		}
+		if v <= 0 {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_MAX_SENTENCES must be positive, got %d", v)
+		}
+		cfg.MaxSentences = v
+	}
+	return cfg, nil
+}
+
 // YouTube ingest defaults: a 2 GiB download cap matches the upload cap; a
 // 15-minute timeout covers a long clip over a slow connection without letting a
 // stuck download pin a worker indefinitely; the downloader defaults to yt-dlp on

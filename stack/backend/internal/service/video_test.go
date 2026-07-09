@@ -177,15 +177,21 @@ func (f *fakeVideoStore) SetVideoFailed(_ context.Context, id, reason string) (d
 // fakeMediaStore is a domain.MediaStore that records keys and returns canned
 // presigned requests.
 type fakeMediaStore struct {
-	exists             bool
-	existsErr          error
-	presignUploadErr   error
-	presignDownloadErr error
+	exists               bool
+	existsErr            error
+	presignUploadErr     error
+	presignUploadOnceErr error
+	presignDownloadErr   error
+	deleteErr            error
 
-	uploadKey   string
-	downloadKey string
-	existsKey   string
-	existsCalls int
+	uploadKey      string
+	uploadOnceKey  string
+	uploadOnceType string
+	uploadOnceSize int64
+	downloadKey    string
+	existsKey      string
+	existsCalls    int
+	deletedKeys    []string
 }
 
 func (f *fakeMediaStore) PresignUpload(_ context.Context, key string) (domain.PresignedRequest, error) {
@@ -193,6 +199,16 @@ func (f *fakeMediaStore) PresignUpload(_ context.Context, key string) (domain.Pr
 		return domain.PresignedRequest{}, f.presignUploadErr
 	}
 	f.uploadKey = key
+	return domain.PresignedRequest{URL: "https://put/" + key, Method: "PUT"}, nil
+}
+
+func (f *fakeMediaStore) PresignUploadOnce(_ context.Context, key, contentType string, sizeBytes int64) (domain.PresignedRequest, error) {
+	if f.presignUploadOnceErr != nil {
+		return domain.PresignedRequest{}, f.presignUploadOnceErr
+	}
+	f.uploadOnceKey = key
+	f.uploadOnceType = contentType
+	f.uploadOnceSize = sizeBytes
 	return domain.PresignedRequest{URL: "https://put/" + key, Method: "PUT"}, nil
 }
 
@@ -211,6 +227,14 @@ func (f *fakeMediaStore) Exists(_ context.Context, key string) (bool, error) {
 		return false, f.existsErr
 	}
 	return f.exists, nil
+}
+
+func (f *fakeMediaStore) Delete(_ context.Context, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedKeys = append(f.deletedKeys, key)
+	return nil
 }
 
 const testMaxUpload = 1 << 20

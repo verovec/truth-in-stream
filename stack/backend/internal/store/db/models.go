@@ -18,6 +18,52 @@ type Claim struct {
 	Embedding pgvector.HalfVector
 }
 
+type Document struct {
+	ID                 uuid.UUID
+	Title              string
+	ObjectKey          string
+	ContentType        string
+	SizeBytes          int64
+	PageCount          int32
+	Status             string
+	AnalysisStatus     string
+	AnalysisError      string
+	SentencesTotal     int32
+	SentencesProcessed int32
+	AnalyzedAt         pgtype.Timestamptz
+	AnalysisRuns       int32
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+type DocumentClaim struct {
+	ID          uuid.UUID
+	DocumentID  uuid.UUID
+	SentenceSeq int32
+	Ordinal     int64
+	ClaimID     string
+	Text        string
+	Status      string
+	Source      string
+	Verdict     string
+	Basis       string
+	Literal     string
+	Flags       []string
+	Confidence  float64
+	Rationale   string
+	Citations   []byte
+	CreatedAt   pgtype.Timestamptz
+}
+
+type DocumentSentence struct {
+	DocumentID uuid.UUID
+	Seq        int32
+	Page       int32
+	Text       string
+	Occurrence int32
+	SkipReason string
+}
+
 type PoliticalClaim struct {
 	ID             string
 	Content        string

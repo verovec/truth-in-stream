@@ -226,6 +226,13 @@ func (o *objectServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", obj.contentType)
 		}
 		_, _ = w.Write(obj.body)
+	case http.MethodDelete:
+		// S3 DeleteObject is idempotent: deleting an absent key still returns
+		// 204, so the fake mirrors that.
+		o.mu.Lock()
+		delete(o.objects, r.URL.Path)
+		o.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -292,6 +299,123 @@ func TestDownloadStreamsObject(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("downloaded body = %q, want %q", got, want)
+	}
+}
+
+// TestPresignUploadOnceSignsConstraints proves the strict upload presign binds
+// the declared content type, exact length, and write-once semantics into the
+// signature: the uploader cannot send a different size or type, and cannot
+// overwrite an existing object, without failing the signature or precondition.
+func TestPresignUploadOnceSignsConstraints(t *testing.T) {
+	t.Parallel()
+	store, err := New(t.Context(), validConfig("http://minio.example:9000", true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	req, err := store.PresignUploadOnce(t.Context(), "documents/doc-1/original.pdf", "application/pdf", 2048)
+	if err != nil {
+		t.Fatalf("presign upload once: %v", err)
+	}
+	if req.Method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", req.Method)
+	}
+	for header, want := range map[string]string{
+		"Content-Type":   "application/pdf",
+		"Content-Length": "2048",
+		"If-None-Match":  "*",
+	} {
+		if !hasSignedHeader(req.SignedHeaders, header) {
+			t.Errorf("signed headers %v missing %s", req.SignedHeaders, header)
+			continue
+		}
+		if got := signedHeaderValue(req.SignedHeaders, header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if !hasSignedHeader(req.SignedHeaders, "host") {
+		t.Errorf("signed headers %v missing host", req.SignedHeaders)
+	}
+}
+
+func TestPresignUploadOnceRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	store, err := New(t.Context(), validConfig("http://minio.example:9000", true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if _, err := store.PresignUploadOnce(t.Context(), "k", "", 1); err == nil {
+		t.Error("empty content type accepted")
+	}
+	if _, err := store.PresignUploadOnce(t.Context(), "k", "application/pdf", 0); err == nil {
+		t.Error("non-positive size accepted")
+	}
+}
+
+func signedHeaderValue(headers map[string][]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
+}
+
+func TestDeleteRemovesObject(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newObjectServerHandler(t))
+	defer srv.Close()
+	objects := srv.Config.Handler.(*objectServer)
+
+	store, err := New(t.Context(), validConfig(srv.URL, true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	body := []byte("doomed bytes")
+	if err := store.Upload(t.Context(), "documents/doc-1/original.pdf", bytes.NewReader(body), "application/pdf", int64(len(body))); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	if err := store.Delete(t.Context(), "documents/doc-1/original.pdf"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok := objects.get("/media/documents/doc-1/original.pdf"); ok {
+		t.Error("object still present after Delete")
+	}
+}
+
+// TestDeleteMissingObjectSucceeds pins S3 delete semantics: removing an absent
+// key is a no-op success, so a retried document deletion never fails on the
+// already-removed object.
+func TestDeleteMissingObjectSucceeds(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(newObjectServerHandler(t))
+	defer srv.Close()
+
+	store, err := New(t.Context(), validConfig(srv.URL, true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := store.Delete(t.Context(), "documents/absent/original.pdf"); err != nil {
+		t.Errorf("delete of an absent key = %v, want nil", err)
+	}
+}
+
+func TestDeleteServerErrorIsWrapped(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// 403 is non-retryable, so the error case stays fast.
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	store, err := New(t.Context(), validConfig(srv.URL, true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := store.Delete(t.Context(), "documents/denied/original.pdf"); err == nil {
+		t.Error("expected error, got nil")
 	}
 }
 

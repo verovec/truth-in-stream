@@ -39,7 +39,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	ups, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))

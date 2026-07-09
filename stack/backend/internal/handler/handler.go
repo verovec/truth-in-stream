@@ -25,7 +25,7 @@ import (
 // served under /demo/ so the browser can play and live-analyze the bundled
 // sample. The only public route is /healthz for load balancer checks; the legacy
 // login and logout routes exist only when the legacy flag is on.
-func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, youtube YouTubeService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). See videos.go.
 	api.HandleFunc("POST /api/videos/uploads", requestUploadHandler(videos))
@@ -33,6 +33,15 @@ func NewMux(health *service.HealthChecker, videos VideoService, youtube YouTubeS
 	api.HandleFunc("POST /api/videos/{id}/confirm", confirmVideoHandler(videos))
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
+	// PDF document records and uploads (id is the record UUID). Reads serve any
+	// authenticated user; creating and deleting documents is admin-only, so the
+	// mutating routes carry the RequireAdmin gate. See documents.go.
+	api.Handle("POST /api/documents/uploads", middleware.RequireAdmin(requestDocumentUploadHandler(documents)))
+	api.Handle("POST /api/documents/{id}/extraction", middleware.RequireAdmin(documentExtractionHandler(documents)))
+	api.HandleFunc("GET /api/documents", listDocumentsHandler(documents))
+	api.HandleFunc("GET /api/documents/{id}", getDocumentHandler(documents))
+	api.HandleFunc("GET /api/documents/{id}/claims", documentClaimsHandler(documents))
+	api.Handle("DELETE /api/documents/{id}", middleware.RequireAdmin(deleteDocumentHandler(documents)))
 	// Live fact-check stream (WebSocket). See live.go.
 	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, recorder, replayer, liveAllowedOrigins, debugFactCheck, logger))
 	// Admin-only exports of a completed video's cached analysis: an SRT transcript

@@ -34,6 +34,10 @@ linters:
         # INSEE BDM SDMX wire-format codes (UNIT_MEASURE values) carried verbatim
         # in the adapter, not English misspellings.
         - INDIVIDUS
+        # The document analysis lifecycle value fixed by the PDF fact-check
+        # design (documents.analysis_status = 'analysing'): API and DB
+        # vocabulary, not prose to be re-spelled.
+        - analysing
   exclusions:
     # Exclude sqlc-generated code (internal/store/db) by the canonical
     # "// Code generated ... DO NOT EDIT." header only.
