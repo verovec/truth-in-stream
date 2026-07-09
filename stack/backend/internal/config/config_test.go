@@ -42,8 +42,17 @@ func TestLoad(t *testing.T) {
 			want: Config{Port: "8080", DatabaseURL: "postgres://localhost/db", DemoMediaDir: "demo", CORSAllowedOrigin: "http://localhost:3000"},
 		},
 	}
+	// Neutralize every config-relevant variable before each case so the subtests
+	// are hermetic. `make test` runs `go test` with DATABASE_URL exported by the
+	// Makefile (the go-run targets need it); without this clearing the leaked value
+	// masks the expected error in "missing database url fails". Load treats an empty
+	// value as unset (requireEnv/getenv), so clearing to "" is equivalent to absent.
+	configEnvKeys := []string{"DATABASE_URL", "PORT", "DEMO_MEDIA_DIR", "CORS_ALLOWED_ORIGIN"}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range configEnvKeys {
+				t.Setenv(k, "")
+			}
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
