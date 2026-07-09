@@ -247,15 +247,25 @@ locals {
   ]
 
   # Managed database (modules/rds): only required when the env provisions RDS.
+  # The prod root also creates a pgvector-tuned DB parameter group and attaches
+  # it to the instance (VER-177), so the parameter-group lifecycle + the params/
+  # tags the provider reads back on every refresh are listed here too.
   rds_actions = [
     "rds:CreateDBInstance",
     "rds:DeleteDBInstance",
     "rds:ModifyDBInstance",
     "rds:CreateDBSubnetGroup",
     "rds:DeleteDBSubnetGroup",
+    "rds:CreateDBParameterGroup",
+    "rds:DeleteDBParameterGroup",
+    "rds:ModifyDBParameterGroup",
+    "rds:ResetDBParameterGroup",
     "rds:AddTagsToResource",
     "rds:DescribeDBInstances",
     "rds:DescribeDBSubnetGroups",
+    "rds:DescribeDBParameterGroups",
+    "rds:DescribeDBParameters",
+    "rds:ListTagsForResource",
   ]
 
   # Managed Valkey cache (modules/valkey): the ElastiCache replication group and

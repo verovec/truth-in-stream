@@ -43,6 +43,24 @@ variable "max_allocated_storage" {
   description = "Storage autoscaling ceiling in GiB."
 }
 
+variable "iops" {
+  type        = number
+  default     = null
+  description = "Provisioned gp3 IOPS. Null (the default) leaves the volume on the gp3 baseline (3000 IOPS). RDS gp3 only accepts a provisioned value above the baseline once allocated_storage reaches the 400 GiB threshold, so keep this null on small instances (e.g. dev)."
+}
+
+variable "storage_throughput" {
+  type        = number
+  default     = null
+  description = "Provisioned gp3 storage throughput in MiB/s. Null (the default) leaves the volume on the gp3 baseline (125 MiB/s). Like iops, a value above the baseline is only valid once allocated_storage reaches the 400 GiB gp3 threshold; keep null on small instances."
+}
+
+variable "parameter_group_name" {
+  type        = string
+  default     = null
+  description = "Name of a custom DB parameter group to attach. Null (the default) leaves the instance on the engine's default parameter group. The prod root passes a pgvector-tuned group here; dev stays on the default."
+}
+
 variable "multi_az" {
   type        = bool
   description = "Standby replica in a second AZ."

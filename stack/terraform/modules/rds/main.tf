@@ -28,12 +28,22 @@ resource "aws_db_instance" "main" {
   storage_type          = "gp3"
   allocated_storage     = var.allocated_storage
   max_allocated_storage = var.max_allocated_storage
-  storage_encrypted     = true
+  # gp3 IOPS/throughput are null on the baseline (dev): the provider then omits
+  # them and RDS uses the gp3 free baseline (3000 IOPS, 125 MiB/s). Provisioning
+  # above the baseline is only valid once allocated_storage >= 400 GiB (the gp3
+  # threshold), which the prod root satisfies.
+  iops               = var.iops
+  storage_throughput = var.storage_throughput
+  storage_encrypted  = true
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [var.security_group_id]
   publicly_accessible    = false
   multi_az               = var.multi_az
+
+  # Null keeps the instance on the engine's default parameter group; the prod
+  # root passes a pgvector-tuned custom group here.
+  parameter_group_name = var.parameter_group_name
 
   backup_retention_period = var.backup_retention_days
   backup_window           = "03:00-04:00"

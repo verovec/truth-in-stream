@@ -111,6 +111,71 @@ module "ecr" {
   )
 }
 
+# pgvector-tuned parameter group for the prod vector store. Holds the memory and
+# parallelism knobs a hundreds-of-GB HNSW workload needs, expressed as RDS
+# formulas so they track the instance memory (DBInstanceClassMemory is in bytes;
+# shared_buffers/effective_cache_size are in 8 KB pages, work_mem/
+# maintenance_work_mem in KB) and stay correct if rds_instance_class is resized.
+# family = postgres17 matches the RDS engine major (modules/rds pins
+# engine_version = "17"); the current default 17.x minor ships pgvector 0.8.2
+# (>= 0.8.0, so iterative scans are available), and auto_minor_version_upgrade
+# only moves forward.
+#
+# The pgvector search GUCs hnsw.ef_search and hnsw.iterative_scan are
+# DELIBERATELY NOT set here: on RDS they are not part of the postgres17 parameter
+# family and the master role (rds_superuser, not a true superuser) is denied
+# setting them via the parameter group or ALTER ROLE/DATABASE, so listing them
+# would fail the apply. They stay session-scoped, set per connection in the Go
+# layer (stack/backend/internal/store/postgres/postgres.go sets hnsw.ef_search
+# via set_config on AfterConnect); iterative_scan is left at its default off and
+# opted into per query where a filter under-returns.
+resource "aws_db_parameter_group" "vector" {
+  count = var.enable_rds ? 1 : 0
+
+  name        = "${local.project}-${var.environment}-pgvector"
+  family      = "postgres17"
+  description = "pgvector-tuned parameters for the prod vector store (VER-177)."
+
+  # 25% of instance memory (the RDS default), set explicitly to document the
+  # sizing decision. Static, so it applies on the next reboot, not live.
+  parameter {
+    name         = "shared_buffers"
+    value        = "{DBInstanceClassMemory/32768}"
+    apply_method = "pending-reboot"
+  }
+
+  # 75% of instance memory: a planner hint (no allocation) so the planner assumes
+  # most of the index/data is served from cache.
+  parameter {
+    name  = "effective_cache_size"
+    value = "{DBInstanceClassMemory*3/32768}"
+  }
+
+  # 16 MiB (up from the 4 MiB default) for the sort/limit work behind a top-k
+  # vector query. Kept modest because work_mem is per node and multiplies across
+  # concurrent queries; raise it only for the heavy query path via
+  # ALTER ROLE ... SET work_mem rather than globally.
+  parameter {
+    name  = "work_mem"
+    value = "16384"
+  }
+
+  # ~6.25% of instance memory for HNSW index builds (the in-progress graph wants
+  # to fit here or the build slows sharply). Shared across parallel build workers.
+  parameter {
+    name  = "maintenance_work_mem"
+    value = "{DBInstanceClassMemory/16384}"
+  }
+
+  # Parallel HNSW index builds (pgvector >= 0.6.0). 4 leaves headroom under the
+  # r7g.2xlarge's 8 vCPU and the default max_parallel_workers (8); raise it with
+  # the instance size.
+  parameter {
+    name  = "max_parallel_maintenance_workers"
+    value = "4"
+  }
+}
+
 module "rds" {
   source = "../modules/rds"
   count  = var.enable_rds ? 1 : 0
@@ -118,15 +183,26 @@ module "rds" {
   project     = local.project
   environment = var.environment
 
-  # Cost-baseline: a small single-AZ instance. Backups (21-day retention),
-  # deletion protection, and the final snapshot are independent of Multi-AZ and
-  # stay on; only the standby replica is dropped. Set rds_multi_az = true (and
-  # scale rds_instance_class as needed) to restore failover HA.
+  # Memory-optimized r-family sized for the vector store (see rds_instance_class).
+  # Backups (21-day retention), deletion protection, and the final snapshot are
+  # independent of Multi-AZ and stay on; only the standby replica is dropped. Set
+  # rds_multi_az = true to restore failover HA.
   instance_class        = var.rds_instance_class
   multi_az              = var.rds_multi_az
   deletion_protection   = true
   skip_final_snapshot   = false
   backup_retention_days = 21
+
+  # Hundreds-of-GB gp3 volume with IOPS/throughput provisioned above the gp3
+  # baseline (valid because allocated_storage >= the 400 GiB gp3 threshold).
+  allocated_storage     = var.rds_allocated_storage
+  max_allocated_storage = var.rds_max_allocated_storage
+  iops                  = var.rds_iops
+  storage_throughput    = var.rds_storage_throughput
+
+  # The pgvector-tuned parameter group above. Attaching it puts the static
+  # shared_buffers change in pending-reboot; the operator reboots to apply it.
+  parameter_group_name = aws_db_parameter_group.vector[0].name
 
   private_subnet_ids = module.vpc.private_subnet_ids
   security_group_id  = module.vpc.postgres_security_group_id
