@@ -5,19 +5,19 @@ Part 1 covers everything that must happen before and around the first deploy; pa
 covers getting fact-check data flowing (crawling and ingestion). Each step links to
 the runbook that owns its detail — this page owns only the ordering.
 
-Every infrastructure action below is human-gated by design: CI plans and validates,
-but the first applies, the DNS publication, every production apply, and every deploy
-are deliberate human actions. Local development needs none of this — see the
-[README quick start](../README.md#quick-start).
+Production stays human-gated by design: PRs only validate, a merge to `main`
+auto-applies only the `dev` root, and the first applies, the DNS publication, every
+production apply, and every deploy are deliberate human actions. Local development
+needs none of this — see the [README quick start](../README.md#quick-start).
 
 ## Part 1 — before deploying to AWS
 
 ### 1. Local tooling and configuration
 
-- Install Terraform (>= 1.11), AWS CLI v2 with the Session Manager plugin, Docker
-  Engine + Compose v2, and GNU make. `make doctor` verifies the Docker and make
-  basics only — it does not check Terraform, the AWS CLI, or the Session Manager
-  plugin.
+- Install Terraform (>= 1.11), AWS CLI v2 with the Session Manager plugin (used
+  by the SSM tunnels), Docker Engine + Compose v2, GNU make, and `jq` (required
+  by the ingestion tooling). `make doctor` verifies the Docker and make basics
+  only — it does not check the rest.
 - Configure the AWS SSO profile the terraform tooling uses, once per machine:
   `aws configure sso --profile truth-in-stream-dev` — see
   [AWS SSO profile](../stack/terraform/README.md#aws-sso-profile). The secret-push
@@ -66,10 +66,11 @@ Detail: [First deploy of an environment](../stack/terraform/README.md#first-depl
 ### 4. Wire terraform CI to AWS (once)
 
 1. Create the CI apply role, out of band with elevated credentials — it is
-   deliberately not managed by the terraform it runs. Grant it the actions each
-   root enumerates as `terraform output apply_required_actions` (the list already
-   includes the `iam:SimulatePrincipalPolicy` and `iam:GetRole` the pre-apply
-   guard itself needs).
+   deliberately not managed by the terraform it runs. Grant it the actions the
+   `dev` root enumerates as `terraform output apply_required_actions` (the list
+   already includes the `iam:SimulatePrincipalPolicy` and `iam:GetRole` the
+   pre-apply guard itself needs). The `prod` root's list can only be read after
+   step 5, which schedules the extension.
 2. Write that role's OIDC trust policy:
    ```sh
    APPLY_ROLE_NAME=<apply-role-name> ./scripts/apply-role-trust.sh
@@ -100,6 +101,10 @@ cd stack/terraform/prod && terraform init && terraform apply
   `enable_wiki_sync`, `enable_db_backup`, the ingestion worker fleets.
 - The TLS certificate is requested in `us-east-1` and stays `PENDING_VALIDATION`
   until step 8 publishes its validation records.
+- After the apply, extend the CI apply role's policy with the `prod` root's
+  `terraform output apply_required_actions` — it differs from dev's. CI plans
+  `prod` (guard included) on every push to `main` and the release applies it, so
+  a missing grant turns both red.
 
 ### 6. Point the deploy engine at production
 
@@ -117,8 +122,9 @@ so the set targets exactly one environment at a time. For the production bring-u
 
 To roll dev images (step 3's flapping services), temporarily point
 `AWS_DEPLOY_ROLE_ARN` at the dev root's output and `DEPLOY_ENVIRONMENT` at `dev`,
-dispatch the wrappers, then point the set back at prod. The deploy engine fails
-fast, naming any variable left unset.
+dispatch `deploy-backend` and `deploy-frontend` (dev runs no Keycloak service),
+then point the set back at prod. The deploy engine fails fast, naming any
+variable left unset.
 
 ### 7. Fill the application secrets
 
@@ -129,9 +135,11 @@ start without values.
 make push-secrets ENV=prod    # pushes the allowlisted keys from .env; asks to type "prod"
 ```
 
-The allowlist covers `EMBEDDING_API_KEY`, `TRANSCRIPTION_API_KEY`,
-`DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `SLACK_WEBHOOK_URL`, and the retired legacy
-login trio. Three secrets are outside the allowlist and are set by hand with
+The allowlist lives in `scripts/push-secrets.sh`: the embedding, transcription,
+LLM, and Slack keys, plus the retired legacy login keys. Leave the legacy keys
+unset in `.env` — with `enable_legacy_password_login` off (the prod default)
+terraform creates no containers for them, and a push would create unmanaged
+secrets. Three secrets are outside the allowlist and are set by hand with
 `aws secretsmanager put-secret-value`:
 
 - `truth-in-stream/prod/app/checkworthy-api-key` (crawl check-worthiness gate)
@@ -174,8 +182,10 @@ git tag v0.1.0 && git push origin v0.1.0
 apply (waits for the `production` environment approval) -> backend (build, scan,
 push, run migrations, roll) -> Keycloak (its DB bootstrap task runs first) and
 frontend. For ad-hoc single-service rolls or a rollback, dispatch `deploy-backend`,
-`deploy-frontend`, `deploy-keycloak`, or `deploy-backup` from the Actions tab.
-Detail: [Deploys (human-gated)](infrastructure.md#deploys-human-gated).
+`deploy-frontend`, or `deploy-keycloak` from the Actions tab; `deploy-backup` only
+builds and pushes the backup image (nothing rolls — the nightly task picks it up
+on its next run). Detail:
+[Deploys (human-gated)](infrastructure.md#deploys-human-gated).
 
 ### 10. One-time corpus load into prod RDS
 
@@ -225,7 +235,8 @@ One-time prerequisites (all human-gated — detail:
    allowlist and are set by hand —
    `aws secretsmanager put-secret-value` on `truth-in-stream/dev/app/checkworthy-api-key`
    and `truth-in-stream/dev/app/factcheck-api-key`.
-4. An open SSO session (`aws sso login`) and the Session Manager plugin.
+4. An open SSO session (`aws sso login`). The Session Manager plugin is not
+   needed here — the commands drive the hosts over `aws ssm send-command`.
 
 Then, per source — `wikipedia`, `stats`, `factcheck`, `scrutins` (queue and
 required producer env per source:
@@ -265,9 +276,13 @@ reference, diagrams, and troubleshooting:
 
 ### Recurring ingestion (optional, off by default)
 
-- `enable_wiki_sync` — a scheduled Fargate task runs a weekly wiki delta sync.
+- `enable_wiki_sync` — a scheduled Fargate task for a weekly wiki delta sync.
+  Keep it off for now: the backend image does not yet ship the `wikisync` binary
+  the task runs (the variable's description says exactly when to flip it).
 - `enable_db_backup` — a nightly `pg_dump` to the private backup bucket; dispatch
-  `deploy-backup` once so its image exists.
+  `deploy-backup` once so its image exists. Detail:
+  [Production database](infrastructure.md#production-database).
 
-Both are gated off by default and enabled with a deliberate apply. Detail:
-[Cloud ingestion](infrastructure.md#cloud-ingestion).
+Both are gated off by default and enabled with a deliberate apply; the task
+mechanics live in
+[`stack/terraform/modules/scheduled-task/README.md`](../stack/terraform/modules/scheduled-task/README.md).
