@@ -47,14 +47,38 @@ variable "nat_gateway_count" {
 
 variable "rds_instance_class" {
   type        = string
-  default     = "db.t4g.small"
-  description = "RDS instance class. db.t4g.small (2 GiB) is the small baseline with enough memory headroom for PostgreSQL + pgvector; scale up the class before adding Multi-AZ if the bottleneck is CPU/memory."
+  default     = "db.r7g.2xlarge"
+  description = "RDS instance class. db.r7g.2xlarge (Graviton3 memory-optimized, 8 vCPU / 64 GiB) sizes the vector store for the datastore-at-scale target (hundreds of GB of halfvec HNSW indexes): AWS recommends the memory-optimized r-family so the HNSW graph stays resident in shared_buffers/OS cache. Assumption pending VER-173's final benchmark numbers; the design references an r7g.2xlarge-class instance for an enwiki-scale (~90 GB) corpus, and this is reversible by lowering the variable. Scale up (r7g/r8g.4xlarge+) or add Multi-AZ as the corpus and traffic grow."
 }
 
 variable "rds_multi_az" {
   type        = bool
   default     = false
   description = "RDS standby replica in a second AZ. Baseline is single-AZ (false) for cost; backups and deletion protection are independent of this and stay on. Set true for failover HA — a key durability lever once prod carries real traffic."
+}
+
+variable "rds_allocated_storage" {
+  type        = number
+  default     = 400
+  description = "Initial gp3 storage in GiB for the vector store. 400 GiB is the RDS gp3 threshold that unlocks provisioning IOPS/throughput above the free baseline (below 400 GiB gp3 is locked to 3000 IOPS / 125 MiB/s), so it is the floor for the tuned rds_iops/rds_storage_throughput below as well as headroom for hundreds of GB of embeddings plus their HNSW index. Operator-owned; raise as the corpus grows (storage autoscales up to rds_max_allocated_storage)."
+}
+
+variable "rds_max_allocated_storage" {
+  type        = number
+  default     = 1000
+  description = "gp3 storage autoscaling ceiling in GiB. 1000 GiB (~1 TiB) lets the store reach hundreds of GB of vectors plus the ~1.5-2x HNSW index without a manual resize. Must be >= rds_allocated_storage."
+}
+
+variable "rds_iops" {
+  type        = number
+  default     = 12000
+  description = "Provisioned gp3 IOPS for the vector store, above the 3000 baseline (valid because rds_allocated_storage >= 400 GiB). Sized for random-read-heavy HNSW search; operator-owned and tunable from VER-173's benchmark. gp3 caps at 64000 IOPS and 500 IOPS/GiB."
+}
+
+variable "rds_storage_throughput" {
+  type        = number
+  default     = 500
+  description = "Provisioned gp3 storage throughput in MiB/s for the vector store, above the 125 baseline (valid because rds_allocated_storage >= 400 GiB). gp3 caps at 4000 MiB/s and throughput must stay <= 0.25 x IOPS. Operator-owned and tunable from VER-173's benchmark."
 }
 
 variable "log_retention_days" {
