@@ -84,7 +84,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "admin",
+          "value": "test1234",
           "temporary": false
         }
       ],

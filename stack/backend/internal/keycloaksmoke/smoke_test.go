@@ -57,7 +57,7 @@ const (
 
 	clientID = "truth-in-stream-web"
 	devUser  = "admin"
-	devPass  = "admin"
+	devPass  = "test1234"
 )
 
 func envOr(key, fallback string) string {

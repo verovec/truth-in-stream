@@ -41,7 +41,7 @@ make bootstrap   # generate .env: operator email, argon2id password hash, sessio
 make up          # build and start the whole stack
 ```
 
-Then open the app and sign in through Keycloak with a local dev user (`admin` / `admin` or
+Then open the app and sign in through Keycloak with a local dev user (`admin` / `test1234` or
 `guest` / `guest`); `admin` additionally sees the debug toggle:
 
 - Frontend -> <http://localhost:3000>
