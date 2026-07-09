@@ -26,7 +26,11 @@ needs none of this — see the [README quick start](../README.md#quick-start).
   to the same `verovec-*` names and are overridden via `AWS_PROFILE`.
 - Copy `.env.example` to `.env` and fill the real API keys — at minimum
   `EMBEDDING_API_KEY` (Voyage) and `TRANSCRIPTION_API_KEY` (AssemblyAI). The file is
-  gitignored and later feeds `make push-secrets`. Key inventory:
+  gitignored and later feeds `make push-secrets`. Clear the demo
+  `AUTH_PASSWORD_HASH` the example ships: `push-secrets` pushes every non-empty
+  allowlisted key, and with legacy password login off (the default in both
+  environments) a non-empty value creates an unmanaged secret holding that
+  committed hash. Key inventory:
   [Configuration](configuration.md#environment-variables).
 - Copy `deploy/targets.example.json` to `deploy/targets.json` and fill the real
   account ids. The file is gitignored; the account guard
@@ -137,13 +141,11 @@ make push-secrets ENV=prod    # pushes the allowlisted keys from .env; asks to t
 ```
 
 The allowlist lives in `scripts/push-secrets.sh`: the embedding, transcription,
-LLM, and Slack keys, plus the retired legacy login keys. With
-`enable_legacy_password_login` off (the prod default) terraform creates no
-containers for the legacy trio, so clear `AUTH_PASSWORD_HASH` in `.env` before
-pushing — `.env.example` ships a demo value, and a non-empty key makes
-`push-secrets` create an unmanaged secret holding that committed hash. Three
-secrets are outside the allowlist and are set by hand with
-`aws secretsmanager put-secret-value`:
+LLM, and Slack keys, plus the retired legacy login keys. Leave the legacy trio
+empty (you cleared the demo `AUTH_PASSWORD_HASH` in step 1) — with
+`enable_legacy_password_login` off, terraform creates no containers for them and a
+non-empty value would push an unmanaged secret. Three secrets are outside the
+allowlist and are set by hand with `aws secretsmanager put-secret-value`:
 
 - `truth-in-stream/prod/app/checkworthy-api-key` (crawl check-worthiness gate)
 - `truth-in-stream/prod/app/factcheck-api-key` (fact-check archive producer)
@@ -234,10 +236,11 @@ One-time prerequisites (all human-gated — detail:
 2. Hosts provisioned: `terraform apply -var enable_ingestion_hosts=true` in
    `stack/terraform/dev` (implies the managed database).
 3. The dev secrets populated: `make push-secrets ENV=dev` covers the consumer
-   host's `embedding-api-key`; the crawler host's two keys sit outside the
-   allowlist and are set by hand —
-   `aws secretsmanager put-secret-value` on `truth-in-stream/dev/app/checkworthy-api-key`
-   and `truth-in-stream/dev/app/factcheck-api-key`.
+   host's `embedding-api-key` (clear the demo `AUTH_PASSWORD_HASH` first — part 1,
+   step 1); the crawler host's two keys sit outside the allowlist and are set by
+   hand — `aws secretsmanager put-secret-value` on
+   `truth-in-stream/dev/app/checkworthy-api-key` and
+   `truth-in-stream/dev/app/factcheck-api-key`.
 4. An open SSO session (`aws sso login`). The Session Manager plugin is not
    needed here — the commands drive the hosts over `aws ssm send-command`.
 
