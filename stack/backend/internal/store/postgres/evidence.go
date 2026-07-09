@@ -113,10 +113,11 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 		// (relaxed order is fine - the rerank re-sorts by exact cosine) with
 		// hnsw.ef_search raised to the pool size; a bare HNSW scan returns at most
 		// ef_search rows, which would silently cap the pool and make a larger
-		// multiplier a no-op. coarse_limit floors at the caller's efSearch so a
-		// full-recall probe (coverage: topK=1, efSearch=200) keeps its candidate
-		// budget through the lossy coarse stage instead of collapsing to
-		// multiplier*1 and risking a false not_covered verdict.
+		// multiplier a no-op. coarse_limit (and thus the coarse ef_search) floors
+		// at the deeper of the caller's efSearch and the single-stage default, so
+		// BQ never searches shallower than the baseline and a full-recall probe
+		// (coverage: topK=1, efSearch=200) keeps its wider budget - see
+		// bqCoarseLimit.
 		coarse := bqCoarseLimit(s.bqMultiplier, topK, efSearch)
 		err = s.searchTuned(ctx, bqEfSearch(coarse), true, func(q *db.Queries) error {
 			var e error
@@ -173,14 +174,22 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 const hnswEfSearchMax = 1000
 
 // bqCoarseLimit is the size of the coarse candidate pool the BQ stage gathers:
-// multiplier*topK, floored at efSearch so a caller that asked for a wider recall
-// budget (a full-recall coverage probe passes efSearch=200, topK=1) keeps it
-// through the lossy coarse stage rather than collapsing to multiplier*1. It is
-// clamped to MaxInt32 for the int32 LIMIT.
+// multiplier*topK, floored at the DEEPER of the caller's efSearch and the
+// single-stage session default (defaultEfSearch). The default floor matters: the
+// pool also sets the coarse scan's hnsw.ef_search (see bqEfSearch), so without it
+// a modest multiplier on the efSearch=0 hot path (e.g. 4*EvidenceTopK=20) would
+// make the bit-HNSW search SHALLOWER than the 100-deep single-stage baseline and
+// lose recall on top of binary quantization's inherent loss. The caller-efSearch
+// floor additionally keeps a full-recall probe (coverage passes efSearch=200,
+// topK=1) at its wider budget. Clamped to MaxInt32 for the int32 LIMIT.
 func bqCoarseLimit(multiplier, topK, efSearch int) int {
 	coarse := int64(multiplier) * int64(topK)
-	if int64(efSearch) > coarse {
-		coarse = int64(efSearch)
+	floor := int64(efSearch)
+	if defaultEfSearch > floor {
+		floor = int64(defaultEfSearch)
+	}
+	if floor > coarse {
+		coarse = floor
 	}
 	if coarse > math.MaxInt32 {
 		coarse = math.MaxInt32

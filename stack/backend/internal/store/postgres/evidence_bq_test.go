@@ -113,8 +113,8 @@ func TestSearchEvidenceBinaryQuantizedRespectsSourceFilter(t *testing.T) {
 }
 
 // TestBQCoarseLimit pins the coarse-pool sizing: multiplier*topK, floored at the
-// caller's efSearch so a full-recall probe keeps its budget through the lossy
-// coarse stage rather than collapsing to multiplier*topK.
+// deeper of the caller's efSearch and the single-stage default so BQ never
+// searches shallower than the baseline (defaultEfSearch=100).
 func TestBQCoarseLimit(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -122,11 +122,11 @@ func TestBQCoarseLimit(t *testing.T) {
 		multiplier, topK, efSearch int
 		want                       int
 	}{
-		{"multiplier times topK", 2, 5, 0, 10},
-		{"larger multiplier widens the pool", 10, 5, 0, 50},
-		{"efSearch floors the coverage probe pool", 4, 1, 200, 200},
-		{"pool wins when it exceeds efSearch", 50, 5, 200, 250},
-		{"minimum pool is topK at multiplier 1", 1, 1, 0, 1},
+		{"pool below the default floors to the session default", 2, 5, 0, defaultEfSearch},
+		{"multiplier 1 also floors to the default", 1, 1, 0, defaultEfSearch},
+		{"pool above the default wins", 40, 5, 0, 200},
+		{"caller efSearch floors above the default (coverage probe)", 4, 1, 200, 200},
+		{"pool wins over both floors", 50, 5, 200, 250},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

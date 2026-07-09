@@ -19,9 +19,12 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/store/db"
 )
 
-// efSearch is the HNSW candidate-list size per query. Higher trades latency for
-// recall; 100 is a safe default at the tens-of-millions scale we target.
-const efSearch = 100
+// defaultEfSearch is the HNSW candidate-list size per query set on every pooled
+// connection. Higher trades latency for recall; 100 is a safe default at the
+// tens-of-millions scale we target. It is also the floor for the BQ coarse
+// stage, so binary quantization never searches shallower than the single-stage
+// baseline (see bqCoarseLimit).
+const defaultEfSearch = 100
 
 // Store is a claim store backed by a pgvector-enabled Postgres database.
 type Store struct {
@@ -68,7 +71,7 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 		}
 		// SET does not accept a bind parameter over the extended protocol, so
 		// use set_config (false = session scope) to keep the value parameterized.
-		if _, err := c.Exec(ctx, "SELECT set_config('hnsw.ef_search', $1, false)", strconv.Itoa(efSearch)); err != nil {
+		if _, err := c.Exec(ctx, "SELECT set_config('hnsw.ef_search', $1, false)", strconv.Itoa(defaultEfSearch)); err != nil {
 			return fmt.Errorf("postgres: set ef_search: %w", err)
 		}
 		return nil
