@@ -19,14 +19,40 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/store/db"
 )
 
-// efSearch is the HNSW candidate-list size per query. Higher trades latency for
-// recall; 100 is a safe default at the tens-of-millions scale we target.
-const efSearch = 100
+// defaultEfSearch is the HNSW candidate-list size per query set on every pooled
+// connection. Higher trades latency for recall; 100 is a safe default at the
+// tens-of-millions scale we target. It is also the floor for the BQ coarse
+// stage, so binary quantization never searches shallower than the single-stage
+// baseline (see bqCoarseLimit).
+const defaultEfSearch = 100
 
 // Store is a claim store backed by a pgvector-enabled Postgres database.
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
+	// bqMultiplier > 0 turns the evidence search into the two-stage
+	// binary-quantization path (VER-176): the coarse bit-index stage gathers
+	// bqMultiplier*k candidates and the halfvec rerank restores ranking. Zero
+	// (the default) keeps the single-stage halfvec search.
+	bqMultiplier int
+}
+
+// Option customizes a Store at Open. It is a variadic option rather than an Open
+// parameter so the many workers that never search (ingest, seed, verify) open
+// the store unchanged; only the API server opts in to binary quantization.
+type Option func(*Store)
+
+// WithBinaryQuantization enables the two-stage binary-quantization evidence
+// search with the given candidate multiplier (coarse candidates = multiplier x
+// the requested k). A non-positive multiplier is ignored, leaving the
+// single-stage search - the default, per the VER-173 verdict, until the corpus
+// approaches the halfvec HNSW's RAM ceiling.
+func WithBinaryQuantization(multiplier int) Option {
+	return func(s *Store) {
+		if multiplier > 0 {
+			s.bqMultiplier = multiplier
+		}
+	}
 }
 
 // Store satisfies the domain port.
@@ -34,7 +60,7 @@ var _ domain.ClaimStore = (*Store)(nil)
 
 // Open builds a connection pool from a libpq DSN and registers the pgvector
 // types (and per-session recall knob) on every connection.
-func Open(ctx context.Context, dsn string) (*Store, error) {
+func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: parse dsn: %w", err)
@@ -45,7 +71,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		}
 		// SET does not accept a bind parameter over the extended protocol, so
 		// use set_config (false = session scope) to keep the value parameterized.
-		if _, err := c.Exec(ctx, "SELECT set_config('hnsw.ef_search', $1, false)", strconv.Itoa(efSearch)); err != nil {
+		if _, err := c.Exec(ctx, "SELECT set_config('hnsw.ef_search', $1, false)", strconv.Itoa(defaultEfSearch)); err != nil {
 			return fmt.Errorf("postgres: set ef_search: %w", err)
 		}
 		return nil
@@ -55,7 +81,11 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: connect: %w", err)
 	}
-	return &Store{pool: pool, queries: db.New(pool)}, nil
+	s := &Store{pool: pool, queries: db.New(pool)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // Ping verifies the store is reachable.

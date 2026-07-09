@@ -82,6 +82,18 @@ provenance lives in `metadata jsonb`.
   sources share an `external_id` without colliding. Index `evidence_chunks_embedding_hnsw` (HNSW
   `halfvec_cosine_ops`, `m=16`, `ef_construction=200`; skips NULLs). Single unpartitioned index per
   the VER-173 benchmark verdict (`docs/datastore-scale-benchmark.md`).
+- A second index `evidence_chunks_embedding_bit_hnsw` (HNSW over `binary_quantize(embedding)::bit(1024)`
+  with `bit_hamming_ops`, VER-176) backs the OPT-IN two-stage binary-quantization search: it is a
+  ~6x smaller RAM working set that gathers coarse candidates by Hamming distance before a halfvec
+  rerank. Off by default (`EVIDENCE_BQ_MULTIPLIER=0`); the single-stage halfvec search is the
+  default, and the bit index sits unqueried until an operator enables the two-stage path
+  (`postgres.WithBinaryQuantization`, wired from `EVIDENCE_BQ_MULTIPLIER` in `cmd/server`). It is
+  still MAINTAINED on every write even when off: that ~2x write-amplification is deliberate - the
+  graph is built during the one-time greenfield/re-ingest (no live traffic) so enabling BQ later is
+  a config flip, not an hours-long CREATE INDEX on a live hundreds-of-GB corpus. The BQ query raises
+  `hnsw.ef_search` and enables `iterative_scan` for the coarse stage so its `coarse_limit` (which
+  floors at the caller's `efSearch`, keeping the full-recall coverage probe's budget) is actually
+  filled rather than capped at `ef_search`.
 - `embedding` is NULLABLE on purpose: ingest never writes it, and re-ingesting changed `content`
   resets it to NULL so a stale vector is never served (`UpsertEvidenceChunk` CASE).
   `SearchEvidenceChunks` filters `WHERE embedding IS NOT NULL`.

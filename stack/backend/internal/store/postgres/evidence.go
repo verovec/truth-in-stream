@@ -106,15 +106,35 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 
 	vec := pgvector.NewHalfVector(query)
 	var rows []db.SearchEvidenceChunksRow
-	err := s.searchTuned(ctx, efSearch, scoped, func(q *db.Queries) error {
-		var e error
-		rows, e = q.SearchEvidenceChunks(ctx, db.SearchEvidenceChunksParams{
-			QueryEmbedding: &vec,
-			Sources:        sources,
-			ResultLimit:    int32(topK),
+	var err error
+	if s.bqMultiplier > 0 {
+		// Two-stage BQ. The coarse bit-index scan must gather coarse_limit
+		// candidates before the halfvec rerank, so it runs under iterative_scan
+		// (relaxed order is fine - the rerank re-sorts by exact cosine) with
+		// hnsw.ef_search raised to the pool size; a bare HNSW scan returns at most
+		// ef_search rows, which would silently cap the pool and make a larger
+		// multiplier a no-op. coarse_limit (and thus the coarse ef_search) floors
+		// at the deeper of the caller's efSearch and the single-stage default, so
+		// BQ never searches shallower than the baseline and a full-recall probe
+		// (coverage: topK=1, efSearch=200) keeps its wider budget - see
+		// bqCoarseLimit.
+		coarse := bqCoarseLimit(s.bqMultiplier, topK, efSearch)
+		err = s.searchTuned(ctx, bqEfSearch(coarse), true, func(q *db.Queries) error {
+			var e error
+			rows, e = s.searchEvidenceBQ(ctx, q, &vec, coarse, topK, sources)
+			return e
 		})
-		return e
-	})
+	} else {
+		err = s.searchTuned(ctx, efSearch, scoped, func(q *db.Queries) error {
+			var e error
+			rows, e = q.SearchEvidenceChunks(ctx, db.SearchEvidenceChunksParams{
+				QueryEmbedding: &vec,
+				Sources:        sources,
+				ResultLimit:    int32(topK),
+			})
+			return e
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: search evidence: %w", err)
 	}
@@ -145,6 +165,70 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 		})
 	}
 	return hits, nil
+}
+
+// hnswEfSearchMax is pgvector's upper bound for hnsw.ef_search (valid range
+// 1..1000). A coarse pool larger than this cannot be requested through
+// ef_search alone; iterative_scan carries the scan past the initial candidate
+// list up to hnsw.max_scan_tuples (default 20000), the practical coarse ceiling.
+const hnswEfSearchMax = 1000
+
+// bqCoarseLimit is the size of the coarse candidate pool the BQ stage gathers:
+// multiplier*topK, floored at the DEEPER of the caller's efSearch and the
+// single-stage session default (defaultEfSearch). The default floor matters: the
+// pool also sets the coarse scan's hnsw.ef_search (see bqEfSearch), so without it
+// a modest multiplier on the efSearch=0 hot path (e.g. 4*EvidenceTopK=20) would
+// make the bit-HNSW search SHALLOWER than the 100-deep single-stage baseline and
+// lose recall on top of binary quantization's inherent loss. The caller-efSearch
+// floor additionally keeps a full-recall probe (coverage passes efSearch=200,
+// topK=1) at its wider budget. Clamped to MaxInt32 for the int32 LIMIT.
+func bqCoarseLimit(multiplier, topK, efSearch int) int {
+	coarse := int64(multiplier) * int64(topK)
+	floor := int64(efSearch)
+	if defaultEfSearch > floor {
+		floor = int64(defaultEfSearch)
+	}
+	if floor > coarse {
+		coarse = floor
+	}
+	if coarse > math.MaxInt32 {
+		coarse = math.MaxInt32
+	}
+	return int(coarse)
+}
+
+// bqEfSearch is the hnsw.ef_search the coarse scan runs at: the coarse pool
+// size, capped at pgvector's ef_search maximum. When the pool exceeds the cap,
+// iterative_scan (enabled by the caller) keeps scanning to fill the LIMIT.
+func bqEfSearch(coarse int) int {
+	if coarse > hnswEfSearchMax {
+		return hnswEfSearchMax
+	}
+	return coarse
+}
+
+// searchEvidenceBQ runs the coarse+rerank query for the two-stage
+// binary-quantization search: the coarse bit-index stage gathers `coarse`
+// candidates by Hamming distance and the halfvec rerank restores exact cosine
+// ordering. The caller raises hnsw.ef_search and enables iterative_scan so the
+// coarse LIMIT is filled. It returns the shared SearchEvidenceChunksRow shape (a
+// direct conversion from the field-identical generated row) so the caller maps
+// the result exactly as the single-stage path does.
+func (s *Store) searchEvidenceBQ(ctx context.Context, q *db.Queries, vec *pgvector.HalfVector, coarse, topK int, sources []string) ([]db.SearchEvidenceChunksRow, error) {
+	bq, err := q.SearchEvidenceChunksBinaryQuantized(ctx, db.SearchEvidenceChunksBinaryQuantizedParams{
+		QueryEmbedding: vec,
+		Sources:        sources,
+		CoarseLimit:    int32(coarse),
+		ResultLimit:    int32(topK),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]db.SearchEvidenceChunksRow, len(bq))
+	for i, r := range bq {
+		rows[i] = db.SearchEvidenceChunksRow(r)
+	}
+	return rows, nil
 }
 
 // UpsertChunks inserts or replaces evidence chunks by (source, external_id,
