@@ -1,4 +1,4 @@
-import { Brand } from "@/components/marketing/brand";
+import { BrandHeading } from "@/components/marketing/brand-heading";
 import { TricoloreRule } from "@/components/marketing/tricolore-rule";
 import { getDictionary } from "@/lib/i18n/dictionaries";
 import { resolveRequestLocale } from "@/lib/i18n/request";
@@ -26,7 +26,7 @@ export default async function LoginPage({
       <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-black/10 bg-white shadow-xl shadow-bleu/5 dark:border-white/10 dark:bg-white/5 dark:shadow-black/40">
         <TricoloreRule />
         <div className="p-6">
-          <Brand locale={locale} name={dict.brand.name} />
+          <BrandHeading name={dict.brand.name} />
           <p className="mt-2 text-sm text-ink/60 dark:text-paper/60">
             {dict.login.intro}
           </p>

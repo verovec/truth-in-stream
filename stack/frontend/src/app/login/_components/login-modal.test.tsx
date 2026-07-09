@@ -15,7 +15,7 @@ const copy = {
 
 function renderModal() {
   return render(
-    <LoginModal copy={copy}>
+    <LoginModal locale="fr" copy={copy}>
       <button type="button">inner control</button>
     </LoginModal>,
   );
@@ -36,6 +36,15 @@ describe("LoginModal", () => {
     expect(
       screen.getByRole("button", { name: /inner control/i }),
     ).toBeInTheDocument();
+  });
+
+  test("labels the dialog subtree with its locale for assistive tech", () => {
+    // The modal renders in the root layout's {auth} slot under <html lang="en">,
+    // so it must carry its own lang or a screen reader mispronounces the
+    // localized copy (WCAG 3.1.2).
+    renderModal();
+
+    expect(screen.getByRole("dialog")).toHaveAttribute("lang", "fr");
   });
 
   test("moves focus into the dialog on open", () => {

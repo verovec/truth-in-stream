@@ -69,9 +69,12 @@ function SpeakerRow({ speaker }: { speaker: SpeakerTally }) {
       ? `${speaker.misleadingFraming} ${plural(locale, speaker.misleadingFraming, t.speakers.framing)}`
       : null;
   const claimsLabel = `${checkable} ${plural(locale, checkable, t.speakers.claim)}`;
-  const label =
-    `${t.speakers.speaker} ${speaker.speaker} : ${claimsLabel}, ${breakdown}` +
-    (framing ? `, ${framing}` : "");
+  // Comma-joined so the assembled aria-label reads naturally in both locales;
+  // the earlier ' : ' baked French space-before-colon spacing into the English
+  // screen-reader announcement.
+  const label = [`${t.speakers.speaker} ${speaker.speaker}`, claimsLabel, breakdown]
+    .concat(framing ? [framing] : [])
+    .join(", ");
   return (
     <li aria-label={label} className="flex items-baseline gap-2">
       <span className="text-xs font-semibold text-ink/80 dark:text-paper/80">

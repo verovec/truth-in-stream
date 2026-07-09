@@ -6,6 +6,7 @@ import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveClaim } from "@/lib/live/claims";
 import type { ClaimVerdict, VerdictSource } from "@/lib/live/frames";
 import { useAppI18n } from "@/components/i18n/app-i18n";
+import { SOURCE_LINK_CLASS } from "./live-row-classes";
 import { MatchRow } from "./match-row";
 import { FlagChips, LiteralBadge } from "./verdict-badge";
 
@@ -202,7 +203,7 @@ function PrimarySourceRow({ source }: { source: PrimarySource }) {
         href={source.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-medium text-bleu underline decoration-bleu/30 underline-offset-2 hover:decoration-bleu dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:decoration-sky-300"
+        className={SOURCE_LINK_CLASS}
       >
         {source.title}
       </a>

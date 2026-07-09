@@ -47,7 +47,17 @@ export function AppLocaleToggle({
                 return;
               }
               startTransition(async () => {
-                await action(locale);
+                // A failed preference write (network blip, expired session)
+                // must fail quietly: the language just does not switch. Without
+                // this catch the rejected transition would bubble to Next's
+                // route error boundary and unmount the whole /app view,
+                // discarding an in-flight live-analysis session.
+                try {
+                  await action(locale);
+                } catch {
+                  // Intentionally ignored; the toggle stays on the current
+                  // locale.
+                }
               });
             }}
             className={

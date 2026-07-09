@@ -38,14 +38,6 @@
   --verdict-unverifiable: #52525c;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --verdict-credible: #6ee7b7;
-    --verdict-disputed: #fda4af;
-    --verdict-unverifiable: #d4d4d8;
-  }
-}
-
 @theme inline {
   --color-verdict-credible: var(--verdict-credible);
   --color-verdict-disputed: var(--verdict-disputed);
@@ -56,10 +48,18 @@
   --color-verdict-flag: #b45309;
 }
 
+/* One dark-scheme block mutates every scheme-swapped :root variable, so a future
+   manual-theme override has a single place to mirror. verdict-flag stays static
+   (defined in @theme above) because the landing's demo chip renders with it and
+   must not shift in dark mode; the app pairs text-verdict-flag with an explicit
+   dark: amber for contrast on the night surface. */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --verdict-credible: #6ee7b7;
+    --verdict-disputed: #fda4af;
+    --verdict-unverifiable: #d4d4d8;
   }
 }
 

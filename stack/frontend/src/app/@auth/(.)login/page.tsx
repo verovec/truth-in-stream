@@ -13,6 +13,7 @@ export default async function LoginModalPage() {
   const dict = await getDictionary(locale);
   return (
     <LoginModal
+      locale={locale}
       copy={{
         title: dict.login.modalTitle,
         intro: dict.login.modalIntro,

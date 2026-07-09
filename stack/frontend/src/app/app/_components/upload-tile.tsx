@@ -75,7 +75,9 @@ function renderOverlay(
             role="alert"
             className="text-xs font-medium text-rose-100"
           >
-            {job.state.message}
+            {job.state.error.kind === "unsupported"
+              ? copy.unsupported
+              : (job.state.error.message ?? copy.failed)}
           </p>
           <button
             type="button"

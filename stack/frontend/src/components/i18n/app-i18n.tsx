@@ -4,16 +4,21 @@ import { createContext, useContext, type ReactNode } from "react";
 import type { Locale } from "@/lib/i18n/config";
 import { fr, type Dictionary } from "@/lib/i18n/dictionaries/fr";
 
-// AppDictionary is the analyser's slice of the dictionary; the server page
-// resolves the locale and passes only the active locale's strings across the
-// client boundary, so the other locale never ships with the view.
+// AppDictionary is the analyser's slice of the dictionary. In production the
+// server page resolves the active locale and passes only its `app` slice down
+// through AppI18nProvider, so the running view renders one locale.
 export type AppDictionary = Dictionary["app"];
 
 type AppI18n = { locale: Locale; t: AppDictionary };
 
-// The default is the French app dictionary, matching the product default, so a
-// component rendered outside the provider (component tests, storybook-style
-// harnesses) still reads coherent French strings instead of crashing.
+// The context default is the French app slice, so a component rendered outside
+// the provider (the isolated component tests) still reads coherent French
+// strings instead of crashing. This pulls the `fr` dictionary object into the
+// /app client bundle even though the provider always overrides it in the real
+// app (AppShell wraps the whole view); the cost is a few KB of French UI
+// strings behind a fallback production never reaches. Removing it would mean
+// requiring the provider everywhere and wrapping every isolated component test,
+// which is not worth that saving.
 const AppI18nContext = createContext<AppI18n>({ locale: "fr", t: fr.app });
 
 export function AppI18nProvider({

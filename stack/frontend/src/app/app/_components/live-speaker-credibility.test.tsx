@@ -35,16 +35,18 @@ describe("SpeakerCredibilityView", () => {
       />,
     );
 
+    // The aria-label is comma-joined (locale-neutral) so it does not bake French
+    // space-before-colon spacing into the English announcement.
     expect(
       screen.getByLabelText(
-        /Intervenant A : 5 affirmations vérifiables, 3 crédibles · 2 contestées/i,
+        /Intervenant A, 5 affirmations vérifiables, 3 crédibles · 2 contestées/i,
       ),
     ).toBeInTheDocument();
     // French pluralizes with Intl.PluralRules: a count of 1 reads singular
     // ("1 crédible"), while the other counts stay plural.
     expect(
       screen.getByLabelText(
-        /Intervenant B : 6 affirmations vérifiables, 1 crédible · 3 contestées · 2 invérifiables/i,
+        /Intervenant B, 6 affirmations vérifiables, 1 crédible · 3 contestées · 2 invérifiables/i,
       ),
     ).toBeInTheDocument();
   });

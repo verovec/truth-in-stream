@@ -10,11 +10,16 @@ import { AppShell } from "./_components/app-shell";
 // the data reads here and the markup in AppShell makes the shell unit-testable
 // (an async Server Component cannot be rendered by the test runner).
 export default async function Home() {
-  const [{ role, authenticated }, locale] = await Promise.all([
+  // The dictionary depends only on the locale, not the session, so resolve the
+  // locale-and-dictionary chain concurrently with the session verification
+  // rather than after it.
+  const [{ role, authenticated }, { locale, dict }] = await Promise.all([
     getSession(),
-    resolveRequestLocale(),
+    resolveRequestLocale().then(async (locale) => ({
+      locale,
+      dict: await getDictionary(locale),
+    })),
   ]);
-  const dict = await getDictionary(locale);
   return (
     <AppShell
       role={role}

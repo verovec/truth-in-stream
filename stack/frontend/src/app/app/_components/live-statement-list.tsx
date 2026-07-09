@@ -262,8 +262,12 @@ function skipLabel(
   reason: string,
   labels: AppDictionary["subtitles"]["skipReasons"],
 ): string {
-  const key = SKIP_KEYS[reason as SkipReason];
-  return key !== undefined ? labels[key] : labels.unknown;
+  // Object.hasOwn (not a bare index) so a wire reason that collides with an
+  // Object.prototype member ("constructor", "toString") resolves to the
+  // unknown-reason fallback instead of an inherited function.
+  return Object.hasOwn(SKIP_KEYS, reason)
+    ? labels[SKIP_KEYS[reason as SkipReason]]
+    : labels.unknown;
 }
 
 // formatConfidence renders a corroboration score (a fraction in [0, 1]) as a

@@ -17,13 +17,23 @@ const VERDICT_STYLES: Record<Verdict, string> = {
     "bg-verdict-flag/10 text-verdict-flag dark:bg-verdict-flag/15 dark:text-amber-300",
 };
 
+// Neutral fallback chrome for a verdict value outside the closed union. The
+// batch path (fact-check/api.ts) passes wire.verdict through without membership
+// validation, so a verdict the backend adds before the frontend knows it must
+// still render a labelled, styled pill (the raw slug) rather than a blank one,
+// exactly as the pre-i18n badge did with {verdict}.
+const VERDICT_FALLBACK_STYLE =
+  "bg-ink/5 text-ink/70 dark:bg-white/10 dark:text-paper/70";
+
 export function VerdictBadge({ verdict }: { verdict: Verdict }) {
   const { t } = useAppI18n();
+  const style = VERDICT_STYLES[verdict] ?? VERDICT_FALLBACK_STYLE;
+  const label = t.legacy.verdicts[verdict] ?? verdict;
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${VERDICT_STYLES[verdict]}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${style}`}
     >
-      {t.legacy.verdicts[verdict]}
+      {label}
     </span>
   );
 }

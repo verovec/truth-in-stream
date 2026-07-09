@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import type { Locale } from "@/lib/i18n/config";
 
 const FOCUSABLE =
   'a[href],area[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),button:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -18,9 +19,11 @@ export type ModalCopy = { title: string; intro: string; close: string };
 // passed as children so the modal owns only presentation and focus management,
 // not the auth logic.
 export function LoginModal({
+  locale,
   copy,
   children,
 }: {
+  locale: Locale;
   copy: ModalCopy;
   children: React.ReactNode;
 }) {
@@ -78,6 +81,11 @@ export function LoginModal({
     >
       <div
         ref={dialogRef}
+        // The modal renders in the root layout's {auth} slot, a sibling of the
+        // locale-labelled marketing/app wrappers directly under <html lang="en">,
+        // so it must re-establish its own language or a screen reader announces
+        // the localized copy with the wrong pronunciation rules (WCAG 3.1.2).
+        lang={locale}
         role="dialog"
         aria-modal="true"
         aria-labelledby={TITLE_ID}

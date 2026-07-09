@@ -254,6 +254,8 @@ export const en: Dictionary = {
       finalizing: "Finalizing…",
       dismiss: "Dismiss",
       uploadingAria: "Uploading {title}",
+      unsupported: "Unsupported file type. Upload an MP4, WebM, OGG, or MOV video.",
+      failed: "Upload failed.",
     },
     youtube: {
       label: "YouTube URL",

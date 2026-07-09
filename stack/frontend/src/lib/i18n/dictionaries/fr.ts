@@ -260,6 +260,9 @@ export const fr = {
       finalizing: "Finalisation…",
       dismiss: "Fermer",
       uploadingAria: "Envoi de {title}",
+      unsupported:
+        "Type de fichier non pris en charge. Importez une vidéo MP4, WebM, OGG ou MOV.",
+      failed: "L'envoi a échoué.",
     },
     youtube: {
       label: "URL YouTube",

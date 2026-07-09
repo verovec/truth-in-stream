@@ -1,5 +1,5 @@
 import { DebugSurface } from "@/components/debug/debug-surface";
-import { Brand } from "@/components/marketing/brand";
+import { BrandHeading } from "@/components/marketing/brand-heading";
 import { TricoloreRule } from "@/components/marketing/tricolore-rule";
 import type { Role } from "@/lib/auth/token";
 import type { Locale } from "@/lib/i18n/config";
@@ -39,7 +39,7 @@ export function AppShell({
         <header className="border-b border-black/5 bg-paper/85 dark:border-white/10 dark:bg-night/85">
           <TricoloreRule />
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            <Brand locale={locale} name={dict.brand.name} />
+            <BrandHeading name={dict.brand.name} />
             <div className="flex items-center gap-2 sm:gap-3">
               <AppLocaleToggle activeLocale={locale} copy={dict.langSwitch} />
               <LogoutButton label={dict.app.header.signOut} />

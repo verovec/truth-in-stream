@@ -39,7 +39,14 @@ describe("AppShell", () => {
       <AppShell role="guest" authenticated={false} locale="fr" dict={fr} />,
     );
 
-    expect(screen.getByText("jeminforme.fr")).toBeInTheDocument();
+    // The brand is the page's level-1 heading (an inert lockup, not a link, so a
+    // stray click can't tear down a live-analysis session by navigating away).
+    expect(
+      screen.getByRole("heading", { level: 1, name: "jeminforme.fr" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "jeminforme.fr" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/truth in stream/i)).not.toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: fr.app.header.signOut }),

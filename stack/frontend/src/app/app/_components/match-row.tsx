@@ -3,14 +3,16 @@
 import type { ClaimMatch, EvidenceMatch, SegmentMatch } from "@/lib/fact-check/api";
 import { formatTemplate } from "@/lib/i18n/text";
 import { useAppI18n } from "@/components/i18n/app-i18n";
+import { SOURCE_LINK_CLASS } from "./live-row-classes";
 import { VerdictBadge } from "./verdict-badge";
 
 // One ranked match - a curated claim verdict with its citation sources, or a
 // Wikipedia evidence excerpt with attribution. Rendered by the decoupled live
 // fact-check list, one row per resolved match.
 
-const SOURCE_LINK_CLASS =
-  "min-w-0 break-words text-xs font-medium text-bleu underline decoration-bleu/30 underline-offset-2 hover:decoration-bleu dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:decoration-sky-300";
+// A citation link in a match row: the shared source-link treatment plus the
+// row's own layout constraints so a long title wraps instead of overflowing.
+const MATCH_SOURCE_LINK_CLASS = `min-w-0 break-words text-xs ${SOURCE_LINK_CLASS}`;
 
 function SimilarityScore({ similarity }: { similarity: number }) {
   const { t } = useAppI18n();
@@ -65,7 +67,7 @@ function ClaimRow({ match }: { match: ClaimMatch }) {
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
-            className={SOURCE_LINK_CLASS}
+            className={MATCH_SOURCE_LINK_CLASS}
           >
             {source.title}
           </a>
@@ -103,7 +105,7 @@ function EvidenceRow({ match }: { match: EvidenceMatch }) {
               href={source.url}
               target="_blank"
               rel="noopener noreferrer"
-              className={SOURCE_LINK_CLASS}
+              className={MATCH_SOURCE_LINK_CLASS}
             >
               {source.title}
             </a>
@@ -115,7 +117,7 @@ function EvidenceRow({ match }: { match: EvidenceMatch }) {
             href={match.article.url}
             target="_blank"
             rel="noopener noreferrer"
-            className={SOURCE_LINK_CLASS}
+            className={MATCH_SOURCE_LINK_CLASS}
           >
             {match.article.title}
           </a>

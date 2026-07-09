@@ -173,8 +173,10 @@ describe("useVideoUploads", () => {
     await waitFor(() => {
       const { state } = result.current.jobs[0];
       expect(state.status).toBe("error");
-      if (state.status === "error") {
-        expect(state.message).toMatch(/out of range/);
+      if (state.status === "error" && state.error.kind === "failed") {
+        expect(state.error.message).toMatch(/out of range/);
+      } else {
+        throw new Error("expected a failed upload carrying the backend message");
       }
     });
   });

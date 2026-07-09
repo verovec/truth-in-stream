@@ -9,6 +9,14 @@ import {
 } from "@/lib/video/api";
 import { putWithProgress, type PutUploader } from "@/lib/video/upload";
 
+// UploadError is why a job failed, kept as data rather than a rendered string so
+// the tile can localize it: an unsupported file type is a fixed, translatable
+// reason, while a transport/backend failure carries the raw message when it has
+// one (else null, so the tile falls back to a localized generic message).
+export type UploadError =
+  | { kind: "unsupported" }
+  | { kind: "failed"; message: string | null };
+
 // UploadJobState is the lifecycle of one file as it uploads. It is a
 // discriminated union so a job can never be both uploading and failed.
 export type UploadJobState =
@@ -16,7 +24,7 @@ export type UploadJobState =
   | { status: "uploading"; progress: number }
   | { status: "confirming" }
   | { status: "ready"; video: LibraryVideo }
-  | { status: "error"; message: string };
+  | { status: "error"; error: UploadError };
 
 export type UploadJob = {
   id: string;
@@ -32,17 +40,16 @@ type UseVideoUploadsOptions = {
   onUploaded?: (video: LibraryVideo) => void;
 };
 
-const UNSUPPORTED_MESSAGE =
-  "Unsupported file type. Upload an MP4, WebM, OGG, or MOV video.";
-
 function deriveTitle(fileName: string): string {
   const dot = fileName.lastIndexOf(".");
   const base = dot > 0 ? fileName.slice(0, dot) : fileName;
   return base.trim() || "Untitled video";
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : "Upload failed.";
+// The raw backend/transport message when the failure carried one, else null so
+// the tile shows its localized generic fallback rather than baked-in English.
+function failureMessage(err: unknown): string | null {
+  return err instanceof Error ? err.message : null;
 }
 
 export function useVideoUploads({
@@ -105,7 +112,10 @@ export function useVideoUploads({
         // A cancelled job has already been removed; do not resurrect it as an
         // error.
         if (!controller.signal.aborted) {
-          setState(id, { status: "error", message: errorMessage(err) });
+          setState(id, {
+            status: "error",
+            error: { kind: "failed", message: failureMessage(err) },
+          });
         }
         return;
       } finally {
@@ -133,7 +143,7 @@ export function useVideoUploads({
             id,
             title,
             fileName: file.name,
-            state: { status: "error", message: UNSUPPORTED_MESSAGE },
+            state: { status: "error", error: { kind: "unsupported" } },
           });
           continue;
         }

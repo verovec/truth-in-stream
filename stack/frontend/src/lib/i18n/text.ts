@@ -16,6 +16,22 @@ export function formatTemplate(
   );
 }
 
+// One Intl.PluralRules per locale, built lazily and reused. The rules never
+// change for a locale, and plural() runs on the hottest UI path (per speaker
+// row and per confidence breakdown on every live-analysis re-render), so
+// constructing a fresh instance each call would burn CPU allocating an
+// identical object many times a second.
+const pluralRules = new Map<Locale, Intl.PluralRules>();
+
+function rulesFor(locale: Locale): Intl.PluralRules {
+  let rules = pluralRules.get(locale);
+  if (rules === undefined) {
+    rules = new Intl.PluralRules(locale);
+    pluralRules.set(locale, rules);
+  }
+  return rules;
+}
+
 // plural picks the form for a count using the locale's own rule via
 // Intl.PluralRules: French counts zero as singular, English does not, so a
 // shared n > 1 shortcut would be wrong in one of the two.
@@ -24,7 +40,5 @@ export function plural(
   count: number,
   forms: PluralForms,
 ): string {
-  return new Intl.PluralRules(locale).select(count) === "one"
-    ? forms.one
-    : forms.other;
+  return rulesFor(locale).select(count) === "one" ? forms.one : forms.other;
 }
