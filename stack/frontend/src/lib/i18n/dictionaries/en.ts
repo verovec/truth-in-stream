@@ -159,6 +159,53 @@ export const en: Dictionary = {
         },
       },
     },
+    viewer: {
+      back: "Documents",
+      loadingAria: "Loading document",
+      loadError: "This document could not load: {message}",
+      loadErrorFallback: "This document could not load.",
+      retry: "Retry",
+      pdf: {
+        loading: "Loading the PDF…",
+        error: "The PDF could not be displayed.",
+        unavailable: "The PDF is not available yet.",
+        documentAria: "PDF document",
+        page: "Page {page}",
+      },
+      progress: {
+        analysing: "Analyzing",
+        counter: "{processed} / {total} sentences",
+        complete: "Analysis complete",
+        none: "Not analyzed",
+        failed: "Analysis failed.",
+      },
+      panel: {
+        heading: "Fact-checks",
+        ariaLabel: "Analyzed sentences",
+        empty: "No analyzed sentences yet.",
+        pending: "Awaiting verification…",
+        error: "This sentence could not be verified.",
+        page: "p. {page}",
+        skipReasons: {
+          not_a_claim: "No verifiable claim",
+          not_covered: "Outside the reference corpus",
+        },
+      },
+      reanalyse: {
+        action: "Reanalyze",
+        retry: "Retry analysis",
+        confirm:
+          "Reanalyze this document? The previous results will be replaced.",
+        confirmYes: "Confirm",
+        confirmNo: "Cancel",
+        running: "Analyzing…",
+        errors: {
+          conflict: "An analysis is already running.",
+          disabled: "Analysis is not available.",
+          failed: "Analysis could not start.",
+        },
+      },
+    },
     summary: {
       heading: "Live findings",
       ariaLabel: "Live findings summary",

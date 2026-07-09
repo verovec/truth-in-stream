@@ -34,6 +34,14 @@ describe("DocumentCard", () => {
     expect(screen.getByText("1 contesté")).toBeInTheDocument();
   });
 
+  test("the whole tile links to the document viewer", () => {
+    render(<DocumentCard doc={doc({ id: "doc-42", title: "Rapport" })} />);
+    expect(screen.getByRole("link", { name: "Rapport" })).toHaveAttribute(
+      "href",
+      "/documents/doc-42",
+    );
+  });
+
   test("pluralizes the page count with the locale rule (1 page singular)", () => {
     render(<DocumentCard doc={doc({ pageCount: 1 })} />);
     expect(screen.getByText("1 page")).toBeInTheDocument();

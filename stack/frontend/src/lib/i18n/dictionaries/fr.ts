@@ -162,6 +162,53 @@ export const fr = {
         },
       },
     },
+    viewer: {
+      back: "Documents",
+      loadingAria: "Chargement du document",
+      loadError: "Ce document n'a pas pu se charger : {message}",
+      loadErrorFallback: "Ce document n'a pas pu se charger.",
+      retry: "Réessayer",
+      pdf: {
+        loading: "Chargement du PDF…",
+        error: "Le PDF n'a pas pu s'afficher.",
+        unavailable: "Le PDF n'est pas encore disponible.",
+        documentAria: "Document PDF",
+        page: "Page {page}",
+      },
+      progress: {
+        analysing: "Analyse en cours",
+        counter: "{processed} / {total} phrases",
+        complete: "Analyse terminée",
+        none: "Non analysé",
+        failed: "L'analyse a échoué.",
+      },
+      panel: {
+        heading: "Vérifications",
+        ariaLabel: "Phrases analysées",
+        empty: "Aucune phrase analysée pour le moment.",
+        pending: "En attente de vérification…",
+        error: "Cette phrase n'a pas pu être vérifiée.",
+        page: "p. {page}",
+        skipReasons: {
+          not_a_claim: "Aucune affirmation vérifiable",
+          not_covered: "Hors du corpus de référence",
+        },
+      },
+      reanalyse: {
+        action: "Relancer l'analyse",
+        retry: "Réessayer l'analyse",
+        confirm:
+          "Relancer l'analyse ? Les résultats précédents seront remplacés.",
+        confirmYes: "Confirmer",
+        confirmNo: "Annuler",
+        running: "Analyse en cours…",
+        errors: {
+          conflict: "Une analyse est déjà en cours.",
+          disabled: "L'analyse n'est pas disponible.",
+          failed: "L'analyse n'a pas pu démarrer.",
+        },
+      },
+    },
     summary: {
       heading: "Constats en direct",
       ariaLabel: "Résumé des constats en direct",

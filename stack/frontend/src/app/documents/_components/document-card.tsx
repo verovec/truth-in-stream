@@ -1,14 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import type { LibraryDocument } from "@/lib/documents/api";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import { formatTemplate, plural } from "@/lib/i18n/text";
 import { DocumentStateBadge } from "./document-state-badge";
 
-// DocumentCard is one library tile: the document title, its page count, the one
-// state badge that matters (upload or analysis lifecycle), and the credible /
-// disputed verdict summary once analysed. The viewer link is added by the viewer
-// card so the tile stays a static presentation until there is somewhere to open.
+// DocumentCard is one library tile linking to the document viewer: the title, its
+// page count, the one state badge that matters (upload or analysis lifecycle),
+// and the credible / disputed verdict summary once analysed. The whole tile is
+// the link, named by the document title, so the whole surface opens the viewer.
 export function DocumentCard({ doc }: { doc: LibraryDocument }) {
   const { t, locale } = useAppI18n();
   const pages = formatTemplate(
@@ -17,7 +18,11 @@ export function DocumentCard({ doc }: { doc: LibraryDocument }) {
   );
   const analysed = doc.status === "ready" && doc.analysisStatus === "complete";
   return (
-    <article className="flex flex-col gap-2 rounded-xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+    <Link
+      href={`/documents/${doc.id}`}
+      aria-label={doc.title}
+      className="flex flex-col gap-2 rounded-xl border border-black/10 bg-white p-4 transition-colors hover:border-bleu-flag/50 hover:bg-black/[0.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:border-white/10 dark:bg-white/5 dark:hover:border-sky-400/50 dark:hover:bg-white/10 dark:focus-visible:outline-paper/60"
+    >
       <div className="flex items-start justify-between gap-2">
         <h3 className="min-w-0 truncate font-medium text-ink dark:text-paper">
           {doc.title}
@@ -48,6 +53,6 @@ export function DocumentCard({ doc }: { doc: LibraryDocument }) {
           ) : null}
         </div>
       ) : null}
-    </article>
+    </Link>
   );
 }

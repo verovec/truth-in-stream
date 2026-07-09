@@ -4,6 +4,15 @@
 // and read the PDF through a presigned GET the backend mints. Sentences are
 // extracted in the browser and posted here; this client only carries them.
 import { API_BASE, toApiError } from "@/lib/http";
+import { normalizeMatch, type MatchWire } from "@/lib/fact-check/api";
+import type { LiveClaim } from "@/lib/live/claims";
+import type {
+  ClaimVerdict,
+  LiteralVerdict,
+  ManipulationFlag,
+  VerdictBasis,
+  VerdictSource,
+} from "@/lib/live/frames";
 import type { ExtractedSentence } from "@/lib/pdf/segment";
 
 export type DocumentStatus = "pending" | "ready" | "failed";
@@ -206,4 +215,159 @@ export async function ingestExtraction(
   }
   const wire = (await response.json()) as DocumentWire;
   return normalizeDocument(wire);
+}
+
+// DocumentSkipReason is why a sentence produced no verdict: the check-worthiness
+// gate found no verifiable claim, or the claim fell outside the reference corpus.
+// An empty string means the sentence was analysed and did produce claims (or has
+// not been reached yet), so the viewer keys "skipped" on a non-empty reason.
+export type DocumentSkipReason = "" | "not_a_claim" | "not_covered";
+
+// DocumentSentence is one analysed sentence in document order with the atomic
+// claims it produced. Claims are the LiveClaim shape so the viewer renders them
+// with the same verdict components the live path uses; a skipped or not-yet-
+// reached sentence carries an empty claims array.
+export type DocumentSentence = {
+  seq: number;
+  page: number;
+  text: string;
+  occurrence: number;
+  skipReason: DocumentSkipReason;
+  claims: LiveClaim[];
+};
+
+// DocumentAnalysis is the polling target: the document's current metadata and
+// progress plus every sentence with its claims, so one fetch drives both the
+// progress bar and the fact-check panel and a hard refresh resumes from it.
+export type DocumentAnalysis = {
+  document: DocumentRecord;
+  sentences: DocumentSentence[];
+};
+
+// DocumentDetail is the viewer's one-time load: the document metadata and a
+// presigned GET for the PDF. pdfUrl is null until the document is ready (the
+// object may not exist in storage before then), so the viewer shows a note
+// rather than pointing react-pdf at nothing.
+export type DocumentDetail = {
+  document: DocumentRecord;
+  pdfUrl: string | null;
+};
+
+// The claim wire fields carry the same closed vocabularies as the live path
+// (the backend's CHECK-constrained columns), so they are typed as those unions
+// rather than raw strings, exactly as DocumentWire trusts status/analysis_status.
+type DocumentClaimWire = {
+  id: string;
+  claim_id: string;
+  text: string;
+  status: "verified" | "error";
+  source?: VerdictSource;
+  verdict?: ClaimVerdict;
+  basis?: VerdictBasis;
+  literal?: LiteralVerdict;
+  flags?: ManipulationFlag[];
+  confidence: number;
+  rationale?: string;
+  citations: MatchWire[];
+};
+
+type DocumentSentenceWire = {
+  seq: number;
+  page: number;
+  text: string;
+  occurrence: number;
+  skip_reason?: DocumentSkipReason;
+  claims: DocumentClaimWire[];
+};
+
+type DocumentDetailWire = DocumentWire & { pdf?: PresignedWire };
+type DocumentClaimsWire = {
+  document: DocumentWire;
+  sentences?: DocumentSentenceWire[];
+};
+
+// normalizeDocumentClaim maps one stored claim onto the LiveClaim the verdict
+// components consume: snake_case to camelCase, citations through the shared match
+// normalizer. sourceLabel/sourceUrl/skipReason/error are live-stream-only fields
+// with no document analogue, so they stay absent.
+function normalizeDocumentClaim(wire: DocumentClaimWire): LiveClaim {
+  return {
+    claimId: wire.claim_id,
+    text: wire.text,
+    status: wire.status,
+    source: wire.source,
+    verdict: wire.verdict,
+    basis: wire.basis,
+    literal: wire.literal,
+    flags: wire.flags,
+    confidence: wire.confidence,
+    rationale: wire.rationale,
+    matches: wire.citations.map(normalizeMatch),
+  };
+}
+
+function normalizeDocumentSentence(
+  wire: DocumentSentenceWire,
+): DocumentSentence {
+  return {
+    seq: wire.seq,
+    page: wire.page,
+    text: wire.text,
+    occurrence: wire.occurrence,
+    skipReason: wire.skip_reason ?? "",
+    claims: wire.claims.map(normalizeDocumentClaim),
+  };
+}
+
+export async function getDocument(
+  id: string,
+  signal?: AbortSignal,
+): Promise<DocumentDetail> {
+  const response = await fetch(
+    `${API_BASE}/api/documents/${encodeURIComponent(id)}`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const wire = (await response.json()) as DocumentDetailWire;
+  return {
+    document: normalizeDocument(wire),
+    pdfUrl: wire.pdf?.url ?? null,
+  };
+}
+
+export async function getDocumentClaims(
+  id: string,
+  signal?: AbortSignal,
+): Promise<DocumentAnalysis> {
+  const response = await fetch(
+    `${API_BASE}/api/documents/${encodeURIComponent(id)}/claims`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const wire = (await response.json()) as DocumentClaimsWire;
+  return {
+    document: normalizeDocument(wire.document),
+    sentences: (wire.sentences ?? []).map(normalizeDocumentSentence),
+  };
+}
+
+// reanalyseDocument triggers a fresh analysis run over the document's stored
+// sentences. The backend answers 202 and runs the job in the background; a 409
+// (already analysing) or 503 (analysis disabled) surfaces as an ApiError the
+// caller branches on, so a concurrent run is reported rather than duplicated.
+export async function reanalyseDocument(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/api/documents/${encodeURIComponent(id)}/reanalyse`,
+    { method: "POST", signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
 }
