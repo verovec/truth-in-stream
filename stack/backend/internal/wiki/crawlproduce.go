@@ -92,11 +92,11 @@ type Gate interface {
 // priorityForKind maps a chunk kind onto the queue's priority band: a lead is an
 // article's summary and its highest-value evidence, so it embeds first at the
 // ceiling; body prose follows at half the ceiling. An unknown kind floors to zero.
-func priorityForKind(kind domain.WikiChunkKind, maxPriority uint8) uint8 {
+func priorityForKind(kind domain.EvidenceChunkKind, maxPriority uint8) uint8 {
 	switch kind {
-	case domain.WikiChunkKindLead:
+	case domain.EvidenceKindLead:
 		return maxPriority
-	case domain.WikiChunkKindBody:
+	case domain.EvidenceKindBody:
 		return maxPriority / 2
 	default:
 		return 0
@@ -276,11 +276,11 @@ func pageChunkJobs(cfg CrawlConfig, lead, full Extract) ([]crawlMessage, error) 
 
 	contents := make([]chunkContent, 0)
 	for _, c := range Chunk(lead.Title, lead.Text) {
-		contents = append(contents, chunkContent{text: c, kind: domain.WikiChunkKindLead})
+		contents = append(contents, chunkContent{text: c, kind: domain.EvidenceKindLead})
 	}
 	if cfg.IncludeBody {
 		for _, c := range Chunk(lead.Title, bodyText(full.Text, lead.Text)) {
-			contents = append(contents, chunkContent{text: c, kind: domain.WikiChunkKindBody})
+			contents = append(contents, chunkContent{text: c, kind: domain.EvidenceKindBody})
 		}
 	}
 
@@ -303,7 +303,7 @@ func pageChunkJobs(cfg CrawlConfig, lead, full Extract) ([]crawlMessage, error) 
 // job, so lead and body chunks share one contiguous index space.
 type chunkContent struct {
 	text string
-	kind domain.WikiChunkKind
+	kind domain.EvidenceChunkKind
 }
 
 // publishMessages publishes a batch of chunk jobs with up to publishConcurrency

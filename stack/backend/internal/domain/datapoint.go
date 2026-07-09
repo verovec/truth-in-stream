@@ -50,15 +50,15 @@ type Datapoint struct {
 	Unit string
 }
 
-// StatCorpus is the wiki_chunks.corpus label stamped on EU (Eurostat) statistical
-// evidence rows. Statistics share the wiki_chunks table and the SearchWiki
+// StatCorpus is the evidence_chunks.source label stamped on EU (Eurostat) statistical
+// evidence rows. Statistics share the evidence_chunks table and the SearchWiki
 // retrieval path with the encyclopedic corpus, but the wiki-maintenance reads
 // (page count for the delta-sync denominator, the clustering scan) must exclude
 // them, so the labels are shared constants the store can filter on without
 // importing the stats service.
 const StatCorpus = "eurostat"
 
-// InteriorStatCorpus and INSEEStatCorpus are the wiki_chunks.corpus labels for
+// InteriorStatCorpus and INSEEStatCorpus are the evidence_chunks.source labels for
 // the two national statistical sources: the interior ministry's open-data
 // residence-permit and asylum CSVs, and the national statistics institute's
 // (INSEE) immigrant labor-market series. Each is a distinct corpus so a
@@ -82,7 +82,7 @@ const (
 	INSEEGDPCorpus          = "insee-pib"
 )
 
-// statCorpora is every statistical corpus label sharing the wiki_chunks table.
+// statCorpora is every statistical corpus label sharing the evidence_chunks table.
 // The wiki-maintenance reads (CountWikiPages, EmbeddedWikiChunks) exclude all of
 // them so statistical evidence never skews the encyclopedic page-count guard or
 // the clustering scan. Adding a statistical source means adding its label here.

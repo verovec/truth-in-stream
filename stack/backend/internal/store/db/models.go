@@ -64,6 +64,26 @@ type DocumentSentence struct {
 	SkipReason string
 }
 
+type EvidenceChunk struct {
+	Source     string
+	ExternalID string
+	ChunkIndex int32
+	Title      string
+	Url        string
+	Content    string
+	Kind       string
+	Embedding  *pgvector.HalfVector
+	Metadata   []byte
+	SyncedAt   pgtype.Timestamptz
+}
+
+type EvidenceSyncState struct {
+	Source       string
+	LastChangeTs pgtype.Timestamptz
+	DumpVersion  pgtype.Text
+	SyncedAt     pgtype.Timestamptz
+}
+
 type PoliticalClaim struct {
 	ID             string
 	Content        string
@@ -104,27 +124,4 @@ type VotingRecord struct {
 	Position   string
 	SourceUrl  string
 	SyncedAt   pgtype.Timestamptz
-}
-
-type WikiChunk struct {
-	PageID     int64
-	ChunkIndex int32
-	Title      string
-	Url        string
-	RevisionID int64
-	Corpus     string
-	Content    string
-	Embedding  *pgvector.HalfVector
-	SyncedAt   pgtype.Timestamptz
-	Section    string
-	Kind       string
-	ClusterID  pgtype.Int4
-	Importance pgtype.Float8
-}
-
-type WikiSyncState struct {
-	Corpus       string
-	LastChangeTs pgtype.Timestamptz
-	DumpVersion  pgtype.Text
-	SyncedAt     pgtype.Timestamptz
 }

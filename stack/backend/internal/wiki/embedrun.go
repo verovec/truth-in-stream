@@ -69,7 +69,7 @@ type Embedder interface {
 type EmbedSource interface {
 	// StagingRemaining counts the staging chunks, pages, and characters still to
 	// embed.
-	StagingRemaining(ctx context.Context) (domain.WikiRemaining, error)
+	StagingRemaining(ctx context.Context) (domain.EvidenceRemaining, error)
 }
 
 // EstimateBulkEmbed projects the cost of embedding the staging chunks still
@@ -86,10 +86,10 @@ func EstimateBulkEmbed(ctx context.Context, src EmbedSource) (Estimate, error) {
 // EstimateFromRemaining projects the embedding cost of a pending chunk set
 // without calling the API. The bulk-into-live dry-run uses it directly over the
 // live remaining count, since that path has no staging table to estimate from.
-func EstimateFromRemaining(rem domain.WikiRemaining) Estimate {
+func EstimateFromRemaining(rem domain.EvidenceRemaining) Estimate {
 	tokens := rem.Chars / charsPerToken
 	return Estimate{
-		Pages:   rem.Pages,
+		Pages:   rem.Documents,
 		Chunks:  rem.Chunks,
 		Tokens:  tokens,
 		CostUSD: float64(tokens) / 1e6 * pricePerMTokenUSD,
@@ -109,8 +109,8 @@ func EstimateFromRemaining(rem domain.WikiRemaining) Estimate {
 // A negative total means the count is unknown (the delta path embeds in place
 // without a pending count), and the line omits pending_total rather than
 // reporting a misleading zero.
-func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, chunks []domain.WikiChunk, cfg Config, done *atomic.Int64, total int64) ([]domain.WikiChunk, error) {
-	out := make([]domain.WikiChunk, len(chunks))
+func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, chunks []domain.EvidenceChunk, cfg Config, done *atomic.Int64, total int64) ([]domain.EvidenceChunk, error) {
+	out := make([]domain.EvidenceChunk, len(chunks))
 	copy(out, chunks)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -138,7 +138,7 @@ func embedChunks(ctx context.Context, logger *slog.Logger, embedder Embedder, ch
 				slog.Int("batch_chunks", end-start),
 				slog.Int64("embedded", done.Add(int64(end-start))),
 				slog.Duration("embed_duration", embedDuration),
-				slog.Int64("through_page", chunks[end-1].PageID),
+				slog.String("through_external_id", chunks[end-1].ExternalID),
 				slog.String("through_title", chunks[end-1].Title),
 			}
 			// A negative total signals an unknown pending count (the delta path);

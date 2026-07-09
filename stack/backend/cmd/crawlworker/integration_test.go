@@ -55,7 +55,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")
@@ -96,7 +96,7 @@ func publishCrawlJob(ctx context.Context, t *testing.T, client *queue.Client, j 
 	}
 }
 
-// waitForEmbeddedRows polls SearchWiki until it returns at least want hits for
+// waitForEmbeddedRows polls SearchEvidence until it returns at least want hits for
 // the embedder's fixed vector, or the deadline passes. A real broker has no
 // deterministic completion signal, so a bounded poll is the honest way to wait.
 func waitForEmbeddedRows(ctx context.Context, t *testing.T, store *postgres.Store, want int) {
@@ -108,9 +108,9 @@ func waitForEmbeddedRows(ctx context.Context, t *testing.T, store *postgres.Stor
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		got, err := store.SearchWiki(ctx, query, want+5)
+		got, err := store.SearchEvidence(ctx, query, want+5)
 		if err != nil {
-			t.Fatalf("SearchWiki: %v", err)
+			t.Fatalf("SearchEvidence: %v", err)
 		}
 		if len(got) >= want {
 			return

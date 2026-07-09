@@ -31,13 +31,14 @@ import (
 // transient failure, so a job that keeps failing is eventually dropped rather
 // than looping forever.
 type Job struct {
-	PageID     int64  `json:"page_id"`
+	Source     string `json:"source"`
+	ExternalID string `json:"external_id"`
 	ChunkIndex int    `json:"chunk_index"`
 	Content    string `json:"content"`
 	Attempt    int    `json:"attempt,omitzero"`
 	// Staging routes the embedding write to the staging corpus instead of the
 	// live one. The bulk-into-live default (false) writes straight into
-	// wiki_chunks, so the chunk is searchable the moment its vector lands; an
+	// evidence_chunks, so the chunk is searchable the moment its vector lands; an
 	// atomic-rebuild producer sets it true so the fleet fills staging for a later
 	// wholesale swap. It is omitted on the wire when false, so a live job's
 	// encoding is unchanged.
@@ -45,19 +46,22 @@ type Job struct {
 }
 
 // validate rejects a job that can never succeed, so the worker drops it instead
-// of embedding nonsense or looping. Wikipedia page ids are positive and chunk
-// indices are non-negative; empty content has nothing to embed; a negative
-// attempt is a corrupt or overflowed counter that must not be retried.
+// of embedding nonsense or looping. A chunk is identified by its (source,
+// external_id, chunk_index): source and external_id must be non-empty and the
+// index non-negative; empty content has nothing to embed; a negative attempt is
+// a corrupt or overflowed counter that must not be retried.
 func (j Job) validate() error {
 	switch {
-	case j.PageID <= 0:
-		return fmt.Errorf("page id %d must be positive", j.PageID)
+	case j.Source == "":
+		return fmt.Errorf("source must not be empty")
+	case j.ExternalID == "":
+		return fmt.Errorf("external id must not be empty")
 	case j.ChunkIndex < 0:
 		return fmt.Errorf("chunk index %d must not be negative", j.ChunkIndex)
 	case j.Content == "":
-		return fmt.Errorf("page %d chunk %d has empty content", j.PageID, j.ChunkIndex)
+		return fmt.Errorf("%s/%s chunk %d has empty content", j.Source, j.ExternalID, j.ChunkIndex)
 	case j.Attempt < 0:
-		return fmt.Errorf("page %d chunk %d has a negative attempt %d", j.PageID, j.ChunkIndex, j.Attempt)
+		return fmt.Errorf("%s/%s chunk %d has a negative attempt %d", j.Source, j.ExternalID, j.ChunkIndex, j.Attempt)
 	default:
 		return nil
 	}
@@ -101,8 +105,8 @@ type Embedder interface {
 // the worker can drop an obsolete job rather than retry it. Writes are
 // idempotent: a redelivered batch rewrites the same vectors safely.
 type Store interface {
-	SetLiveChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (matched int, err error)
-	SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (matched int, err error)
+	SetLiveChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) (matched int, err error)
+	SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) (matched int, err error)
 }
 
 // Delivery is one job message awaiting acknowledgement, abstracting the broker
@@ -401,7 +405,7 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 	}
 
 	good := make([]pending, 0, len(items))
-	var live, staging []domain.WikiChunk
+	var live, staging []domain.EvidenceChunk
 	for i, it := range items {
 		var vec []float32
 		if i < len(embeddings) {
@@ -412,7 +416,7 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 			// fault: re-embedding the same content would reproduce it, so drop rather
 			// than loop, and never write a malformed vector into the corpus.
 			w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
-				slog.Int64("page_id", it.job.PageID),
+				slog.String("source", it.job.Source), slog.String("external_id", it.job.ExternalID),
 				slog.Int("chunk_index", it.job.ChunkIndex),
 				slog.Int("dims", len(vec)),
 				slog.Int("want_dims", domain.EmbeddingDim))
@@ -420,7 +424,7 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 			continue
 		}
 		good = append(good, it)
-		chunk := domain.WikiChunk{PageID: it.job.PageID, ChunkIndex: it.job.ChunkIndex, Content: it.job.Content, Embedding: vec}
+		chunk := domain.EvidenceChunk{Source: it.job.Source, ExternalID: it.job.ExternalID, ChunkIndex: it.job.ChunkIndex, Content: it.job.Content, Embedding: vec}
 		if it.job.Staging {
 			staging = append(staging, chunk)
 		} else {
@@ -462,7 +466,7 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 // statement, and returns how many rows matched across both. A real queue is
 // single-mode, so one half is normally empty and its method is skipped; routing
 // both keeps a worker correct even if a queue ever carried a mix.
-func (w *Worker) writeChunks(ctx context.Context, live, staging []domain.WikiChunk) (int, error) {
+func (w *Worker) writeChunks(ctx context.Context, live, staging []domain.EvidenceChunk) (int, error) {
 	matched := 0
 	if len(live) > 0 {
 		n, err := w.store.SetLiveChunkEmbeddings(ctx, live)
@@ -574,7 +578,7 @@ func (w *Worker) embedAndWrite(ctx context.Context, job Job, priority uint8) Res
 			got = len(embeddings[0])
 		}
 		w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
-			slog.Int64("page_id", job.PageID),
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("vectors", len(embeddings)),
 			slog.Int("dims", got),
@@ -582,14 +586,14 @@ func (w *Worker) embedAndWrite(ctx context.Context, job Job, priority uint8) Res
 		return Result{Action: ActionAck}
 	}
 
-	chunk := domain.WikiChunk{PageID: job.PageID, ChunkIndex: job.ChunkIndex, Content: job.Content, Embedding: embeddings[0]}
+	chunk := domain.EvidenceChunk{Source: job.Source, ExternalID: job.ExternalID, ChunkIndex: job.ChunkIndex, Content: job.Content, Embedding: embeddings[0]}
 	matched, err := w.writeChunk(ctx, job.Staging, chunk)
 	if err != nil {
 		return w.afterFailure(ctx, job, priority, "write", err)
 	}
 	if matched == 0 {
 		w.logger.InfoContext(ctx, "embedding job references a chunk no longer in the corpus, dropping",
-			slog.Int64("page_id", job.PageID),
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Bool("staging", job.Staging))
 		return Result{Action: ActionAck}
@@ -599,11 +603,11 @@ func (w *Worker) embedAndWrite(ctx context.Context, job Job, priority uint8) Res
 
 // writeChunk writes one chunk's embedding to the staging or live corpus,
 // reporting whether a row matched.
-func (w *Worker) writeChunk(ctx context.Context, staging bool, chunk domain.WikiChunk) (int, error) {
+func (w *Worker) writeChunk(ctx context.Context, staging bool, chunk domain.EvidenceChunk) (int, error) {
 	if staging {
-		return w.store.SetStagingChunkEmbeddings(ctx, []domain.WikiChunk{chunk})
+		return w.store.SetStagingChunkEmbeddings(ctx, []domain.EvidenceChunk{chunk})
 	}
-	return w.store.SetLiveChunkEmbeddings(ctx, []domain.WikiChunk{chunk})
+	return w.store.SetLiveChunkEmbeddings(ctx, []domain.EvidenceChunk{chunk})
 }
 
 // afterFailure decides what to do with a job whose embed or write failed. A
@@ -616,7 +620,7 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	if ctx.Err() != nil {
 		w.logger.InfoContext(ctx, "embedding job interrupted by shutdown, requeuing",
 			slog.String("stage", stage),
-			slog.Int64("page_id", job.PageID),
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex))
 		return Result{Action: ActionRequeue}
 	}
@@ -627,7 +631,7 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	if job.Attempt >= w.maxAttempts-1 {
 		w.logger.ErrorContext(ctx, "dropping embedding job after exhausting retries",
 			slog.String("stage", stage),
-			slog.Int64("page_id", job.PageID),
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("attempt", job.Attempt),
 			slog.Int("max_attempts", w.maxAttempts),
@@ -642,14 +646,14 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 		// Marshaling a value just unmarshaled cannot realistically fail; if it
 		// does, dropping is safer than spinning on a job that can never re-enqueue.
 		w.logger.ErrorContext(ctx, "dropping embedding job that cannot be re-encoded for retry",
-			slog.Int64("page_id", job.PageID),
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Any("err", err))
 		return Result{Action: ActionAck}
 	}
 	w.logger.WarnContext(ctx, "embedding job failed, re-enqueuing for retry",
 		slog.String("stage", stage),
-		slog.Int64("page_id", job.PageID),
+		slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 		slog.Int("chunk_index", job.ChunkIndex),
 		slog.Int("next_attempt", retry.Attempt),
 		slog.Int("max_attempts", w.maxAttempts),

@@ -14,13 +14,14 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"sync"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 // CrawlJob is one unit of crawl-ingest work: a fully self-contained Wikipedia
-// chunk. Every field needed to write a live wiki_chunks row travels in the body,
+// chunk. Every field needed to write a live evidence_chunks row travels in the body,
 // so the worker performs no database read before writing. Attempt is the delivery
 // attempt so far; the producer leaves it zero and the worker increments it on a
 // transient-failure re-enqueue so a job that keeps failing is eventually dropped.
@@ -51,7 +52,7 @@ func (j CrawlJob) validate() error {
 		return fmt.Errorf("page %d chunk %d has empty content", j.PageID, j.ChunkIndex)
 	case j.Corpus == "":
 		return fmt.Errorf("page %d chunk %d has empty corpus", j.PageID, j.ChunkIndex)
-	case !domain.WikiChunkKind(j.Kind).Valid():
+	case !domain.EvidenceChunkKind(j.Kind).Valid():
 		return fmt.Errorf("page %d chunk %d has invalid kind %q", j.PageID, j.ChunkIndex, j.Kind)
 	case j.RevisionID < 0:
 		return fmt.Errorf("page %d chunk %d has a negative revision %d", j.PageID, j.ChunkIndex, j.RevisionID)
@@ -91,7 +92,7 @@ type Embedder interface {
 // Store upserts a fully embedded chunk into the live corpus. The write is
 // idempotent: a redelivered job rewrites the same row.
 type Store interface {
-	UpsertEmbeddedChunk(ctx context.Context, chunk domain.WikiChunk) error
+	UpsertEmbeddedChunk(ctx context.Context, chunk domain.EvidenceChunk) error
 }
 
 // Delivery is one job message awaiting acknowledgement, abstracting the broker.
@@ -269,10 +270,16 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionAck}
 	}
 
-	chunk := domain.WikiChunk{
-		PageID: job.PageID, ChunkIndex: job.ChunkIndex, Title: job.Title, URL: job.URL,
-		RevisionID: job.RevisionID, Corpus: job.Corpus, Content: job.Content, Section: job.Section,
-		Kind: domain.WikiChunkKind(job.Kind), Embedding: embeddings[0],
+	chunk := domain.EvidenceChunk{
+		Source:     job.Corpus,
+		ExternalID: strconv.FormatInt(job.PageID, 10),
+		ChunkIndex: job.ChunkIndex,
+		Title:      job.Title,
+		URL:        job.URL,
+		Content:    job.Content,
+		Kind:       domain.EvidenceChunkKind(job.Kind),
+		Metadata:   domain.WikiMetadata{RevisionID: job.RevisionID, Section: job.Section}.Map(),
+		Embedding:  embeddings[0],
 	}
 	if err := w.store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
 		return w.afterFailure(ctx, job, priority, "upsert", err)

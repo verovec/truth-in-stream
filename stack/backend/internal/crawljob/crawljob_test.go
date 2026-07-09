@@ -24,13 +24,21 @@ func (f fakeEmbedder) EmbedDocuments(_ context.Context, _ []string) ([][]float32
 }
 
 type fakeStore struct {
-	got domain.WikiChunk
+	got domain.EvidenceChunk
 	err error
 }
 
-func (f *fakeStore) UpsertEmbeddedChunk(_ context.Context, c domain.WikiChunk) error {
+func (f *fakeStore) UpsertEmbeddedChunk(_ context.Context, c domain.EvidenceChunk) error {
 	f.got = c
 	return f.err
+}
+
+// chunkKey is the generalized evidence natural key (source, external_id,
+// chunk_index) that replaced the wiki-shaped (page_id, chunk_index) pair.
+type chunkKey struct {
+	source     string
+	externalID string
+	chunkIndex int
 }
 
 func fullVec() []float32 { return make([]float32, domain.EmbeddingDim) }
@@ -58,10 +66,14 @@ func TestProcessHappyPathUpserts(t *testing.T) {
 	if res.Action != ActionAck {
 		t.Fatalf("action = %v, want Ack", res.Action)
 	}
-	if st.got.PageID != 5 || st.got.Kind != domain.WikiChunkKindBody || len(st.got.Embedding) != domain.EmbeddingDim {
+	if st.got.ExternalID != "5" || st.got.Kind != domain.EvidenceKindBody || len(st.got.Embedding) != domain.EmbeddingDim {
 		t.Errorf("upserted chunk wrong: %+v", st.got)
 	}
-	if st.got.Title != "Atom" || st.got.URL != "u" || st.got.RevisionID != 9 || st.got.Corpus != "simplewiki-crawl" {
+	meta, err := domain.ParseWikiMetadata(st.got.Metadata)
+	if err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+	if st.got.Title != "Atom" || st.got.URL != "u" || meta.RevisionID != 9 || st.got.Source != "simplewiki-crawl" {
 		t.Errorf("upserted chunk metadata wrong: %+v", st.got)
 	}
 }
@@ -135,22 +147,22 @@ func TestProcessEmbedErrorRepublishes(t *testing.T) {
 // TestProcessRedeliveryIsIdempotent proves an at-least-once redelivery upserts the
 // same chunk key both times: the worker performs no duplicate-suppression, so
 // safety rests on the store's UpsertEmbeddedChunk being an idempotent upsert on
-// (page_id, chunk_index) (proven by store.TestUpsertEmbeddedChunkIsIdempotent).
+// (source, external_id, chunk_index) (proven by store.TestUpsertEmbeddedChunkIsIdempotent).
 func TestProcessRedeliveryIsIdempotent(t *testing.T) {
 	st := &fakeStore{}
 	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
 	body := mustBody(t, validJob())
 
 	first := w.Process(t.Context(), body, 5)
-	firstKey := [2]int64{st.got.PageID, int64(st.got.ChunkIndex)}
+	firstKey := chunkKey{st.got.Source, st.got.ExternalID, st.got.ChunkIndex}
 	second := w.Process(t.Context(), body, 5)
-	secondKey := [2]int64{st.got.PageID, int64(st.got.ChunkIndex)}
+	secondKey := chunkKey{st.got.Source, st.got.ExternalID, st.got.ChunkIndex}
 
 	if first.Action != ActionAck || second.Action != ActionAck {
 		t.Fatalf("actions = %v, %v; want both ActionAck", first.Action, second.Action)
 	}
-	if firstKey != secondKey || firstKey != [2]int64{5, 1} {
-		t.Fatalf("redelivery upserted keys %v then %v, want both (page 5, chunk 1)", firstKey, secondKey)
+	if firstKey != secondKey || firstKey != (chunkKey{"simplewiki-crawl", "5", 1}) {
+		t.Fatalf("redelivery upserted keys %v then %v, want both (source simplewiki-crawl, external 5, chunk 1)", firstKey, secondKey)
 	}
 }
 
@@ -222,8 +234,8 @@ func TestRunAcksAfterUpsertAndReturns(t *testing.T) {
 	if !acked || nacked {
 		t.Fatalf("delivery acked=%v nacked=%v, want acked after a committed upsert", acked, nacked)
 	}
-	if st.got.PageID != 5 {
-		t.Fatalf("upsert did not run before ack: stored page id = %d", st.got.PageID)
+	if st.got.ExternalID != "5" {
+		t.Fatalf("upsert did not run before ack: stored external id = %q", st.got.ExternalID)
 	}
 }
 

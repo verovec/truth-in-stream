@@ -84,7 +84,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")
@@ -151,12 +151,12 @@ func TestSeedWikiChunksSearchable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedQueries: %v", err)
 	}
-	got, err := store.SearchWiki(ctx, qvecs[0], 3)
+	got, err := store.SearchEvidence(ctx, qvecs[0], 3)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) == 0 {
-		t.Fatal("SearchWiki returned no evidence")
+		t.Fatal("SearchEvidence returned no evidence")
 	}
 	if got[0].Title != target.Title || got[0].URL != target.URL {
 		t.Errorf("nearest = %q/%q, want %q/%q", got[0].Title, got[0].URL, target.Title, target.URL)
@@ -180,9 +180,9 @@ func TestSeedWikiChunksIdempotent(t *testing.T) {
 			t.Fatalf("SeedWikiChunks: %v", err)
 		}
 	}
-	pages, err := store.CountPages(ctx)
+	pages, err := store.CountDocuments(ctx)
 	if err != nil {
-		t.Fatalf("CountPages: %v", err)
+		t.Fatalf("CountDocuments: %v", err)
 	}
 	if want := int64(7); pages != want {
 		t.Errorf("distinct pages = %d, want %d (reseed must not duplicate)", pages, want)

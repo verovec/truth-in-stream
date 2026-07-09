@@ -47,7 +47,7 @@ func (c claimsCoverage) topSimilarity(ctx context.Context, vec []float32) (float
 type wikiCoverage struct{ store EvidenceSearcher }
 
 func (w wikiCoverage) topSimilarity(ctx context.Context, vec []float32) (float64, bool, error) {
-	hits, err := w.store.SearchWiki(ctx, vec, coverageTopK)
+	hits, err := w.store.SearchEvidence(ctx, vec, coverageTopK)
 	if err != nil {
 		return 0, false, fmt.Errorf("service: wiki coverage search: %w", err)
 	}

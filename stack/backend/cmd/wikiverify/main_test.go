@@ -8,8 +8,8 @@ import (
 )
 
 // healthyCorpus is a fully rebuilt corpus: every check should pass.
-func healthyCorpus() domain.WikiCorpusHealth {
-	return domain.WikiCorpusHealth{
+func healthyCorpus() domain.EvidenceCorpusHealth {
+	return domain.EvidenceCorpusHealth{
 		Chunks:          1000,
 		NullEmbeddings:  0,
 		ZeroVectors:     0,
@@ -31,14 +31,14 @@ func TestEvaluateFailsOnEachDefect(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		mutate func(*domain.WikiCorpusHealth)
+		mutate func(*domain.EvidenceCorpusHealth)
 	}{
-		{"empty corpus", func(h *domain.WikiCorpusHealth) { h.Chunks = 0 }},
-		{"zero-vector embeddings", func(h *domain.WikiCorpusHealth) { h.ZeroVectors = 1 }},
-		{"wrong embedding dimension", func(h *domain.WikiCorpusHealth) { h.EmbeddingType = "halfvec(512)" }},
-		{"missing metadata", func(h *domain.WikiCorpusHealth) { h.MissingMetadata = 2 }},
-		{"hnsw index absent", func(h *domain.WikiCorpusHealth) { h.HNSWPresent = false }},
-		{"hnsw index invalid", func(h *domain.WikiCorpusHealth) { h.HNSWValid = false }},
+		{"empty corpus", func(h *domain.EvidenceCorpusHealth) { h.Chunks = 0 }},
+		{"zero-vector embeddings", func(h *domain.EvidenceCorpusHealth) { h.ZeroVectors = 1 }},
+		{"wrong embedding dimension", func(h *domain.EvidenceCorpusHealth) { h.EmbeddingType = "halfvec(512)" }},
+		{"missing metadata", func(h *domain.EvidenceCorpusHealth) { h.MissingMetadata = 2 }},
+		{"hnsw index absent", func(h *domain.EvidenceCorpusHealth) { h.HNSWPresent = false }},
+		{"hnsw index invalid", func(h *domain.EvidenceCorpusHealth) { h.HNSWValid = false }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

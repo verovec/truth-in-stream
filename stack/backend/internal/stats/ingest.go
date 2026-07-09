@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
@@ -11,7 +12,7 @@ import (
 
 // StatCorpus is the corpus label stamped on EU (Eurostat) statistical evidence
 // rows. It is distinct from the Wikipedia corpus so the provenance of a
-// retrieved passage is identifiable, while both share the wiki_chunks table and
+// retrieved passage is identifiable, while both share the evidence_chunks table and
 // the single SearchWiki retrieval path the fact-check verifier already uses. It
 // aliases domain.StatCorpus, one of the shared constants the store filters on.
 const StatCorpus = domain.StatCorpus
@@ -29,7 +30,7 @@ const defaultUpsertBatchSize = 128
 // exclude every statistical corpus.
 type Source interface {
 	Datapoints(ctx context.Context) ([]domain.Datapoint, error)
-	// Corpus is the wiki_chunks.corpus label every passage from this source is
+	// Corpus is the evidence_chunks.source label every passage from this source is
 	// stamped with; it must be one of domain.StatCorpora.
 	Corpus() string
 }
@@ -45,13 +46,13 @@ type Source interface {
 //
 // Unlike the Wikipedia bulk path, the stats path does NOT claim the wiki corpus
 // lock: the statistical corpora deliberately coexist with the encyclopedic corpus
-// in wiki_chunks (each is excluded from the wiki-only maintenance reads), so
-// EnsureCorpus's single-corpus invariant - a Wikipedia-rebuild concern - must not
+// in evidence_chunks (each is excluded from the wiki-only maintenance reads), so
+// EnsureSource's single-source invariant - a Wikipedia-rebuild concern - must not
 // gate them.
 type Store interface {
-	UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) error
-	CountUnembeddedLiveCorpus(ctx context.Context, corpus string) (int64, error)
-	UnembeddedLiveCorpus(ctx context.Context, corpus string, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
+	UpsertChunks(ctx context.Context, chunks []domain.EvidenceChunk) error
+	CountUnembeddedLiveSource(ctx context.Context, corpus string) (int64, error)
+	UnembeddedLiveSource(ctx context.Context, corpus string, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
 }
 
 // Publisher enqueues an embedding-job body at a priority for the worker fleet,
@@ -144,9 +145,9 @@ func Run(ctx context.Context, logger *slog.Logger, src Source, store Store, pub 
 // series+period twice) collapse to the last occurrence, so the upserted count
 // matches the rows actually written and one key never reaches the store twice in
 // a batch - mirroring the store's idempotent upsert on that same key.
-func renderChunks(datapoints []domain.Datapoint, corpus string) ([]domain.WikiChunk, error) {
-	chunks := make([]domain.WikiChunk, 0, len(datapoints))
-	index := make(map[domain.WikiCursor]int, len(datapoints))
+func renderChunks(datapoints []domain.Datapoint, corpus string) ([]domain.EvidenceChunk, error) {
+	chunks := make([]domain.EvidenceChunk, 0, len(datapoints))
+	index := make(map[domain.EvidenceCursor]int, len(datapoints))
 	for _, d := range datapoints {
 		if err := d.Validate(); err != nil {
 			return nil, fmt.Errorf("stats: invalid datapoint (%s %s %s): %w", d.Dataset, d.SeriesKey, d.Period, err)
@@ -162,18 +163,21 @@ func renderChunks(datapoints []domain.Datapoint, corpus string) ([]domain.WikiCh
 			// Fail loudly here rather than enqueue a job the fleet silently drops.
 			return nil, fmt.Errorf("stats: datapoint (%s %s) derived a non-positive page id %d", d.Dataset, d.SeriesKey, pageID)
 		}
-		chunk := domain.WikiChunk{
-			PageID:     pageID,
+		externalID := strconv.FormatInt(pageID, 10)
+		// A statistical passage carries no wiki provenance (no revision or
+		// section), so its metadata is empty - the source-extensible schema in
+		// action: a new source is rows under a new source value with its own
+		// (here absent) metadata keys, no column and no migration.
+		chunk := domain.EvidenceChunk{
+			Source:     corpus,
+			ExternalID: externalID,
 			ChunkIndex: chunkIndex,
 			Title:      d.Title,
 			URL:        d.SourceURL,
-			RevisionID: 0,
-			Corpus:     corpus,
 			Content:    RenderFrench(d),
-			Section:    "",
-			Kind:       domain.WikiChunkKindLead,
+			Kind:       domain.EvidenceKindLead,
 		}
-		k := domain.WikiCursor{PageID: pageID, ChunkIndex: int32(chunkIndex)}
+		k := domain.EvidenceCursor{Source: corpus, ExternalID: externalID, ChunkIndex: int32(chunkIndex)}
 		if i, dup := index[k]; dup {
 			chunks[i] = chunk
 			continue
@@ -189,7 +193,7 @@ func renderChunks(datapoints []domain.Datapoint, corpus string) ([]domain.WikiCh
 // written. The upsert leaves the embedding NULL (or clears a stale one when the
 // content changed), so the fleet fills it; an unchanged re-run keeps the prior
 // vector untouched.
-func upsertUnembedded(ctx context.Context, store Store, chunks []domain.WikiChunk, batchSize int) (int, error) {
+func upsertUnembedded(ctx context.Context, store Store, chunks []domain.EvidenceChunk, batchSize int) (int, error) {
 	total := 0
 	for start := 0; start < len(chunks); start += batchSize {
 		end := min(start+batchSize, len(chunks))
@@ -213,9 +217,9 @@ type corpusLiveStore struct {
 }
 
 func (c corpusLiveStore) CountUnembeddedLive(ctx context.Context) (int64, error) {
-	return c.store.CountUnembeddedLiveCorpus(ctx, c.corpus)
+	return c.store.CountUnembeddedLiveSource(ctx, c.corpus)
 }
 
-func (c corpusLiveStore) UnembeddedLive(ctx context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
-	return c.store.UnembeddedLiveCorpus(ctx, c.corpus, after, limit)
+func (c corpusLiveStore) UnembeddedLive(ctx context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
+	return c.store.UnembeddedLiveSource(ctx, c.corpus, after, limit)
 }

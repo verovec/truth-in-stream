@@ -102,8 +102,8 @@ func matchWeight(m Match, p confidenceParams) float64 {
 // chunkKindWeight maps a chunk kind to its corroboration weight, defaulting an
 // unknown kind to the lead weight so a future chunk classification never silently
 // drops to zero evidence weight.
-func chunkKindWeight(kind domain.WikiChunkKind, p confidenceParams) float64 {
-	if kind == domain.WikiChunkKindBody {
+func chunkKindWeight(kind domain.EvidenceChunkKind, p confidenceParams) float64 {
+	if kind == domain.EvidenceKindBody {
 		return p.bodyWeight
 	}
 	return p.leadWeight

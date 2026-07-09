@@ -12,19 +12,20 @@ import (
 )
 
 type Querier interface {
-	// Transaction-scoped advisory lock serializing corpus claims, so two
-	// concurrent syncs cannot both pass the foreign-corpus check and claim
-	// different corpora. Released automatically at commit/rollback.
-	AcquireWikiCorpusLock(ctx context.Context, key int64) error
-	// Claims the store for a corpus before ingestion starts (and before any
-	// checkpoint exists), so a corpus switch is detectable even after a crashed
+	// Transaction-scoped advisory lock serializing source claims, so two concurrent
+	// syncs cannot both pass the foreign-source check and claim different sources.
+	// Released automatically at commit/rollback.
+	AcquireEvidenceSourceLock(ctx context.Context, key int64) error
+	// Claims the store for a source before ingestion starts (and before any
+	// checkpoint exists), so a source switch is detectable even after a crashed
 	// first run. Never overwrites an existing checkpoint.
-	ClaimWikiCorpus(ctx context.Context, corpus string) error
-	CountWikiChunksForPage(ctx context.Context, pageID int64) (int64, error)
+	ClaimEvidenceSource(ctx context.Context, source string) error
+	CountEvidenceChunksForDocument(ctx context.Context, arg CountEvidenceChunksForDocumentParams) (int64, error)
 	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
-	// corpus: every statistical corpus (separate corpora that share this table) is
-	// excluded so its rows never skew the wiki change-fraction guard.
-	CountWikiPages(ctx context.Context, excludeCorpora []string) (int64, error)
+	// corpora: every statistical source (separate sources that share this table) is
+	// excluded so its rows never skew the change-fraction guard. A document is one
+	// (source, external_id).
+	CountEvidenceDocuments(ctx context.Context, excludeSources []string) (int64, error)
 	// The id is caller-minted (the object key embeds it), unlike videos whose id
 	// the database assigns.
 	CreateDocument(ctx context.Context, arg CreateDocumentParams) (Document, error)
@@ -35,22 +36,24 @@ type Querier interface {
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
 	// Sentences and claims go with the document via ON DELETE CASCADE.
 	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
-	DeleteWikiPage(ctx context.Context, pageID int64) error
-	// Delta sync removes a hard-deleted page by title: RecentChanges reports a
-	// deletion with page id 0, so the stored page can only be found by its title.
-	DeleteWikiPagesByTitle(ctx context.Context, titles []string) error
+	// Delta sync removes a hard-deleted page by title within its own source:
+	// RecentChanges reports a deletion with page id 0, so the stored chunk can only
+	// be found by its title. Scoping to the source keeps a same-titled chunk of
+	// another source safe.
+	DeleteEvidenceByTitle(ctx context.Context, arg DeleteEvidenceByTitleParams) error
+	DeleteEvidenceDocument(ctx context.Context, arg DeleteEvidenceDocumentParams) error
 	// The clustering job reads the embedded live corpus in keyset order to group it
 	// into topic clusters and score importance. The embedding IS NOT NULL filter
 	// scopes the scan to the chunks that actually carry a vector to cluster, and the
-	// corpus filter keeps statistical evidence (separate corpora sharing this
-	// table) out of the encyclopedic clustering it does not belong to.
-	EmbeddedWikiChunks(ctx context.Context, arg EmbeddedWikiChunksParams) ([]EmbeddedWikiChunksRow, error)
+	// source filter keeps statistical evidence (separate sources sharing this table)
+	// out of the encyclopedic clustering it does not belong to.
+	EmbeddedEvidenceChunks(ctx context.Context, arg EmbeddedEvidenceChunksParams) ([]EmbeddedEvidenceChunksRow, error)
 	GetDocument(ctx context.Context, id uuid.UUID) (Document, error)
-	GetOtherWikiCorpus(ctx context.Context, corpus string) (string, error)
+	GetEvidenceChunk(ctx context.Context, arg GetEvidenceChunkParams) (GetEvidenceChunkRow, error)
+	GetEvidenceSyncState(ctx context.Context, source string) (EvidenceSyncState, error)
+	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
-	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
-	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
 	// ordinal, not created_at, carries insertion order: an analysis run writes its
 	// claims in one transaction, so their created_at values are identical.
@@ -75,52 +78,70 @@ type Querier interface {
 	// single parameter, so the HNSW index still drives the ORDER BY (no repeated
 	// positional-parameter mis-numbering).
 	SearchClaims(ctx context.Context, arg SearchClaimsParams) ([]SearchClaimsRow, error)
-	// Approximate nearest-neighbor retrieval over the curated political claim DB,
-	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated
-	// talking point. query_embedding is referenced twice but sqlc collapses it to one
-	// parameter, so the HNSW index drives the ORDER BY.
-	SearchPoliticalClaims(ctx context.Context, arg SearchPoliticalClaimsParams) ([]SearchPoliticalClaimsRow, error)
 	// Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
 	// SearchClaims. The embedding IS NOT NULL filter keeps unembedded chunks out of
 	// the result regardless of the chosen plan; the HNSW index only indexes
 	// non-null rows, so the filter does not degrade index use. query_embedding is
 	// referenced twice but sqlc collapses it to one parameter, so the index still
 	// drives the ORDER BY.
-	SearchWikiChunks(ctx context.Context, arg SearchWikiChunksParams) ([]SearchWikiChunksRow, error)
+	SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceChunksParams) ([]SearchEvidenceChunksRow, error)
+	// Approximate nearest-neighbor retrieval over the curated political claim DB,
+	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated
+	// talking point. query_embedding is referenced twice but sqlc collapses it to one
+	// parameter, so the HNSW index drives the ORDER BY.
+	SearchPoliticalClaims(ctx context.Context, arg SearchPoliticalClaimsParams) ([]SearchPoliticalClaimsRow, error)
 	// Flip a pending document to ready with its extraction metadata. The status
 	// guard makes extraction exactly-once: a non-pending document returns no row
 	// and the store maps that to a conflict.
 	SetDocumentExtracted(ctx context.Context, arg SetDocumentExtractedParams) (Document, error)
+	// The clustering job writes each chunk's cluster id and importance into the
+	// metadata jsonb, merging with the || operator so the revision id and section
+	// keys survive. The casts pin the params to plain integer/double so a non-null
+	// write is a value, not a nullable pointer.
+	SetEvidenceChunkClustering(ctx context.Context, arg []SetEvidenceChunkClusteringParams) *SetEvidenceChunkClusteringBatchResults
+	// Delta sync writes embeddings straight into the live table: at delta volume the
+	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
+	SetEvidenceChunkEmbedding(ctx context.Context, arg []SetEvidenceChunkEmbeddingParams) *SetEvidenceChunkEmbeddingBatchResults
 	// A failed ingest: record the reason and flip the record to failed.
 	SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error)
 	// A completed ingest: record the probed title, size, and duration, clear any
 	// prior error, and flip the record to ready.
 	SetVideoReady(ctx context.Context, arg SetVideoReadyParams) (Video, error)
 	SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) (Video, error)
-	// The clustering job writes each chunk's cluster id and importance back into the
-	// live table. The casts pin the params to plain integer/double so a non-null
-	// write is a value, not a nullable pointer.
-	SetWikiChunkClustering(ctx context.Context, arg []SetWikiChunkClusteringParams) *SetWikiChunkClusteringBatchResults
-	// Delta sync writes embeddings straight into the live table: at delta volume the
-	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
-	SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults
 	// Delta sync diffs the revision RecentChanges reports against the one stored, so
-	// a page already at that revision is neither refetched nor re-embedded. A page's
-	// chunks share a revision after an upsert; max guards against a partial update.
-	StoredWikiRevisions(ctx context.Context, pageIds []int64) ([]StoredWikiRevisionsRow, error)
-	// Removes the stale tail of a page after a re-sync produced fewer chunks
-	// (from_index 0 removes the page entirely, e.g. it became a redirect).
-	TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults
+	// a document already at that revision is neither refetched nor re-embedded. A
+	// document's chunks share a revision after an upsert; max guards a partial
+	// update. revision_id lives in the metadata jsonb now (a wiki-source key), so a
+	// row missing the key yields NULL from the ->> and COALESCE floors it to 0 - a
+	// non-numeric revision the delta always treats as stale and refetches, rather
+	// than a NULL that would fail the non-nullable int64 scan and stall the sync.
+	StoredEvidenceRevisions(ctx context.Context, arg StoredEvidenceRevisionsParams) ([]StoredEvidenceRevisionsRow, error)
+	// Removes the stale tail of a document after a re-sync produced fewer chunks
+	// (from_index 0 removes the document entirely, e.g. it became a redirect).
+	TrimEvidenceDocumentChunks(ctx context.Context, arg []TrimEvidenceDocumentChunksParams) *TrimEvidenceDocumentChunksBatchResults
 	// The delta sync reads the chunks it just upserted into the live table back in
 	// keyset order to embed them in place. The embedding IS NULL filter scopes the
-	// scan to the unembedded chunks a delta run produced.
-	UnembeddedWikiChunks(ctx context.Context, arg UnembeddedWikiChunksParams) ([]UnembeddedWikiChunksRow, error)
+	// scan to the unembedded chunks a delta run produced. The keyset spans the full
+	// (source, external_id, chunk_index) because external_id is unique only within a
+	// source.
+	UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEvidenceChunksParams) ([]UnembeddedEvidenceChunksRow, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 	// Crawl ingestion writes content and embedding together: the worker embeds the
 	// self-contained message, then upserts the whole row in one statement so a chunk
 	// is never visible to search without its matching vector. The embedding is always
 	// the freshly computed one, so a re-crawl rewrites the same vector idempotently.
-	UpsertEmbeddedChunk(ctx context.Context, arg UpsertEmbeddedChunkParams) error
+	UpsertEmbeddedEvidenceChunk(ctx context.Context, arg UpsertEmbeddedEvidenceChunkParams) error
+	// Ingest never writes embeddings; the CASE keeps an existing embedding only
+	// while the content it was computed from is unchanged, so re-ingesting a
+	// changed revision invalidates the stale vector instead of serving it. metadata
+	// MERGES (`existing || new`) rather than replacing, so the ingest keys the
+	// writer supplies (revision id, section) overwrite while the offline clustering
+	// keys (cluster_id, importance) the ingest does not carry survive a re-ingest -
+	// the old schema kept importance in a dedicated column the upsert never touched,
+	// and UnembeddedLive reads that importance to embed the most important content
+	// first.
+	UpsertEvidenceChunk(ctx context.Context, arg []UpsertEvidenceChunkParams) *UpsertEvidenceChunkBatchResults
+	UpsertEvidenceSyncState(ctx context.Context, arg UpsertEvidenceSyncStateParams) error
 	// The fact-check-archive crawler writes a curated claim with its embedding in one
 	// statement, so a row is never visible to ANN search without its matching vector.
 	// The embedding is the freshly computed one, so a re-crawl rewrites the same row
@@ -134,11 +155,6 @@ type Querier interface {
 	// Scrutins ingest writes one recorded position per person per scrutin. Re-running
 	// the ingest rewrites the same row, so a bulk re-run is idempotent.
 	UpsertVotingRecord(ctx context.Context, arg UpsertVotingRecordParams) error
-	// Ingest never writes embeddings; the CASE keeps an existing embedding only
-	// while the content it was computed from is unchanged, so re-ingesting a
-	// changed revision invalidates the stale vector instead of serving it.
-	UpsertWikiChunk(ctx context.Context, arg []UpsertWikiChunkParams) *UpsertWikiChunkBatchResults
-	UpsertWikiSyncState(ctx context.Context, arg UpsertWikiSyncStateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

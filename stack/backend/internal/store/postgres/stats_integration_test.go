@@ -41,7 +41,7 @@ func (p *capturePublisher) published() []embedjob.Job {
 // the stat passages become searchable. It returns the number of passages
 // upserted. The fixed vector makes every stat passage the nearest neighbor of a
 // query embedded the same way, which is enough to prove retrieval through the
-// SearchWiki path without a network embedding call.
+// SearchEvidence path without a network embedding call.
 func ingestStatsEmbedded(ctx context.Context, t *testing.T, store *Store, src stats.Source, vec []float32) int {
 	t.Helper()
 	pub := &capturePublisher{}
@@ -50,9 +50,9 @@ func ingestStatsEmbedded(ctx context.Context, t *testing.T, store *Store, src st
 		t.Fatalf("stats.Run: %v", err)
 	}
 	jobs := pub.published()
-	chunks := make([]domain.WikiChunk, len(jobs))
+	chunks := make([]domain.EvidenceChunk, len(jobs))
 	for i, j := range jobs {
-		chunks[i] = domain.WikiChunk{PageID: j.PageID, ChunkIndex: j.ChunkIndex, Content: j.Content, Embedding: vec}
+		chunks[i] = domain.EvidenceChunk{Source: j.Source, ExternalID: j.ExternalID, ChunkIndex: j.ChunkIndex, Content: j.Content, Embedding: vec}
 	}
 	if len(chunks) > 0 {
 		matched, err := store.SetLiveChunkEmbeddings(ctx, chunks)
@@ -86,7 +86,7 @@ func statDatapoints() []domain.Datapoint {
 // TestStatsRunStoresAndRetrievesThroughFleet is the card's end-to-end DB proof:
 // the producer upserts rendered statistical passages un-embedded and enqueues one
 // embed job each, the fleet write fills the vectors, the passages are retrieved
-// through the same SearchWiki path the fact-check verifier uses, and a re-run does
+// through the same SearchEvidence path the fact-check verifier uses, and a re-run does
 // not duplicate a datapoint+period nor republish an already-embedded passage.
 func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 	store := setupStore(t)
@@ -100,12 +100,12 @@ func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 		t.Fatalf("producer upserted %d, want 2", n)
 	}
 
-	hits, err := store.SearchWiki(ctx, vec, 5)
+	hits, err := store.SearchEvidence(ctx, vec, 5)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(hits) < 2 {
-		t.Fatalf("SearchWiki returned %d hits, want >= 2", len(hits))
+		t.Fatalf("SearchEvidence returned %d hits, want >= 2", len(hits))
 	}
 	var found2022 bool
 	for _, h := range hits {
@@ -140,16 +140,16 @@ func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 	var count int64
 	if err := store.pool.QueryRow(
 		ctx,
-		"SELECT count(DISTINCT page_id) FROM wiki_chunks WHERE corpus = $1", stats.StatCorpus,
+		"SELECT count(DISTINCT external_id) FROM evidence_chunks WHERE source = $1", stats.StatCorpus,
 	).Scan(&count); err != nil {
 		t.Fatalf("count stat pages: %v", err)
 	}
 	if count != 1 {
 		t.Errorf("after re-run distinct stat pages = %d, want 1 (one series, no duplicates)", count)
 	}
-	rerunHits, err := store.SearchWiki(ctx, vec, 10)
+	rerunHits, err := store.SearchEvidence(ctx, vec, 10)
 	if err != nil {
-		t.Fatalf("SearchWiki after re-run: %v", err)
+		t.Fatalf("SearchEvidence after re-run: %v", err)
 	}
 	if len(rerunHits) != 2 {
 		t.Errorf("after re-run hits = %d, want 2 (no duplicate passages)", len(rerunHits))
@@ -157,49 +157,50 @@ func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 }
 
 // TestStatsExcludedFromWikiMaintenanceReads proves statistical rows, though
-// retrievable through SearchWiki, are excluded from the encyclopedic-corpus
-// maintenance reads: the delta-sync page-count denominator (CountPages) and the
+// retrievable through SearchEvidence, are excluded from the encyclopedic-corpus
+// maintenance reads: the delta-sync page-count denominator (CountDocuments) and the
 // clustering scan (EmbeddedChunks). Mixing them in would skew the wiki
 // bulk-recommendation guard and cluster statistics into encyclopedic topics.
 func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	wiki := domain.WikiChunk{
-		PageID: 42, ChunkIndex: 0, Title: "Immigration", URL: "https://w/imm",
-		RevisionID: 1, Corpus: "simplewiki", Content: "Immigration is the movement of people.",
-		Kind: domain.WikiChunkKindLead, Embedding: fullEmbedding(),
+	wiki := domain.EvidenceChunk{
+		Source: "simplewiki", ExternalID: "42", ChunkIndex: 0, Title: "Immigration", URL: "https://w/imm",
+		Content: "Immigration is the movement of people.",
+		Kind:    domain.EvidenceKindLead, Embedding: fullEmbedding(),
+		Metadata: domain.WikiMetadata{RevisionID: 1}.Map(),
 	}
 	if err := store.UpsertEmbeddedChunk(ctx, wiki); err != nil {
 		t.Fatalf("seed wiki chunk: %v", err)
 	}
 	ingestStatsEmbedded(ctx, t, store, fixedSource{statDatapoints()}, fullEmbedding())
 
-	pages, err := store.CountPages(ctx)
+	pages, err := store.CountDocuments(ctx)
 	if err != nil {
-		t.Fatalf("CountPages: %v", err)
+		t.Fatalf("CountDocuments: %v", err)
 	}
 	if pages != 1 {
-		t.Errorf("CountPages = %d, want 1 (statistical series excluded)", pages)
+		t.Errorf("CountDocuments = %d, want 1 (statistical series excluded)", pages)
 	}
 
-	embedded, err := store.EmbeddedChunks(ctx, domain.WikiCursor{}, 100)
+	embedded, err := store.EmbeddedChunks(ctx, domain.EvidenceCursor{}, 100)
 	if err != nil {
 		t.Fatalf("EmbeddedChunks: %v", err)
 	}
 	if len(embedded) != 1 {
 		t.Fatalf("EmbeddedChunks returned %d, want 1 (statistics excluded)", len(embedded))
 	}
-	if embedded[0].PageID != 42 {
-		t.Errorf("clustering scan returned page %d, want the wiki page 42", embedded[0].PageID)
+	if embedded[0].ExternalID != "42" {
+		t.Errorf("clustering scan returned page %s, want the wiki page 42", embedded[0].ExternalID)
 	}
 
-	hits, err := store.SearchWiki(ctx, fullEmbedding(), 10)
+	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(hits) != 3 {
-		t.Errorf("SearchWiki returned %d, want 3 (1 wiki + 2 stats both retrievable)", len(hits))
+		t.Errorf("SearchEvidence returned %d, want 3 (1 wiki + 2 stats both retrievable)", len(hits))
 	}
 }
 
@@ -237,16 +238,17 @@ func nationalDatapoints() []domain.Datapoint {
 
 // TestNationalStatsExcludedFromWikiMaintenanceReads proves the national
 // statistical corpora (interior ministry, INSEE) introduced in VER-120 are
-// excluded from CountPages and the clustering scan just like the EU corpus,
-// while still being retrievable through SearchWiki.
+// excluded from CountDocuments and the clustering scan just like the EU corpus,
+// while still being retrievable through SearchEvidence.
 func TestNationalStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	wiki := domain.WikiChunk{
-		PageID: 42, ChunkIndex: 0, Title: "Immigration", URL: "https://w/imm",
-		RevisionID: 1, Corpus: "simplewiki", Content: "Immigration is the movement of people.",
-		Kind: domain.WikiChunkKindLead, Embedding: fullEmbedding(),
+	wiki := domain.EvidenceChunk{
+		Source: "simplewiki", ExternalID: "42", ChunkIndex: 0, Title: "Immigration", URL: "https://w/imm",
+		Content: "Immigration is the movement of people.",
+		Kind:    domain.EvidenceKindLead, Embedding: fullEmbedding(),
+		Metadata: domain.WikiMetadata{RevisionID: 1}.Map(),
 	}
 	if err := store.UpsertEmbeddedChunk(ctx, wiki); err != nil {
 		t.Fatalf("seed wiki chunk: %v", err)
@@ -256,31 +258,31 @@ func TestNationalStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 	ingestStatsEmbedded(ctx, t, store, statSource{corpus: domain.InteriorStatCorpus, dps: nationalDatapoints()[:1]}, vec)
 	ingestStatsEmbedded(ctx, t, store, statSource{corpus: domain.INSEEStatCorpus, dps: nationalDatapoints()[1:]}, vec)
 
-	pages, err := store.CountPages(ctx)
+	pages, err := store.CountDocuments(ctx)
 	if err != nil {
-		t.Fatalf("CountPages: %v", err)
+		t.Fatalf("CountDocuments: %v", err)
 	}
 	if pages != 1 {
-		t.Errorf("CountPages = %d, want 1 (both national statistical corpora excluded)", pages)
+		t.Errorf("CountDocuments = %d, want 1 (both national statistical corpora excluded)", pages)
 	}
 
-	embedded, err := store.EmbeddedChunks(ctx, domain.WikiCursor{}, 100)
+	embedded, err := store.EmbeddedChunks(ctx, domain.EvidenceCursor{}, 100)
 	if err != nil {
 		t.Fatalf("EmbeddedChunks: %v", err)
 	}
 	if len(embedded) != 1 {
 		t.Fatalf("EmbeddedChunks returned %d, want 1 (national statistics excluded)", len(embedded))
 	}
-	if embedded[0].PageID != 42 {
-		t.Errorf("clustering scan returned page %d, want the wiki page 42", embedded[0].PageID)
+	if embedded[0].ExternalID != "42" {
+		t.Errorf("clustering scan returned page %s, want the wiki page 42", embedded[0].ExternalID)
 	}
 
-	hits, err := store.SearchWiki(ctx, fullEmbedding(), 10)
+	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(hits) != 3 {
-		t.Errorf("SearchWiki returned %d, want 3 (1 wiki + 2 national stats retrievable)", len(hits))
+		t.Errorf("SearchEvidence returned %d, want 3 (1 wiki + 2 national stats retrievable)", len(hits))
 	}
 }
 

@@ -10,14 +10,14 @@ import (
 func TestWikiCorpusHealthOnHealthyCorpus(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{
+	seedChunks(t, store, []domain.EvidenceChunk{
 		withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1)),
 		withEmbedding(wikiChunk(2, 0, "v2"), unitVec(2)),
 	})
 
-	h, err := store.WikiCorpusHealth(ctx)
+	h, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth: %v", err)
+		t.Fatalf("EvidenceCorpusHealth: %v", err)
 	}
 	if h.Chunks != 2 {
 		t.Errorf("chunks = %d, want 2", h.Chunks)
@@ -37,15 +37,15 @@ func TestWikiCorpusHealthDetectsNullAndZeroVectors(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 	zero := make([]float32, domain.EmbeddingDim) // all-zero embedding: a bug-shaped vector
-	seedChunks(t, store, []domain.WikiChunk{
+	seedChunks(t, store, []domain.EvidenceChunk{
 		withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1)),
 		wikiChunk(2, 0, "v2"),                      // never embedded -> null
 		withEmbedding(wikiChunk(3, 0, "v0"), zero), // zero vector
 	})
 
-	h, err := store.WikiCorpusHealth(ctx)
+	h, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth: %v", err)
+		t.Fatalf("EvidenceCorpusHealth: %v", err)
 	}
 	if h.Chunks != 3 {
 		t.Errorf("chunks = %d, want 3", h.Chunks)
@@ -61,15 +61,15 @@ func TestWikiCorpusHealthDetectsNullAndZeroVectors(t *testing.T) {
 func TestWikiCorpusHealthDetectsMissingMetadata(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
+	seedChunks(t, store, []domain.EvidenceChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
 	// Force an invalid kind directly (the store guards writes, so reach past it).
-	if _, err := store.pool.Exec(ctx, "UPDATE wiki_chunks SET kind = '' WHERE page_id = 1"); err != nil {
+	if _, err := store.pool.Exec(ctx, "UPDATE evidence_chunks SET kind = '' WHERE source = 'simplewiki' AND external_id = '1'"); err != nil {
 		t.Fatalf("corrupt kind: %v", err)
 	}
 
-	h, err := store.WikiCorpusHealth(ctx)
+	h, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth: %v", err)
+		t.Fatalf("EvidenceCorpusHealth: %v", err)
 	}
 	if h.MissingMetadata != 1 {
 		t.Errorf("missing metadata = %d, want 1", h.MissingMetadata)
@@ -79,7 +79,7 @@ func TestWikiCorpusHealthDetectsMissingMetadata(t *testing.T) {
 func TestResetWikiCorpusClearsCorpusAndCheckpoint(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
-	seedChunks(t, store, []domain.WikiChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
+	seedChunks(t, store, []domain.EvidenceChunk{withEmbedding(wikiChunk(1, 0, "v1"), unitVec(1))})
 	// A leftover staging table from an interrupted run must also be cleared.
 	if err := store.ResetStaging(ctx, "v1"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
@@ -88,14 +88,14 @@ func TestResetWikiCorpusClearsCorpusAndCheckpoint(t *testing.T) {
 		t.Fatal("precondition: staging table should exist")
 	}
 
-	if err := store.ResetWikiCorpus(ctx); err != nil {
-		t.Fatalf("ResetWikiCorpus: %v", err)
+	if err := store.ResetEvidenceCorpus(ctx); err != nil {
+		t.Fatalf("ResetEvidenceCorpus: %v", err)
 	}
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_chunks"); n != 0 {
-		t.Errorf("wiki_chunks has %d rows after reset, want 0", n)
+	if n := scalarInt(t, store, "SELECT count(*) FROM evidence_chunks"); n != 0 {
+		t.Errorf("evidence_chunks has %d rows after reset, want 0", n)
 	}
-	if n := scalarInt(t, store, "SELECT count(*) FROM wiki_sync_state"); n != 0 {
-		t.Errorf("wiki_sync_state has %d rows after reset, want 0 (checkpoint cleared)", n)
+	if n := scalarInt(t, store, "SELECT count(*) FROM evidence_sync_state"); n != 0 {
+		t.Errorf("evidence_sync_state has %d rows after reset, want 0 (checkpoint cleared)", n)
 	}
 	if stagingExistsT(t, store) {
 		t.Error("staging table survived the reset")

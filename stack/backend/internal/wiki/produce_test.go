@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func (p *fakePublisher) published() []publishedMsg {
 type fakeProducerStore struct {
 	mu sync.Mutex
 
-	staging []domain.WikiChunk
+	staging []domain.EvidenceChunk
 
 	// remaining is the sequence StagingRemaining returns on successive calls; the
 	// last value is held once the sequence is exhausted, modeling a fleet that
@@ -87,23 +88,20 @@ func (f *fakeProducerStore) CountUnembeddedStaging(context.Context) (int64, erro
 	return n, nil
 }
 
-func (f *fakeProducerStore) UnembeddedStaging(_ context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+func (f *fakeProducerStore) UnembeddedStaging(_ context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.unembedErr != nil {
 		return nil, f.unembedErr
 	}
-	out := []domain.WikiChunk{}
+	out := []domain.EvidenceChunk{}
 	for _, c := range f.staging {
-		if c.PageID > after.PageID || (c.PageID == after.PageID && int32(c.ChunkIndex) > after.ChunkIndex) {
+		if afterCursor(c, after) {
 			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].PageID != out[j].PageID {
-			return out[i].PageID < out[j].PageID
-		}
-		return out[i].ChunkIndex < out[j].ChunkIndex
+		return lessChunk(out[i], out[j])
 	})
 	if len(out) > limit {
 		out = out[:limit]
@@ -123,20 +121,20 @@ func (f *fakeProducerStore) FinalizeStaging(_ context.Context, corpus, version s
 	return nil
 }
 
-func producerChunks(pages int) []domain.WikiChunk {
+func producerChunks(pages int) []domain.EvidenceChunk {
 	const perPage = 2
-	out := make([]domain.WikiChunk, 0, pages*perPage)
+	out := make([]domain.EvidenceChunk, 0, pages*perPage)
 	for p := 1; p <= pages; p++ {
 		for i := range perPage {
-			out = append(out, domain.WikiChunk{
-				PageID:     int64(p),
+			out = append(out, domain.EvidenceChunk{
+				Source:     "simplewiki",
+				ExternalID: strconv.Itoa(p),
 				ChunkIndex: i,
 				Title:      "T",
 				URL:        "https://simple.wikipedia.org/wiki/T",
-				RevisionID: 1,
-				Corpus:     "simplewiki",
 				Content:    contentFor(p, i),
-				Kind:       domain.WikiChunkKindLead,
+				Kind:       domain.EvidenceKindLead,
+				Metadata:   domain.WikiMetadata{RevisionID: 1}.Map(),
 			})
 		}
 	}
@@ -193,10 +191,10 @@ func TestRunBulkEnqueuePublishesOneJobPerChunk(t *testing.T) {
 		// rather than position - the broker, not publish order, enforces priority.
 		byKey := map[string]embedjob.Job{}
 		for _, j := range decodeJobs(t, msgs) {
-			byKey[fmt.Sprintf("%d/%d", j.PageID, j.ChunkIndex)] = j
+			byKey[fmt.Sprintf("%s/%d", j.ExternalID, j.ChunkIndex)] = j
 		}
 		for _, want := range store.staging {
-			key := fmt.Sprintf("%d/%d", want.PageID, want.ChunkIndex)
+			key := fmt.Sprintf("%s/%d", want.ExternalID, want.ChunkIndex)
 			got, ok := byKey[key]
 			if !ok {
 				t.Errorf("no job published for chunk %s", key)
@@ -244,7 +242,7 @@ func TestRunBulkPublishPublishesWithoutDrainOrSwap(t *testing.T) {
 	// embed it.
 	for _, j := range decodeJobs(t, pub.published()) {
 		if j.Content == "" {
-			t.Fatalf("published job for %d/%d has empty content; jobs must be self-contained", j.PageID, j.ChunkIndex)
+			t.Fatalf("published job for %s/%d has empty content; jobs must be self-contained", j.ExternalID, j.ChunkIndex)
 		}
 	}
 	if store.finalized {
@@ -266,9 +264,9 @@ func TestRunBulkPublishValidatesConfig(t *testing.T) {
 func TestRunBulkEnqueuePrioritizesLeadOverBody(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		lead := domain.WikiChunk{PageID: 1, ChunkIndex: 0, Corpus: "simplewiki", Content: "lead text", Kind: domain.WikiChunkKindLead}
-		body := domain.WikiChunk{PageID: 2, ChunkIndex: 0, Corpus: "simplewiki", Content: "body text", Kind: domain.WikiChunkKindBody}
-		store := &fakeProducerStore{staging: []domain.WikiChunk{lead, body}, remaining: []int64{2, 0}}
+		lead := domain.EvidenceChunk{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Content: "lead text", Kind: domain.EvidenceKindLead}
+		body := domain.EvidenceChunk{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Content: "body text", Kind: domain.EvidenceKindBody}
+		store := &fakeProducerStore{staging: []domain.EvidenceChunk{lead, body}, remaining: []int64{2, 0}}
 		pub := &fakePublisher{}
 
 		if _, err := RunBulkEnqueue(t.Context(), discardLogger(), store, pub, producerConfig()); err != nil {
@@ -351,14 +349,14 @@ func TestRunBulkEnqueueResumeEnqueuesOnlyRemaining(t *testing.T) {
 		if stats.Published != 4 {
 			t.Errorf("published = %d, want 4 (resume enqueues only the remainder)", stats.Published)
 		}
-		pages := map[int64]bool{}
+		pages := map[string]bool{}
 		for _, j := range decodeJobs(t, pub.published()) {
-			pages[j.PageID] = true
+			pages[j.ExternalID] = true
 		}
-		if pages[1] {
+		if pages["1"] {
 			t.Error("resume re-enqueued an already-embedded page 1 chunk")
 		}
-		if !pages[2] || !pages[3] {
+		if !pages["2"] || !pages["3"] {
 			t.Errorf("resume published pages %v, want only the remainder pages 2 and 3", pages)
 		}
 		if !store.finalized {
@@ -446,10 +444,10 @@ func TestStaticImportance(t *testing.T) {
 	short := "x"
 	// A lead always outranks a body; within a kind, longer content outranks
 	// shorter; an unknown kind floors to zero.
-	leadLong := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindLead, Content: long})
-	leadShort := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindLead, Content: short})
-	bodyLong := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: long})
-	unknown := staticImportance(domain.WikiChunk{Kind: domain.WikiChunkKind("mystery"), Content: long})
+	leadLong := staticImportance(domain.EvidenceChunk{Kind: domain.EvidenceKindLead, Content: long})
+	leadShort := staticImportance(domain.EvidenceChunk{Kind: domain.EvidenceKindLead, Content: short})
+	bodyLong := staticImportance(domain.EvidenceChunk{Kind: domain.EvidenceKindBody, Content: long})
+	unknown := staticImportance(domain.EvidenceChunk{Kind: domain.EvidenceChunkKind("mystery"), Content: long})
 
 	if !(leadLong > leadShort) {
 		t.Errorf("longer lead %.3f should outrank shorter lead %.3f", leadLong, leadShort)
@@ -497,13 +495,13 @@ func TestPriorityForPrefersImportanceOverStatic(t *testing.T) {
 	imp := 0.9
 	// A body chunk (the static heuristic would put it low) that carries a high
 	// clustering score must be prioritized by the score, not the static fallback.
-	scored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: "x", Importance: &imp}
+	scored := domain.EvidenceChunk{Kind: domain.EvidenceKindBody, Content: "x", Metadata: domain.WikiMetadata{Importance: &imp}.Map()}
 	if got := priorityFor(scored, 10); got != 9 {
 		t.Errorf("scored body chunk priority = %d, want 9 (importance drives it)", got)
 	}
 	// With no score, the same chunk falls back to the static heuristic, which keeps
 	// a short body well below the importance-driven band.
-	unscored := domain.WikiChunk{Kind: domain.WikiChunkKindBody, Content: "x"}
+	unscored := domain.EvidenceChunk{Kind: domain.EvidenceKindBody, Content: "x"}
 	want := priorityFromImportance(staticImportance(unscored), 10)
 	if got := priorityFor(unscored, 10); got != want {
 		t.Errorf("unscored body chunk priority = %d, want %d (static fallback)", got, want)
@@ -517,9 +515,9 @@ func TestRunBulkEnqueueUsesImportanceForPriority(t *testing.T) {
 		low := 0.2
 		// Both chunks are lead (kind heuristic would tie them at the ceiling), but
 		// their importance scores must produce distinct priorities.
-		c1 := domain.WikiChunk{PageID: 1, ChunkIndex: 0, Corpus: "simplewiki", Content: "important", Kind: domain.WikiChunkKindLead, Importance: &high}
-		c2 := domain.WikiChunk{PageID: 2, ChunkIndex: 0, Corpus: "simplewiki", Content: "minor", Kind: domain.WikiChunkKindLead, Importance: &low}
-		store := &fakeProducerStore{staging: []domain.WikiChunk{c1, c2}, remaining: []int64{2, 0}}
+		c1 := domain.EvidenceChunk{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Content: "important", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{Importance: &high}.Map()}
+		c2 := domain.EvidenceChunk{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Content: "minor", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{Importance: &low}.Map()}
+		store := &fakeProducerStore{staging: []domain.EvidenceChunk{c1, c2}, remaining: []int64{2, 0}}
 		pub := &fakePublisher{}
 
 		if _, err := RunBulkEnqueue(t.Context(), discardLogger(), store, pub, producerConfig()); err != nil {
@@ -546,7 +544,7 @@ func TestRunBulkEnqueueUsesImportanceForPriority(t *testing.T) {
 // for un-embedded chunks; it has no finalize step because there is no swap.
 type fakeLiveProducerStore struct {
 	mu         sync.Mutex
-	live       []domain.WikiChunk
+	live       []domain.EvidenceChunk
 	countErr   error
 	unembedErr error
 }
@@ -560,23 +558,20 @@ func (f *fakeLiveProducerStore) CountUnembeddedLive(context.Context) (int64, err
 	return int64(len(f.live)), nil
 }
 
-func (f *fakeLiveProducerStore) UnembeddedLive(_ context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+func (f *fakeLiveProducerStore) UnembeddedLive(_ context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.unembedErr != nil {
 		return nil, f.unembedErr
 	}
-	out := []domain.WikiChunk{}
+	out := []domain.EvidenceChunk{}
 	for _, c := range f.live {
-		if c.PageID > after.PageID || (c.PageID == after.PageID && int32(c.ChunkIndex) > after.ChunkIndex) {
+		if afterCursor(c, after) {
 			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].PageID != out[j].PageID {
-			return out[i].PageID < out[j].PageID
-		}
-		return out[i].ChunkIndex < out[j].ChunkIndex
+		return lessChunk(out[i], out[j])
 	})
 	if len(out) > limit {
 		out = out[:limit]
@@ -601,7 +596,7 @@ func TestRunBulkLivePublishPublishesLiveJobs(t *testing.T) {
 	// the vector straight into wiki_chunks.
 	for _, j := range decodeJobs(t, msgs) {
 		if j.Staging {
-			t.Errorf("live job for page %d chunk %d set Staging; want live", j.PageID, j.ChunkIndex)
+			t.Errorf("live job for page %s chunk %d set Staging; want live", j.ExternalID, j.ChunkIndex)
 		}
 	}
 }
@@ -627,7 +622,7 @@ func TestRunBulkEnqueueStampsStagingJobs(t *testing.T) {
 		// for the later swap rather than the live corpus.
 		for _, j := range decodeJobs(t, pub.published()) {
 			if !j.Staging {
-				t.Errorf("atomic job for page %d chunk %d did not set Staging", j.PageID, j.ChunkIndex)
+				t.Errorf("atomic job for page %s chunk %d did not set Staging", j.ExternalID, j.ChunkIndex)
 			}
 		}
 	})

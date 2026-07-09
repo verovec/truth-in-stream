@@ -19,7 +19,7 @@ import (
 )
 
 // The bulk-embedding pipeline builds the next corpus in a staging table and
-// swaps it into wiki_chunks atomically: ingest fills staging from the dump,
+// swaps it into evidence_chunks atomically: ingest fills staging from the dump,
 // unchanged embeddings carry forward from live, the remaining chunks embed in
 // place, and a rename swaps staging over live. The staging table, its index,
 // and the rename are runtime DDL that sqlc cannot model (it compiles DML
@@ -27,16 +27,16 @@ import (
 // as the raw statements below; the live-corpus DML still goes through generated
 // queries. The names are constants, never interpolated user input.
 const (
-	wikiStagingTable           = "wiki_chunks_staging"
-	wikiStagingPK              = "wiki_chunks_staging_pkey"
-	wikiStagingHNSWIndex       = "wiki_chunks_staging_embedding_hnsw"
-	wikiChunksHNSWIndex        = "wiki_chunks_embedding_hnsw"
-	wikiChunksPK               = "wiki_chunks_pkey"
-	wikiChunksOldTable         = "wiki_chunks_old"
-	wikiChunksOldPK            = "wiki_chunks_old_pkey"
-	wikiChunksOldHNSWIndex     = "wiki_chunks_old_embedding_hnsw"
-	hnswM                  int = 16
-	hnswEfConstruction     int = 200
+	evidenceStagingTable           = "evidence_chunks_staging"
+	evidenceStagingPK              = "evidence_chunks_staging_pkey"
+	evidenceStagingHNSWIndex       = "evidence_chunks_staging_embedding_hnsw"
+	evidenceChunksHNSWIndex        = "evidence_chunks_embedding_hnsw"
+	evidenceChunksPK               = "evidence_chunks_pkey"
+	evidenceChunksOldTable         = "evidence_chunks_old"
+	evidenceChunksOldPK            = "evidence_chunks_old_pkey"
+	evidenceChunksOldHNSWIndex     = "evidence_chunks_old_embedding_hnsw"
+	hnswM                      int = 16
+	hnswEfConstruction         int = 200
 )
 
 // Staging is stamped with its lifecycle phase and the dump version it is being
@@ -60,7 +60,7 @@ func (s *Store) readStaging(ctx context.Context) (exists bool, phase, version st
 	if err = s.pool.QueryRow(
 		ctx,
 		"SELECT to_regclass($1) IS NOT NULL, obj_description(to_regclass($1), 'pg_class')",
-		wikiStagingTable,
+		evidenceStagingTable,
 	).Scan(&exists, &raw); err != nil {
 		return false, "", "", fmt.Errorf("postgres: read staging stamp: %w", err)
 	}
@@ -109,8 +109,8 @@ func (s *Store) liveCurrentAt(ctx context.Context, version string) (bool, error)
 	)
 	if err := s.pool.QueryRow(
 		ctx, `
-		SELECT (SELECT dump_version FROM wiki_sync_state LIMIT 1),
-		       (SELECT count(*) FROM wiki_chunks WHERE embedding IS NULL)`,
+		SELECT (SELECT dump_version FROM evidence_sync_state LIMIT 1),
+		       (SELECT count(*) FROM evidence_chunks WHERE embedding IS NULL)`,
 	).Scan(&stored, &nulls); err != nil {
 		return false, fmt.Errorf("postgres: read live currency: %w", err)
 	}
@@ -127,10 +127,10 @@ func (s *Store) liveCurrentAt(ctx context.Context, version string) (bool, error)
 func (s *Store) ResetStaging(ctx context.Context, version string) error {
 	stamp := stagingStamp(stampBuilding, version)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "DROP TABLE IF EXISTS "+wikiStagingTable); err != nil {
+		if _, err := tx.Exec(ctx, "DROP TABLE IF EXISTS "+evidenceStagingTable); err != nil {
 			return fmt.Errorf("drop staging: %w", err)
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE wiki_chunks INCLUDING DEFAULTS)", wikiStagingTable)); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE evidence_chunks INCLUDING DEFAULTS)", evidenceStagingTable)); err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
 		return stampStagingTx(ctx, tx, stamp)
@@ -149,26 +149,31 @@ func (s *Store) MarkStagingReady(ctx context.Context, version string) error {
 }
 
 // UpsertStagingChunks inserts chunks (NULL embedding) into the staging table in
-// one batch. ResetStaging leaves staging empty and multistream page ids are
+// one batch. ResetStaging leaves staging empty and multistream document ids are
 // unique, so a plain INSERT never conflicts; the primary key is added at
-// finalize.
-func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error {
+// finalize. Staging becomes the live table at swap, so it carries every served
+// column (title, url, kind, metadata), not just the embed inputs.
+func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.EvidenceChunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 	stmt := fmt.Sprintf(
-		"INSERT INTO %s (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-		wikiStagingTable,
+		"INSERT INTO %s (source, external_id, chunk_index, title, url, content, kind, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+		evidenceStagingTable,
 	)
 	batch := &pgx.Batch{}
 	for _, c := range chunks {
 		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
-			return fmt.Errorf("postgres: stage chunk page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+			return fmt.Errorf("postgres: stage chunk %s/%s: chunk index %d out of range", c.Source, c.ExternalID, c.ChunkIndex)
 		}
 		if !c.Kind.Valid() {
-			return fmt.Errorf("postgres: stage chunk page %d: invalid kind %q", c.PageID, c.Kind)
+			return fmt.Errorf("postgres: stage chunk %s/%s: invalid kind %q", c.Source, c.ExternalID, c.Kind)
 		}
-		batch.Queue(stmt, c.PageID, int32(c.ChunkIndex), c.Title, c.URL, c.RevisionID, c.Corpus, c.Content, c.Section, string(c.Kind))
+		meta, err := marshalMetadata(c.Metadata)
+		if err != nil {
+			return fmt.Errorf("postgres: stage chunk %s/%s: %w", c.Source, c.ExternalID, err)
+		}
+		batch.Queue(stmt, c.Source, c.ExternalID, int32(c.ChunkIndex), c.Title, c.URL, c.Content, string(c.Kind), meta)
 	}
 	br := s.pool.SendBatch(ctx, batch)
 	defer func() { _ = br.Close() }()
@@ -188,11 +193,12 @@ func (s *Store) UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChu
 func (s *Store) CarryForwardEmbeddings(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE %s s SET embedding = l.embedding
-		FROM wiki_chunks l
-		WHERE s.page_id = l.page_id
+		FROM evidence_chunks l
+		WHERE s.source = l.source
+		  AND s.external_id = l.external_id
 		  AND s.chunk_index = l.chunk_index
 		  AND s.content = l.content
-		  AND l.embedding IS NOT NULL`, wikiStagingTable))
+		  AND l.embedding IS NOT NULL`, evidenceStagingTable))
 	if err != nil {
 		return 0, fmt.Errorf("postgres: carry forward embeddings: %w", err)
 	}
@@ -201,15 +207,15 @@ func (s *Store) CarryForwardEmbeddings(ctx context.Context) (int64, error) {
 
 // StagingRemaining counts the staging chunks still to embed and their content
 // characters, feeding the run's pending total and the dry-run cost estimate.
-func (s *Store) StagingRemaining(ctx context.Context) (domain.WikiRemaining, error) {
-	var r domain.WikiRemaining
+func (s *Store) StagingRemaining(ctx context.Context) (domain.EvidenceRemaining, error) {
+	var r domain.EvidenceRemaining
 	if err := s.pool.QueryRow(
 		ctx, fmt.Sprintf(`
-		SELECT count(*)::bigint, count(DISTINCT page_id)::bigint,
+		SELECT count(*)::bigint, count(DISTINCT (source, external_id))::bigint,
 		       COALESCE(sum(length(content)), 0)::bigint
-		FROM %s WHERE embedding IS NULL`, wikiStagingTable),
-	).Scan(&r.Chunks, &r.Pages, &r.Chars); err != nil {
-		return domain.WikiRemaining{}, fmt.Errorf("postgres: staging remaining: %w", err)
+		FROM %s WHERE embedding IS NULL`, evidenceStagingTable),
+	).Scan(&r.Chunks, &r.Documents, &r.Chars); err != nil {
+		return domain.EvidenceRemaining{}, fmt.Errorf("postgres: staging remaining: %w", err)
 	}
 	return r, nil
 }
@@ -217,11 +223,11 @@ func (s *Store) StagingRemaining(ctx context.Context) (domain.WikiRemaining, err
 // CountUnembeddedStaging counts the staging chunks still lacking an embedding.
 // The producer's drain wait polls it every few seconds, so unlike
 // StagingRemaining it counts rows only - it never reads content or counts
-// distinct pages - keeping each poll cheap even on a large staging table.
+// distinct documents - keeping each poll cheap even on a large staging table.
 func (s *Store) CountUnembeddedStaging(ctx context.Context) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(
-		ctx, fmt.Sprintf("SELECT count(*)::bigint FROM %s WHERE embedding IS NULL", wikiStagingTable),
+		ctx, fmt.Sprintf("SELECT count(*)::bigint FROM %s WHERE embedding IS NULL", evidenceStagingTable),
 	).Scan(&n); err != nil {
 		return 0, fmt.Errorf("postgres: count un-embedded staging: %w", err)
 	}
@@ -229,52 +235,35 @@ func (s *Store) CountUnembeddedStaging(ctx context.Context) (int64, error) {
 }
 
 // UnembeddedStaging returns up to limit staging chunks still lacking an
-// embedding, ordered after cur in keyset order and carrying the VER-49 metadata
-// (section, kind) the producer maps to a job priority. It LEFT JOINs the live
-// table to carry forward each chunk's prior importance (the offline clustering
-// job writes importance onto live wiki_chunks after a corpus is embedded), so
-// the producer prioritizes a re-ingest by the last run's clustering and falls
-// back to the kind heuristic for a new chunk with no prior importance. The join
-// matches on content as well as identity - exactly as CarryForwardEmbeddings
-// does - so a chunk whose text changed does not inherit the stale importance of
-// the old text; it falls back to the heuristic until the next clustering run
-// rescores it. The WHERE embedding IS NULL filter is the resume cursor: a re-run
-// pages from the start and the fleet has already filled the embedded prefix, so
-// only the still-pending chunks come back.
-func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+// embedding, ordered after cur in keyset order and carrying the metadata the
+// producer maps to a job priority. It LEFT JOINs the live table to carry forward
+// each chunk's prior importance (the offline clustering job writes importance
+// into the live metadata after a corpus is embedded), so the producer
+// prioritizes a re-ingest by the last run's clustering and falls back to the
+// kind heuristic for a new chunk with no prior importance. The join matches on
+// content as well as identity - exactly as CarryForwardEmbeddings does - so a
+// chunk whose text changed does not inherit the stale importance of the old
+// text. The WHERE embedding IS NULL filter is the resume cursor: a re-run pages
+// from the start and the fleet has already filled the embedded prefix.
+func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded staging: limit %d out of range", limit)
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
-		SELECT s.page_id, s.chunk_index, s.title, s.url, s.revision_id, s.corpus, s.content, s.section, s.kind, l.importance
+		SELECT s.source, s.external_id, s.chunk_index, s.content, s.kind, (l.metadata->>'importance')::float8
 		FROM %s s
-		LEFT JOIN wiki_chunks l
-		  ON l.page_id = s.page_id AND l.chunk_index = s.chunk_index AND l.content = s.content
+		LEFT JOIN evidence_chunks l
+		  ON l.source = s.source AND l.external_id = s.external_id AND l.chunk_index = s.chunk_index AND l.content = s.content
 		WHERE s.embedding IS NULL
-		  AND (s.page_id, s.chunk_index) > ($1::bigint, $2::integer)
-		ORDER BY s.page_id, s.chunk_index
-		LIMIT $3`, wikiStagingTable), cur.PageID, cur.ChunkIndex, limit)
+		  AND (s.source, s.external_id, s.chunk_index) > ($1::text, $2::text, $3::integer)
+		ORDER BY s.source, s.external_id, s.chunk_index
+		LIMIT $4`, evidenceStagingTable), cur.Source, cur.ExternalID, cur.ChunkIndex, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: unembedded staging: %w", err)
 	}
 	defer rows.Close()
-	out := []domain.WikiChunk{}
-	for rows.Next() {
-		var (
-			c          domain.WikiChunk
-			idx        int32
-			kind       string
-			importance *float64
-		)
-		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind, &importance); err != nil {
-			return nil, fmt.Errorf("postgres: scan staging chunk: %w", err)
-		}
-		c.ChunkIndex = int(idx)
-		c.Kind = domain.WikiChunkKind(kind)
-		c.Importance = importance
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
+	out, err := scanEmbedQueue(rows)
+	if err != nil {
 		return nil, fmt.Errorf("postgres: read staging chunks: %w", err)
 	}
 	return out, nil
@@ -286,67 +275,52 @@ func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.WikiCursor, li
 func (s *Store) CountUnembeddedLive(ctx context.Context) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(
-		ctx, "SELECT count(*)::bigint FROM wiki_chunks WHERE embedding IS NULL",
+		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL",
 	).Scan(&n); err != nil {
 		return 0, fmt.Errorf("postgres: count un-embedded live: %w", err)
 	}
 	return n, nil
 }
 
-// CountUnembeddedLiveCorpus counts the un-embedded live chunks of one corpus.
+// CountUnembeddedLiveSource counts the un-embedded live chunks of one source.
 // The stats bulk-into-live producer reports it as the pending total before
-// publishing; scoping to the corpus keeps a stats run from counting another
-// corpus's pending chunks (the wiki and crawl corpora share wiki_chunks).
-func (s *Store) CountUnembeddedLiveCorpus(ctx context.Context, corpus string) (int64, error) {
+// publishing; scoping to the source keeps a stats run from counting another
+// source's pending chunks (the wiki, crawl, and stat sources share the table).
+func (s *Store) CountUnembeddedLiveSource(ctx context.Context, source string) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(
-		ctx, "SELECT count(*)::bigint FROM wiki_chunks WHERE embedding IS NULL AND corpus = $1", corpus,
+		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL AND source = $1", source,
 	).Scan(&n); err != nil {
-		return 0, fmt.Errorf("postgres: count un-embedded live for corpus %q: %w", corpus, err)
+		return 0, fmt.Errorf("postgres: count un-embedded live for source %q: %w", source, err)
 	}
 	return n, nil
 }
 
-// UnembeddedLiveCorpus returns up to limit un-embedded live chunks of one corpus
-// in keyset order after cur, the corpus-scoped twin of UnembeddedLive the stats
+// UnembeddedLiveSource returns up to limit un-embedded live chunks of one source
+// in keyset order after cur, the source-scoped twin of UnembeddedLive the stats
 // producer uses so a run enqueues only its own source's pending passages. The
-// statistical corpora carry no clustering importance, so it reads no importance
-// column; the producer falls back to its static kind/length heuristic for
-// priority. The embedding IS NULL filter is the resume cursor: a re-run pages
-// from the start and the fleet has already filled the embedded prefix, so only
-// the still-pending chunks come back.
-func (s *Store) UnembeddedLiveCorpus(ctx context.Context, corpus string, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+// statistical sources carry no clustering importance, so it reads none; the
+// producer falls back to its static kind/length heuristic for priority. The
+// embedding IS NULL filter is the resume cursor.
+func (s *Store) UnembeddedLiveSource(ctx context.Context, source string, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
-		return nil, fmt.Errorf("postgres: unembedded live corpus: limit %d out of range", limit)
+		return nil, fmt.Errorf("postgres: unembedded live source: limit %d out of range", limit)
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind
-		FROM wiki_chunks
+		SELECT source, external_id, chunk_index, content, kind, NULL::float8
+		FROM evidence_chunks
 		WHERE embedding IS NULL
-		  AND corpus = $1
-		  AND (page_id, chunk_index) > ($2::bigint, $3::integer)
-		ORDER BY page_id, chunk_index
-		LIMIT $4`, corpus, cur.PageID, cur.ChunkIndex, limit)
+		  AND source = $1
+		  AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
+		ORDER BY source, external_id, chunk_index
+		LIMIT $4`, source, cur.ExternalID, cur.ChunkIndex, limit)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: unembedded live corpus %q: %w", corpus, err)
+		return nil, fmt.Errorf("postgres: unembedded live source %q: %w", source, err)
 	}
 	defer rows.Close()
-	out := []domain.WikiChunk{}
-	for rows.Next() {
-		var (
-			c    domain.WikiChunk
-			idx  int32
-			kind string
-		)
-		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind); err != nil {
-			return nil, fmt.Errorf("postgres: scan live corpus chunk: %w", err)
-		}
-		c.ChunkIndex = int(idx)
-		c.Kind = domain.WikiChunkKind(kind)
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: read live corpus chunks: %w", err)
+	out, err := scanEmbedQueue(rows)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read live source chunks: %w", err)
 	}
 	return out, nil
 }
@@ -354,62 +328,73 @@ func (s *Store) UnembeddedLiveCorpus(ctx context.Context, corpus string, cur dom
 // LiveRemaining counts the live chunks still to embed and their content
 // characters, feeding the bulk-into-live dry-run cost estimate. It mirrors
 // StagingRemaining for the live corpus.
-func (s *Store) LiveRemaining(ctx context.Context) (domain.WikiRemaining, error) {
-	var r domain.WikiRemaining
+func (s *Store) LiveRemaining(ctx context.Context) (domain.EvidenceRemaining, error) {
+	var r domain.EvidenceRemaining
 	if err := s.pool.QueryRow(
 		ctx, `
-		SELECT count(*)::bigint, count(DISTINCT page_id)::bigint,
+		SELECT count(*)::bigint, count(DISTINCT (source, external_id))::bigint,
 		       COALESCE(sum(length(content)), 0)::bigint
-		FROM wiki_chunks WHERE embedding IS NULL`,
-	).Scan(&r.Chunks, &r.Pages, &r.Chars); err != nil {
-		return domain.WikiRemaining{}, fmt.Errorf("postgres: live remaining: %w", err)
+		FROM evidence_chunks WHERE embedding IS NULL`,
+	).Scan(&r.Chunks, &r.Documents, &r.Chars); err != nil {
+		return domain.EvidenceRemaining{}, fmt.Errorf("postgres: live remaining: %w", err)
 	}
 	return r, nil
 }
 
 // UnembeddedLive returns up to limit live chunks still lacking an embedding,
-// ordered after cur in keyset order and carrying the metadata (section, kind,
-// importance) the bulk-into-live producer maps to a job priority. It reads
-// importance straight off the live row - the clustering job writes it after a
-// corpus is embedded - so a re-ingest prioritizes by the last run's clustering
-// and a first build falls back to the producer's static heuristic. The
-// embedding IS NULL filter is the resume cursor: a re-run pages from the start
-// and the fleet has already filled the embedded prefix, so only the still-pending
-// chunks come back. It is distinct from UnembeddedChunks, which the delta sync
-// uses without the publish metadata.
-func (s *Store) UnembeddedLive(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+// ordered after cur in keyset order and carrying the metadata (kind, importance)
+// the bulk-into-live producer maps to a job priority. It reads importance from
+// the live metadata jsonb - the clustering job writes it after a corpus is
+// embedded - so a re-ingest prioritizes by the last run's clustering and a first
+// build falls back to the producer's static heuristic. The embedding IS NULL
+// filter is the resume cursor. It is distinct from UnembeddedChunks, which the
+// delta sync uses without the publish metadata.
+func (s *Store) UnembeddedLive(ctx context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded live: limit %d out of range", limit)
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT page_id, chunk_index, title, url, revision_id, corpus, content, section, kind, importance
-		FROM wiki_chunks
+		SELECT source, external_id, chunk_index, content, kind, (metadata->>'importance')::float8
+		FROM evidence_chunks
 		WHERE embedding IS NULL
-		  AND (page_id, chunk_index) > ($1::bigint, $2::integer)
-		ORDER BY page_id, chunk_index
-		LIMIT $3`, cur.PageID, cur.ChunkIndex, limit)
+		  AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
+		ORDER BY source, external_id, chunk_index
+		LIMIT $4`, cur.Source, cur.ExternalID, cur.ChunkIndex, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: unembedded live: %w", err)
 	}
 	defer rows.Close()
-	out := []domain.WikiChunk{}
+	out, err := scanEmbedQueue(rows)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read live chunks: %w", err)
+	}
+	return out, nil
+}
+
+// scanEmbedQueue reads the embed-order projection (key, content, kind, and an
+// optional importance) shared by the staging and live pending scans, carrying
+// importance into the chunk metadata so the producer prioritizes by it.
+func scanEmbedQueue(rows pgx.Rows) ([]domain.EvidenceChunk, error) {
+	out := []domain.EvidenceChunk{}
 	for rows.Next() {
 		var (
-			c          domain.WikiChunk
+			c          domain.EvidenceChunk
 			idx        int32
 			kind       string
 			importance *float64
 		)
-		if err := rows.Scan(&c.PageID, &idx, &c.Title, &c.URL, &c.RevisionID, &c.Corpus, &c.Content, &c.Section, &kind, &importance); err != nil {
-			return nil, fmt.Errorf("postgres: scan live chunk: %w", err)
+		if err := rows.Scan(&c.Source, &c.ExternalID, &idx, &c.Content, &kind, &importance); err != nil {
+			return nil, fmt.Errorf("scan embed-queue chunk: %w", err)
 		}
 		c.ChunkIndex = int(idx)
-		c.Kind = domain.WikiChunkKind(kind)
-		c.Importance = importance
+		c.Kind = domain.EvidenceChunkKind(kind)
+		if importance != nil {
+			c.Metadata = domain.WikiMetadata{Importance: importance}.Map()
+		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: read live chunks: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
@@ -417,28 +402,34 @@ func (s *Store) UnembeddedLive(ctx context.Context, cur domain.WikiCursor, limit
 // UnembeddedChunks returns up to limit live chunks ordered after cur. The delta
 // sync embeds changed chunks in the live table, reading the ones it just
 // upserted back through this keyset scan.
-func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	if limit < 1 || limit > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: unembedded chunks: limit %d out of range", limit)
 	}
-	rows, err := s.queries.UnembeddedWikiChunks(ctx, db.UnembeddedWikiChunksParams{
-		AfterPageID:     cur.PageID,
+	rows, err := s.queries.UnembeddedEvidenceChunks(ctx, db.UnembeddedEvidenceChunksParams{
+		AfterSource:     cur.Source,
+		AfterExternalID: cur.ExternalID,
 		AfterChunkIndex: cur.ChunkIndex,
 		RowLimit:        int32(limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("postgres: unembedded chunks: %w", err)
 	}
-	out := make([]domain.WikiChunk, len(rows))
+	out := make([]domain.EvidenceChunk, len(rows))
 	for i, r := range rows {
-		out[i] = domain.WikiChunk{
-			PageID:     r.PageID,
+		meta, err := unmarshalMetadata(r.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: unembedded chunks: %s/%s#%d: %w", r.Source, r.ExternalID, r.ChunkIndex, err)
+		}
+		out[i] = domain.EvidenceChunk{
+			Source:     r.Source,
+			ExternalID: r.ExternalID,
 			ChunkIndex: int(r.ChunkIndex),
 			Title:      r.Title,
 			URL:        r.Url,
-			RevisionID: r.RevisionID,
-			Corpus:     r.Corpus,
 			Content:    r.Content,
+			Kind:       domain.EvidenceChunkKind(r.Kind),
+			Metadata:   meta,
 		}
 	}
 	return out, nil
@@ -451,53 +442,52 @@ func (s *Store) UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, lim
 const undefinedTableCode = "42P01"
 
 // SetStagingChunkEmbedding writes one embedding onto the staging row identified
-// by (pageID, chunkIndex). The vector is sent in pgvector's text form and cast
-// server-side - the same text-format path UpdateStagingEmbeddings uses, because
-// the runtime staging table is outside the sqlc-modeled schema and pgvector-go
-// has no binary halfvec encoder. The write is idempotent: a redelivered job
-// rewrites the same vector. updated is false, with no error, when nothing
-// matched - either no staging row carries that identity, or the staging table is
-// gone because the corpus was already swapped live - so the embedding worker
-// drops a late or duplicate job instead of retrying it forever.
-func (s *Store) SetStagingChunkEmbedding(ctx context.Context, pageID int64, chunkIndex int, embedding []float32) (bool, error) {
+// by (source, externalID, chunkIndex). The vector is sent in pgvector's text
+// form and cast server-side - the same text-format path setChunkEmbeddingsInto
+// uses, because the runtime staging table is outside the sqlc-modeled schema and
+// pgvector-go has no binary halfvec encoder. The write is idempotent. updated is
+// false, with no error, when nothing matched - either no staging row carries
+// that identity, or the staging table is gone because the corpus was already
+// swapped live - so the embedding worker drops a late or duplicate job.
+func (s *Store) SetStagingChunkEmbedding(ctx context.Context, source, externalID string, chunkIndex int, embedding []float32) (bool, error) {
 	if len(embedding) != domain.EmbeddingDim {
-		return false, fmt.Errorf("postgres: set staging embedding page %d: embedding has %d dims, want %d", pageID, len(embedding), domain.EmbeddingDim)
+		return false, fmt.Errorf("postgres: set staging embedding %s/%s: embedding has %d dims, want %d", source, externalID, len(embedding), domain.EmbeddingDim)
 	}
 	if chunkIndex < 0 || chunkIndex > math.MaxInt32 {
-		return false, fmt.Errorf("postgres: set staging embedding page %d: chunk index %d out of range", pageID, chunkIndex)
+		return false, fmt.Errorf("postgres: set staging embedding %s/%s: chunk index %d out of range", source, externalID, chunkIndex)
 	}
 	tag, err := s.pool.Exec(ctx, fmt.Sprintf(
-		"UPDATE %s SET embedding = $1::halfvec WHERE page_id = $2 AND chunk_index = $3", wikiStagingTable,
+		"UPDATE %s SET embedding = $1::halfvec WHERE source = $2 AND external_id = $3 AND chunk_index = $4", evidenceStagingTable,
 	),
-		formatHalfVec(embedding), pageID, int32(chunkIndex))
+		formatHalfVec(embedding), source, externalID, int32(chunkIndex))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == undefinedTableCode {
 			return false, nil
 		}
-		return false, fmt.Errorf("postgres: set staging embedding page %d chunk %d: %w", pageID, chunkIndex, err)
+		return false, fmt.Errorf("postgres: set staging embedding %s/%s#%d: %w", source, externalID, chunkIndex, err)
 	}
 	return tag.RowsAffected() > 0, nil
 }
 
 // SetLiveChunkEmbeddings writes a batch of embeddings straight into the live
-// wiki_chunks table in one statement, so each NULL->vector write makes its chunk
-// searchable immediately and the corpus grows monotonically while the fleet
-// embeds. It is the bulk-into-live worker's write path. matched is how many rows
-// the batch updated; the rest reference a chunk that left the corpus or whose
-// content changed under a re-ingest (the content guard refuses to attach a vector
-// to text it was not computed from), which the worker treats as obsolete and
-// drops. The write is idempotent: a redelivered batch rewrites the same vectors.
-func (s *Store) SetLiveChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (int, error) {
-	return s.setChunkEmbeddingsInto(ctx, "wiki_chunks", chunks)
+// evidence_chunks table in one statement, so each NULL->vector write makes its
+// chunk searchable immediately and the corpus grows monotonically while the
+// fleet embeds. It is the bulk-into-live worker's write path. matched is how
+// many rows the batch updated; the rest reference a chunk that left the corpus
+// or whose content changed under a re-ingest (the content guard refuses to
+// attach a vector to text it was not computed from), which the worker treats as
+// obsolete and drops. The write is idempotent.
+func (s *Store) SetLiveChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) (int, error) {
+	return s.setChunkEmbeddingsInto(ctx, "evidence_chunks", chunks)
 }
 
 // SetStagingChunkEmbeddings writes a batch of embeddings into the staging table
 // in one statement, the atomic-rebuild worker's write path. matched is zero with
 // no error when the staging table is gone because the corpus was already swapped
 // live, so the worker drops a late job instead of retrying it forever.
-func (s *Store) SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) (int, error) {
-	return s.setChunkEmbeddingsInto(ctx, wikiStagingTable, chunks)
+func (s *Store) SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) (int, error) {
+	return s.setChunkEmbeddingsInto(ctx, evidenceStagingTable, chunks)
 }
 
 // setChunkEmbeddingsInto writes the batch's embeddings into table in a single
@@ -509,22 +499,24 @@ func (s *Store) SetStagingChunkEmbeddings(ctx context.Context, chunks []domain.W
 // does not match and is left for the fresh job. table is a trusted constant,
 // never user input. A missing table (staging dropped by a completed swap) yields
 // matched zero with no error.
-func (s *Store) setChunkEmbeddingsInto(ctx context.Context, table string, chunks []domain.WikiChunk) (int, error) {
+func (s *Store) setChunkEmbeddingsInto(ctx context.Context, table string, chunks []domain.EvidenceChunk) (int, error) {
 	if len(chunks) == 0 {
 		return 0, nil
 	}
-	pageIDs := make([]int64, len(chunks))
+	sources := make([]string, len(chunks))
+	externalIDs := make([]string, len(chunks))
 	indexes := make([]int32, len(chunks))
 	contents := make([]string, len(chunks))
 	vectors := make([]string, len(chunks))
 	for i, c := range chunks {
 		if len(c.Embedding) != domain.EmbeddingDim {
-			return 0, fmt.Errorf("postgres: set embedding page %d chunk %d: embedding has %d dims, want %d", c.PageID, c.ChunkIndex, len(c.Embedding), domain.EmbeddingDim)
+			return 0, fmt.Errorf("postgres: set embedding %s/%s#%d: embedding has %d dims, want %d", c.Source, c.ExternalID, c.ChunkIndex, len(c.Embedding), domain.EmbeddingDim)
 		}
 		if c.ChunkIndex < 0 || c.ChunkIndex > math.MaxInt32 {
-			return 0, fmt.Errorf("postgres: set embedding page %d: chunk index %d out of range", c.PageID, c.ChunkIndex)
+			return 0, fmt.Errorf("postgres: set embedding %s/%s: chunk index %d out of range", c.Source, c.ExternalID, c.ChunkIndex)
 		}
-		pageIDs[i] = c.PageID
+		sources[i] = c.Source
+		externalIDs[i] = c.ExternalID
 		indexes[i] = int32(c.ChunkIndex)
 		contents[i] = c.Content
 		vectors[i] = formatHalfVec(c.Embedding)
@@ -532,11 +524,12 @@ func (s *Store) setChunkEmbeddingsInto(ctx context.Context, table string, chunks
 	tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE %s AS w
 		SET embedding = v.embedding::halfvec, synced_at = now()
-		FROM unnest($1::bigint[], $2::integer[], $3::text[], $4::text[]) AS v(page_id, chunk_index, content, embedding)
-		WHERE w.page_id = v.page_id
+		FROM unnest($1::text[], $2::text[], $3::integer[], $4::text[], $5::text[]) AS v(source, external_id, chunk_index, content, embedding)
+		WHERE w.source = v.source
+		  AND w.external_id = v.external_id
 		  AND w.chunk_index = v.chunk_index
 		  AND w.content = v.content`, table),
-		pageIDs, indexes, contents, vectors)
+		sources, externalIDs, indexes, contents, vectors)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == undefinedTableCode {
@@ -548,7 +541,7 @@ func (s *Store) setChunkEmbeddingsInto(ctx context.Context, table string, chunks
 }
 
 // formatHalfVec renders an embedding as pgvector's text form, "[1,2,3]", for a
-// text-format COPY.
+// text-format cast.
 func formatHalfVec(v []float32) string {
 	var b strings.Builder
 	b.WriteByte('[')
@@ -580,7 +573,7 @@ func stampStagingTx(ctx context.Context, tx pgx.Tx, stamp string) error {
 	var stmt string
 	if err := tx.QueryRow(
 		ctx,
-		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", wikiStagingTable),
+		fmt.Sprintf("SELECT format('COMMENT ON TABLE %s IS %%L', $1::text)", evidenceStagingTable),
 		stamp,
 	).Scan(&stmt); err != nil {
 		return fmt.Errorf("build staging stamp: %w", err)
@@ -592,15 +585,15 @@ func stampStagingTx(ctx context.Context, tx pgx.Tx, stamp string) error {
 }
 
 // FinalizeStaging builds the staging index, then swaps it into the live table
-// and checkpoints the corpus at version. The swap revalidates that staging is a
+// and checkpoints the source at version. The swap revalidates that staging is a
 // complete embedded corpus inside its own transaction, so it never swaps a
 // partial or unembedded corpus and a concurrent reader sees the old corpus until
 // commit.
-func (s *Store) FinalizeStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error {
+func (s *Store) FinalizeStaging(ctx context.Context, source, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error {
 	if err := s.buildStagingIndex(ctx, maintenanceWorkMem, maxParallelWorkers); err != nil {
 		return err
 	}
-	return s.swapStaging(ctx, corpus, version, lastChangeTS)
+	return s.swapStaging(ctx, source, version, lastChangeTS)
 }
 
 // validateStagingTx refuses the swap unless staging is a non-empty, fully
@@ -611,13 +604,13 @@ func (s *Store) FinalizeStaging(ctx context.Context, corpus, version string, las
 // rename.
 func (s *Store) validateStagingTx(ctx context.Context, tx pgx.Tx) error {
 	var staging, nullEmbeddings int64
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+wikiStagingTable).Scan(&staging); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+evidenceStagingTable).Scan(&staging); err != nil {
 		return fmt.Errorf("count staging chunks: %w", err)
 	}
 	if staging == 0 {
 		return errors.New("staging corpus is empty, refusing to swap")
 	}
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+wikiStagingTable+" WHERE embedding IS NULL").Scan(&nullEmbeddings); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+evidenceStagingTable+" WHERE embedding IS NULL").Scan(&nullEmbeddings); err != nil {
 		return fmt.Errorf("count staging null embeddings: %w", err)
 	}
 	if nullEmbeddings != 0 {
@@ -632,13 +625,13 @@ func (s *Store) validateStagingTx(ctx context.Context, tx pgx.Tx) error {
 func (s *Store) buildStagingIndex(ctx context.Context, maintenanceWorkMem string, maxParallelWorkers int) error {
 	addPK := fmt.Sprintf(`DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '%s') THEN
-        ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (page_id, chunk_index);
+        ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (source, external_id, chunk_index);
     END IF;
-END $$;`, wikiStagingPK, wikiStagingTable, wikiStagingPK)
+END $$;`, evidenceStagingPK, evidenceStagingTable, evidenceStagingPK)
 
 	createIndex := fmt.Sprintf(
 		"CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding halfvec_cosine_ops) WITH (m = %d, ef_construction = %d)",
-		wikiStagingHNSWIndex, wikiStagingTable, hnswM, hnswEfConstruction,
+		evidenceStagingHNSWIndex, evidenceStagingTable, hnswM, hnswEfConstruction,
 	)
 
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -664,29 +657,29 @@ END $$;`, wikiStagingPK, wikiStagingTable, wikiStagingPK)
 	return nil
 }
 
-// swapStaging replaces the live wiki_chunks with the freshly indexed staging
+// swapStaging replaces the live evidence_chunks with the freshly indexed staging
 // table in one transaction: readers see the old corpus until commit and the new
 // one after, never a partial one. The old table's index and constraint are
 // renamed aside first so the staging objects can take the canonical names that
-// the migration schema and later ingests expect. The corpus checkpoint advances
+// the migration schema and later ingests expect. The source checkpoint advances
 // in the same transaction, recording the dump version now live so a later run
 // can tell the corpus is current.
-func (s *Store) swapStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time) error {
+func (s *Store) swapStaging(ctx context.Context, source, version string, lastChangeTS time.Time) error {
 	stmts := []string{
-		"DROP TABLE IF EXISTS " + wikiChunksOldTable,
+		"DROP TABLE IF EXISTS " + evidenceChunksOldTable,
 		// IF EXISTS so a corpus whose HNSW index was dropped (e.g. for an ops
 		// rebuild) still swaps; the staging index takes the canonical name next.
-		fmt.Sprintf("ALTER INDEX IF EXISTS %s RENAME TO %s", wikiChunksHNSWIndex, wikiChunksOldHNSWIndex),
-		fmt.Sprintf("ALTER TABLE wiki_chunks RENAME CONSTRAINT %s TO %s", wikiChunksPK, wikiChunksOldPK),
-		"ALTER TABLE wiki_chunks RENAME TO " + wikiChunksOldTable,
-		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", wikiStagingHNSWIndex, wikiChunksHNSWIndex),
-		fmt.Sprintf("ALTER TABLE %s RENAME CONSTRAINT %s TO %s", wikiStagingTable, wikiStagingPK, wikiChunksPK),
-		fmt.Sprintf("ALTER TABLE %s RENAME TO wiki_chunks", wikiStagingTable),
-		"DROP TABLE " + wikiChunksOldTable,
+		fmt.Sprintf("ALTER INDEX IF EXISTS %s RENAME TO %s", evidenceChunksHNSWIndex, evidenceChunksOldHNSWIndex),
+		fmt.Sprintf("ALTER TABLE evidence_chunks RENAME CONSTRAINT %s TO %s", evidenceChunksPK, evidenceChunksOldPK),
+		"ALTER TABLE evidence_chunks RENAME TO " + evidenceChunksOldTable,
+		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", evidenceStagingHNSWIndex, evidenceChunksHNSWIndex),
+		fmt.Sprintf("ALTER TABLE %s RENAME CONSTRAINT %s TO %s", evidenceStagingTable, evidenceStagingPK, evidenceChunksPK),
+		fmt.Sprintf("ALTER TABLE %s RENAME TO evidence_chunks", evidenceStagingTable),
+		"DROP TABLE " + evidenceChunksOldTable,
 	}
 
-	checkpoint := db.UpsertWikiSyncStateParams{
-		Corpus:       corpus,
+	checkpoint := db.UpsertEvidenceSyncStateParams{
+		Source:       source,
 		DumpVersion:  pgtype.Text{String: version, Valid: version != ""},
 		LastChangeTs: pgtype.Timestamptz{Time: lastChangeTS, Valid: !lastChangeTS.IsZero()},
 	}
@@ -700,8 +693,8 @@ func (s *Store) swapStaging(ctx context.Context, corpus, version string, lastCha
 				return fmt.Errorf("swap step %q: %w", stmt, err)
 			}
 		}
-		if err := s.queries.WithTx(tx).UpsertWikiSyncState(ctx, checkpoint); err != nil {
-			return fmt.Errorf("checkpoint corpus: %w", err)
+		if err := s.queries.WithTx(tx).UpsertEvidenceSyncState(ctx, checkpoint); err != nil {
+			return fmt.Errorf("checkpoint source: %w", err)
 		}
 		return nil
 	})
@@ -726,7 +719,7 @@ func (s *Store) EmbedInProgress(ctx context.Context) (bool, error) {
 // stagingExists reports whether the staging table is present.
 func (s *Store) stagingExists(ctx context.Context) (bool, error) {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", wikiStagingTable).Scan(&exists); err != nil {
+	if err := s.pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", evidenceStagingTable).Scan(&exists); err != nil {
 		return false, fmt.Errorf("postgres: check staging table: %w", err)
 	}
 	return exists, nil

@@ -1945,7 +1945,7 @@ const (
 // Crawl configures the category crawler. Categories are the seed category titles
 // (e.g. "Category:Physics"); Project is the wiki project whose Action API is
 // queried and whose host builds article URLs (defaults to WIKI_CORPUS); Corpus is
-// the provenance tag written to wiki_chunks.corpus (defaults to "<project>-crawl"
+// the provenance tag written to evidence_chunks.source (defaults to "<project>-crawl"
 // so crawl rows are isolated from the dump corpus's delta checkpoint); MaxDepth
 // bounds subcategory recursion (0 = direct pages only); MaxPages caps distinct
 // pages collected; IncludeBody adds kind='body' chunks alongside the lead. Shards

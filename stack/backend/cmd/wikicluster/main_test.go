@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
@@ -16,21 +17,24 @@ func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 // clustering write so a test can assert the orchestration scored and batched
 // every chunk.
 type fakeStore struct {
-	chunks  []domain.WikiChunk
-	written []domain.WikiChunk
+	chunks  []domain.EvidenceChunk
+	written []domain.EvidenceChunk
 	batches int
 }
 
-func (f *fakeStore) EmbeddedChunks(_ context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
-	var out []domain.WikiChunk
+func (f *fakeStore) EmbeddedChunks(_ context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
+	var out []domain.EvidenceChunk
 	for _, c := range f.chunks {
-		if c.PageID > cur.PageID || (c.PageID == cur.PageID && int32(c.ChunkIndex) > cur.ChunkIndex) {
+		if afterCursor(c, cur) {
 			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].PageID != out[j].PageID {
-			return out[i].PageID < out[j].PageID
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		if out[i].ExternalID != out[j].ExternalID {
+			return out[i].ExternalID < out[j].ExternalID
 		}
 		return out[i].ChunkIndex < out[j].ChunkIndex
 	})
@@ -40,14 +44,31 @@ func (f *fakeStore) EmbeddedChunks(_ context.Context, cur domain.WikiCursor, lim
 	return out, nil
 }
 
-func (f *fakeStore) SetChunkClustering(_ context.Context, chunks []domain.WikiChunk) error {
+// afterCursor reports whether c sorts strictly after cur in the store's keyset
+// order (source, external_id, chunk_index).
+func afterCursor(c domain.EvidenceChunk, cur domain.EvidenceCursor) bool {
+	if c.Source != cur.Source {
+		return c.Source > cur.Source
+	}
+	if c.ExternalID != cur.ExternalID {
+		return c.ExternalID > cur.ExternalID
+	}
+	return int32(c.ChunkIndex) > cur.ChunkIndex
+}
+
+func (f *fakeStore) SetChunkClustering(_ context.Context, chunks []domain.EvidenceChunk) error {
 	f.batches++
 	f.written = append(f.written, chunks...)
 	return nil
 }
 
-func embeddedChunk(pageID int64, vec []float32) domain.WikiChunk {
-	return domain.WikiChunk{PageID: pageID, ChunkIndex: 0, Corpus: "simplewiki", Embedding: vec}
+func embeddedChunk(pageID int64, vec []float32) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source:     "simplewiki",
+		ExternalID: strconv.FormatInt(pageID, 10),
+		ChunkIndex: 0,
+		Embedding:  vec,
+	}
 }
 
 func testClusterConfig() config.WikiCluster {
@@ -56,7 +77,7 @@ func testClusterConfig() config.WikiCluster {
 
 func TestClusterCorpusScoresAndWritesEveryChunk(t *testing.T) {
 	t.Parallel()
-	chunks := make([]domain.WikiChunk, 0, 10)
+	chunks := make([]domain.EvidenceChunk, 0, 10)
 	for i := range 6 {
 		chunks = append(chunks, embeddedChunk(int64(i+1), []float32{10, 0}))
 	}
@@ -73,11 +94,15 @@ func TestClusterCorpusScoresAndWritesEveryChunk(t *testing.T) {
 		t.Fatalf("wrote %d chunks, want 10 (every chunk scored)", len(store.written))
 	}
 	for _, c := range store.written {
-		if c.ClusterID == nil || c.Importance == nil {
-			t.Errorf("chunk page %d written without cluster id / importance", c.PageID)
+		wm, err := domain.ParseWikiMetadata(c.Metadata)
+		if err != nil {
+			t.Fatalf("chunk %s metadata parse: %v", c.ExternalID, err)
 		}
-		if c.Importance != nil && (*c.Importance < 0 || *c.Importance > 1) {
-			t.Errorf("chunk page %d importance %v out of [0,1]", c.PageID, *c.Importance)
+		if wm.ClusterID == nil || wm.Importance == nil {
+			t.Errorf("chunk %s written without cluster id / importance", c.ExternalID)
+		}
+		if wm.Importance != nil && (*wm.Importance < 0 || *wm.Importance > 1) {
+			t.Errorf("chunk %s importance %v out of [0,1]", c.ExternalID, *wm.Importance)
 		}
 	}
 	// WriteBatch is 4, so 10 chunks write in 3 batches (4 + 4 + 2).
@@ -110,7 +135,7 @@ func TestClusterCorpusEmptyCorpusWritesNothing(t *testing.T) {
 func TestClusterCorpusIsDeterministicAcrossRuns(t *testing.T) {
 	t.Parallel()
 	build := func() *fakeStore {
-		chunks := make([]domain.WikiChunk, 0, 10)
+		chunks := make([]domain.EvidenceChunk, 0, 10)
 		for i := range 5 {
 			chunks = append(chunks, embeddedChunk(int64(i+1), []float32{5, 1}))
 		}
@@ -128,10 +153,14 @@ func TestClusterCorpusIsDeterministicAcrossRuns(t *testing.T) {
 	if _, err := clusterCorpus(t.Context(), discardLogger(), second, testClusterConfig()); err != nil {
 		t.Fatalf("clusterCorpus (second): %v", err)
 	}
-	byPage := func(s *fakeStore) map[int64]domain.WikiChunk {
-		m := map[int64]domain.WikiChunk{}
+	byPage := func(s *fakeStore) map[string]domain.WikiMetadata {
+		m := map[string]domain.WikiMetadata{}
 		for _, c := range s.written {
-			m[c.PageID] = c
+			wm, err := domain.ParseWikiMetadata(c.Metadata)
+			if err != nil {
+				t.Fatalf("chunk %s metadata parse: %v", c.ExternalID, err)
+			}
+			m[c.ExternalID] = wm
 		}
 		return m
 	}
@@ -139,7 +168,7 @@ func TestClusterCorpusIsDeterministicAcrossRuns(t *testing.T) {
 	for page, ca := range a {
 		cb := b[page]
 		if *ca.ClusterID != *cb.ClusterID || *ca.Importance != *cb.Importance {
-			t.Fatalf("page %d non-deterministic: (%d,%v) vs (%d,%v)", page, *ca.ClusterID, *ca.Importance, *cb.ClusterID, *cb.Importance)
+			t.Fatalf("page %s non-deterministic: (%d,%v) vs (%d,%v)", page, *ca.ClusterID, *ca.Importance, *cb.ClusterID, *cb.Importance)
 		}
 	}
 }

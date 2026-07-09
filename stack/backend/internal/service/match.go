@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +31,7 @@ type ClaimSearcher interface {
 // evidence. Kept separate from ClaimSearcher so the two corpora stay
 // independently swappable.
 type EvidenceSearcher interface {
-	SearchWiki(ctx context.Context, query []float32, topK int) ([]domain.WikiEvidence, error)
+	SearchEvidence(ctx context.Context, query []float32, topK int) ([]domain.EvidenceHit, error)
 }
 
 // ErrEmptySegment is returned when a segment contains no text to match.
@@ -57,7 +56,7 @@ type Match struct {
 	Verdict    domain.Verdict
 	Sources    []domain.Source
 	Article    domain.Article
-	WikiKind   domain.WikiChunkKind
+	WikiKind   domain.EvidenceChunkKind
 	EvidenceID string
 	Score      float64
 }
@@ -245,7 +244,7 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 	if m.cfg.EvidenceTopK == 0 {
 		return nil, nil
 	}
-	hits, err := m.evidence.SearchWiki(ctx, query, m.cfg.EvidenceTopK)
+	hits, err := m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK)
 	if err != nil {
 		return nil, fmt.Errorf("service: search evidence: %w", err)
 	}
@@ -257,11 +256,16 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 			break
 		}
 		matches = append(matches, Match{
-			Kind:       domain.MatchKindEvidence,
-			Text:       h.Content,
-			Article:    domain.Article{Title: h.Title, URL: h.URL},
-			WikiKind:   h.Kind,
-			EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, strconv.FormatInt(h.PageID, 10), h.ChunkIndex),
+			Kind:     domain.MatchKindEvidence,
+			Text:     h.Content,
+			Article:  domain.Article{Title: h.Title, URL: h.URL},
+			WikiKind: h.Kind,
+			// The source coordinate is (source, external_id): external_id is unique
+			// only within a source, so composing on external_id alone would collide
+			// two sources that share a page-id space (a wiki corpus and its crawl),
+			// dropping one as a duplicate downstream. source has no ':' so it
+			// round-trips through ParseEvidenceID's kind:source:chunk split.
+			EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, h.Source+"/"+h.ExternalID, h.ChunkIndex),
 			Score:      score,
 		})
 	}

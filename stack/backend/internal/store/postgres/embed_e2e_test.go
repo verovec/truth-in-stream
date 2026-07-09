@@ -15,7 +15,7 @@ import (
 // the bulk-into-live path end to end: published jobs -> batched embed -> in-place
 // live write -> searchable mid-drain. It uses a deterministic embedder instead of
 // paying Voyage, so the production code paths (Worker.Run, SetLiveChunkEmbeddings,
-// SearchWiki) are exercised exactly as in a real run.
+// SearchEvidence) are exercised exactly as in a real run.
 
 type e2eEmbedder struct{ calls atomic.Int32 }
 
@@ -71,7 +71,7 @@ func TestBulkIntoLiveEndToEndQueryableMidDrain(t *testing.T) {
 
 	// Ingest five chunks straight into the live table (embedding NULL), as the
 	// bulk-into-live producer does.
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "alpha one"),
 		wikiChunk(2, 0, "bravo two two"),
 		wikiChunk(3, 0, "charlie three three three"),
@@ -84,7 +84,7 @@ func TestBulkIntoLiveEndToEndQueryableMidDrain(t *testing.T) {
 	// drained part of the queue while the rest is still pending.
 	deliveries := make([]embedjob.Delivery, 0, 3)
 	for _, c := range chunks[:3] {
-		body, err := json.Marshal(embedjob.Job{PageID: c.PageID, ChunkIndex: c.ChunkIndex, Content: c.Content})
+		body, err := json.Marshal(embedjob.Job{Source: c.Source, ExternalID: c.ExternalID, ChunkIndex: c.ChunkIndex, Content: c.Content})
 		if err != nil {
 			t.Fatalf("marshal job: %v", err)
 		}
@@ -108,9 +108,9 @@ func TestBulkIntoLiveEndToEndQueryableMidDrain(t *testing.T) {
 	// invisible until their vectors land.
 	hot := make([]float32, domain.EmbeddingDim)
 	hot[len("alpha one")%domain.EmbeddingDim] = 1
-	got, err := store.SearchWiki(ctx, hot, 5)
+	got, err := store.SearchEvidence(ctx, hot, 5)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("search returned %d chunks, want 3 (only the embedded prefix is visible mid-drain)", len(got))

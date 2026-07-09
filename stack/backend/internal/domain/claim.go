@@ -2,13 +2,28 @@
 // It imports nothing internal; all layers depend inward on this package.
 package domain
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
-// EmbeddingDim is the fixed embedding dimension for the claim store. It is
-// pinned to the voyage-4-large output dimension and the claims.embedding
-// halfvec(1024) column; ingest and query time must use the same value or
-// similarity scores are meaningless.
+// EmbeddingDim is the fixed embedding dimension for every vector store. It is
+// pinned to the voyage-4-large output dimension and the halfvec(EmbeddingDim)
+// columns; ingest and query time must use the same value or similarity scores
+// are meaningless. It is the Go half of the one-place dimension contract - the
+// SQL half is the halfvec(1024) column type in the migrations - so changing the
+// dimension is the model-migration runbook (docs/embedding-model-migration.md),
+// not an ad-hoc edit.
 const EmbeddingDim = 1024
+
+// HalfvecColumnType is the Postgres type an embedding column declares, derived
+// from EmbeddingDim so a dimension change has a single Go source of truth. It is
+// what pg_attribute's format_type reports for a halfvec(EmbeddingDim) column, so
+// the corpus verifier compares the live column against it rather than a
+// hard-coded literal.
+func HalfvecColumnType() string {
+	return fmt.Sprintf("halfvec(%d)", EmbeddingDim)
+}
 
 // ValidCosineThreshold reports whether t is a usable cosine-similarity
 // threshold: a real number in [-1, 1]. The inverted comparison also rejects

@@ -17,7 +17,7 @@ import (
 type fakeStore struct {
 	mu            sync.Mutex
 	corpus        string
-	chunks        map[[2]int64]domain.WikiChunk
+	chunks        map[[2]int64]domain.EvidenceChunk
 	resetVersion  string
 	resets        int
 	readyVersion  string
@@ -26,10 +26,10 @@ type fakeStore struct {
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{chunks: make(map[[2]int64]domain.WikiChunk)}
+	return &fakeStore{chunks: make(map[[2]int64]domain.EvidenceChunk)}
 }
 
-func (f *fakeStore) EnsureCorpus(_ context.Context, corpus string) error {
+func (f *fakeStore) EnsureSource(_ context.Context, corpus string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.corpus != "" && f.corpus != corpus {
@@ -42,20 +42,20 @@ func (f *fakeStore) EnsureCorpus(_ context.Context, corpus string) error {
 func (f *fakeStore) ResetStaging(_ context.Context, version string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.chunks = make(map[[2]int64]domain.WikiChunk)
+	f.chunks = make(map[[2]int64]domain.EvidenceChunk)
 	f.resetVersion = version
 	f.resets++
 	return nil
 }
 
-func (f *fakeStore) UpsertStagingChunks(_ context.Context, chunks []domain.WikiChunk) error {
+func (f *fakeStore) UpsertStagingChunks(_ context.Context, chunks []domain.EvidenceChunk) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
 	for _, c := range chunks {
-		f.chunks[[2]int64{c.PageID, int64(c.ChunkIndex)}] = c
+		f.chunks[[2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}] = c
 	}
 	return nil
 }
@@ -106,7 +106,7 @@ func TestRunBulk(t *testing.T) {
 	if !ok {
 		t.Fatal("missing chunk (1, 0) for Paris")
 	}
-	if first.Title != "Paris" || first.Corpus != "simplewiki" || first.RevisionID != 100 {
+	if first.Title != "Paris" || first.Source != "simplewiki" || chunkRevision(first) != 100 {
 		t.Errorf("chunk metadata wrong: %+v", first)
 	}
 	if first.URL != "https://simple.wikipedia.org/wiki/Paris" {
@@ -114,13 +114,13 @@ func TestRunBulk(t *testing.T) {
 	}
 	// Ingestion extracts only lead sections, so every staged chunk is tagged
 	// as the lead: the section heading is empty (the lead has none) and the
-	// kind is WikiChunkKindLead.
+	// kind is EvidenceKindLead.
 	for key, c := range store.chunks {
-		if c.Section != "" {
-			t.Errorf("chunk (%d, %d) section = %q, want empty for a lead chunk", key[0], key[1], c.Section)
+		if sec := chunkSection(c); sec != "" {
+			t.Errorf("chunk (%d, %d) section = %q, want empty for a lead chunk", key[0], key[1], sec)
 		}
-		if c.Kind != domain.WikiChunkKindLead {
-			t.Errorf("chunk (%d, %d) kind = %q, want %q", key[0], key[1], c.Kind, domain.WikiChunkKindLead)
+		if c.Kind != domain.EvidenceKindLead {
+			t.Errorf("chunk (%d, %d) kind = %q, want %q", key[0], key[1], c.Kind, domain.EvidenceKindLead)
 		}
 	}
 	if !strings.HasPrefix(first.Content, "Paris\n\n") {
@@ -181,8 +181,8 @@ func TestRunBulkResetClearsPriorStaging(t *testing.T) {
 	// earlier run (where it was an article) must not survive: ResetStaging wipes
 	// staging before the rebuild, so a page absent from the dump leaves no rows.
 	store := newFakeStore()
-	store.chunks[[2]int64{2, 0}] = domain.WikiChunk{PageID: 2, ChunkIndex: 0, Content: "stale"}
-	store.chunks[[2]int64{2, 1}] = domain.WikiChunk{PageID: 2, ChunkIndex: 1, Content: "stale"}
+	store.chunks[[2]int64{2, 0}] = domain.EvidenceChunk{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Content: "stale"}
+	store.chunks[[2]int64{2, 1}] = domain.EvidenceChunk{Source: "simplewiki", ExternalID: "2", ChunkIndex: 1, Content: "stale"}
 
 	if _, err := RunBulk(t.Context(), store, fixtureFiles(), "simplewiki"); err != nil {
 		t.Fatalf("RunBulk: %v", err)
@@ -272,16 +272,16 @@ func TestPageURL(t *testing.T) {
 type fakeLiveStore struct {
 	mu        sync.Mutex
 	corpus    string
-	chunks    map[[2]int64]domain.WikiChunk
+	chunks    map[[2]int64]domain.EvidenceChunk
 	trims     map[int64]int
 	upsertErr error
 }
 
 func newFakeLiveStore() *fakeLiveStore {
-	return &fakeLiveStore{chunks: make(map[[2]int64]domain.WikiChunk), trims: make(map[int64]int)}
+	return &fakeLiveStore{chunks: make(map[[2]int64]domain.EvidenceChunk), trims: make(map[int64]int)}
 }
 
-func (f *fakeLiveStore) EnsureCorpus(_ context.Context, corpus string) error {
+func (f *fakeLiveStore) EnsureSource(_ context.Context, corpus string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.corpus != "" && f.corpus != corpus {
@@ -291,23 +291,23 @@ func (f *fakeLiveStore) EnsureCorpus(_ context.Context, corpus string) error {
 	return nil
 }
 
-func (f *fakeLiveStore) UpsertChunks(_ context.Context, chunks []domain.WikiChunk) error {
+func (f *fakeLiveStore) UpsertChunks(_ context.Context, chunks []domain.EvidenceChunk) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
 	for _, c := range chunks {
-		f.chunks[[2]int64{c.PageID, int64(c.ChunkIndex)}] = c
+		f.chunks[[2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}] = c
 	}
 	return nil
 }
 
-func (f *fakeLiveStore) TrimPages(_ context.Context, trims []domain.WikiTrim) error {
+func (f *fakeLiveStore) TrimDocuments(_ context.Context, trims []domain.EvidenceTrim) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, tr := range trims {
-		f.trims[tr.PageID] = tr.FromIndex
+		f.trims[parseID(tr.ExternalID)] = tr.FromIndex
 	}
 	return nil
 }
@@ -333,7 +333,7 @@ func TestRunBulkLive(t *testing.T) {
 		}
 	}
 	first, ok := store.chunks[[2]int64{1, 0}]
-	if !ok || first.Title != "Paris" || first.Corpus != "simplewiki" {
+	if !ok || first.Title != "Paris" || first.Source != "simplewiki" {
 		t.Fatalf("missing or wrong chunk (1,0): %+v", first)
 	}
 	// The page's stale tail is trimmed from its new chunk count, so a shrunk lead

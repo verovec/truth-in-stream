@@ -19,16 +19,16 @@ func TestStoredRevisions(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "a", Kind: domain.WikiChunkKindLead},
-		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 100, Corpus: "simplewiki", Content: "b", Kind: domain.WikiChunkKindLead},
-		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 200, Corpus: "simplewiki", Content: "c", Kind: domain.WikiChunkKindLead},
+	chunks := []domain.EvidenceChunk{
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Title: "Paris", URL: "u", Content: "a", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 100}.Map()},
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 1, Title: "Paris", URL: "u", Content: "b", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 100}.Map()},
+		{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Title: "Lyon", URL: "u", Content: "c", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 200}.Map()},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 
-	got, err := store.StoredRevisions(ctx, []int64{1, 2, 3})
+	got, err := store.StoredRevisions(ctx, "simplewiki", []int64{1, 2, 3})
 	if err != nil {
 		t.Fatalf("StoredRevisions: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestStoredRevisions(t *testing.T) {
 		t.Errorf("unstored page 3 present in result: %v", got)
 	}
 
-	empty, err := store.StoredRevisions(ctx, nil)
+	empty, err := store.StoredRevisions(ctx, "simplewiki", nil)
 	if err != nil || len(empty) != 0 {
 		t.Errorf("StoredRevisions(nil) = %v, %v", empty, err)
 	}
@@ -55,17 +55,17 @@ func TestCountPages(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	if n, err := store.CountPages(ctx); err != nil || n != 0 {
-		t.Fatalf("CountPages empty = %d, %v", n, err)
+	if n, err := store.CountDocuments(ctx); err != nil || n != 0 {
+		t.Fatalf("CountDocuments empty = %d, %v", n, err)
 	}
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "a"), wikiChunk(1, 1, "b"), wikiChunk(2, 0, "c"),
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
-	if n, err := store.CountPages(ctx); err != nil || n != 2 {
-		t.Fatalf("CountPages = %d, %v; want 2 distinct pages", n, err)
+	if n, err := store.CountDocuments(ctx); err != nil || n != 2 {
+		t.Fatalf("CountDocuments = %d, %v; want 2 distinct pages", n, err)
 	}
 }
 
@@ -73,27 +73,27 @@ func TestDeletePagesByTitle(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "a", Kind: domain.WikiChunkKindLead},
-		{PageID: 1, ChunkIndex: 1, Title: "Paris", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "b", Kind: domain.WikiChunkKindLead},
-		{PageID: 2, ChunkIndex: 0, Title: "Lyon", URL: "u", RevisionID: 1, Corpus: "simplewiki", Content: "c", Kind: domain.WikiChunkKindLead},
+	chunks := []domain.EvidenceChunk{
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Title: "Paris", URL: "u", Content: "a", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 1, Title: "Paris", URL: "u", Content: "b", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
+		{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Title: "Lyon", URL: "u", Content: "c", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 
-	if err := store.DeletePagesByTitle(ctx, []string{"Paris"}); err != nil {
-		t.Fatalf("DeletePagesByTitle: %v", err)
+	if err := store.DeleteByTitle(ctx, "simplewiki", []string{"Paris"}); err != nil {
+		t.Fatalf("DeleteByTitle: %v", err)
 	}
-	if n, err := store.queries.CountWikiChunksForPage(ctx, 1); err != nil || n != 0 {
+	if n, err := store.queries.CountEvidenceChunksForDocument(ctx, db.CountEvidenceChunksForDocumentParams{Source: "simplewiki", ExternalID: "1"}); err != nil || n != 0 {
 		t.Errorf("page 1 (Paris) chunks after delete = %d, %v; want 0", n, err)
 	}
-	if n, err := store.queries.CountWikiChunksForPage(ctx, 2); err != nil || n != 1 {
+	if n, err := store.queries.CountEvidenceChunksForDocument(ctx, db.CountEvidenceChunksForDocumentParams{Source: "simplewiki", ExternalID: "2"}); err != nil || n != 1 {
 		t.Errorf("page 2 (Lyon) chunks = %d, %v; want 1 (untouched)", n, err)
 	}
 
-	if err := store.DeletePagesByTitle(ctx, nil); err != nil {
-		t.Errorf("DeletePagesByTitle(nil) = %v", err)
+	if err := store.DeleteByTitle(ctx, "simplewiki", nil); err != nil {
+		t.Errorf("DeleteByTitle(nil) = %v", err)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestSetChunkEmbeddings(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "Paris\n\nlead"),
 		wikiChunk(1, 1, "Paris\n\nmore"),
 	}
@@ -115,16 +115,16 @@ func TestSetChunkEmbeddings(t *testing.T) {
 		t.Fatalf("SetChunkEmbeddings: %v", err)
 	}
 
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
 	if got.EmbeddingIsNull {
 		t.Error("embedding still NULL after SetChunkEmbeddings")
 	}
 
 	// Every chunk is now embedded, so nothing remains for the embed pass to pick up.
-	pending, err := store.UnembeddedChunks(ctx, domain.WikiCursor{}, 10)
+	pending, err := store.UnembeddedChunks(ctx, domain.EvidenceCursor{}, 10)
 	if err != nil {
 		t.Fatalf("UnembeddedChunks: %v", err)
 	}
@@ -137,12 +137,12 @@ func TestSetChunkEmbeddingsRejectsWrongDim(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{wikiChunk(1, 0, "x")}); err != nil {
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{wikiChunk(1, 0, "x")}); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 	bad := wikiChunk(1, 0, "x")
 	bad.Embedding = []float32{1, 2, 3}
-	if err := store.SetChunkEmbeddings(ctx, []domain.WikiChunk{bad}); err == nil {
+	if err := store.SetChunkEmbeddings(ctx, []domain.EvidenceChunk{bad}); err == nil {
 		t.Fatal("SetChunkEmbeddings accepted a short embedding, want error")
 	}
 }

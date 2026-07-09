@@ -20,9 +20,9 @@ func TestLoadWikiChunksValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWikiChunks: %v", err)
 	}
-	want := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Earth", URL: "https://simple.wikipedia.org/wiki/Earth", RevisionID: 100, Corpus: "simplewiki", Content: "The Earth is the third planet from the Sun.", Kind: domain.WikiChunkKindLead},
-		{PageID: 1, ChunkIndex: 1, Title: "Earth", URL: "https://simple.wikipedia.org/wiki/Earth", RevisionID: 100, Corpus: "simplewiki", Content: "It is the only known planet with life.", Kind: domain.WikiChunkKindLead},
+	want := []domain.EvidenceChunk{
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Title: "Earth", URL: "https://simple.wikipedia.org/wiki/Earth", Content: "The Earth is the third planet from the Sun.", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 100}.Map()},
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 1, Title: "Earth", URL: "https://simple.wikipedia.org/wiki/Earth", Content: "It is the only known planet with life.", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 100}.Map()},
 	}
 	if diff := cmp.Diff(want, chunks); diff != "" {
 		t.Errorf("chunks mismatch (-want +got):\n%s", diff)

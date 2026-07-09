@@ -15,7 +15,7 @@ func claimMatch(verdict domain.Verdict, score float64) Match {
 
 // evidenceMatch is a Wikipedia evidence cluster member of the given chunk kind
 // and similarity, for confidence-scoring tests.
-func evidenceMatch(kind domain.WikiChunkKind, score float64) Match {
+func evidenceMatch(kind domain.EvidenceChunkKind, score float64) Match {
 	return Match{Kind: domain.MatchKindEvidence, WikiKind: kind, Score: score}
 }
 
@@ -64,13 +64,13 @@ func TestComputeConfidence(t *testing.T) {
 		},
 		{
 			name:    "lead evidence corroborates at full weight",
-			matches: []Match{evidenceMatch(domain.WikiChunkKindLead, 0.7)},
+			matches: []Match{evidenceMatch(domain.EvidenceKindLead, 0.7)},
 			params:  params,
 			want:    domain.Confidence{Score: 1, Supporting: 0.7, Contradicting: 0, EvidenceItems: 1},
 		},
 		{
 			name:    "body evidence corroborates at reduced weight",
-			matches: []Match{evidenceMatch(domain.WikiChunkKindBody, 0.6)},
+			matches: []Match{evidenceMatch(domain.EvidenceKindBody, 0.6)},
 			params:  params,
 			want:    domain.Confidence{Score: 1, Supporting: 0.3, Contradicting: 0, EvidenceItems: 1},
 		},
@@ -78,7 +78,7 @@ func TestComputeConfidence(t *testing.T) {
 			name: "claim and evidence combine as corroboration",
 			matches: []Match{
 				claimMatch(domain.VerdictCorroborates, 0.8),
-				evidenceMatch(domain.WikiChunkKindLead, 0.6),
+				evidenceMatch(domain.EvidenceKindLead, 0.6),
 			},
 			params: params,
 			want:   domain.Confidence{Score: 1, Supporting: 1.4, Contradicting: 0, EvidenceItems: 2},
@@ -154,7 +154,7 @@ func TestMatchContributions(t *testing.T) {
 		},
 		{
 			name:    "lead evidence contributes full weight, body half",
-			matches: []Match{evidenceMatch(domain.WikiChunkKindLead, 0.7), evidenceMatch(domain.WikiChunkKindBody, 0.6)},
+			matches: []Match{evidenceMatch(domain.EvidenceKindLead, 0.7), evidenceMatch(domain.EvidenceKindBody, 0.6)},
 			params:  params,
 			want:    []float64{0.7, 0.3},
 		},
@@ -202,7 +202,7 @@ func TestMatchContributionsSumMatchesScore(t *testing.T) {
 	matches := []Match{
 		claimMatch(domain.VerdictCorroborates, 0.9),
 		claimMatch(domain.VerdictContradicts, 0.4),
-		evidenceMatch(domain.WikiChunkKindBody, 0.6),
+		evidenceMatch(domain.EvidenceKindBody, 0.6),
 		claimMatch(domain.VerdictUnclear, 0.5),
 	}
 

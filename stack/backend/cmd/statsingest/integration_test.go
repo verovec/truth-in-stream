@@ -27,7 +27,7 @@ import (
 // pipeline against a throwaway Postgres: the producer upserts un-embedded stat
 // passages and enqueues one embed job each, the embedworker drains the in-process
 // queue and writes the vectors into the live wiki_chunks table, and the now
-// embedded passages become retrievable via SearchWiki. It needs no broker - an
+// embedded passages become retrievable via SearchEvidence. It needs no broker - an
 // in-memory queue stands in for RabbitMQ so the test is hermetic - and skips
 // without TEST_DATABASE_URL. The schema reset drops tables, so a throwaway DB is
 // required (never the shared dev database).
@@ -53,7 +53,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")
@@ -215,9 +215,9 @@ func TestStatsIngestRoutesThroughFleetEndToEnd(t *testing.T) {
 	}
 
 	// Before the fleet runs, the passages are present but un-embedded.
-	rem, err := store.CountUnembeddedLiveCorpus(ctx, domain.StatCorpus)
+	rem, err := store.CountUnembeddedLiveSource(ctx, domain.StatCorpus)
 	if err != nil {
-		t.Fatalf("CountUnembeddedLiveCorpus: %v", err)
+		t.Fatalf("CountUnembeddedLiveSource: %v", err)
 	}
 	if rem != 2 {
 		t.Fatalf("un-embedded stat chunks before drain = %d, want 2", rem)
@@ -239,9 +239,9 @@ func TestStatsIngestRoutesThroughFleetEndToEnd(t *testing.T) {
 	// The now-embedded passages are retrievable: a query embedded like the 2022
 	// passage returns it as the nearest neighbor above the floor.
 	want := stats.RenderFrench(dps[1])
-	got, err := store.SearchWiki(ctx, vectorFor(want), 1)
+	got, err := store.SearchEvidence(ctx, vectorFor(want), 1)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 1 || got[0].Content != want {
 		t.Fatalf("nearest = %+v; want the embedded 2022 passage %q", got, want)
@@ -342,9 +342,9 @@ func waitUnembeddedCorpus(ctx context.Context, t *testing.T, store *postgres.Sto
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		n, err := store.CountUnembeddedLiveCorpus(ctx, corpus)
+		n, err := store.CountUnembeddedLiveSource(ctx, corpus)
 		if err != nil {
-			t.Fatalf("CountUnembeddedLiveCorpus(%s): %v", corpus, err)
+			t.Fatalf("CountUnembeddedLiveSource(%s): %v", corpus, err)
 		}
 		if n == want {
 			return
@@ -405,7 +405,7 @@ func chomageQuarterly() []domain.Datapoint {
 // TestINSEEDataflowRoutesThroughFleetEndToEnd is the INSEE-source acceptance
 // check: the discovered quarterly unemployment passages upsert un-embedded under
 // the unemployment theme corpus, the fleet drains and embeds them, and a passage
-// is retrievable via SearchWiki. Re-running the ingest does not duplicate
+// is retrievable via SearchEvidence. Re-running the ingest does not duplicate
 // passages - the (IDBANK, period) provenance key upserts in place.
 func TestINSEEDataflowRoutesThroughFleetEndToEnd(t *testing.T) {
 	dsn := testDSN(t)
@@ -433,9 +433,9 @@ func TestINSEEDataflowRoutesThroughFleetEndToEnd(t *testing.T) {
 	runFleet(ctx, t, store, mq, orthogonalEmbedder{}, domain.INSEEUnemploymentCorpus)
 
 	want := stats.RenderFrench(dps[0])
-	got, err := store.SearchWiki(ctx, vectorFor(want), 1)
+	got, err := store.SearchEvidence(ctx, vectorFor(want), 1)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 1 || got[0].Content != want {
 		t.Fatalf("nearest = %+v; want the embedded Q1 passage %q", got, want)
@@ -455,9 +455,9 @@ func TestINSEEDataflowRoutesThroughFleetEndToEnd(t *testing.T) {
 	if st2.Published != 0 {
 		t.Fatalf("re-run published %d, want 0 (all already embedded)", st2.Published)
 	}
-	total, err := store.CountUnembeddedLiveCorpus(ctx, domain.INSEEUnemploymentCorpus)
+	total, err := store.CountUnembeddedLiveSource(ctx, domain.INSEEUnemploymentCorpus)
 	if err != nil {
-		t.Fatalf("CountUnembeddedLiveCorpus: %v", err)
+		t.Fatalf("CountUnembeddedLiveSource: %v", err)
 	}
 	if total != 0 {
 		t.Fatalf("un-embedded after idempotent re-run = %d, want 0 (no new rows)", total)
@@ -503,9 +503,9 @@ func TestLaborPassageSurvivesMacroCorpora(t *testing.T) {
 	// Query the way a verifier would: embed a labor-themed question and confirm
 	// the labor passage is the nearest neighbor despite 200 macro passages.
 	query := tokenVector("taux d'emploi des immigrés en France")
-	got, err := store.SearchWiki(ctx, query, 3)
+	got, err := store.SearchEvidence(ctx, query, 3)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) == 0 {
 		t.Fatal("no evidence returned for the labor query")

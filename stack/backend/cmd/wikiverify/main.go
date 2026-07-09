@@ -49,7 +49,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	health, err := store.WikiCorpusHealth(ctx)
+	health, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ type check struct {
 // evaluate turns a corpus health snapshot into the ordered list of checks the
 // verifier reports. It is pure so the pass/fail decision is unit-tested without a
 // database.
-func evaluate(h domain.WikiCorpusHealth) []check {
+func evaluate(h domain.EvidenceCorpusHealth) []check {
 	embedded := h.Chunks - h.NullEmbeddings
 	coverage := 0.0
 	if h.Chunks > 0 {
@@ -84,7 +84,7 @@ func evaluate(h domain.WikiCorpusHealth) []check {
 		// row), so a partially embedded corpus passes as long as what is embedded is
 		// sound.
 		{"no zero-vector embeddings", h.ZeroVectors == 0, fmt.Sprintf("%d zero-vector embeddings", h.ZeroVectors)},
-		{"embedding dimension 1024", h.EmbeddingType == "halfvec(1024)", fmt.Sprintf("embedding column is %q", h.EmbeddingType)},
+		{fmt.Sprintf("embedding dimension %d", domain.EmbeddingDim), h.EmbeddingType == domain.HalfvecColumnType(), fmt.Sprintf("embedding column is %q", h.EmbeddingType)},
 		{"per-chunk metadata populated", h.MissingMetadata == 0, fmt.Sprintf("%d chunks with an invalid kind", h.MissingMetadata)},
 		{"HNSW index present", h.HNSWPresent, fmt.Sprintf("present=%t", h.HNSWPresent)},
 		{"HNSW index valid", h.HNSWValid, fmt.Sprintf("valid=%t", h.HNSWValid)},
@@ -103,7 +103,7 @@ func passed(checks []check) bool {
 
 // report logs each check (a failed one at ERROR so it stands out) and returns an
 // error when any failed, which the caller turns into a non-zero exit.
-func report(ctx context.Context, logger *slog.Logger, h domain.WikiCorpusHealth) error {
+func report(ctx context.Context, logger *slog.Logger, h domain.EvidenceCorpusHealth) error {
 	checks := evaluate(h)
 	for _, c := range checks {
 		level := slog.LevelInfo
