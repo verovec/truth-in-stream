@@ -57,7 +57,9 @@ ALB; the ALB has no public DNS name and is reachable only from CloudFront.
   users in a dedicated `keycloak` database on the shared RDS instance, created by an idempotent
   one-shot bootstrap task the release runs before Keycloak rolls. Gated by `enable_keycloak`
   (default on; requires RDS). See [Configuration -> Local Keycloak](configuration.md#local-keycloak-identity-provider)
-  for the realm contract shared with local dev.
+  for the realm contract shared with local dev, and the
+  [prod Keycloak setup runbook](keycloak-prod-setup.md) for the one-time production setup
+  (Secrets Manager retrieval, first admin-console login, creating the real admin user).
 
 ## Production database
 

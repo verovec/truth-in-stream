@@ -444,7 +444,7 @@ variable "keycloak_desired_count" {
 variable "keycloak_admin_username" {
   type        = string
   default     = "admin"
-  description = "Keycloak master-realm bootstrap admin username (KC_BOOTSTRAP_ADMIN_USERNAME). Only the password is secret (Secrets Manager, set out of band)."
+  description = "Keycloak master-realm bootstrap admin username (KC_BOOTSTRAP_ADMIN_USERNAME). Only the password is secret (Terraform-generated, stored in Secrets Manager)."
 }
 
 variable "keycloak_db_bootstrap_image" {
