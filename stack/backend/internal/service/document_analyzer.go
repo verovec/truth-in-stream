@@ -115,10 +115,12 @@ func (a *DocumentAnalyzer) Start(ctx context.Context, id string) error {
 
 // run processes every stored sentence of a locked document through the verify
 // path and persists each result, then marks the run complete. It runs on a
-// fresh, timeout-bounded context detached from the trigger request. A gate
-// failure or a persistence failure fails the whole run (the admin reanalyses);
-// a per-claim retrieval or verify failure is a non-fatal error claim, so a run
-// still completes with error claims for the sentences that could not verify.
+// fresh, timeout-bounded context detached from the trigger request. Only a
+// terminal failure - the run's context expiring/canceling, or a persistence
+// failure - fails the whole run (the admin reanalyses). A transient gate error
+// on one sentence, like a per-claim verify failure, is recorded as an error
+// outcome for that sentence and the run continues, so one flaky classify call
+// does not discard every sentence already verified.
 func (a *DocumentAnalyzer) run(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), a.timeout)
 	defer cancel()
@@ -132,21 +134,52 @@ func (a *DocumentAnalyzer) run(id string) {
 	for _, sentence := range sentences {
 		result, err := a.verify.AnalyzeText(ctx, a.gate, sentence.Text, strconv.Itoa(sentence.Seq))
 		if err != nil {
-			a.failRun(id, fmt.Errorf("analysing sentence %d: %w", sentence.Seq, err))
-			return
+			if ctx.Err() != nil {
+				// The run's own context is done (timeout or shutdown): the whole run
+				// cannot proceed, so fail it. Sentences already recorded keep their
+				// results (per-sentence replace); the admin reanalyses.
+				a.failRun(id, fmt.Errorf("analysing sentence %d: %w", sentence.Seq, err))
+				return
+			}
+			// A transient gate failure on a live context is non-fatal: record the
+			// sentence as an error outcome and keep going, mirroring how a per-claim
+			// verify failure is a non-fatal error claim.
+			a.logger.WarnContext(ctx, "document analysis gate failed for a sentence, recording an error and continuing",
+				slog.String("document_id", id), slog.Int("seq", sentence.Seq), slog.Any("err", err))
+			result = gateErrorResult(sentence.Text)
 		}
-		skip, claims := sentenceOutcome(sentence.Seq, result)
+		skip, claims := a.sentenceOutcome(ctx, id, sentence.Seq, result)
 		if err := a.store.RecordDocumentSentenceResult(ctx, id, sentence.Seq, skip, claims); err != nil {
 			a.failRun(id, fmt.Errorf("recording sentence %d: %w", sentence.Seq, err))
 			return
 		}
 	}
 
+	a.completeRun(id)
+}
+
+// completeRun makes the terminal complete flip on a fresh context. Using the
+// run's own timeout context would let a run that consumed most of its budget
+// record a spurious failure when only the final flip races the deadline, even
+// though every sentence's result is already persisted.
+func (a *DocumentAnalyzer) completeRun(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), failRecordTimeout)
+	defer cancel()
 	if err := a.store.CompleteDocumentAnalysis(ctx, id); err != nil {
 		// The run's work is persisted; only the terminal flip failed. Record it as
 		// a failed run so the document does not linger analysing.
 		a.failRun(id, fmt.Errorf("completing run: %w", err))
 	}
+}
+
+// gateErrorResult is the batch result recorded for a sentence whose gate call
+// failed transiently: one error claim, so the sentence still ends with a real
+// per-claim outcome (the "every sentence gets an outcome" contract) and the run
+// continues.
+func gateErrorResult(text string) BatchUnitResult {
+	return BatchUnitResult{Checkable: true, Claims: []BatchClaimResult{
+		{Claim: AtomicClaim{ClaimID: "gate-error", Text: text}, Status: ClaimStatusError},
+	}}
 }
 
 // failRun records a terminal failure with a clear reason on a fresh context, so
@@ -174,11 +207,40 @@ func (a *DocumentAnalyzer) Recover(ctx context.Context) error {
 	return nil
 }
 
+// documentSkipReasons is the vocabulary the document_sentences.skip_reason
+// CHECK constraint permits. The verify path's gate emits only not_a_claim, but
+// the analyzer takes whatever SegmentPrechecker it is handed, so a reason
+// outside this set (e.g. a capacity shed's not_checked) is normalized to none
+// rather than being persisted into a CHECK violation that would fail the run.
+var documentSkipReasons = map[domain.SkipReason]bool{
+	domain.SkipReasonNone:       true,
+	domain.SkipReasonNotAClaim:  true,
+	domain.SkipReasonNotCovered: true,
+}
+
+// documentVerdicts, documentBases, and documentLiterals are the enum
+// vocabularies the document_claims CHECK constraints permit. The verifier
+// adapter validates most of this, but the LLM tool-schema enum is a soft hint
+// the model can violate, so the analyzer clamps here: an out-of-vocabulary
+// verdict would otherwise fail the whole document run on a CHECK violation.
+var (
+	documentVerdicts = map[string]bool{"": true, VerdictCredible: true, VerdictDisputed: true, VerdictUnverifiable: true}
+	documentBases    = map[string]bool{"": true, BasisEvidence: true, BasisKnowledge: true}
+	documentLiterals = map[string]bool{"": true, string(domain.LiteralAccurate): true, string(domain.LiteralInaccurate): true, string(domain.LiteralUnverifiable): true}
+)
+
 // sentenceOutcome maps one sentence's batch result to the persisted skip reason
-// and claim rows. A gated or claimless sentence carries a skip reason and no
-// claims; a check-worthy sentence carries its claim rows and no skip.
-func sentenceOutcome(seq int, result BatchUnitResult) (domain.SkipReason, []domain.DocumentClaim) {
+// and claim rows, validating every enum against the document CHECK vocabularies
+// so a stray LLM string can never fail the whole run. A gated or claimless
+// sentence carries a skip reason and no claims; a check-worthy sentence carries
+// its claim rows and no skip.
+func (a *DocumentAnalyzer) sentenceOutcome(ctx context.Context, id string, seq int, result BatchUnitResult) (domain.SkipReason, []domain.DocumentClaim) {
 	if !result.Checkable {
+		if !documentSkipReasons[result.SkipReason] {
+			a.logger.WarnContext(ctx, "document analysis gate returned an unsupported skip reason, recording none",
+				slog.String("document_id", id), slog.Int("seq", seq), slog.String("skip_reason", string(result.SkipReason)))
+			return domain.SkipReasonNone, nil
+		}
 		return result.SkipReason, nil
 	}
 	if len(result.Claims) == 0 {
@@ -186,25 +248,49 @@ func sentenceOutcome(seq int, result BatchUnitResult) (domain.SkipReason, []doma
 	}
 	claims := make([]domain.DocumentClaim, len(result.Claims))
 	for i, r := range result.Claims {
-		claim := domain.DocumentClaim{
+		claims[i] = a.documentClaim(ctx, id, seq, r)
+	}
+	return domain.SkipReasonNone, claims
+}
+
+// documentClaim maps one batch claim result to a persisted claim row, clamping
+// any out-of-vocabulary LLM verdict/basis/literal to an error claim so it cannot
+// violate a CHECK constraint and fail the run.
+func (a *DocumentAnalyzer) documentClaim(ctx context.Context, id string, seq int, r BatchClaimResult) domain.DocumentClaim {
+	claim := domain.DocumentClaim{
+		SentenceSeq: seq,
+		ClaimID:     r.Claim.ClaimID,
+		Text:        r.Claim.Text,
+		Status:      documentClaimStatus(r.Status),
+		Source:      string(r.Source),
+	}
+	if r.Verdict != nil {
+		claim.Verdict = r.Verdict.Verdict
+		claim.Basis = r.Verdict.Basis
+		claim.Literal = r.Verdict.Literal
+		claim.Flags = r.Verdict.Flags
+		claim.Confidence = r.Verdict.Confidence
+		claim.Rationale = r.Verdict.Rationale
+		claim.Citations = r.Verdict.Citations
+	}
+	if claim.Status == domain.DocumentClaimVerified && !validClaimEnums(claim) {
+		a.logger.WarnContext(ctx, "document analysis verdict outside the enum vocabulary, recording an error claim",
+			slog.String("document_id", id), slog.Int("seq", seq),
+			slog.String("verdict", claim.Verdict), slog.String("basis", claim.Basis), slog.String("literal", claim.Literal))
+		return domain.DocumentClaim{
 			SentenceSeq: seq,
 			ClaimID:     r.Claim.ClaimID,
 			Text:        r.Claim.Text,
-			Status:      documentClaimStatus(r.Status),
-			Source:      string(r.Source),
+			Status:      domain.DocumentClaimError,
 		}
-		if r.Verdict != nil {
-			claim.Verdict = r.Verdict.Verdict
-			claim.Basis = r.Verdict.Basis
-			claim.Literal = r.Verdict.Literal
-			claim.Flags = r.Verdict.Flags
-			claim.Confidence = r.Verdict.Confidence
-			claim.Rationale = r.Verdict.Rationale
-			claim.Citations = r.Verdict.Citations
-		}
-		claims[i] = claim
 	}
-	return domain.SkipReasonNone, claims
+	return claim
+}
+
+// validClaimEnums reports whether a claim's verdict, basis, and literal all fall
+// within the document_claims CHECK vocabularies.
+func validClaimEnums(claim domain.DocumentClaim) bool {
+	return documentVerdicts[claim.Verdict] && documentBases[claim.Basis] && documentLiterals[claim.Literal]
 }
 
 // documentClaimStatus maps a batch claim status to the persisted status. The

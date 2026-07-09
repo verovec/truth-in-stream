@@ -382,6 +382,10 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 		}
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
+	// Apply the deeper-reasoner second pass, same as the live credibility path,
+	// so a document verdict matches what live would show for the same sentence.
+	// It is a no-op when the feature is off or the verdict does not qualify.
+	verdict = vp.applyReverifyBatch(ctx, claim, verdict, ret)
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 }

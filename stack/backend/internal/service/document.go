@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -43,6 +44,11 @@ var (
 
 // documentContentType is the only content type the document API accepts.
 const documentContentType = "application/pdf"
+
+// autoStartTimeout bounds the synchronous lock transaction of the auto-start
+// trigger. It runs on a request-detached context, so a bound keeps a hung store
+// call from leaking; the analysis run itself is spawned and bounded separately.
+const autoStartTimeout = 15 * time.Second
 
 // maxDocumentPageCount bounds the client-declared page count and, through the
 // per-sentence page check, every page number. It is far above any real PDF and
@@ -274,13 +280,18 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 // autoStartAnalysis triggers the first analysis of a freshly-extracted document
 // when an analyzer is wired and enabled. It is best-effort: the document is
 // already ready, so a trigger failure is logged and swallowed rather than
-// failing the extraction.
+// failing the extraction. The trigger runs on a context detached from the
+// request's cancellation (Start's lock transaction must not be aborted if the
+// client disconnects the moment the extraction POST returns) but bounded so a
+// hung store call cannot leak. Request-scoped values are preserved.
 func (s *DocumentService) autoStartAnalysis(ctx context.Context, id string) {
 	if s.analyzer == nil || !s.analyzer.Enabled() {
 		return
 	}
-	if err := s.analyzer.Start(ctx, id); err != nil {
-		s.logger.WarnContext(ctx, "auto-start document analysis failed", slog.String("document_id", id), slog.Any("err", err))
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoStartTimeout)
+	defer cancel()
+	if err := s.analyzer.Start(startCtx, id); err != nil {
+		s.logger.WarnContext(startCtx, "auto-start document analysis failed", slog.String("document_id", id), slog.Any("err", err))
 	}
 }
 

@@ -17,11 +17,11 @@ type fakeAnalyzerStore struct {
 	locked    domain.Document
 	sentences []domain.DocumentSentence
 
-	startErr  error
-	listErr   error
-	recordErr error
+	startErr   error
+	listErr    error
+	recordErr  error
 	recoverIDs []string
-	recoverEr error
+	recoverEr  error
 
 	started   []string
 	recorded  []recordedSentence
@@ -220,21 +220,97 @@ func TestDocumentAnalyzerStartPropagatesLockErrors(t *testing.T) {
 	}
 }
 
-func TestDocumentAnalyzerFailsRunOnGateError(t *testing.T) {
+// TestDocumentAnalyzerGateErrorIsNonFatal proves a transient gate error on one
+// sentence (the run context still live) records that sentence as an error
+// outcome and lets the run complete, rather than discarding every other
+// sentence's work.
+func TestDocumentAnalyzerGateErrorIsNonFatal(t *testing.T) {
+	t.Parallel()
+	store := &fakeAnalyzerStore{sentences: []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "boom", Occurrence: 1},
+		{Seq: 1, Page: 1, Text: "fine", Occurrence: 1},
+	}}
+	verify := fakeBatchVerifier{
+		err:    map[string]error{"boom": errors.New("gate down")},
+		byText: map[string]BatchUnitResult{"fine": {Checkable: false, SkipReason: domain.SkipReasonNotAClaim}},
+	}
+	a := syncAnalyzer(t, store, verify)
+
+	if err := a.Start(t.Context(), "doc-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorded, completed, failed := store.snapshot()
+	if len(failed) != 0 {
+		t.Fatalf("a transient gate error failed the whole run: %+v", failed)
+	}
+	if len(completed) != 1 {
+		t.Errorf("run did not complete: %v", completed)
+	}
+	if len(recorded) != 2 {
+		t.Fatalf("recorded %d sentences, want both processed", len(recorded))
+	}
+	if len(recorded[0].claims) != 1 || recorded[0].claims[0].Status != domain.DocumentClaimError {
+		t.Errorf("gated-error sentence = %+v, want a single error claim", recorded[0])
+	}
+	if recorded[1].skip != domain.SkipReasonNotAClaim {
+		t.Errorf("sentence 1 = %+v, want its normal skip", recorded[1])
+	}
+}
+
+// TestDocumentAnalyzerFailsRunOnCanceledContext proves that when the run's own
+// context is already done (timeout/shutdown), a gate error fails the whole run
+// rather than recording an error claim against a dead context.
+func TestDocumentAnalyzerFailsRunOnCanceledContext(t *testing.T) {
 	t.Parallel()
 	store := &fakeAnalyzerStore{sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "boom", Occurrence: 1}}}
 	verify := fakeBatchVerifier{err: map[string]error{"boom": errors.New("gate down")}}
-	a := syncAnalyzer(t, store, verify)
+	a, err := NewDocumentAnalyzer(store, verify, allowAllPrechecker{}, DocumentAnalyzerConfig{Timeout: time.Nanosecond}, discardLogger())
+	if err != nil {
+		t.Fatalf("NewDocumentAnalyzer: %v", err)
+	}
+	a.spawn = func(f func()) { f() }
 
 	if err := a.Start(t.Context(), "doc-1"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	_, completed, failed := store.snapshot()
 	if len(completed) != 0 {
-		t.Error("a gate failure still completed the run")
+		t.Error("a context-canceled run still completed")
 	}
-	if len(failed) != 1 || failed[0].id != "doc-1" || failed[0].reason == "" {
-		t.Errorf("failed = %+v, want doc-1 failed with a reason", failed)
+	if len(failed) != 1 || failed[0].id != "doc-1" {
+		t.Errorf("failed = %+v, want the run failed", failed)
+	}
+}
+
+// TestDocumentAnalyzerClampsBadVerdict proves an out-of-enum LLM verdict is
+// recorded as an error claim rather than being persisted into a CHECK violation
+// that would fail the run.
+func TestDocumentAnalyzerClampsBadVerdict(t *testing.T) {
+	t.Parallel()
+	store := &fakeAnalyzerStore{sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "claim", Occurrence: 1}}}
+	verify := fakeBatchVerifier{byText: map[string]BatchUnitResult{
+		"claim": {Checkable: true, Claims: []BatchClaimResult{
+			{
+				Claim: AtomicClaim{ClaimID: "0-0", Text: "claim"}, Status: ClaimStatusVerified, Source: SourceVerified,
+				Verdict: &VerifiedVerdict{Verdict: "mostly-credible", Basis: BasisEvidence, Confidence: 0.7},
+			},
+		}},
+	}}
+	a := syncAnalyzer(t, store, verify)
+
+	if err := a.Start(t.Context(), "doc-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorded, completed, failed := store.snapshot()
+	if len(failed) != 0 {
+		t.Fatalf("a bad verdict failed the run: %+v", failed)
+	}
+	if len(completed) != 1 || len(recorded) != 1 || len(recorded[0].claims) != 1 {
+		t.Fatalf("run outcome = completed %v recorded %+v", completed, recorded)
+	}
+	c := recorded[0].claims[0]
+	if c.Status != domain.DocumentClaimError || c.Verdict != "" {
+		t.Errorf("claim = %+v, want an error claim with the out-of-enum verdict cleared", c)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/source"
 )
 
 // newBatchVerifyPath builds a VerifyPath with test defaults for the batch seam,
@@ -219,6 +220,83 @@ func TestAnalyzeTextVerifierError(t *testing.T) {
 	}
 	if c := res.Claims[0]; c.Status != ClaimStatusError || c.Verdict != nil {
 		t.Errorf("claim = %+v, want error with no verdict", c)
+	}
+}
+
+// TestAnalyzeTextPoliticalTwoAxis proves the batch path routes a claim through
+// the political classify -> route -> two-axis verify pipeline when political
+// mode is active, carrying the literal axis and manipulation flags into the
+// batch result (the same two-axis output the live path produces).
+func TestAnalyzeTextPoliticalTwoAxis(t *testing.T) {
+	t.Parallel()
+	text := "le budget de la defense a augmente de 40%"
+	evidence := []source.Evidence{srcEvidence(source.KindStats, "insee-1", "defense +12%")}
+	classifier := fakeClassifier{}
+	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{text: evidence}}
+	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
+		text: {Literal: string(domain.LiteralInaccurate), Basis: BasisEvidence, Flags: []string{"missing-context"}, Confidence: 0.8, Rationale: "les chiffres different"},
+	}}
+	vp := newBatchVerifyPath(t, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{text: {text}}},
+		Matcher:    liveMatcher{}, // no curated match, so the political route+verify runs
+		Verifier:   &fakeVerifier{},
+		Political:  &PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier},
+	})
+
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	if err != nil {
+		t.Fatalf("AnalyzeText: %v", err)
+	}
+	if len(res.Claims) != 1 {
+		t.Fatalf("claims = %d, want 1", len(res.Claims))
+	}
+	c := res.Claims[0]
+	if c.Status != ClaimStatusVerified || c.Source != SourceVerified {
+		t.Errorf("claim = status %q source %q, want verified/verified", c.Status, c.Source)
+	}
+	if c.Verdict == nil {
+		t.Fatal("nil verdict on a routed political claim")
+	}
+	// The literal axis maps onto the credibility axis (inaccurate -> disputed) and
+	// the manipulation flags are carried through.
+	if c.Verdict.Literal != string(domain.LiteralInaccurate) || c.Verdict.Verdict != VerdictDisputed {
+		t.Errorf("axes = literal %q / credibility %q, want inaccurate/disputed", c.Verdict.Literal, c.Verdict.Verdict)
+	}
+	if len(c.Verdict.Flags) != 1 || c.Verdict.Flags[0] != "missing-context" {
+		t.Errorf("flags = %v, want [missing-context]", c.Verdict.Flags)
+	}
+	if len(verifier.seen()) != 1 {
+		t.Errorf("political verifier calls = %v, want one", verifier.seen())
+	}
+}
+
+// TestAnalyzeTextPoliticalNoEvidence proves the political batch path returns the
+// honest unverifiable/knowledge outcome (no verifier call) when routing finds no
+// evidence, mirroring the credibility no-evidence case.
+func TestAnalyzeTextPoliticalNoEvidence(t *testing.T) {
+	t.Parallel()
+	text := "une affirmation politique obscure"
+	router := &fakeRouterRetriever{} // no routed evidence
+	verifier := &fakePoliticalVerifier{}
+	vp := newBatchVerifyPath(t, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{text: {text}}},
+		Matcher:    liveMatcher{}, Verifier: &fakeVerifier{},
+		Political: &PoliticalConfig{Classifier: fakeClassifier{}, Retriever: router, Verifier: verifier},
+	})
+
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	if err != nil {
+		t.Fatalf("AnalyzeText: %v", err)
+	}
+	if len(res.Claims) != 1 {
+		t.Fatalf("claims = %d, want 1", len(res.Claims))
+	}
+	c := res.Claims[0]
+	if c.Status != ClaimStatusVerified || c.Verdict == nil || c.Verdict.Verdict != VerdictUnverifiable {
+		t.Errorf("claim = %+v / %+v, want verified unverifiable", c, c.Verdict)
+	}
+	if len(verifier.seen()) != 0 {
+		t.Errorf("no-evidence political claim still called the verifier: %v", verifier.seen())
 	}
 }
 

@@ -221,63 +221,49 @@ func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 
 // StartDocumentAnalysis claims a ready document for a fresh analysis run in one
 // transaction: it flips the document to analysing (the job lock), zeroes the
-// progress counter, then wipes the prior run's claims and clears every
-// sentence's skip reason. It returns the locked record, or a classified error
-// when the guard admits no row: ErrDocumentNotFound (unknown),
-// ErrAnalysisInProgress (already analysing), or ErrDocumentNotReady (upload not
-// ready).
+// progress counter, and clears any prior error. It returns the locked record,
+// or a classified error when the guard admits no row: ErrDocumentNotFound
+// (unknown), ErrAnalysisInProgress (already analysing), or ErrDocumentNotReady
+// (upload not ready). It deliberately does not wipe the prior run's claims or
+// skip reasons - each sentence's results are replaced as it is reprocessed (see
+// RecordDocumentSentenceResult), so a run that fails partway keeps the previous
+// run's verdicts for the sentences it never reached rather than destroying them.
 func (s *Store) StartDocumentAnalysis(ctx context.Context, id string) (domain.Document, error) {
 	uid, err := uuid.Parse(id)
 	if err != nil {
 		return domain.Document{}, domain.ErrDocumentNotFound
 	}
 
-	var doc domain.Document
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		q := s.queries.WithTx(tx)
-		row, err := q.LockDocumentForAnalysis(ctx, uid)
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The guard matched no row: resolve why for the caller.
-			existing, getErr := q.GetDocument(ctx, uid)
-			if errors.Is(getErr, pgx.ErrNoRows) {
-				return domain.ErrDocumentNotFound
-			}
-			if getErr != nil {
-				return fmt.Errorf("resolve analysis conflict: %w", getErr)
-			}
-			if existing.AnalysisStatus == string(domain.DocumentAnalysisAnalysing) {
-				return domain.ErrAnalysisInProgress
-			}
-			return domain.ErrDocumentNotReady
+	row, err := s.queries.LockDocumentForAnalysis(ctx, uid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The guard matched no row: resolve why for the caller.
+		existing, getErr := s.queries.GetDocument(ctx, uid)
+		if errors.Is(getErr, pgx.ErrNoRows) {
+			return domain.Document{}, domain.ErrDocumentNotFound
 		}
-		if err != nil {
-			return fmt.Errorf("lock for analysis: %w", err)
+		if getErr != nil {
+			return domain.Document{}, fmt.Errorf("postgres: start analysis %s: resolve conflict: %w", id, getErr)
 		}
-		if err := q.DeleteDocumentClaims(ctx, uid); err != nil {
-			return fmt.Errorf("wipe claims: %w", err)
+		if existing.AnalysisStatus == string(domain.DocumentAnalysisAnalysing) {
+			return domain.Document{}, domain.ErrAnalysisInProgress
 		}
-		if err := q.ClearDocumentSkipReasons(ctx, uid); err != nil {
-			return fmt.Errorf("clear skip reasons: %w", err)
-		}
-		doc = documentFromRow(row)
-		return nil
-	})
-	switch {
-	case errors.Is(err, domain.ErrDocumentNotFound),
-		errors.Is(err, domain.ErrAnalysisInProgress),
-		errors.Is(err, domain.ErrDocumentNotReady):
-		return domain.Document{}, err
-	case err != nil:
+		return domain.Document{}, domain.ErrDocumentNotReady
+	}
+	if err != nil {
 		return domain.Document{}, fmt.Errorf("postgres: start analysis %s: %w", id, err)
 	}
-	return doc, nil
+	return documentFromRow(row), nil
 }
 
 // RecordDocumentSentenceResult persists one analyzed sentence's outcome and
-// advances progress in one transaction: a skipped sentence records its skip
-// reason, a check-worthy sentence inserts its claim rows, and either way the
-// progress counter is bumped. Bundling the write with the bump keeps progress
-// consistent with the stored results after a mid-run refresh.
+// advances progress in one transaction: it replaces that sentence's prior claims
+// (delete then insert), sets its skip reason to the run's value (empty when the
+// sentence produced claims, so a stale prior skip is cleared), and bumps the
+// progress counter. Replacing per sentence rather than wiping the whole document
+// up front means a run that fails partway leaves already-processed sentences with
+// their fresh results and the rest with the previous run's - never an empty
+// document. Bundling the writes keeps progress consistent with the stored results
+// after a mid-run refresh.
 func (s *Store) RecordDocumentSentenceResult(ctx context.Context, id string, seq int, skipReason domain.SkipReason, claims []domain.DocumentClaim) error {
 	uid, err := uuid.Parse(id)
 	if err != nil {
@@ -286,14 +272,18 @@ func (s *Store) RecordDocumentSentenceResult(ctx context.Context, id string, seq
 
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := s.queries.WithTx(tx)
-		if skipReason != domain.SkipReasonNone {
-			if err := q.SetDocumentSentenceSkipReason(ctx, db.SetDocumentSentenceSkipReasonParams{
-				DocumentID: uid,
-				Seq:        int32(seq),
-				SkipReason: string(skipReason),
-			}); err != nil {
-				return fmt.Errorf("set skip reason: %w", err)
-			}
+		if err := q.DeleteDocumentSentenceClaims(ctx, db.DeleteDocumentSentenceClaimsParams{
+			DocumentID:  uid,
+			SentenceSeq: int32(seq),
+		}); err != nil {
+			return fmt.Errorf("wipe prior claims: %w", err)
+		}
+		if err := q.SetDocumentSentenceSkipReason(ctx, db.SetDocumentSentenceSkipReasonParams{
+			DocumentID: uid,
+			Seq:        int32(seq),
+			SkipReason: string(skipReason),
+		}); err != nil {
+			return fmt.Errorf("set skip reason: %w", err)
 		}
 		if len(claims) > 0 {
 			params := make([]db.InsertDocumentClaimParams, len(claims))

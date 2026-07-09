@@ -25,19 +25,6 @@ func (q *Queries) BumpDocumentSentencesProcessed(ctx context.Context, id uuid.UU
 	return err
 }
 
-const clearDocumentSkipReasons = `-- name: ClearDocumentSkipReasons :exec
-UPDATE document_sentences
-SET skip_reason = ''
-WHERE document_id = $1
-`
-
-// Clear every sentence's skip reason at the start of an analysis run, so a
-// sentence check-worthy this run is not left with a stale prior skip.
-func (q *Queries) ClearDocumentSkipReasons(ctx context.Context, documentID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, clearDocumentSkipReasons, documentID)
-	return err
-}
-
 const completeDocumentAnalysis = `-- name: CompleteDocumentAnalysis :exec
 UPDATE documents
 SET analysis_status = 'complete', analysis_error = '', analyzed_at = now(), analysis_runs = analysis_runs + 1, updated_at = now()
@@ -112,15 +99,21 @@ func (q *Queries) DeleteDocument(ctx context.Context, id uuid.UUID) (int64, erro
 	return result.RowsAffected(), nil
 }
 
-const deleteDocumentClaims = `-- name: DeleteDocumentClaims :exec
+const deleteDocumentSentenceClaims = `-- name: DeleteDocumentSentenceClaims :exec
 DELETE FROM document_claims
-WHERE document_id = $1
+WHERE document_id = $1 AND sentence_seq = $2
 `
 
-// Wipe a document's claims at the start of an analysis run; the reanalysis keeps
-// only the latest results.
-func (q *Queries) DeleteDocumentClaims(ctx context.Context, documentID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteDocumentClaims, documentID)
+type DeleteDocumentSentenceClaimsParams struct {
+	DocumentID  uuid.UUID
+	SentenceSeq int32
+}
+
+// Remove one sentence's prior claims just before its fresh results are written,
+// so re-analysing a sentence replaces its verdicts atomically without wiping the
+// whole document up front.
+func (q *Queries) DeleteDocumentSentenceClaims(ctx context.Context, arg DeleteDocumentSentenceClaimsParams) error {
+	_, err := q.db.Exec(ctx, deleteDocumentSentenceClaims, arg.DocumentID, arg.SentenceSeq)
 	return err
 }
 
@@ -338,7 +331,10 @@ RETURNING id, title, object_key, content_type, size_bytes, page_count, status, a
 // guarded update. The guard admits a document that is ready and not already
 // analysing (so a none/complete/failed analysis re-runs, a concurrent run is
 // excluded). No row returned means the store resolves why (unknown, not ready,
-// or already analysing) and maps it to the right error.
+// or already analysing) and maps it to the right error. Prior claims and skip
+// reasons are NOT wiped here: each sentence's results are replaced as it is
+// reprocessed, so a run that fails partway keeps the previous run's verdicts for
+// the sentences it never reached instead of destroying them all up front.
 func (q *Queries) LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error) {
 	row := q.db.QueryRow(ctx, lockDocumentForAnalysis, id)
 	var i Document

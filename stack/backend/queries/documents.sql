@@ -61,24 +61,21 @@ WHERE id = $1;
 -- guarded update. The guard admits a document that is ready and not already
 -- analysing (so a none/complete/failed analysis re-runs, a concurrent run is
 -- excluded). No row returned means the store resolves why (unknown, not ready,
--- or already analysing) and maps it to the right error.
+-- or already analysing) and maps it to the right error. Prior claims and skip
+-- reasons are NOT wiped here: each sentence's results are replaced as it is
+-- reprocessed, so a run that fails partway keeps the previous run's verdicts for
+-- the sentences it never reached instead of destroying them all up front.
 UPDATE documents
 SET analysis_status = 'analysing', sentences_processed = 0, analysis_error = '', updated_at = now()
 WHERE id = $1 AND status = 'ready' AND analysis_status <> 'analysing'
 RETURNING id, title, object_key, content_type, size_bytes, page_count, status, analysis_status, analysis_error, sentences_total, sentences_processed, analyzed_at, analysis_runs, created_at, updated_at;
 
--- name: DeleteDocumentClaims :exec
--- Wipe a document's claims at the start of an analysis run; the reanalysis keeps
--- only the latest results.
+-- name: DeleteDocumentSentenceClaims :exec
+-- Remove one sentence's prior claims just before its fresh results are written,
+-- so re-analysing a sentence replaces its verdicts atomically without wiping the
+-- whole document up front.
 DELETE FROM document_claims
-WHERE document_id = $1;
-
--- name: ClearDocumentSkipReasons :exec
--- Clear every sentence's skip reason at the start of an analysis run, so a
--- sentence check-worthy this run is not left with a stale prior skip.
-UPDATE document_sentences
-SET skip_reason = ''
-WHERE document_id = $1;
+WHERE document_id = $1 AND sentence_seq = $2;
 
 -- name: BumpDocumentSentencesProcessed :exec
 -- Advance the progress counter by one completed sentence. Progress is database

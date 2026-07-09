@@ -23,9 +23,6 @@ type Querier interface {
 	// checkpoint exists), so a source switch is detectable even after a crashed
 	// first run. Never overwrites an existing checkpoint.
 	ClaimEvidenceSource(ctx context.Context, source string) error
-	// Clear every sentence's skip reason at the start of an analysis run, so a
-	// sentence check-worthy this run is not left with a stale prior skip.
-	ClearDocumentSkipReasons(ctx context.Context, documentID uuid.UUID) error
 	// Terminal success: mark the run complete, stamp the completion time, and count
 	// the run.
 	CompleteDocumentAnalysis(ctx context.Context, id uuid.UUID) error
@@ -45,9 +42,10 @@ type Querier interface {
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
 	// Sentences and claims go with the document via ON DELETE CASCADE.
 	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
-	// Wipe a document's claims at the start of an analysis run; the reanalysis keeps
-	// only the latest results.
-	DeleteDocumentClaims(ctx context.Context, documentID uuid.UUID) error
+	// Remove one sentence's prior claims just before its fresh results are written,
+	// so re-analysing a sentence replaces its verdicts atomically without wiping the
+	// whole document up front.
+	DeleteDocumentSentenceClaims(ctx context.Context, arg DeleteDocumentSentenceClaimsParams) error
 	// Delta sync removes a hard-deleted page by title within its own source:
 	// RecentChanges reports a deletion with page id 0, so the stored chunk can only
 	// be found by its title. Scoping to the source keeps a same-titled chunk of
@@ -88,7 +86,10 @@ type Querier interface {
 	// guarded update. The guard admits a document that is ready and not already
 	// analysing (so a none/complete/failed analysis re-runs, a concurrent run is
 	// excluded). No row returned means the store resolves why (unknown, not ready,
-	// or already analysing) and maps it to the right error.
+	// or already analysing) and maps it to the right error. Prior claims and skip
+	// reasons are NOT wiped here: each sentence's results are replaced as it is
+	// reprocessed, so a run that fails partway keeps the previous run's verdicts for
+	// the sentences it never reached instead of destroying them all up front.
 	LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an

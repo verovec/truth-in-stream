@@ -33,7 +33,7 @@ func sampleClaim(docID string, seq int, claimID string) domain.DocumentClaim {
 	}
 }
 
-func TestStartDocumentAnalysisWipesAndLocks(t *testing.T) {
+func TestStartDocumentAnalysisLocksWithoutWiping(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
@@ -57,21 +57,58 @@ func TestStartDocumentAnalysisWipesAndLocks(t *testing.T) {
 		t.Errorf("sentences_processed = %d, want 0 after reset", locked.SentencesProcessed)
 	}
 
+	// Prior claims and skip reasons survive the lock: they are replaced per
+	// sentence as the run reprocesses each, so a run that fails partway keeps the
+	// previous run's verdicts rather than being wiped empty up front.
 	claims, err := store.ListDocumentClaims(ctx, doc.ID)
 	if err != nil {
 		t.Fatalf("ListDocumentClaims: %v", err)
 	}
-	if len(claims) != 0 {
-		t.Errorf("claims not wiped: %+v", claims)
+	if len(claims) != 1 || claims[0].ClaimID != "c-old" {
+		t.Errorf("prior claims wiped by start: %+v, want the old claim retained", claims)
 	}
 	sentences, err := store.ListDocumentSentences(ctx, doc.ID)
 	if err != nil {
 		t.Fatalf("ListDocumentSentences: %v", err)
 	}
-	for _, s := range sentences {
-		if s.SkipReason != domain.SkipReasonNone {
-			t.Errorf("sentence %d skip reason %q not cleared", s.Seq, s.SkipReason)
-		}
+	if sentences[0].SkipReason != domain.SkipReasonNotAClaim {
+		t.Errorf("prior skip reason wiped by start: %q, want it retained until reprocessed", sentences[0].SkipReason)
+	}
+}
+
+// TestRecordDocumentSentenceResultReplaces proves per-sentence replace: writing a
+// sentence's result a second time deletes its prior claims and overwrites its
+// skip reason, without touching other sentences.
+func TestRecordDocumentSentenceResultReplaces(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	doc := readyDocument(t, store, 2)
+	// Sentence 0 first has a claim, then is re-recorded as a skip (its claim must
+	// vanish). Sentence 1 keeps its claim throughout.
+	if err := store.RecordDocumentSentenceResult(ctx, doc.ID, 0, domain.SkipReasonNone, []domain.DocumentClaim{sampleClaim(doc.ID, 0, "c-first")}); err != nil {
+		t.Fatalf("first record seq 0: %v", err)
+	}
+	if err := store.RecordDocumentSentenceResult(ctx, doc.ID, 1, domain.SkipReasonNone, []domain.DocumentClaim{sampleClaim(doc.ID, 1, "keep")}); err != nil {
+		t.Fatalf("record seq 1: %v", err)
+	}
+	if err := store.RecordDocumentSentenceResult(ctx, doc.ID, 0, domain.SkipReasonNotCovered, nil); err != nil {
+		t.Fatalf("replace seq 0: %v", err)
+	}
+
+	claims, err := store.ListDocumentClaims(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentClaims: %v", err)
+	}
+	if len(claims) != 1 || claims[0].ClaimID != "keep" {
+		t.Errorf("claims = %+v, want only sentence 1's claim after seq 0 was replaced by a skip", claims)
+	}
+	sentences, err := store.ListDocumentSentences(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentSentences: %v", err)
+	}
+	if sentences[0].SkipReason != domain.SkipReasonNotCovered {
+		t.Errorf("seq 0 skip reason = %q, want not_covered after replace", sentences[0].SkipReason)
 	}
 }
 
