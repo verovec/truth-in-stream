@@ -1491,25 +1491,32 @@ func LoadUpload() (Upload, error) {
 }
 
 // Document API defaults: a 30 MB PDF covers long reports while bounding
-// storage and abuse; 1500 sentences bounds the LLM cost of one analysis run.
+// storage and abuse; 1500 sentences bounds the LLM cost of one analysis run; a
+// 30-minute analysis timeout bounds one whole run (most sentences are gated out,
+// so real runs are far shorter, but a full check-worthy document under the
+// verify pool can take many minutes).
 const (
-	defaultDocumentMaxSizeBytes int64 = 30 << 20
-	defaultDocumentMaxSentences       = 1500
+	defaultDocumentMaxSizeBytes    int64 = 30 << 20
+	defaultDocumentMaxSentences          = 1500
+	defaultDocumentAnalysisTimeout       = 30 * time.Minute
 )
 
 // Documents holds the PDF document constraints applied by the documents API.
 type Documents struct {
-	MaxSizeBytes int64
-	MaxSentences int
+	MaxSizeBytes    int64
+	MaxSentences    int
+	AnalysisTimeout time.Duration
 }
 
 // LoadDocuments reads the document configuration from the environment.
 // DOCUMENT_MAX_SIZE_BYTES and DOCUMENT_MAX_SENTENCES override the defaults and
-// must be positive integers.
+// must be positive integers; DOCUMENT_ANALYSIS_TIMEOUT overrides the run timeout
+// and must be a positive duration.
 func LoadDocuments() (Documents, error) {
 	cfg := Documents{
-		MaxSizeBytes: defaultDocumentMaxSizeBytes,
-		MaxSentences: defaultDocumentMaxSentences,
+		MaxSizeBytes:    defaultDocumentMaxSizeBytes,
+		MaxSentences:    defaultDocumentMaxSentences,
+		AnalysisTimeout: defaultDocumentAnalysisTimeout,
 	}
 	if raw := os.Getenv("DOCUMENT_MAX_SIZE_BYTES"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 64)
@@ -1530,6 +1537,16 @@ func LoadDocuments() (Documents, error) {
 			return Documents{}, fmt.Errorf("config: DOCUMENT_MAX_SENTENCES must be positive, got %d", v)
 		}
 		cfg.MaxSentences = v
+	}
+	if raw := os.Getenv("DOCUMENT_ANALYSIS_TIMEOUT"); raw != "" {
+		v, err := time.ParseDuration(raw)
+		if err != nil {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_ANALYSIS_TIMEOUT %q: %w", raw, err)
+		}
+		if v <= 0 {
+			return Documents{}, fmt.Errorf("config: DOCUMENT_ANALYSIS_TIMEOUT must be positive, got %s", v)
+		}
+		cfg.AnalysisTimeout = v
 	}
 	return cfg, nil
 }

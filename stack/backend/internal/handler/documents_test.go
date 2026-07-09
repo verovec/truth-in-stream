@@ -87,6 +87,51 @@ func (f *fakeDocumentService) Delete(_ context.Context, id string) error {
 
 var _ DocumentService = (*fakeDocumentService)(nil)
 
+// fakeDocumentAnalyzer is a handler.DocumentAnalyzerService stand-in.
+type fakeDocumentAnalyzer struct {
+	startErr    error
+	lastStartID string
+}
+
+func (f *fakeDocumentAnalyzer) Start(_ context.Context, id string) error {
+	f.lastStartID = id
+	return f.startErr
+}
+
+var _ DocumentAnalyzerService = (*fakeDocumentAnalyzer)(nil)
+
+func TestReanalyseDocumentHandler(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+	}{
+		{name: "accepted", err: nil, wantCode: http.StatusAccepted},
+		{name: "unknown", err: domain.ErrDocumentNotFound, wantCode: http.StatusNotFound},
+		{name: "not ready", err: domain.ErrDocumentNotReady, wantCode: http.StatusConflict},
+		{name: "already analysing", err: domain.ErrAnalysisInProgress, wantCode: http.StatusConflict},
+		{name: "disabled", err: service.ErrAnalysisDisabled, wantCode: http.StatusServiceUnavailable},
+		{name: "internal", err: errors.New("boom"), wantCode: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			analyzer := &fakeDocumentAnalyzer{startErr: tc.err}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/documents/d1/reanalyse", nil)
+			req.SetPathValue("id", "d1")
+			reanalyseDocumentHandler(analyzer)(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+			if analyzer.lastStartID != "d1" {
+				t.Errorf("start id = %q, want d1", analyzer.lastStartID)
+			}
+		})
+	}
+}
+
 func TestRequestDocumentUploadHandlerSuccess(t *testing.T) {
 	t.Parallel()
 	svc := &fakeDocumentService{ticket: service.DocumentUploadTicket{
@@ -438,7 +483,7 @@ func TestDeleteDocumentHandler(t *testing.T) {
 func newDocumentsTestServer(svc *fakeDocumentService) http.Handler {
 	health := service.NewHealthChecker(fakePinger{})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, &fakeVideoService{}, svc, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
+	return NewMux(health, &fakeVideoService{}, svc, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
 }
 
 // TestDocumentRoutesRoleGating proves the split the design fixes: mutating
@@ -463,6 +508,9 @@ func TestDocumentRoutesRoleGating(t *testing.T) {
 		{name: "extraction as guest", method: http.MethodPost, path: "/api/documents/d1/extraction", body: extractionBody, bearer: testGuestToken, wantCode: http.StatusForbidden},
 		{name: "delete as admin", method: http.MethodDelete, path: "/api/documents/d1", bearer: testAdminToken, wantCode: http.StatusNoContent},
 		{name: "delete as guest", method: http.MethodDelete, path: "/api/documents/d1", bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "reanalyse as admin", method: http.MethodPost, path: "/api/documents/d1/reanalyse", bearer: testAdminToken, wantCode: http.StatusAccepted},
+		{name: "reanalyse as guest", method: http.MethodPost, path: "/api/documents/d1/reanalyse", bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "reanalyse anonymous", method: http.MethodPost, path: "/api/documents/d1/reanalyse", wantCode: http.StatusUnauthorized},
 		{name: "list as guest", method: http.MethodGet, path: "/api/documents", bearer: testGuestToken, wantCode: http.StatusOK},
 		{name: "get as guest", method: http.MethodGet, path: "/api/documents/d1", bearer: testGuestToken, wantCode: http.StatusOK},
 		{name: "claims as guest", method: http.MethodGet, path: "/api/documents/d1/claims", bearer: testGuestToken, wantCode: http.StatusOK},

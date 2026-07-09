@@ -219,6 +219,178 @@ func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 	return nil
 }
 
+// StartDocumentAnalysis claims a ready document for a fresh analysis run in one
+// transaction: it flips the document to analysing (the job lock), zeroes the
+// progress counter, then wipes the prior run's claims and clears every
+// sentence's skip reason. It returns the locked record, or a classified error
+// when the guard admits no row: ErrDocumentNotFound (unknown),
+// ErrAnalysisInProgress (already analysing), or ErrDocumentNotReady (upload not
+// ready).
+func (s *Store) StartDocumentAnalysis(ctx context.Context, id string) (domain.Document, error) {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.Document{}, domain.ErrDocumentNotFound
+	}
+
+	var doc domain.Document
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := s.queries.WithTx(tx)
+		row, err := q.LockDocumentForAnalysis(ctx, uid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The guard matched no row: resolve why for the caller.
+			existing, getErr := q.GetDocument(ctx, uid)
+			if errors.Is(getErr, pgx.ErrNoRows) {
+				return domain.ErrDocumentNotFound
+			}
+			if getErr != nil {
+				return fmt.Errorf("resolve analysis conflict: %w", getErr)
+			}
+			if existing.AnalysisStatus == string(domain.DocumentAnalysisAnalysing) {
+				return domain.ErrAnalysisInProgress
+			}
+			return domain.ErrDocumentNotReady
+		}
+		if err != nil {
+			return fmt.Errorf("lock for analysis: %w", err)
+		}
+		if err := q.DeleteDocumentClaims(ctx, uid); err != nil {
+			return fmt.Errorf("wipe claims: %w", err)
+		}
+		if err := q.ClearDocumentSkipReasons(ctx, uid); err != nil {
+			return fmt.Errorf("clear skip reasons: %w", err)
+		}
+		doc = documentFromRow(row)
+		return nil
+	})
+	switch {
+	case errors.Is(err, domain.ErrDocumentNotFound),
+		errors.Is(err, domain.ErrAnalysisInProgress),
+		errors.Is(err, domain.ErrDocumentNotReady):
+		return domain.Document{}, err
+	case err != nil:
+		return domain.Document{}, fmt.Errorf("postgres: start analysis %s: %w", id, err)
+	}
+	return doc, nil
+}
+
+// RecordDocumentSentenceResult persists one analyzed sentence's outcome and
+// advances progress in one transaction: a skipped sentence records its skip
+// reason, a check-worthy sentence inserts its claim rows, and either way the
+// progress counter is bumped. Bundling the write with the bump keeps progress
+// consistent with the stored results after a mid-run refresh.
+func (s *Store) RecordDocumentSentenceResult(ctx context.Context, id string, seq int, skipReason domain.SkipReason, claims []domain.DocumentClaim) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.ErrDocumentNotFound
+	}
+
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := s.queries.WithTx(tx)
+		if skipReason != domain.SkipReasonNone {
+			if err := q.SetDocumentSentenceSkipReason(ctx, db.SetDocumentSentenceSkipReasonParams{
+				DocumentID: uid,
+				Seq:        int32(seq),
+				SkipReason: string(skipReason),
+			}); err != nil {
+				return fmt.Errorf("set skip reason: %w", err)
+			}
+		}
+		if len(claims) > 0 {
+			params := make([]db.InsertDocumentClaimParams, len(claims))
+			for i, c := range claims {
+				citations, err := marshalCitations(c.Citations)
+				if err != nil {
+					return fmt.Errorf("marshal citations: %w", err)
+				}
+				flags := c.Flags
+				if flags == nil {
+					flags = []string{}
+				}
+				params[i] = db.InsertDocumentClaimParams{
+					DocumentID:  uid,
+					SentenceSeq: int32(seq),
+					ClaimID:     c.ClaimID,
+					Text:        c.Text,
+					Status:      string(c.Status),
+					Source:      c.Source,
+					Verdict:     c.Verdict,
+					Basis:       c.Basis,
+					Literal:     c.Literal,
+					Flags:       flags,
+					Confidence:  c.Confidence,
+					Rationale:   c.Rationale,
+					Citations:   citations,
+				}
+			}
+			if err := firstBatchError(q.InsertDocumentClaim(ctx, params)); err != nil {
+				return fmt.Errorf("insert claims: %w", err)
+			}
+		}
+		if err := q.BumpDocumentSentencesProcessed(ctx, uid); err != nil {
+			return fmt.Errorf("bump progress: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("postgres: record sentence result %s seq %d: %w", id, seq, err)
+	}
+	return nil
+}
+
+// CompleteDocumentAnalysis marks a run complete, stamps the completion time, and
+// increments the run count.
+func (s *Store) CompleteDocumentAnalysis(ctx context.Context, id string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.ErrDocumentNotFound
+	}
+	if err := s.queries.CompleteDocumentAnalysis(ctx, uid); err != nil {
+		return fmt.Errorf("postgres: complete analysis %s: %w", id, err)
+	}
+	return nil
+}
+
+// FailDocumentAnalysis records the reason a run failed and flips it to failed so
+// the admin can reanalyse.
+func (s *Store) FailDocumentAnalysis(ctx context.Context, id, reason string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.ErrDocumentNotFound
+	}
+	if err := s.queries.FailDocumentAnalysis(ctx, db.FailDocumentAnalysisParams{ID: uid, AnalysisError: reason}); err != nil {
+		return fmt.Errorf("postgres: fail analysis %s: %w", id, err)
+	}
+	return nil
+}
+
+// RecoverInterruptedAnalyses flips every document left analysing (the process
+// died mid-run) to failed with a clear reason, returning the recovered ids for
+// startup logging.
+func (s *Store) RecoverInterruptedAnalyses(ctx context.Context) ([]string, error) {
+	ids, err := s.queries.RecoverInterruptedAnalyses(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: recover interrupted analyses: %w", err)
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out, nil
+}
+
+// marshalCitations encodes a claim's citations as a jsonb array, normalizing a
+// nil slice to an empty array so the column never holds SQL NULL or 'null'.
+func marshalCitations(citations []domain.SegmentMatch) ([]byte, error) {
+	if citations == nil {
+		citations = []domain.SegmentMatch{}
+	}
+	raw, err := json.Marshal(citations)
+	if err != nil {
+		return nil, fmt.Errorf("marshal citations: %w", err)
+	}
+	return raw, nil
+}
+
 // documentFromRow maps a generated row to the domain type. A NULL analyzed_at
 // maps to the zero time.
 func documentFromRow(r db.Document) domain.Document {

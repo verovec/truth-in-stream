@@ -214,14 +214,6 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	documentSvc, err := service.NewDocumentService(pgStore, mediaStore, service.DocumentConfig{
-		MaxSizeBytes: documentsCfg.MaxSizeBytes,
-		MaxSentences: documentsCfg.MaxSentences,
-	})
-	if err != nil {
-		return err
-	}
-
 	youtubeSvc, err := service.NewIngestService(pgStore, mediaStore, ytdlp.New(ytdlp.Config{
 		BinaryPath: youtubeCfg.BinaryPath,
 		MaxBytes:   youtubeCfg.MaxBytes,
@@ -285,6 +277,36 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// The document analyzer reuses the verify path to fact-check stored PDF
+	// sentences as an in-process background job. verifyPath is a typed nil when
+	// the feature is off, so it is only handed to the analyzer as a non-nil
+	// interface when actually built - otherwise the analyzer would report itself
+	// enabled over a nil pointer. The gate is the same coverage-free claim gate
+	// the live path uses. Startup recovery flips any run interrupted by a prior
+	// crash to failed so the admin can reanalyse.
+	var batchVerifier service.BatchVerifier
+	if verifyPath != nil {
+		batchVerifier = verifyPath
+	}
+	documentAnalyzer, err := service.NewDocumentAnalyzer(pgStore, batchVerifier, prechecker, service.DocumentAnalyzerConfig{
+		Timeout: documentsCfg.AnalysisTimeout,
+	}, logger)
+	if err != nil {
+		return err
+	}
+	if err := documentAnalyzer.Recover(ctx); err != nil {
+		return err
+	}
+
+	documentSvc, err := service.NewDocumentService(pgStore, mediaStore, documentAnalyzer, service.DocumentConfig{
+		MaxSizeBytes: documentsCfg.MaxSizeBytes,
+		MaxSentences: documentsCfg.MaxSentences,
+	}, logger)
+	if err != nil {
+		return err
+	}
+
 	liveAnalyzer, err := service.NewLiveAnalyzer(service.LiveAnalyzerConfig{
 		Stream:           liveStream(transcription, locale, logger),
 		Matcher:          segmentMatcher,
@@ -307,7 +329,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, youtubeSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

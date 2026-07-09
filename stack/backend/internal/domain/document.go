@@ -16,6 +16,16 @@ var ErrDocumentNotFound = errors.New("document not found")
 // re-posting it is a conflict, not a retry.
 var ErrDocumentNotPending = errors.New("document is not pending extraction")
 
+// ErrDocumentNotReady is returned when an analysis is triggered on a document
+// whose upload is not ready (still pending or failed): there are no stored
+// sentences to analyze.
+var ErrDocumentNotReady = errors.New("document is not ready for analysis")
+
+// ErrAnalysisInProgress is returned when an analysis is triggered on a document
+// whose analysis is already running. The analysing status is the job lock, so a
+// concurrent trigger is a conflict.
+var ErrAnalysisInProgress = errors.New("document analysis is already in progress")
+
 // DocumentStatus is the upload lifecycle of a document record, mirroring
 // VideoStatus: an upload starts Pending, becomes Ready once its extraction is
 // stored and its object confirmed in storage, and is Failed when it will never

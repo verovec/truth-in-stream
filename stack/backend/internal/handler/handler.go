@@ -25,7 +25,7 @@ import (
 // served under /demo/ so the browser can play and live-analyze the bundled
 // sample. The only public route is /healthz for load balancer checks; the legacy
 // login and logout routes exist only when the legacy flag is on.
-func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, youtube YouTubeService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). See videos.go.
 	api.HandleFunc("POST /api/videos/uploads", requestUploadHandler(videos))
@@ -38,6 +38,7 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	// mutating routes carry the RequireAdmin gate. See documents.go.
 	api.Handle("POST /api/documents/uploads", middleware.RequireAdmin(requestDocumentUploadHandler(documents)))
 	api.Handle("POST /api/documents/{id}/extraction", middleware.RequireAdmin(documentExtractionHandler(documents)))
+	api.Handle("POST /api/documents/{id}/reanalyse", middleware.RequireAdmin(reanalyseDocumentHandler(documentAnalyzer)))
 	api.HandleFunc("GET /api/documents", listDocumentsHandler(documents))
 	api.HandleFunc("GET /api/documents/{id}", getDocumentHandler(documents))
 	api.HandleFunc("GET /api/documents/{id}/claims", documentClaimsHandler(documents))

@@ -271,6 +271,121 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	}, nil
 }
 
+// BatchClaimResult is one atomic claim's resolved verdict produced outside the
+// live socket, for the document analyzer. Status is verified or error; a batch
+// job never sheds, so there is no unchecked outcome. Source and Verdict are
+// zero on an error claim.
+type BatchClaimResult struct {
+	Claim   AtomicClaim
+	Status  ClaimStatus
+	Source  VerdictSource
+	Verdict *VerifiedVerdict
+}
+
+// BatchUnitResult is the outcome of analyzing one text unit (a document
+// sentence) in batch. When Checkable is false the gate skipped the unit with
+// SkipReason; when Checkable is true but Claims is empty, decomposition found no
+// verifiable claim (a not_a_claim skip). Otherwise Claims holds one resolved
+// verdict per atomic claim, in decomposition order.
+type BatchUnitResult struct {
+	Checkable  bool
+	SkipReason domain.SkipReason
+	Claims     []BatchClaimResult
+}
+
+// AnalyzeText runs one text unit through the verify path for a batch analyzer:
+// gate -> decompose -> per-claim fast/verify, returning the resolved verdicts
+// without emitting live events, speaker tallies, or consistency. Unlike the live
+// path it never sheds: each claim's verify call blocks on the verify pool until
+// a slot frees (bounded only by ctx), so every claim ends with a real verdict or
+// an error. The gate is supplied by the caller; VerifyPath holds none. It errors
+// only when the gate itself fails - a per-claim retrieval or verify failure is a
+// non-fatal error result, mirroring the live path.
+func (vp *VerifyPath) AnalyzeText(ctx context.Context, gate SegmentPrechecker, text, anchorID string) (BatchUnitResult, error) {
+	decision, err := gate.Evaluate(ctx, text)
+	if err != nil {
+		return BatchUnitResult{}, fmt.Errorf("service: batch gate: %w", err)
+	}
+	if !decision.Checkable {
+		return BatchUnitResult{Checkable: false, SkipReason: decision.Reason}, nil
+	}
+
+	claims := vp.decomposeText(ctx, text, "", anchorID)
+	if len(claims) == 0 {
+		return BatchUnitResult{Checkable: true, SkipReason: domain.SkipReasonNotAClaim}, nil
+	}
+
+	// A sentence's claims resolve concurrently, bounded by the shared verify
+	// pool's semaphore; the analyzer processes sentences one at a time, so the
+	// pool is the only concurrency bound. results is index-addressed so the
+	// goroutines never contend on a shared slice.
+	results := make([]BatchClaimResult, len(claims))
+	var wg sync.WaitGroup
+	for i, claim := range claims {
+		wg.Add(1)
+		go func(i int, claim AtomicClaim) {
+			defer wg.Done()
+			results[i] = vp.resolveClaimBatch(ctx, claim)
+		}(i, claim)
+	}
+	wg.Wait()
+	return BatchUnitResult{Checkable: true, Claims: results}, nil
+}
+
+// resolveClaimBatch resolves one atomic claim for a batch job. It mirrors
+// scoreClaim's branch order - cache, retrieve, political/credibility curated
+// borrow, political route+verify or credibility verify - but returns the verdict
+// rather than emitting it, blocks on the verify pool instead of shedding, and
+// has no unchecked outcome. A retrieval or verify failure is an error result.
+func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) BatchClaimResult {
+	if cached, ok := vp.cacheGet(claim.Text); ok {
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: cached.source, Verdict: cached.verdict}
+	}
+
+	ret, err := vp.retrieve(ctx, claim.Text)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch retrieval failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
+	}
+
+	// Political curated fast borrow (political path only, ahead of the legacy
+	// borrow because only it carries the manipulation axis).
+	if vp.political() {
+		if verdict, ok := vp.politicalFastMatch(ctx, ret.embedding); ok {
+			vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+			return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceCurated, Verdict: verdict}
+		}
+	}
+
+	// Credibility curated fast borrow: a high-similarity curated near-match
+	// borrows its verdict with no verifier call, carrying its literal axis on the
+	// political path.
+	if fast, ok := vp.fastMatch(ret.matches); ok {
+		verdict := curatedVerdict(fast)
+		if vp.political() {
+			verdict.Literal = literalFromCredibility(verdict.Verdict)
+		}
+		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceCurated, Verdict: verdict}
+	}
+
+	if vp.political() {
+		return vp.resolvePoliticalClaimBatch(ctx, claim, ret)
+	}
+
+	verdict, err := vp.verifyClaimBlocking(ctx, claim.Text, ret.matches)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
+	}
+	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+}
+
 // scoreUnit is the verify-path replacement for the legacy LiveAnalyzer.scoreUnit:
 // gate the unit, decompose it into atomic claims, announce them, then run each
 // claim's fast/verify lifecycle concurrently under the verify pool. It reuses the
@@ -339,13 +454,21 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 // together. The decomposer never errors; an empty result means the unit carried
 // no verifiable claim.
 func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string) []AtomicClaim {
+	return vp.decomposeText(ctx, text, pu.speaker, pu.members[0].id)
+}
+
+// decomposeText is the transport-free core of decompose: it runs the decomposer
+// on the fast pool and assigns each surviving atomic claim a stable id
+// (anchorID plus an index). The live path passes the unit's anchor id and
+// speaker; the batch analyzer passes a per-sentence anchor and an empty
+// speaker. Behavior is identical to the prior inline body.
+func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, anchorID string) []AtomicClaim {
 	fastCtx, cancel := context.WithTimeout(ctx, vp.fastDeadline)
 	defer cancel()
-	texts := vp.decomposer.Decompose(fastCtx, text, pu.speaker, "")
-	anchor := pu.members[0].id
+	texts := vp.decomposer.Decompose(fastCtx, text, speaker, "")
 	claims := make([]AtomicClaim, 0, len(texts))
 	for i, t := range texts {
-		claims = append(claims, AtomicClaim{ClaimID: anchor + "-" + strconv.Itoa(i), Text: t})
+		claims = append(claims, AtomicClaim{ClaimID: anchorID + "-" + strconv.Itoa(i), Text: t})
 	}
 	return claims
 }
@@ -502,15 +625,40 @@ func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []d
 	}
 	defer func() { <-vp.verifySem }()
 
+	verdict, err := vp.runVerifier(ctx, claim, matches)
+	return verdict, false, err
+}
+
+// runVerifier runs the credibility verifier against retrieved evidence under an
+// already-held verify slot (the caller owns slot acquisition and release). It
+// bounds the call by the verify deadline and resolves the verifier's citations
+// back to the retrieved matches. Split out of verifyClaim so the live
+// shed-acquire path and the batch blocking-acquire path share one verifier body.
+func (vp *VerifyPath) runVerifier(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, vp.verifyDeadline)
 	defer cancel()
 
 	passages := passagesFromMatches(matches)
 	res, err := vp.verifier.Verify(verifyCtx, claim, passages)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return verdictFromResult(res, matches), false, nil
+	return verdictFromResult(res, matches), nil
+}
+
+// verifyClaimBlocking is the no-shed counterpart of verifyClaim for a batch job:
+// it blocks on the verify pool until a slot frees (bounded only by ctx) rather
+// than shedding to unchecked, so every claim ends with a real verdict. The
+// no-evidence short-circuit and the verifier body are shared with verifyClaim.
+func (vp *VerifyPath) verifyClaimBlocking(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, error) {
+	if len(matches) == 0 {
+		return &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}, nil
+	}
+	if !vp.acquireVerifySlotBlocking(ctx) {
+		return nil, ctx.Err()
+	}
+	defer func() { <-vp.verifySem }()
+	return vp.runVerifier(ctx, claim, matches)
 }
 
 // acquireVerifySlot takes a verify-pool slot, waiting up to the bounded queue's
@@ -544,6 +692,19 @@ func (vp *VerifyPath) acquireVerifySlot(ctx context.Context) bool {
 		return true
 	case <-wait.C:
 		return false
+	}
+}
+
+// acquireVerifySlotBlocking waits for a verify-pool slot without ever shedding:
+// a batch document job can wait, so it blocks until a slot frees or ctx is
+// canceled. It reports false only on cancellation. This is the backpressure the
+// batch analyzer applies in place of the live path's capacity shed.
+func (vp *VerifyPath) acquireVerifySlotBlocking(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case vp.verifySem <- struct{}{}:
+		return true
 	}
 }
 

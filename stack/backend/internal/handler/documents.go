@@ -39,6 +39,14 @@ type DocumentService interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// DocumentAnalyzerService is the slice of the analyzer the reanalyse endpoint
+// consumes, satisfied by *service.DocumentAnalyzer. Start claims the document
+// and spawns its analysis, returning a lifecycle error the handler maps to a
+// status code.
+type DocumentAnalyzerService interface {
+	Start(ctx context.Context, id string) error
+}
+
 // maxExtractionBodyBytes bounds the extraction body: the sentence cap bounds
 // the row count, this bounds the raw bytes a client can post before decoding.
 const maxExtractionBodyBytes = 8 << 20
@@ -276,6 +284,31 @@ func documentClaimsHandler(svc DocumentService) http.HandlerFunc {
 				Document:  toDocumentJSON(analysis.Document),
 				Sentences: sentences,
 			})
+		}
+	}
+}
+
+// reanalyseDocumentHandler triggers a fresh analysis run over a document's
+// stored sentences and returns 202; the run proceeds in the background. A
+// document that does not exist, is not ready, or is already analysing maps to
+// its own status; when the verify path is not configured the endpoint reports
+// analysis is unavailable. Upload, list, and view work regardless.
+func reanalyseDocumentHandler(svc DocumentAnalyzerService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := svc.Start(r.Context(), r.PathValue("id"))
+		switch {
+		case errors.Is(err, domain.ErrDocumentNotFound):
+			httpx.Error(w, http.StatusNotFound, "unknown document")
+		case errors.Is(err, domain.ErrDocumentNotReady):
+			httpx.Error(w, http.StatusConflict, "document is not ready for analysis")
+		case errors.Is(err, domain.ErrAnalysisInProgress):
+			httpx.Error(w, http.StatusConflict, "analysis is already in progress")
+		case errors.Is(err, service.ErrAnalysisDisabled):
+			httpx.Error(w, http.StatusServiceUnavailable, "analysis is not available")
+		case err != nil:
+			httpx.Error(w, http.StatusInternalServerError, "internal error")
+		default:
+			w.WriteHeader(http.StatusAccepted)
 		}
 	}
 }

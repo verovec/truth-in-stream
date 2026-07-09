@@ -929,10 +929,15 @@ services:
       STORAGE_SECRET_KEY: "minioadmin"
       STORAGE_USE_PATH_STYLE: "true"
       # PDF document API caps (empty keeps the backend defaults: 30 MB, 1500
-      # sentences). Forwarded explicitly - a variable in .env does nothing
-      # unless compose passes it through.
+      # sentences, 30m analysis run timeout). Forwarded explicitly - a variable
+      # in .env does nothing unless compose passes it through. The document
+      # analyzer reuses the verify path, so its behaviour is governed by the
+      # FACTCHECK_VERIFY_* and FACTCHECK_POLITICAL variables forwarded above:
+      # with the verify path off, upload and view still work but analysis is
+      # disabled.
       DOCUMENT_MAX_SIZE_BYTES: "${DOCUMENT_MAX_SIZE_BYTES:-}"
       DOCUMENT_MAX_SENTENCES: "${DOCUMENT_MAX_SENTENCES:-}"
+      DOCUMENT_ANALYSIS_TIMEOUT: "${DOCUMENT_ANALYSIS_TIMEOUT:-}"
       # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
       # yt-dlp and ffmpeg, so the defaults work as-is. Optional overrides:
       # YOUTUBE_DOWNLOADER_PATH (default "yt-dlp"), YOUTUBE_MAX_DOWNLOAD_BYTES

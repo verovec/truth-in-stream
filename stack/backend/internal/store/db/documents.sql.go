@@ -12,6 +12,45 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpDocumentSentencesProcessed = `-- name: BumpDocumentSentencesProcessed :exec
+UPDATE documents
+SET sentences_processed = sentences_processed + 1, updated_at = now()
+WHERE id = $1
+`
+
+// Advance the progress counter by one completed sentence. Progress is database
+// state, so it survives a page refresh mid-run.
+func (q *Queries) BumpDocumentSentencesProcessed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, bumpDocumentSentencesProcessed, id)
+	return err
+}
+
+const clearDocumentSkipReasons = `-- name: ClearDocumentSkipReasons :exec
+UPDATE document_sentences
+SET skip_reason = ''
+WHERE document_id = $1
+`
+
+// Clear every sentence's skip reason at the start of an analysis run, so a
+// sentence check-worthy this run is not left with a stale prior skip.
+func (q *Queries) ClearDocumentSkipReasons(ctx context.Context, documentID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearDocumentSkipReasons, documentID)
+	return err
+}
+
+const completeDocumentAnalysis = `-- name: CompleteDocumentAnalysis :exec
+UPDATE documents
+SET analysis_status = 'complete', analysis_error = '', analyzed_at = now(), analysis_runs = analysis_runs + 1, updated_at = now()
+WHERE id = $1
+`
+
+// Terminal success: mark the run complete, stamp the completion time, and count
+// the run.
+func (q *Queries) CompleteDocumentAnalysis(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, completeDocumentAnalysis, id)
+	return err
+}
+
 const createDocument = `-- name: CreateDocument :one
 INSERT INTO documents (id, title, object_key, content_type, size_bytes, status)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -71,6 +110,36 @@ func (q *Queries) DeleteDocument(ctx context.Context, id uuid.UUID) (int64, erro
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteDocumentClaims = `-- name: DeleteDocumentClaims :exec
+DELETE FROM document_claims
+WHERE document_id = $1
+`
+
+// Wipe a document's claims at the start of an analysis run; the reanalysis keeps
+// only the latest results.
+func (q *Queries) DeleteDocumentClaims(ctx context.Context, documentID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDocumentClaims, documentID)
+	return err
+}
+
+const failDocumentAnalysis = `-- name: FailDocumentAnalysis :exec
+UPDATE documents
+SET analysis_status = 'failed', analysis_error = $2, updated_at = now()
+WHERE id = $1
+`
+
+type FailDocumentAnalysisParams struct {
+	ID            uuid.UUID
+	AnalysisError string
+}
+
+// Terminal failure: record the reason and flip the run to failed so the admin
+// can reanalyse.
+func (q *Queries) FailDocumentAnalysis(ctx context.Context, arg FailDocumentAnalysisParams) error {
+	_, err := q.db.Exec(ctx, failDocumentAnalysis, arg.ID, arg.AnalysisError)
+	return err
 }
 
 const getDocument = `-- name: GetDocument :one
@@ -257,6 +326,71 @@ func (q *Queries) ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	return items, nil
 }
 
+const lockDocumentForAnalysis = `-- name: LockDocumentForAnalysis :one
+UPDATE documents
+SET analysis_status = 'analysing', sentences_processed = 0, analysis_error = '', updated_at = now()
+WHERE id = $1 AND status = 'ready' AND analysis_status <> 'analysing'
+RETURNING id, title, object_key, content_type, size_bytes, page_count, status, analysis_status, analysis_error, sentences_total, sentences_processed, analyzed_at, analysis_runs, created_at, updated_at
+`
+
+// Claim a ready document for a fresh analysis run: flip it to analysing (the
+// lock), zero the progress counter, and clear any prior error - all in one
+// guarded update. The guard admits a document that is ready and not already
+// analysing (so a none/complete/failed analysis re-runs, a concurrent run is
+// excluded). No row returned means the store resolves why (unknown, not ready,
+// or already analysing) and maps it to the right error.
+func (q *Queries) LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error) {
+	row := q.db.QueryRow(ctx, lockDocumentForAnalysis, id)
+	var i Document
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.PageCount,
+		&i.Status,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.SentencesTotal,
+		&i.SentencesProcessed,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const recoverInterruptedAnalyses = `-- name: RecoverInterruptedAnalyses :many
+UPDATE documents
+SET analysis_status = 'failed', analysis_error = 'interrupted by restart', updated_at = now()
+WHERE analysis_status = 'analysing'
+RETURNING id
+`
+
+// Startup recovery: any document left analysing when the process died is flipped
+// to failed with a clear reason. Returns the recovered ids for logging.
+func (q *Queries) RecoverInterruptedAnalyses(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, recoverInterruptedAnalyses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setDocumentExtracted = `-- name: SetDocumentExtracted :one
 UPDATE documents
 SET page_count = $2, sentences_total = $3, status = 'ready', updated_at = now()
@@ -294,4 +428,22 @@ func (q *Queries) SetDocumentExtracted(ctx context.Context, arg SetDocumentExtra
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const setDocumentSentenceSkipReason = `-- name: SetDocumentSentenceSkipReason :exec
+UPDATE document_sentences
+SET skip_reason = $3
+WHERE document_id = $1 AND seq = $2
+`
+
+type SetDocumentSentenceSkipReasonParams struct {
+	DocumentID uuid.UUID
+	Seq        int32
+	SkipReason string
+}
+
+// Record why a sentence was not verified this run (not_a_claim / not_covered).
+func (q *Queries) SetDocumentSentenceSkipReason(ctx context.Context, arg SetDocumentSentenceSkipReasonParams) error {
+	_, err := q.db.Exec(ctx, setDocumentSentenceSkipReason, arg.DocumentID, arg.Seq, arg.SkipReason)
+	return err
 }
