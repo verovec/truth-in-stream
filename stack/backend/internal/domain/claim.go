@@ -97,5 +97,5 @@ type ClaimStore interface {
 	Upsert(ctx context.Context, claims []Claim) error
 	// Search returns the topK claims closest to query by cosine distance,
 	// nearest first.
-	Search(ctx context.Context, query []float32, topK int) ([]ClaimMatch, error)
+	Search(ctx context.Context, query []float32, topK, efSearch int) ([]ClaimMatch, error)
 }

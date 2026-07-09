@@ -44,7 +44,7 @@ type fakeSearcher struct {
 	gotTopK  int
 }
 
-func (f *fakeSearcher) Search(_ context.Context, query []float32, topK int) ([]domain.ClaimMatch, error) {
+func (f *fakeSearcher) Search(_ context.Context, query []float32, topK, _ int) ([]domain.ClaimMatch, error) {
 	f.gotQuery = query
 	f.gotTopK = topK
 	if f.err != nil {
@@ -54,15 +54,19 @@ func (f *fakeSearcher) Search(_ context.Context, query []float32, topK int) ([]d
 }
 
 type fakeEvidence struct {
-	hits     []domain.EvidenceHit
-	err      error
-	gotQuery []float32
-	gotTopK  int
+	hits        []domain.EvidenceHit
+	err         error
+	gotQuery    []float32
+	gotTopK     int
+	gotEfSearch int
+	gotSources  []string
 }
 
-func (f *fakeEvidence) SearchEvidence(_ context.Context, query []float32, topK int) ([]domain.EvidenceHit, error) {
+func (f *fakeEvidence) SearchEvidence(_ context.Context, query []float32, topK, efSearch int, sources []string) ([]domain.EvidenceHit, error) {
 	f.gotQuery = query
 	f.gotTopK = topK
+	f.gotEfSearch = efSearch
+	f.gotSources = sources
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -474,14 +478,14 @@ func TestNewMatcherValidatesConfig(t *testing.T) {
 // race-free.
 type stubSearcher struct{}
 
-func (stubSearcher) Search(context.Context, []float32, int) ([]domain.ClaimMatch, error) {
+func (stubSearcher) Search(context.Context, []float32, int, int) ([]domain.ClaimMatch, error) {
 	return nil, nil
 }
 
 // stubEvidence is the evidence-corpus counterpart to stubSearcher.
 type stubEvidence struct{}
 
-func (stubEvidence) SearchEvidence(context.Context, []float32, int) ([]domain.EvidenceHit, error) {
+func (stubEvidence) SearchEvidence(context.Context, []float32, int, int, []string) ([]domain.EvidenceHit, error) {
 	return nil, nil
 }
 

@@ -239,7 +239,7 @@ func TestStatsIngestRoutesThroughFleetEndToEnd(t *testing.T) {
 	// The now-embedded passages are retrievable: a query embedded like the 2022
 	// passage returns it as the nearest neighbor above the floor.
 	want := stats.RenderFrench(dps[1])
-	got, err := store.SearchEvidence(ctx, vectorFor(want), 1)
+	got, err := store.SearchEvidence(ctx, vectorFor(want), 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestINSEEDataflowRoutesThroughFleetEndToEnd(t *testing.T) {
 	runFleet(ctx, t, store, mq, orthogonalEmbedder{}, domain.INSEEUnemploymentCorpus)
 
 	want := stats.RenderFrench(dps[0])
-	got, err := store.SearchEvidence(ctx, vectorFor(want), 1)
+	got, err := store.SearchEvidence(ctx, vectorFor(want), 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestLaborPassageSurvivesMacroCorpora(t *testing.T) {
 	// Query the way a verifier would: embed a labor-themed question and confirm
 	// the labor passage is the nearest neighbor despite 200 macro passages.
 	query := tokenVector("taux d'emploi des immigrés en France")
-	got, err := store.SearchEvidence(ctx, query, 3)
+	got, err := store.SearchEvidence(ctx, query, 3, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

@@ -100,7 +100,7 @@ type PoliticalClaimStore interface {
 	UpsertPoliticalClaim(ctx context.Context, claim PoliticalClaim) error
 	// SearchPoliticalClaims returns the topK claims closest to query by cosine
 	// distance, nearest first.
-	SearchPoliticalClaims(ctx context.Context, query []float32, topK int) ([]PoliticalClaimMatch, error)
+	SearchPoliticalClaims(ctx context.Context, query []float32, topK, efSearch int) ([]PoliticalClaimMatch, error)
 }
 
 // VotePosition is a recorded position on a scrutin (a vote in the Assemblee

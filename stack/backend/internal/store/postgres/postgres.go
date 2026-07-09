@@ -119,8 +119,48 @@ func firstBatchError(br batchExecer) error {
 	return execErr
 }
 
-// Search returns the topK claims closest to query by cosine distance.
-func (s *Store) Search(ctx context.Context, query []float32, topK int) ([]domain.ClaimMatch, error) {
+// searchIterativeScan is the hnsw.iterative_scan mode a filtered search runs
+// under. relaxed_order keeps recall high when a WHERE filter (a source scope)
+// would otherwise make HNSW under-return the LIMIT. It is applied ONLY to a
+// scoped search: an unfiltered search has nothing to under-return, so enabling
+// it there would only weaken the strict distance ordering that the top-1
+// consumers and the break-on-first-below-threshold match loops rely on, add a
+// pgvector >= 0.8.0 dependency to searches that were version-tolerant, and pay a
+// transaction round-trip for nothing. hnsw.max_scan_tuples keeps its bounded
+// 20000 default, so a scoped scan is capped rather than unbounded.
+const searchIterativeScan = "relaxed_order"
+
+// searchTuned runs one vector search with a per-query hnsw.ef_search and,
+// for a scoped search, hnsw.iterative_scan applied transaction-locally
+// (set_config local=true) so neither leaks onto the pooled connection the way a
+// session SET would. It is the one tuned path the three corpus searches share.
+// When neither a raised ef_search (efSearch <= 0) nor iterative scan is needed -
+// the unfiltered hot path the live matcher and political fast-path take - it
+// runs the query straight on the pool with no transaction, exactly as before,
+// preserving both the latency and the session-default strict ordering.
+func (s *Store) searchTuned(ctx context.Context, efSearch int, iterativeScan bool, run func(q *db.Queries) error) error {
+	if efSearch <= 0 && !iterativeScan {
+		return run(s.queries)
+	}
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if efSearch > 0 {
+			if _, err := tx.Exec(ctx, "SELECT set_config('hnsw.ef_search', $1, true)", strconv.Itoa(efSearch)); err != nil {
+				return fmt.Errorf("set ef_search: %w", err)
+			}
+		}
+		if iterativeScan {
+			if _, err := tx.Exec(ctx, "SELECT set_config('hnsw.iterative_scan', $1, true)", searchIterativeScan); err != nil {
+				return fmt.Errorf("set iterative_scan: %w", err)
+			}
+		}
+		return run(s.queries.WithTx(tx))
+	})
+}
+
+// Search returns the topK claims closest to query by cosine distance under a
+// per-query efSearch (0 keeps the session default). The claims corpus has no
+// source scope, so the search stays strictly ordered (no iterative scan).
+func (s *Store) Search(ctx context.Context, query []float32, topK, efSearch int) ([]domain.ClaimMatch, error) {
 	if topK <= 0 || topK > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: search: topK %d out of range", topK)
 	}
@@ -128,9 +168,14 @@ func (s *Store) Search(ctx context.Context, query []float32, topK int) ([]domain
 		return nil, fmt.Errorf("postgres: search: query has %d dims, want %d", len(query), domain.EmbeddingDim)
 	}
 
-	rows, err := s.queries.SearchClaims(ctx, db.SearchClaimsParams{
-		QueryEmbedding: pgvector.NewHalfVector(query),
-		ResultLimit:    int32(topK),
+	var rows []db.SearchClaimsRow
+	err := s.searchTuned(ctx, efSearch, false, func(q *db.Queries) error {
+		var e error
+		rows, e = q.SearchClaims(ctx, db.SearchClaimsParams{
+			QueryEmbedding: pgvector.NewHalfVector(query),
+			ResultLimit:    int32(topK),
+		})
+		return e
 	})
 	if err != nil {
 		return nil, fmt.Errorf("postgres: search: %w", err)

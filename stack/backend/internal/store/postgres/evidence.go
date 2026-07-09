@@ -84,8 +84,10 @@ func (s *Store) EnsureSource(ctx context.Context, source string) error {
 // SearchEvidence returns the topK embedded evidence chunks closest to query by
 // cosine distance, nearest first, as supporting evidence. It mirrors
 // Store.Search over the claims corpus; unembedded chunks are excluded by the
-// query.
-func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK int) ([]domain.EvidenceHit, error) {
+// query. A non-empty sources scopes the search to those sources and runs under
+// iterative scan so the filter does not under-return; nil (or an empty slice)
+// is the unchanged global search, which stays strictly ordered.
+func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSearch int, sources []string) ([]domain.EvidenceHit, error) {
 	if topK <= 0 || topK > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: search evidence: topK %d out of range", topK)
 	}
@@ -93,10 +95,25 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK int) (
 		return nil, fmt.Errorf("postgres: search evidence: query has %d dims, want %d", len(query), domain.EmbeddingDim)
 	}
 
+	// An empty (non-nil) slice is coerced to nil so it means "all sources" like
+	// nil does, rather than encoding to the empty SQL array `{}` that
+	// `source = ANY('{}')` would match against nothing - a silent no-results
+	// footgun for a dynamically built, possibly-empty filter.
+	if len(sources) == 0 {
+		sources = nil
+	}
+	scoped := sources != nil
+
 	vec := pgvector.NewHalfVector(query)
-	rows, err := s.queries.SearchEvidenceChunks(ctx, db.SearchEvidenceChunksParams{
-		QueryEmbedding: &vec,
-		ResultLimit:    int32(topK),
+	var rows []db.SearchEvidenceChunksRow
+	err := s.searchTuned(ctx, efSearch, scoped, func(q *db.Queries) error {
+		var e error
+		rows, e = q.SearchEvidenceChunks(ctx, db.SearchEvidenceChunksParams{
+			QueryEmbedding: &vec,
+			Sources:        sources,
+			ResultLimit:    int32(topK),
+		})
+		return e
 	})
 	if err != nil {
 		return nil, fmt.Errorf("postgres: search evidence: %w", err)

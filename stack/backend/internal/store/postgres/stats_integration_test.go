@@ -100,7 +100,7 @@ func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 		t.Fatalf("producer upserted %d, want 2", n)
 	}
 
-	hits, err := store.SearchEvidence(ctx, vec, 5)
+	hits, err := store.SearchEvidence(ctx, vec, 5, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestStatsRunStoresAndRetrievesThroughFleet(t *testing.T) {
 	if count != 1 {
 		t.Errorf("after re-run distinct stat pages = %d, want 1 (one series, no duplicates)", count)
 	}
-	rerunHits, err := store.SearchEvidence(ctx, vec, 10)
+	rerunHits, err := store.SearchEvidence(ctx, vec, 10, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence after re-run: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 		t.Errorf("clustering scan returned page %s, want the wiki page 42", embedded[0].ExternalID)
 	}
 
-	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10)
+	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestNationalStatsExcludedFromWikiMaintenanceReads(t *testing.T) {
 		t.Errorf("clustering scan returned page %s, want the wiki page 42", embedded[0].ExternalID)
 	}
 
-	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10)
+	hits, err := store.SearchEvidence(ctx, fullEmbedding(), 10, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

@@ -507,7 +507,7 @@ func TestSetStagingChunkEmbeddingSearchableAfterSwap(t *testing.T) {
 		t.Fatalf("FinalizeStaging: %v", err)
 	}
 
-	got, err := store.SearchEvidence(ctx, unitVec(2), 1)
+	got, err := store.SearchEvidence(ctx, unitVec(2), 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestSetLiveChunkEmbeddingsWritesBatchInPlace(t *testing.T) {
 		t.Error("un-embedded chunk 3 should remain null")
 	}
 	// The freshly embedded chunk is now searchable in place, no swap needed.
-	got, err := store.SearchEvidence(ctx, unitVec(0), 1)
+	got, err := store.SearchEvidence(ctx, unitVec(0), 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

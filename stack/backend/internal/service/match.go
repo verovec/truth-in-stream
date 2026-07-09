@@ -23,7 +23,7 @@ type QueryEmbedder interface {
 // ClaimSearcher is the slice of the claim store the matcher needs:
 // approximate nearest-neighbor retrieval over the curated claims corpus.
 type ClaimSearcher interface {
-	Search(ctx context.Context, query []float32, topK int) ([]domain.ClaimMatch, error)
+	Search(ctx context.Context, query []float32, topK, efSearch int) ([]domain.ClaimMatch, error)
 }
 
 // EvidenceSearcher is the slice of the store the matcher needs for the
@@ -31,7 +31,7 @@ type ClaimSearcher interface {
 // evidence. Kept separate from ClaimSearcher so the two corpora stay
 // independently swappable.
 type EvidenceSearcher interface {
-	SearchEvidence(ctx context.Context, query []float32, topK int) ([]domain.EvidenceHit, error)
+	SearchEvidence(ctx context.Context, query []float32, topK, efSearch int, sources []string) ([]domain.EvidenceHit, error)
 }
 
 // ErrEmptySegment is returned when a segment contains no text to match.
@@ -214,7 +214,7 @@ func (m *Matcher) Contributions(matches []Match) []float64 {
 
 // claimMatches retrieves and threshold-filters curated claim hits.
 func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, error) {
-	hits, err := m.claims.Search(ctx, query, m.cfg.TopK)
+	hits, err := m.claims.Search(ctx, query, m.cfg.TopK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("service: search claims: %w", err)
 	}
@@ -244,7 +244,7 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 	if m.cfg.EvidenceTopK == 0 {
 		return nil, nil
 	}
-	hits, err := m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK)
+	hits, err := m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("service: search evidence: %w", err)
 	}

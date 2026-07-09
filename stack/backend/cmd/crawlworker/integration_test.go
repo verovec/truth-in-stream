@@ -108,7 +108,7 @@ func waitForEmbeddedRows(ctx context.Context, t *testing.T, store *postgres.Stor
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		got, err := store.SearchEvidence(ctx, query, want+5)
+		got, err := store.SearchEvidence(ctx, query, want+5, 0, nil)
 		if err != nil {
 			t.Fatalf("SearchEvidence: %v", err)
 		}
