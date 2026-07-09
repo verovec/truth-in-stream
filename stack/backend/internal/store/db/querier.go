@@ -122,14 +122,25 @@ type Querier interface {
 	// Stage one gathers coarse_limit candidates by Hamming distance over the
 	// binary-quantized bit index (evidence_chunks_embedding_bit_hnsw): the ORDER BY
 	// expression matches the index expression exactly so the planner uses it, and
-	// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. Stage two
-	// reranks those candidates by exact cosine distance on the full-precision
-	// halfvec column, so final ordering matches a single-stage search whenever the
-	// coarse pass captured the true neighbours (coarse_limit is a multiple of the
-	// final k). The CTE is MATERIALIZED so the planner cannot collapse the rerank
-	// into the coarse pass and defeat the two stages. query_embedding is referenced
-	// in both stages but sqlc collapses it to one parameter. The optional sources
-	// filter mirrors SearchEvidenceChunks so a scoped two-stage search is possible.
+	// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. The caller
+	// raises hnsw.ef_search (and enables iterative_scan) so this LIMIT is actually
+	// filled - a bare HNSW scan returns at most ef_search rows. Stage two reranks
+	// those candidates by exact cosine distance on the full-precision halfvec
+	// column, so final ordering matches a single-stage search whenever the coarse
+	// pass captured the true neighbours (coarse_limit is a multiple of the final k).
+	//
+	// The candidate CTE is MATERIALIZED (so the planner cannot collapse the rerank
+	// into the coarse pass and defeat the two stages) and carries ONLY the natural
+	// key plus the precomputed cosine distance - never the embedding or the heavy
+	// content/title/url/metadata columns, which would otherwise be read and buffered
+	// for every coarse candidate only to be discarded. The rerank orders by that
+	// precomputed distance, and evidence_chunks is joined back for the heavy columns
+	// of just the result_limit rows that survive. Computing the cosine distance in
+	// the candidate CTE (against evidence_chunks.embedding directly) also lets sqlc
+	// infer query_embedding as the halfvec-typed column parameter. query_embedding
+	// is referenced in several stages but sqlc collapses it to one parameter. The
+	// optional sources filter mirrors SearchEvidenceChunks so a scoped two-stage
+	// search is possible.
 	SearchEvidenceChunksBinaryQuantized(ctx context.Context, arg SearchEvidenceChunksBinaryQuantizedParams) ([]SearchEvidenceChunksBinaryQuantizedRow, error)
 	// Approximate nearest-neighbor retrieval over the curated political claim DB,
 	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated

@@ -305,25 +305,32 @@ func (q *Queries) SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceCh
 
 const searchEvidenceChunksBinaryQuantized = `-- name: SearchEvidenceChunksBinaryQuantized :many
 WITH candidates AS MATERIALIZED (
-    SELECT source, external_id, chunk_index, title, url, content, kind, metadata, embedding
+    SELECT evidence_chunks.source, evidence_chunks.external_id, evidence_chunks.chunk_index,
+           (evidence_chunks.embedding <=> $1)::float8 AS distance
     FROM evidence_chunks
-    WHERE embedding IS NOT NULL
-      AND ($3::text[] IS NULL OR source = ANY($3::text[]))
-    ORDER BY binary_quantize(embedding)::bit(1024) <~> binary_quantize($1::halfvec(1024))
+    WHERE evidence_chunks.embedding IS NOT NULL
+      AND ($2::text[] IS NULL OR evidence_chunks.source = ANY($2::text[]))
+    ORDER BY binary_quantize(evidence_chunks.embedding)::bit(1024) <~> binary_quantize($1::halfvec(1024))
+    LIMIT $3
+),
+reranked AS (
+    SELECT source, external_id, chunk_index, distance
+    FROM candidates
+    ORDER BY distance
     LIMIT $4
 )
-SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
-       (embedding <=> $1)::float8 AS distance
-FROM candidates
-ORDER BY embedding <=> $1
-LIMIT $2
+SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind, e.metadata,
+       r.distance
+FROM reranked r
+JOIN evidence_chunks e USING (source, external_id, chunk_index)
+ORDER BY r.distance
 `
 
 type SearchEvidenceChunksBinaryQuantizedParams struct {
 	QueryEmbedding *pgvector.HalfVector
-	ResultLimit    int32
 	Sources        []string
 	CoarseLimit    int32
+	ResultLimit    int32
 }
 
 type SearchEvidenceChunksBinaryQuantizedRow struct {
@@ -342,20 +349,31 @@ type SearchEvidenceChunksBinaryQuantizedRow struct {
 // Stage one gathers coarse_limit candidates by Hamming distance over the
 // binary-quantized bit index (evidence_chunks_embedding_bit_hnsw): the ORDER BY
 // expression matches the index expression exactly so the planner uses it, and
-// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. Stage two
-// reranks those candidates by exact cosine distance on the full-precision
-// halfvec column, so final ordering matches a single-stage search whenever the
-// coarse pass captured the true neighbours (coarse_limit is a multiple of the
-// final k). The CTE is MATERIALIZED so the planner cannot collapse the rerank
-// into the coarse pass and defeat the two stages. query_embedding is referenced
-// in both stages but sqlc collapses it to one parameter. The optional sources
-// filter mirrors SearchEvidenceChunks so a scoped two-stage search is possible.
+// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. The caller
+// raises hnsw.ef_search (and enables iterative_scan) so this LIMIT is actually
+// filled - a bare HNSW scan returns at most ef_search rows. Stage two reranks
+// those candidates by exact cosine distance on the full-precision halfvec
+// column, so final ordering matches a single-stage search whenever the coarse
+// pass captured the true neighbours (coarse_limit is a multiple of the final k).
+//
+// The candidate CTE is MATERIALIZED (so the planner cannot collapse the rerank
+// into the coarse pass and defeat the two stages) and carries ONLY the natural
+// key plus the precomputed cosine distance - never the embedding or the heavy
+// content/title/url/metadata columns, which would otherwise be read and buffered
+// for every coarse candidate only to be discarded. The rerank orders by that
+// precomputed distance, and evidence_chunks is joined back for the heavy columns
+// of just the result_limit rows that survive. Computing the cosine distance in
+// the candidate CTE (against evidence_chunks.embedding directly) also lets sqlc
+// infer query_embedding as the halfvec-typed column parameter. query_embedding
+// is referenced in several stages but sqlc collapses it to one parameter. The
+// optional sources filter mirrors SearchEvidenceChunks so a scoped two-stage
+// search is possible.
 func (q *Queries) SearchEvidenceChunksBinaryQuantized(ctx context.Context, arg SearchEvidenceChunksBinaryQuantizedParams) ([]SearchEvidenceChunksBinaryQuantizedRow, error) {
 	rows, err := q.db.Query(ctx, searchEvidenceChunksBinaryQuantized,
 		arg.QueryEmbedding,
-		arg.ResultLimit,
 		arg.Sources,
 		arg.CoarseLimit,
+		arg.ResultLimit,
 	)
 	if err != nil {
 		return nil, err

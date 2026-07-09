@@ -791,6 +791,12 @@ services:
       # model, and note the committed seed cache is keyed under the default - a
       # different model needs `make refresh-embeddings` to rebuild it.
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      # Opt-in two-stage binary-quantization evidence search (VER-176). 0 (the
+      # default) keeps the single-stage halfvec search; a positive value gathers
+      # multiplier x k coarse candidates on the bit index and reranks them on the
+      # halfvec column. Off until the corpus approaches the halfvec HNSW's RAM
+      # ceiling; validate recall on the real corpus before enabling.
+      EVIDENCE_BQ_MULTIPLIER: "${EVIDENCE_BQ_MULTIPLIER:-}"
       # LLM provider for every LLM-backed stage (consistency, check-worthiness,
       # claim decomposition, claim typing, the credibility verifier). Defaults to
       # deepseek (DeepSeek's cheap chat model, keyed on DEEPSEEK_API_KEY). Set
