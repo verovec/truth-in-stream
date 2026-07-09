@@ -68,23 +68,7 @@ func (s *Store) ListDocuments(ctx context.Context) ([]domain.DocumentListItem, e
 	items := make([]domain.DocumentListItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, domain.DocumentListItem{
-			Document: documentFromRow(db.Document{
-				ID:                 r.ID,
-				Title:              r.Title,
-				ObjectKey:          r.ObjectKey,
-				ContentType:        r.ContentType,
-				SizeBytes:          r.SizeBytes,
-				PageCount:          r.PageCount,
-				Status:             r.Status,
-				AnalysisStatus:     r.AnalysisStatus,
-				AnalysisError:      r.AnalysisError,
-				SentencesTotal:     r.SentencesTotal,
-				SentencesProcessed: r.SentencesProcessed,
-				AnalyzedAt:         r.AnalyzedAt,
-				AnalysisRuns:       r.AnalysisRuns,
-				CreatedAt:          r.CreatedAt,
-				UpdatedAt:          r.UpdatedAt,
-			}),
+			Document:       documentFromRow(r.Document),
 			CredibleClaims: int(r.CredibleClaims),
 			DisputedClaims: int(r.DisputedClaims),
 		})

@@ -23,6 +23,13 @@ type MediaStore interface {
 	// the host, so the uploader sets the object's Content-Type by sending that
 	// header on the PUT; storage records whatever it sends.
 	PresignUpload(ctx context.Context, key string) (PresignedRequest, error)
+	// PresignUploadOnce returns a presigned PUT request for key that binds the
+	// declared content type, the exact byte length, and write-once semantics
+	// into the signature: a PUT with a different size or type fails the
+	// signature check, and a PUT over an existing object fails its
+	// precondition. A retried PUT whose first attempt succeeded therefore gets
+	// 412, which the uploader treats as already-uploaded.
+	PresignUploadOnce(ctx context.Context, key, contentType string, sizeBytes int64) (PresignedRequest, error)
 	// PresignDownload returns a presigned GET request for key.
 	PresignDownload(ctx context.Context, key string) (PresignedRequest, error)
 	// Exists reports whether an object with key is present.

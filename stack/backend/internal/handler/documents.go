@@ -49,11 +49,14 @@ type documentUploadRequestBody struct {
 	SizeBytes   int64  `json:"size_bytes"`
 }
 
+// documentUploadResponse carries the ticket plus the extraction sentence cap,
+// so the extract-first client can abort an over-long document before the PUT.
 type documentUploadResponse struct {
-	DocumentID string        `json:"document_id"`
-	ObjectKey  string        `json:"object_key"`
-	Status     string        `json:"status"`
-	Upload     presignedJSON `json:"upload"`
+	DocumentID   string        `json:"document_id"`
+	ObjectKey    string        `json:"object_key"`
+	Status       string        `json:"status"`
+	Upload       presignedJSON `json:"upload"`
+	MaxSentences int           `json:"max_sentences"`
 }
 
 type extractionSentenceBody struct {
@@ -102,9 +105,12 @@ type listDocumentsResponse struct {
 	Documents []documentListItemJSON `json:"documents"`
 }
 
+// documentResponse is the detail wire form. PDF is present only once the
+// document is ready: before that the object may not exist in storage, so no
+// download URL is handed out.
 type documentResponse struct {
 	documentJSON
-	PDF presignedJSON `json:"pdf"`
+	PDF *presignedJSON `json:"pdf,omitzero"`
 }
 
 // documentClaimJSON is the wire form of one stored claim. Citations carries
@@ -164,10 +170,11 @@ func requestDocumentUploadHandler(svc DocumentService) http.HandlerFunc {
 			httpx.Error(w, http.StatusInternalServerError, "internal error")
 		default:
 			httpx.JSON(w, http.StatusCreated, documentUploadResponse{
-				DocumentID: ticket.Document.ID,
-				ObjectKey:  ticket.Document.ObjectKey,
-				Status:     string(ticket.Document.Status),
-				Upload:     toPresignedJSON(ticket.Upload),
+				DocumentID:   ticket.Document.ID,
+				ObjectKey:    ticket.Document.ObjectKey,
+				Status:       string(ticket.Document.Status),
+				Upload:       toPresignedJSON(ticket.Upload),
+				MaxSentences: ticket.MaxSentences,
 			})
 		}
 	}
@@ -242,10 +249,12 @@ func getDocumentHandler(svc DocumentService) http.HandlerFunc {
 		case err != nil:
 			httpx.Error(w, http.StatusInternalServerError, "internal error")
 		default:
-			httpx.JSON(w, http.StatusOK, documentResponse{
-				documentJSON: toDocumentJSON(readable.Document),
-				PDF:          toPresignedJSON(readable.PDF),
-			})
+			resp := documentResponse{documentJSON: toDocumentJSON(readable.Document)}
+			if readable.PDF.URL != "" {
+				pdf := toPresignedJSON(readable.PDF)
+				resp.PDF = &pdf
+			}
+			httpx.JSON(w, http.StatusOK, resp)
 		}
 	}
 }

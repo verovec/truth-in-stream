@@ -302,6 +302,65 @@ func TestDownloadStreamsObject(t *testing.T) {
 	}
 }
 
+// TestPresignUploadOnceSignsConstraints proves the strict upload presign binds
+// the declared content type, exact length, and write-once semantics into the
+// signature: the uploader cannot send a different size or type, and cannot
+// overwrite an existing object, without failing the signature or precondition.
+func TestPresignUploadOnceSignsConstraints(t *testing.T) {
+	t.Parallel()
+	store, err := New(t.Context(), validConfig("http://minio.example:9000", true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	req, err := store.PresignUploadOnce(t.Context(), "documents/doc-1/original.pdf", "application/pdf", 2048)
+	if err != nil {
+		t.Fatalf("presign upload once: %v", err)
+	}
+	if req.Method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", req.Method)
+	}
+	for header, want := range map[string]string{
+		"Content-Type":   "application/pdf",
+		"Content-Length": "2048",
+		"If-None-Match":  "*",
+	} {
+		if !hasSignedHeader(req.SignedHeaders, header) {
+			t.Errorf("signed headers %v missing %s", req.SignedHeaders, header)
+			continue
+		}
+		if got := signedHeaderValue(req.SignedHeaders, header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if !hasSignedHeader(req.SignedHeaders, "host") {
+		t.Errorf("signed headers %v missing host", req.SignedHeaders)
+	}
+}
+
+func TestPresignUploadOnceRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	store, err := New(t.Context(), validConfig("http://minio.example:9000", true))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if _, err := store.PresignUploadOnce(t.Context(), "k", "", 1); err == nil {
+		t.Error("empty content type accepted")
+	}
+	if _, err := store.PresignUploadOnce(t.Context(), "k", "application/pdf", 0); err == nil {
+		t.Error("non-positive size accepted")
+	}
+}
+
+func signedHeaderValue(headers map[string][]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
+}
+
 func TestDeleteRemovesObject(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(newObjectServerHandler(t))

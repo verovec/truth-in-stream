@@ -45,8 +45,10 @@ func TestLoadDocuments(t *testing.T) {
 	for _, tc := range tests {
 		// Subtests stay sequential: t.Setenv forbids t.Parallel.
 		t.Run(tc.name, func(t *testing.T) {
-			for k, v := range tc.env {
-				t.Setenv(k, v)
+			// Pin both knobs every run (empty reads as unset), so an ambient
+			// DOCUMENT_* variable on the host cannot leak into the defaults case.
+			for _, k := range []string{"DOCUMENT_MAX_SIZE_BYTES", "DOCUMENT_MAX_SENTENCES"} {
+				t.Setenv(k, tc.env[k])
 			}
 			got, err := LoadDocuments()
 			if tc.wantErr {

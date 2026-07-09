@@ -52,10 +52,14 @@ type Querier interface {
 	GetWikiChunk(ctx context.Context, arg GetWikiChunkParams) (GetWikiChunkRow, error)
 	GetWikiSyncState(ctx context.Context, corpus string) (WikiSyncState, error)
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
-	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]DocumentClaim, error)
+	// ordinal, not created_at, carries insertion order: an analysis run writes its
+	// claims in one transaction, so their created_at values are identical.
+	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]ListDocumentClaimsRow, error)
 	ListDocumentSentences(ctx context.Context, documentID uuid.UUID) ([]DocumentSentence, error)
 	// Library rows, newest first, each with its verdict summary counts. The FILTER
 	// counts read stored claims only; a document with no claims counts zero.
+	// sqlc.embed keeps the row a real db.Document, so a future documents column
+	// cannot silently drop out of the list mapping.
 	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	ListVideos(ctx context.Context) ([]Video, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The

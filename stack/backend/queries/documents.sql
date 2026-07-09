@@ -13,7 +13,9 @@ WHERE id = $1;
 -- name: ListDocuments :many
 -- Library rows, newest first, each with its verdict summary counts. The FILTER
 -- counts read stored claims only; a document with no claims counts zero.
-SELECT d.id, d.title, d.object_key, d.content_type, d.size_bytes, d.page_count, d.status, d.analysis_status, d.analysis_error, d.sentences_total, d.sentences_processed, d.analyzed_at, d.analysis_runs, d.created_at, d.updated_at,
+-- sqlc.embed keeps the row a real db.Document, so a future documents column
+-- cannot silently drop out of the list mapping.
+SELECT sqlc.embed(d),
        count(c.id) FILTER (WHERE c.verdict = 'credible') AS credible_claims,
        count(c.id) FILTER (WHERE c.verdict = 'disputed') AS disputed_claims
 FROM documents d
@@ -41,10 +43,12 @@ WHERE document_id = $1
 ORDER BY seq;
 
 -- name: ListDocumentClaims :many
+-- ordinal, not created_at, carries insertion order: an analysis run writes its
+-- claims in one transaction, so their created_at values are identical.
 SELECT id, document_id, sentence_seq, claim_id, text, status, source, verdict, basis, literal, flags, confidence, rationale, citations, created_at
 FROM document_claims
 WHERE document_id = $1
-ORDER BY sentence_seq, created_at, id;
+ORDER BY sentence_seq, ordinal;
 
 -- name: DeleteDocument :execrows
 -- Sentences and claims go with the document via ON DELETE CASCADE.

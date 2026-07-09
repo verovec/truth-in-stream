@@ -106,18 +106,38 @@ const listDocumentClaims = `-- name: ListDocumentClaims :many
 SELECT id, document_id, sentence_seq, claim_id, text, status, source, verdict, basis, literal, flags, confidence, rationale, citations, created_at
 FROM document_claims
 WHERE document_id = $1
-ORDER BY sentence_seq, created_at, id
+ORDER BY sentence_seq, ordinal
 `
 
-func (q *Queries) ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]DocumentClaim, error) {
+type ListDocumentClaimsRow struct {
+	ID          uuid.UUID
+	DocumentID  uuid.UUID
+	SentenceSeq int32
+	ClaimID     string
+	Text        string
+	Status      string
+	Source      string
+	Verdict     string
+	Basis       string
+	Literal     string
+	Flags       []string
+	Confidence  float64
+	Rationale   string
+	Citations   []byte
+	CreatedAt   pgtype.Timestamptz
+}
+
+// ordinal, not created_at, carries insertion order: an analysis run writes its
+// claims in one transaction, so their created_at values are identical.
+func (q *Queries) ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]ListDocumentClaimsRow, error) {
 	rows, err := q.db.Query(ctx, listDocumentClaims, documentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DocumentClaim{}
+	items := []ListDocumentClaimsRow{}
 	for rows.Next() {
-		var i DocumentClaim
+		var i ListDocumentClaimsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.DocumentID,
@@ -190,27 +210,15 @@ ORDER BY d.created_at DESC, d.id
 `
 
 type ListDocumentsRow struct {
-	ID                 uuid.UUID
-	Title              string
-	ObjectKey          string
-	ContentType        string
-	SizeBytes          int64
-	PageCount          int32
-	Status             string
-	AnalysisStatus     string
-	AnalysisError      string
-	SentencesTotal     int32
-	SentencesProcessed int32
-	AnalyzedAt         pgtype.Timestamptz
-	AnalysisRuns       int32
-	CreatedAt          pgtype.Timestamptz
-	UpdatedAt          pgtype.Timestamptz
-	CredibleClaims     int64
-	DisputedClaims     int64
+	Document       Document
+	CredibleClaims int64
+	DisputedClaims int64
 }
 
 // Library rows, newest first, each with its verdict summary counts. The FILTER
 // counts read stored claims only; a document with no claims counts zero.
+// sqlc.embed keeps the row a real db.Document, so a future documents column
+// cannot silently drop out of the list mapping.
 func (q *Queries) ListDocuments(ctx context.Context) ([]ListDocumentsRow, error) {
 	rows, err := q.db.Query(ctx, listDocuments)
 	if err != nil {
@@ -221,21 +229,21 @@ func (q *Queries) ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	for rows.Next() {
 		var i ListDocumentsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.ObjectKey,
-			&i.ContentType,
-			&i.SizeBytes,
-			&i.PageCount,
-			&i.Status,
-			&i.AnalysisStatus,
-			&i.AnalysisError,
-			&i.SentencesTotal,
-			&i.SentencesProcessed,
-			&i.AnalyzedAt,
-			&i.AnalysisRuns,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.Document.ID,
+			&i.Document.Title,
+			&i.Document.ObjectKey,
+			&i.Document.ContentType,
+			&i.Document.SizeBytes,
+			&i.Document.PageCount,
+			&i.Document.Status,
+			&i.Document.AnalysisStatus,
+			&i.Document.AnalysisError,
+			&i.Document.SentencesTotal,
+			&i.Document.SentencesProcessed,
+			&i.Document.AnalyzedAt,
+			&i.Document.AnalysisRuns,
+			&i.Document.CreatedAt,
+			&i.Document.UpdatedAt,
 			&i.CredibleClaims,
 			&i.DisputedClaims,
 		); err != nil {

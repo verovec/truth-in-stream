@@ -131,7 +131,8 @@ func newTestDocumentService(t *testing.T, store domain.DocumentStore, media doma
 func validSentences(n int) []domain.DocumentSentence {
 	out := make([]domain.DocumentSentence, n)
 	for i := range out {
-		out[i] = domain.DocumentSentence{Seq: i, Page: 1, Text: "Une phrase vérifiable.", Occurrence: 1}
+		// Identical text on one page must carry sequential occurrences.
+		out[i] = domain.DocumentSentence{Seq: i, Page: 1, Text: "Une phrase vérifiable.", Occurrence: i + 1}
 	}
 	return out
 }
@@ -176,8 +177,31 @@ func TestDocumentRequestUpload(t *testing.T) {
 	if ticket.Document.Status != domain.DocumentStatusPending {
 		t.Errorf("status = %q, want pending", ticket.Document.Status)
 	}
-	if ticket.Upload.Method != "PUT" || media.uploadKey != wantKey {
-		t.Errorf("presigned PUT not minted for the object key: %+v (signed %q)", ticket.Upload, media.uploadKey)
+	if ticket.Upload.Method != "PUT" || media.uploadOnceKey != wantKey {
+		t.Errorf("presigned PUT not minted for the object key: %+v (signed %q)", ticket.Upload, media.uploadOnceKey)
+	}
+	if media.uploadOnceType != "application/pdf" || media.uploadOnceSize != 2048 {
+		t.Errorf("presign constraints = %q/%d, want the declared type and size signed in", media.uploadOnceType, media.uploadOnceSize)
+	}
+	if ticket.MaxSentences != testMaxDocumentSentences {
+		t.Errorf("ticket max sentences = %d, want %d so the client can fail fast before the PUT", ticket.MaxSentences, testMaxDocumentSentences)
+	}
+}
+
+// TestDocumentRequestUploadPresignFailureLeavesNoRow proves the presign runs
+// before the insert: a storage misconfiguration yields an error and no phantom
+// pending record that could never receive an upload.
+func TestDocumentRequestUploadPresignFailureLeavesNoRow(t *testing.T) {
+	t.Parallel()
+	store := newFakeDocumentStore()
+	media := &fakeMediaStore{presignUploadOnceErr: errors.New("storage down")}
+	svc := newTestDocumentService(t, store, media)
+
+	if _, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1}); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(store.documents) != 0 {
+		t.Error("presign failure left a pending record behind")
 	}
 }
 
@@ -276,6 +300,12 @@ func TestDocumentIngestExtractionRejects(t *testing.T) {
 		},
 		{name: "page count below one", id: testDocumentID, ext: DocumentExtraction{PageCount: 0, Sentences: validSentences(1)}, wantErr: ErrDocumentInvalidExtraction},
 		{
+			name:    "page count above the bound",
+			id:      testDocumentID,
+			ext:     DocumentExtraction{PageCount: maxDocumentPageCount + 1, Sentences: validSentences(1)},
+			wantErr: ErrDocumentInvalidExtraction,
+		},
+		{
 			name: "non-dense seq",
 			id:   testDocumentID,
 			ext: DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
@@ -300,10 +330,35 @@ func TestDocumentIngestExtractionRejects(t *testing.T) {
 			wantErr: ErrDocumentInvalidExtraction,
 		},
 		{
+			name: "sentence text above the byte cap",
+			id:   testDocumentID,
+			ext: DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+				{Seq: 0, Page: 1, Text: strings.Repeat("a", maxDocumentSentenceBytes+1), Occurrence: 1},
+			}},
+			wantErr: ErrDocumentInvalidExtraction,
+		},
+		{
 			name: "occurrence below one",
 			id:   testDocumentID,
 			ext: DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
 				{Seq: 0, Page: 1, Text: "x", Occurrence: 0},
+			}},
+			wantErr: ErrDocumentInvalidExtraction,
+		},
+		{
+			name: "duplicate text reusing occurrence 1",
+			id:   testDocumentID,
+			ext: DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+				{Seq: 0, Page: 1, Text: "Le budget augmente.", Occurrence: 1},
+				{Seq: 1, Page: 1, Text: "Le budget augmente.", Occurrence: 1},
+			}},
+			wantErr: ErrDocumentInvalidExtraction,
+		},
+		{
+			name: "occurrence jumping ahead",
+			id:   testDocumentID,
+			ext: DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+				{Seq: 0, Page: 1, Text: "x", Occurrence: 2},
 			}},
 			wantErr: ErrDocumentInvalidExtraction,
 		},
@@ -326,6 +381,45 @@ func TestDocumentIngestExtractionRejects(t *testing.T) {
 				t.Error("rejected extraction stored sentences")
 			}
 		})
+	}
+}
+
+// TestDocumentIngestExtractionIdempotentRetry proves a retried POST of the
+// same extraction after a lost response returns the ready document instead of
+// a conflict, mirroring VideoService.Confirm; an extraction with a different
+// shape still conflicts.
+func TestDocumentIngestExtractionIdempotentRetry(t *testing.T) {
+	t.Parallel()
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
+	svc := newTestDocumentService(t, store, media)
+	if _, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1}); err != nil {
+		t.Fatalf("RequestUpload: %v", err)
+	}
+	ext := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1},
+		{Seq: 1, Page: 1, Text: "Deux.", Occurrence: 1},
+	}}
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, ext); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	storeCalls := store.extractCalls
+
+	doc, err := svc.IngestExtraction(t.Context(), testDocumentID, ext)
+	if err != nil {
+		t.Fatalf("retried ingest = %v, want the ready document", err)
+	}
+	if doc.Status != domain.DocumentStatusReady {
+		t.Errorf("retried ingest status = %q, want ready", doc.Status)
+	}
+	if store.extractCalls != storeCalls {
+		t.Errorf("retry re-stored the extraction (%d calls, want %d)", store.extractCalls, storeCalls)
+	}
+
+	different := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Autre.", Occurrence: 1},
+	}}
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, different); !errors.Is(err, domain.ErrDocumentNotPending) {
+		t.Errorf("different extraction err = %v, want ErrDocumentNotPending", err)
 	}
 }
 
@@ -372,19 +466,35 @@ func TestDocumentList(t *testing.T) {
 
 func TestDocumentGet(t *testing.T) {
 	t.Parallel()
-	store, media := newFakeDocumentStore(), &fakeMediaStore{}
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
 	svc := newTestDocumentService(t, store, media)
 	ticket, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1})
 	if err != nil {
 		t.Fatalf("RequestUpload: %v", err)
 	}
 
+	// Pending: the object may not exist yet, so no download is presigned.
+	pending, err := svc.Get(t.Context(), ticket.Document.ID)
+	if err != nil {
+		t.Fatalf("Get (pending): %v", err)
+	}
+	if pending.Document.ID != ticket.Document.ID {
+		t.Errorf("document = %+v, want the record", pending.Document)
+	}
+	if pending.PDF.URL != "" || media.downloadKey != "" {
+		t.Errorf("pending pdf = %+v (signed %q), want no presigned URL before ready", pending.PDF, media.downloadKey)
+	}
+
+	if _, err := svc.IngestExtraction(t.Context(), ticket.Document.ID, DocumentExtraction{
+		PageCount: 1,
+		Sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1}},
+	}); err != nil {
+		t.Fatalf("IngestExtraction: %v", err)
+	}
+
 	got, err := svc.Get(t.Context(), ticket.Document.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
-	}
-	if got.Document.ID != ticket.Document.ID {
-		t.Errorf("document = %+v, want the record", got.Document)
 	}
 	if got.PDF.Method != "GET" || media.downloadKey != ticket.Document.ObjectKey {
 		t.Errorf("pdf = %+v (signed %q), want presigned GET for the object key", got.PDF, media.downloadKey)
@@ -451,8 +561,10 @@ func TestDocumentDelete(t *testing.T) {
 	if err := svc.Delete(t.Context(), ticket.Document.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if len(media.deletedKeys) != 1 || media.deletedKeys[0] != ticket.Document.ObjectKey {
-		t.Errorf("deleted keys = %v, want the object key", media.deletedKeys)
+	// The object is deleted before the rows and swept once more after them, so
+	// a presigned PUT landing between the two passes does not orphan an object.
+	if len(media.deletedKeys) != 2 || media.deletedKeys[0] != ticket.Document.ObjectKey || media.deletedKeys[1] != ticket.Document.ObjectKey {
+		t.Errorf("deleted keys = %v, want the object key deleted before and swept after the rows", media.deletedKeys)
 	}
 	if len(store.deletedIDs) != 1 || store.deletedIDs[0] != ticket.Document.ID {
 		t.Errorf("deleted ids = %v, want the record", store.deletedIDs)

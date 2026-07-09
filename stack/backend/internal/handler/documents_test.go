@@ -95,6 +95,7 @@ func TestRequestDocumentUploadHandlerSuccess(t *testing.T) {
 			URL: "https://put/documents/doc-1/original.pdf", Method: "PUT",
 			SignedHeaders: map[string][]string{"Host": {"storage"}},
 		},
+		MaxSentences: 1500,
 	}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/documents/uploads",
@@ -113,6 +114,9 @@ func TestRequestDocumentUploadHandlerSuccess(t *testing.T) {
 	}
 	if got.Upload.URL != "https://put/documents/doc-1/original.pdf" || got.Upload.Method != "PUT" {
 		t.Errorf("upload = %+v, want presigned PUT", got.Upload)
+	}
+	if got.MaxSentences != 1500 {
+		t.Errorf("max_sentences = %d, want the cap surfaced to the client", got.MaxSentences)
 	}
 	if svc.lastUpload != (service.DocumentUploadRequest{Title: "Rapport", ContentType: "application/pdf", SizeBytes: 2048}) {
 		t.Errorf("forwarded request = %+v, want decoded body", svc.lastUpload)
@@ -292,6 +296,27 @@ func TestGetDocumentHandler(t *testing.T) {
 	}
 	if got.PDF.URL != "https://get/documents/d1/original.pdf" || got.PDF.Method != "GET" {
 		t.Errorf("pdf = %+v, want presigned GET", got.PDF)
+	}
+}
+
+// TestGetDocumentHandlerPendingOmitsPDF pins the wire contract for a document
+// whose object may not exist yet: no pdf key at all, rather than a URL that
+// would 404 against storage.
+func TestGetDocumentHandlerPendingOmitsPDF(t *testing.T) {
+	t.Parallel()
+	svc := &fakeDocumentService{readable: service.ReadableDocument{
+		Document: domain.Document{ID: "d1", Title: "Rapport", Status: domain.DocumentStatusPending},
+	}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/documents/d1", nil)
+	req.SetPathValue("id", "d1")
+	getDocumentHandler(svc)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), `"pdf"`) {
+		t.Errorf("pending document body carries a pdf key: %s", rec.Body.String())
 	}
 }
 

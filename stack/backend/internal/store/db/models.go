@@ -40,6 +40,7 @@ type DocumentClaim struct {
 	ID          uuid.UUID
 	DocumentID  uuid.UUID
 	SentenceSeq int32
+	Ordinal     int64
 	ClaimID     string
 	Text        string
 	Status      string

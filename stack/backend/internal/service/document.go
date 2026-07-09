@@ -43,6 +43,18 @@ var (
 // documentContentType is the only content type the document API accepts.
 const documentContentType = "application/pdf"
 
+// maxDocumentPageCount bounds the client-declared page count and, through the
+// per-sentence page check, every page number. It is far above any real PDF and
+// far below the int32 range the store narrows to, so a declared value can
+// never wrap at insert.
+const maxDocumentPageCount = 100_000
+
+// maxDocumentSentenceBytes bounds one sentence's text. The sentence cap bounds
+// how many analysis units a document yields; this bounds how large a single
+// unit can be, so a mis-segmented extraction cannot smuggle a whole PDF into
+// one "sentence" and blow up the analyzer's LLM prompt.
+const maxDocumentSentenceBytes = 4096
+
 // DocumentUploadRequest is the input to RequestUpload: the operator-supplied
 // title, the declared content type, and the declared size in bytes.
 type DocumentUploadRequest struct {
@@ -53,9 +65,13 @@ type DocumentUploadRequest struct {
 
 // DocumentUploadTicket pairs the created (pending) document record with the
 // presigned PUT the browser uses to upload the PDF directly to storage.
+// MaxSentences is the extraction cap, surfaced so the extract-first client can
+// abort before the PUT when a document is too long instead of discovering the
+// cap on the extraction POST.
 type DocumentUploadTicket struct {
-	Document domain.Document
-	Upload   domain.PresignedRequest
+	Document     domain.Document
+	Upload       domain.PresignedRequest
+	MaxSentences int
 }
 
 // DocumentExtraction is the browser-extracted text of one PDF: the page total
@@ -135,6 +151,11 @@ func NewDocumentService(store domain.DocumentStore, media domain.MediaStore, cfg
 // RequestUpload validates the request, records a pending document, and returns
 // it with a presigned PUT the browser uses to upload the PDF directly to
 // storage. The document id is minted here because the object key embeds it.
+// The presign binds the declared content type and exact size into the
+// signature and makes the key write-once, so the stored metadata cannot
+// diverge from what actually lands in storage and a completed upload cannot be
+// overwritten. Presigning runs before the insert: it has no side effects, so a
+// storage failure leaves no phantom pending record behind.
 func (s *DocumentService) RequestUpload(ctx context.Context, req DocumentUploadRequest) (DocumentUploadTicket, error) {
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -149,6 +170,10 @@ func (s *DocumentService) RequestUpload(ctx context.Context, req DocumentUploadR
 
 	id := s.newDocumentID()
 	key := domain.DocumentObjectKey(id)
+	presigned, err := s.media.PresignUploadOnce(ctx, key, documentContentType, req.SizeBytes)
+	if err != nil {
+		return DocumentUploadTicket{}, fmt.Errorf("document: presign upload: %w", err)
+	}
 	doc, err := s.store.CreateDocument(ctx, domain.Document{
 		ID:          id,
 		Title:       title,
@@ -160,11 +185,7 @@ func (s *DocumentService) RequestUpload(ctx context.Context, req DocumentUploadR
 	if err != nil {
 		return DocumentUploadTicket{}, fmt.Errorf("document: request upload: %w", err)
 	}
-	presigned, err := s.media.PresignUpload(ctx, key)
-	if err != nil {
-		return DocumentUploadTicket{}, fmt.Errorf("document: presign upload: %w", err)
-	}
-	return DocumentUploadTicket{Document: doc, Upload: presigned}, nil
+	return DocumentUploadTicket{Document: doc, Upload: presigned, MaxSentences: s.maxSentences}, nil
 }
 
 // IngestExtraction validates the browser extraction and stores it atomically,
@@ -182,6 +203,14 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 		return domain.Document{}, err
 	}
 	if doc.Status != domain.DocumentStatusPending {
+		// A retry of the extraction that already succeeded (the response was
+		// lost) is idempotent, mirroring VideoService.Confirm: the ready
+		// document is returned unchanged when the posted shape matches what is
+		// stored. A different shape is a real conflict.
+		if doc.Status == domain.DocumentStatusReady &&
+			doc.PageCount == ext.PageCount && doc.SentencesTotal == len(ext.Sentences) {
+			return doc, nil
+		}
 		return domain.Document{}, domain.ErrDocumentNotPending
 	}
 	exists, err := s.media.Exists(ctx, doc.ObjectKey)
@@ -207,19 +236,25 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 	return updated, nil
 }
 
-// validateExtraction enforces the extraction shape: a positive page count, a
-// non-empty sentence list under the cap, sequences dense from 0, pages within
-// the document, non-blank text, and 1-based occurrences.
+// validateExtraction enforces the extraction shape: a page count in
+// [1, maxDocumentPageCount], a non-empty sentence list under the cap,
+// sequences dense from 0, pages within the document, non-blank text under the
+// per-sentence byte cap, and occurrences that count identical text per page
+// exactly (the nth duplicate carries occurrence n). The upper bounds keep
+// every value far inside the int32 range the store narrows to; the occurrence
+// rule is the anchoring contract, so an incoherent numbering is rejected here
+// rather than corrupting highlights at view time.
 func validateExtraction(ext DocumentExtraction, maxSentences int) error {
 	if len(ext.Sentences) == 0 {
 		return ErrDocumentExtractionEmpty
 	}
 	if len(ext.Sentences) > maxSentences {
-		return ErrDocumentTooManySentences
+		return fmt.Errorf("%w (%d sentences, cap %d)", ErrDocumentTooManySentences, len(ext.Sentences), maxSentences)
 	}
-	if ext.PageCount < 1 {
-		return fmt.Errorf("%w: page count %d", ErrDocumentInvalidExtraction, ext.PageCount)
+	if ext.PageCount < 1 || ext.PageCount > maxDocumentPageCount {
+		return fmt.Errorf("%w: page count %d outside 1..%d", ErrDocumentInvalidExtraction, ext.PageCount, maxDocumentPageCount)
 	}
+	occurrences := make(map[int]map[string]int)
 	for i, sentence := range ext.Sentences {
 		if sentence.Seq != i {
 			return fmt.Errorf("%w: sentence %d has seq %d, want dense from 0", ErrDocumentInvalidExtraction, i, sentence.Seq)
@@ -230,9 +265,17 @@ func validateExtraction(ext DocumentExtraction, maxSentences int) error {
 		if strings.TrimSpace(sentence.Text) == "" {
 			return fmt.Errorf("%w: sentence %d text is blank", ErrDocumentInvalidExtraction, i)
 		}
-		if sentence.Occurrence < 1 {
-			return fmt.Errorf("%w: sentence %d occurrence %d, want >= 1", ErrDocumentInvalidExtraction, i, sentence.Occurrence)
+		if len(sentence.Text) > maxDocumentSentenceBytes {
+			return fmt.Errorf("%w: sentence %d is %d bytes, cap %d", ErrDocumentInvalidExtraction, i, len(sentence.Text), maxDocumentSentenceBytes)
 		}
+		if occurrences[sentence.Page] == nil {
+			occurrences[sentence.Page] = make(map[string]int)
+		}
+		want := occurrences[sentence.Page][sentence.Text] + 1
+		if sentence.Occurrence != want {
+			return fmt.Errorf("%w: sentence %d occurrence %d, want %d", ErrDocumentInvalidExtraction, i, sentence.Occurrence, want)
+		}
+		occurrences[sentence.Page][sentence.Text] = want
 	}
 	return nil
 }
@@ -247,12 +290,17 @@ func (s *DocumentService) List(ctx context.Context) ([]domain.DocumentListItem, 
 	return items, nil
 }
 
-// Get returns the record with the given id plus a presigned GET the browser
-// uses to fetch the PDF directly from storage.
+// Get returns the record with the given id plus, once the document is ready, a
+// presigned GET the browser uses to fetch the PDF directly from storage. A
+// pending or failed document carries no download: its object may not exist, so
+// handing out a URL would send the viewer to a storage 404.
 func (s *DocumentService) Get(ctx context.Context, id string) (ReadableDocument, error) {
 	doc, err := s.store.GetDocument(ctx, id)
 	if err != nil {
 		return ReadableDocument{}, err
+	}
+	if doc.Status != domain.DocumentStatusReady {
+		return ReadableDocument{Document: doc}, nil
 	}
 	presigned, err := s.media.PresignDownload(ctx, doc.ObjectKey)
 	if err != nil {
@@ -296,7 +344,12 @@ func (s *DocumentService) Claims(ctx context.Context, id string) (DocumentAnalys
 // Delete removes the document's storage object, then its rows (sentences and
 // claims cascade). The object goes first: if the row deletion fails the record
 // stays visible and the operator retries, whereas rows-first would strand an
-// invisible object in storage.
+// invisible object in storage. After the rows are gone the object is swept
+// once more, best-effort: the write-once presigned PUT stays live for its TTL,
+// so an in-flight upload finishing between the two passes would otherwise land
+// an object no record references. A PUT completing after the sweep can still
+// orphan the object; that residual window is accepted (its cost is one bounded
+// PDF) rather than blocking deletion for the ticket's lifetime.
 func (s *DocumentService) Delete(ctx context.Context, id string) error {
 	doc, err := s.store.GetDocument(ctx, id)
 	if err != nil {
@@ -308,5 +361,6 @@ func (s *DocumentService) Delete(ctx context.Context, id string) error {
 	if err := s.store.DeleteDocument(ctx, doc.ID); err != nil {
 		return fmt.Errorf("document: delete %s: %w", id, err)
 	}
+	_ = s.media.Delete(ctx, doc.ObjectKey)
 	return nil
 }

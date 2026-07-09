@@ -221,6 +221,12 @@ func TestListDocumentsCountsAndOrder(t *testing.T) {
 	seedTestClaim(ctx, t, store, older.ID, 1, "c-3", "disputed", "[]")
 	seedTestClaim(ctx, t, store, older.ID, 1, "c-4", "unverifiable", "[]")
 
+	// Backdate the older document so the newest-first ordering is asserted
+	// deterministically instead of trusting insert-time clock ticks.
+	if _, err := store.pool.Exec(ctx, "UPDATE documents SET created_at = created_at - interval '1 hour' WHERE id = $1", older.ID); err != nil {
+		t.Fatalf("backdate older: %v", err)
+	}
+
 	list, err := store.ListDocuments(ctx)
 	if err != nil {
 		t.Fatalf("ListDocuments: %v", err)
@@ -228,21 +234,15 @@ func TestListDocumentsCountsAndOrder(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("listed %d documents, want 2", len(list))
 	}
-	// Newest first; ties broken by id so the order is stable either way.
-	byID := map[string]domain.DocumentListItem{list[0].ID: list[0], list[1].ID: list[1]}
-	got, ok := byID[older.ID]
-	if !ok {
-		t.Fatalf("older document missing from list")
+	if list[0].ID != newer.ID || list[1].ID != older.ID {
+		t.Errorf("order = [%s, %s], want newest first", list[0].ID, list[1].ID)
 	}
+	got := list[1]
 	if got.CredibleClaims != 2 || got.DisputedClaims != 1 {
 		t.Errorf("counts = %d credible / %d disputed, want 2/1 (unverifiable never counted)", got.CredibleClaims, got.DisputedClaims)
 	}
-	fresh, ok := byID[newer.ID]
-	if !ok {
-		t.Fatalf("newer document missing from list")
-	}
-	if fresh.CredibleClaims != 0 || fresh.DisputedClaims != 0 {
-		t.Errorf("claimless counts = %d/%d, want 0/0", fresh.CredibleClaims, fresh.DisputedClaims)
+	if list[0].CredibleClaims != 0 || list[0].DisputedClaims != 0 {
+		t.Errorf("claimless counts = %d/%d, want 0/0", list[0].CredibleClaims, list[0].DisputedClaims)
 	}
 }
 
@@ -303,6 +303,43 @@ func TestListDocumentClaimsRoundTrip(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("absent document claims = %+v, want empty", empty)
+	}
+}
+
+// TestListDocumentClaimsSameTransactionOrder proves a sentence's claims come
+// back in insertion order even when they share one created_at, the shape an
+// analysis run produces: now() is transaction-stable, so the ordinal identity,
+// not the timestamp, must carry the order.
+func TestListDocumentClaimsSameTransactionOrder(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	doc := createTestDocument(ctx, t, store, "Ordered")
+	if _, err := store.StoreDocumentExtraction(ctx, doc.ID, 1, []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1},
+	}); err != nil {
+		t.Fatalf("extraction: %v", err)
+	}
+	// One statement = one transaction = identical created_at for both rows.
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO document_claims (document_id, sentence_seq, claim_id, text, status, verdict, citations)
+		VALUES ($1, 0, 'c-first', 'first', 'verified', 'credible', '[]'),
+		       ($1, 0, 'c-second', 'second', 'verified', 'disputed', '[]')`, doc.ID); err != nil {
+		t.Fatalf("seed claims: %v", err)
+	}
+
+	claims, err := store.ListDocumentClaims(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentClaims: %v", err)
+	}
+	if len(claims) != 2 {
+		t.Fatalf("listed %d claims, want 2", len(claims))
+	}
+	if claims[0].ClaimID != "c-first" || claims[1].ClaimID != "c-second" {
+		t.Errorf("order = [%s, %s], want insertion order", claims[0].ClaimID, claims[1].ClaimID)
+	}
+	if !claims[0].CreatedAt.Equal(claims[1].CreatedAt) {
+		t.Fatalf("test premise broken: created_at values differ (%v vs %v)", claims[0].CreatedAt, claims[1].CreatedAt)
 	}
 }
 
