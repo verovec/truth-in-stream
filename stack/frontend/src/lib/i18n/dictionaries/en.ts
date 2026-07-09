@@ -115,6 +115,50 @@ export const en: Dictionary = {
     header: {
       signOut: "Sign out",
     },
+    nav: {
+      ariaLabel: "Primary navigation",
+      videos: "Videos",
+      documents: "Documents",
+    },
+    documents: {
+      heading: "Documents",
+      loadingAria: "Loading documents",
+      loadError: "Documents could not load: {message}",
+      loadErrorFallback: "Documents could not load.",
+      retry: "Retry",
+      empty: "No documents yet.",
+      emptyAdmin: "No documents yet. Upload a PDF to get started.",
+      pageCount: { one: "{count} page", other: "{count} pages" },
+      status: { ready: "Ready", pending: "Pending", failed: "Failed" },
+      analysis: {
+        none: "Not analyzed",
+        analysing: "Analyzing",
+        complete: "Analyzed",
+        failed: "Analysis failed",
+      },
+      counts: {
+        credible: { one: "{count} credible", other: "{count} credible" },
+        disputed: { one: "{count} disputed", other: "{count} disputed" },
+      },
+      uploader: {
+        prompt: "Drop a PDF here, or click to choose",
+        formats: "Text-layer PDF (scanned documents are not supported)",
+        inputAria: "Upload a PDF document",
+        extracting: "Extracting text…",
+        preparing: "Preparing…",
+        finalizing: "Finalizing…",
+        dismiss: "Dismiss",
+        uploadingAria: "Uploading {title}",
+        errors: {
+          unsupported: "Unsupported file type. Upload a PDF.",
+          scanned:
+            "This PDF has no extractable text (a scanned document). Upload a text-layer PDF.",
+          tooLong:
+            "This document exceeds the {max}-sentence limit. Upload a shorter document.",
+          failed: "The upload failed.",
+        },
+      },
+    },
     summary: {
       heading: "Live findings",
       ariaLabel: "Live findings summary",

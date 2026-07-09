@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# pdf.js worker copied by scripts/copy-pdf-worker.mjs (keyed to the pinned pdfjs-dist version)
+public/pdf.worker.min.mjs
