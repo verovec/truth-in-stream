@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -42,6 +44,11 @@ var (
 
 // documentContentType is the only content type the document API accepts.
 const documentContentType = "application/pdf"
+
+// autoStartTimeout bounds the synchronous lock transaction of the auto-start
+// trigger. It runs on a request-detached context, so a bound keeps a hung store
+// call from leaking; the analysis run itself is spawned and bounded separately.
+const autoStartTimeout = 15 * time.Second
 
 // maxDocumentPageCount bounds the client-declared page count and, through the
 // per-sentence page check, every page number. It is far above any real PDF and
@@ -103,6 +110,18 @@ type DocumentAnalysis struct {
 	Sentences []DocumentSentenceClaims
 }
 
+// AnalysisStarter triggers a document's fact-check analysis. *DocumentAnalyzer
+// satisfies it. The DocumentService uses it to auto-start the first analysis
+// once an extraction is stored; it is optional (nil when the verify path is
+// off).
+type AnalysisStarter interface {
+	// Enabled reports whether analysis can run (the verify path is configured).
+	Enabled() bool
+	// Start claims the document and spawns its analysis, or returns a lifecycle
+	// error (not found / not ready / already analysing / disabled).
+	Start(ctx context.Context, id string) error
+}
+
 // DocumentConfig configures a DocumentService. MaxSizeBytes bounds a declared
 // upload size; MaxSentences bounds an extraction, both to bound LLM cost and
 // abuse.
@@ -115,18 +134,23 @@ type DocumentConfig struct {
 // uploads, validates and stores browser extractions, and lists, resolves, and
 // deletes records. It holds no HTTP types. newDocumentID is a field rather than
 // a direct call so tests can inject a deterministic id; it is unexported and
-// set only by the constructor, so no caller can bypass validation.
+// set only by the constructor, so no caller can bypass validation. analyzer is
+// optional: when set and enabled, a fresh extraction auto-starts the first
+// analysis.
 type DocumentService struct {
 	store         domain.DocumentStore
 	media         domain.MediaStore
+	analyzer      AnalysisStarter
 	maxSizeBytes  int64
 	maxSentences  int
 	newDocumentID func() string
+	logger        *slog.Logger
 }
 
-// NewDocumentService builds a DocumentService. It fails fast on a nil
-// dependency or a non-positive bound.
-func NewDocumentService(store domain.DocumentStore, media domain.MediaStore, cfg DocumentConfig) (*DocumentService, error) {
+// NewDocumentService builds a DocumentService. It fails fast on a nil required
+// dependency or a non-positive bound. analyzer may be nil (analysis disabled);
+// logger defaults to slog.Default.
+func NewDocumentService(store domain.DocumentStore, media domain.MediaStore, analyzer AnalysisStarter, cfg DocumentConfig, logger *slog.Logger) (*DocumentService, error) {
 	if store == nil {
 		return nil, errors.New("document: store is required")
 	}
@@ -139,12 +163,17 @@ func NewDocumentService(store domain.DocumentStore, media domain.MediaStore, cfg
 	if cfg.MaxSentences <= 0 {
 		return nil, fmt.Errorf("document: max sentences must be positive, got %d", cfg.MaxSentences)
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &DocumentService{
 		store:         store,
 		media:         media,
+		analyzer:      analyzer,
 		maxSizeBytes:  cfg.MaxSizeBytes,
 		maxSentences:  cfg.MaxSentences,
 		newDocumentID: uuid.NewString,
+		logger:        logger,
 	}, nil
 }
 
@@ -240,7 +269,30 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 		}
 		return domain.Document{}, fmt.Errorf("document: ingest extraction %s: %w", id, err)
 	}
+	// A fresh extraction auto-starts the first analysis when the verify path is
+	// enabled; the document is ready regardless, so a start failure is logged,
+	// not surfaced. This runs only on the fresh flip, never the idempotent retry
+	// above, so a retried POST does not re-trigger analysis.
+	s.autoStartAnalysis(ctx, updated.ID)
 	return updated, nil
+}
+
+// autoStartAnalysis triggers the first analysis of a freshly-extracted document
+// when an analyzer is wired and enabled. It is best-effort: the document is
+// already ready, so a trigger failure is logged and swallowed rather than
+// failing the extraction. The trigger runs on a context detached from the
+// request's cancellation (Start's lock transaction must not be aborted if the
+// client disconnects the moment the extraction POST returns) but bounded so a
+// hung store call cannot leak. Request-scoped values are preserved.
+func (s *DocumentService) autoStartAnalysis(ctx context.Context, id string) {
+	if s.analyzer == nil || !s.analyzer.Enabled() {
+		return
+	}
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoStartTimeout)
+	defer cancel()
+	if err := s.analyzer.Start(startCtx, id); err != nil {
+		s.logger.WarnContext(startCtx, "auto-start document analysis failed", slog.String("document_id", id), slog.Any("err", err))
+	}
 }
 
 // extractionMatchesStored reports whether the posted extraction is identical

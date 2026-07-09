@@ -165,6 +165,40 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 }
 
+// resolvePoliticalClaimBatch is the batch counterpart of scorePoliticalClaim:
+// classify, route+retrieve, and two-axis verify, returning the verdict rather
+// than emitting it, and blocking on the verify pool instead of shedding. A
+// routing or verify failure is an error result; no routed evidence yields the
+// honest unverifiable/knowledge outcome, mirroring the credibility no-evidence
+// case. Only reached on the political path (vp.political()).
+func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim AtomicClaim, ret retrieved) BatchClaimResult {
+	ct := vp.pol.Classifier.Classify(ctx, claim.Text)
+
+	evidence, err := vp.routeRetrieve(ctx, claim.Text, ct)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch political routing failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
+	}
+
+	if len(evidence) == 0 {
+		verdict := politicalNoEvidenceVerdict()
+		vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+	}
+
+	verdict, err := vp.verifyPoliticalBlocking(ctx, claim.Text, evidence)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch political verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
+	}
+	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+}
+
 // routeRetrieve classifies-then-routes one claim under the fast deadline (routing
 // is the path's retrieval tier). It returns the routed evidence the verifier reads.
 func (vp *VerifyPath) routeRetrieve(ctx context.Context, claim string, ct claimtype.Type) ([]source.Evidence, error) {
@@ -187,15 +221,35 @@ func (vp *VerifyPath) verifyPolitical(ctx context.Context, claim string, evidenc
 	}
 	defer func() { <-vp.verifySem }()
 
+	verdict, err := vp.runPoliticalVerifier(ctx, claim, evidence)
+	return verdict, false, err
+}
+
+// runPoliticalVerifier runs the two-axis verifier against routed evidence under
+// an already-held verify slot (the caller owns acquisition and release), bounded
+// by the verify deadline. Split out of verifyPolitical so the live shed-acquire
+// path and the batch blocking-acquire path share one two-axis verifier body.
+func (vp *VerifyPath) runPoliticalVerifier(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, vp.verifyDeadline)
 	defer cancel()
 
 	passages := EvidencePassagesFrom(evidence)
 	res, err := vp.pol.Verifier.VerifyPolitical(verifyCtx, claim, passages)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return politicalVerdictFromResult(res, evidence), false, nil
+	return politicalVerdictFromResult(res, evidence), nil
+}
+
+// verifyPoliticalBlocking is the no-shed counterpart of verifyPolitical for a
+// batch job: it blocks on the verify pool until a slot frees (bounded only by
+// ctx) rather than shedding, so every routed claim ends with a two-axis verdict.
+func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, error) {
+	if !vp.acquireVerifySlotBlocking(ctx) {
+		return nil, ctx.Err()
+	}
+	defer func() { <-vp.verifySem }()
+	return vp.runPoliticalVerifier(ctx, claim, evidence)
 }
 
 // politicalVerdictFromResult builds the wire verdict from the two-axis judgment.

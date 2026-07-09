@@ -183,3 +183,26 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, p
 	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
 }
+
+// applyReverifyBatch is the batch counterpart of maybeReverify: it re-judges a
+// qualifying grounded fast verdict with the deeper reasoner and returns the
+// upgraded verdict, or the original fast verdict when the feature is off, the
+// verdict does not qualify, or the reasoning call fails. It emits nothing.
+// Batch document analysis has no realtime constraint, so it applies the same
+// second-pass upgrade the live path does, keeping a document's verdict for a
+// sentence identical to what the live path would show for the same sentence.
+func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) *VerifiedVerdict {
+	sp := vp.secondPass
+	passages := passagesFromMatches(ret.matches)
+	if sp == nil || !sp.qualifies(fast, len(passages)) {
+		return fast
+	}
+	reasoned, err := sp.reverify(ctx, claim.Text, passages)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch second-pass reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return fast
+	}
+	return sp.upgrade(fast, reasoned, ret.matches)
+}

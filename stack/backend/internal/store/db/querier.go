@@ -16,10 +16,16 @@ type Querier interface {
 	// syncs cannot both pass the foreign-source check and claim different sources.
 	// Released automatically at commit/rollback.
 	AcquireEvidenceSourceLock(ctx context.Context, key int64) error
+	// Advance the progress counter by one completed sentence. Progress is database
+	// state, so it survives a page refresh mid-run.
+	BumpDocumentSentencesProcessed(ctx context.Context, id uuid.UUID) error
 	// Claims the store for a source before ingestion starts (and before any
 	// checkpoint exists), so a source switch is detectable even after a crashed
 	// first run. Never overwrites an existing checkpoint.
 	ClaimEvidenceSource(ctx context.Context, source string) error
+	// Terminal success: mark the run complete, stamp the completion time, and count
+	// the run.
+	CompleteDocumentAnalysis(ctx context.Context, id uuid.UUID) error
 	CountEvidenceChunksForDocument(ctx context.Context, arg CountEvidenceChunksForDocumentParams) (int64, error)
 	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
 	// corpora: every statistical source (separate sources that share this table) is
@@ -36,6 +42,10 @@ type Querier interface {
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
 	// Sentences and claims go with the document via ON DELETE CASCADE.
 	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
+	// Remove one sentence's prior claims just before its fresh results are written,
+	// so re-analysing a sentence replaces its verdicts atomically without wiping the
+	// whole document up front.
+	DeleteDocumentSentenceClaims(ctx context.Context, arg DeleteDocumentSentenceClaimsParams) error
 	// Delta sync removes a hard-deleted page by title within its own source:
 	// RecentChanges reports a deletion with page id 0, so the stored chunk can only
 	// be found by its title. Scoping to the source keeps a same-titled chunk of
@@ -48,12 +58,18 @@ type Querier interface {
 	// source filter keeps statistical evidence (separate sources sharing this table)
 	// out of the encyclopedic clustering it does not belong to.
 	EmbeddedEvidenceChunks(ctx context.Context, arg EmbeddedEvidenceChunksParams) ([]EmbeddedEvidenceChunksRow, error)
+	// Terminal failure: record the reason and flip the run to failed so the admin
+	// can reanalyse.
+	FailDocumentAnalysis(ctx context.Context, arg FailDocumentAnalysisParams) error
 	GetDocument(ctx context.Context, id uuid.UUID) (Document, error)
 	GetEvidenceChunk(ctx context.Context, arg GetEvidenceChunkParams) (GetEvidenceChunkRow, error)
 	GetEvidenceSyncState(ctx context.Context, source string) (EvidenceSyncState, error)
 	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
+	// Persist one atomic claim's verdict. ordinal is assigned by the identity
+	// column, preserving insertion order within the sentence.
+	InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
 	// ordinal, not created_at, carries insertion order: an analysis run writes its
 	// claims in one transaction, so their created_at values are identical.
@@ -65,11 +81,24 @@ type Querier interface {
 	// cannot silently drop out of the list mapping.
 	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	ListVideos(ctx context.Context) ([]Video, error)
+	// Claim a ready document for a fresh analysis run: flip it to analysing (the
+	// lock), zero the progress counter, and clear any prior error - all in one
+	// guarded update. The guard admits a document that is ready and not already
+	// analysing (so a none/complete/failed analysis re-runs, a concurrent run is
+	// excluded). No row returned means the store resolves why (unknown, not ready,
+	// or already analysing) and maps it to the right error. Prior claims and skip
+	// reasons are NOT wiped here: each sentence's results are replaced as it is
+	// reprocessed, so a run that fails partway keeps the previous run's verdicts for
+	// the sentences it never reached instead of destroying them all up front.
+	LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an
 	// exact match on the recorded scrutin date; a caller resolves the scrutin date
 	// before lookup.
 	LookupVotingRecords(ctx context.Context, arg LookupVotingRecordsParams) ([]LookupVotingRecordsRow, error)
+	// Startup recovery: any document left analysing when the process died is flipped
+	// to failed with a clear reason. Returns the recovered ids for logging.
+	RecoverInterruptedAnalyses(ctx context.Context) ([]uuid.UUID, error)
 	// Atomically claim a failed ingest for retry: flip it back to pending only if it
 	// is currently failed, so two concurrent re-submissions cannot both re-download.
 	// The guard returns no row (and thus no claim) when the record is not failed.
@@ -94,6 +123,8 @@ type Querier interface {
 	// guard makes extraction exactly-once: a non-pending document returns no row
 	// and the store maps that to a conflict.
 	SetDocumentExtracted(ctx context.Context, arg SetDocumentExtractedParams) (Document, error)
+	// Record why a sentence was not verified this run (not_a_claim / not_covered).
+	SetDocumentSentenceSkipReason(ctx context.Context, arg SetDocumentSentenceSkipReasonParams) error
 	// The clustering job writes each chunk's cluster id and importance into the
 	// metadata jsonb, merging with the || operator so the revision id and section
 	// keys survive. The casts pin the params to plain integer/double so a non-null

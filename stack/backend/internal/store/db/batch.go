@@ -18,6 +18,80 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const insertDocumentClaim = `-- name: InsertDocumentClaim :batchexec
+INSERT INTO document_claims (document_id, sentence_seq, claim_id, text, status, source, verdict, basis, literal, flags, confidence, rationale, citations)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+`
+
+type InsertDocumentClaimBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDocumentClaimParams struct {
+	DocumentID  uuid.UUID
+	SentenceSeq int32
+	ClaimID     string
+	Text        string
+	Status      string
+	Source      string
+	Verdict     string
+	Basis       string
+	Literal     string
+	Flags       []string
+	Confidence  float64
+	Rationale   string
+	Citations   []byte
+}
+
+// Persist one atomic claim's verdict. ordinal is assigned by the identity
+// column, preserving insertion order within the sentence.
+func (q *Queries) InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.DocumentID,
+			a.SentenceSeq,
+			a.ClaimID,
+			a.Text,
+			a.Status,
+			a.Source,
+			a.Verdict,
+			a.Basis,
+			a.Literal,
+			a.Flags,
+			a.Confidence,
+			a.Rationale,
+			a.Citations,
+		}
+		batch.Queue(insertDocumentClaim, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDocumentClaimBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDocumentClaimBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDocumentClaimBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const insertDocumentSentence = `-- name: InsertDocumentSentence :batchexec
 INSERT INTO document_sentences (document_id, seq, page, text, occurrence)
 VALUES ($1, $2, $3, $4, $5)

@@ -114,18 +114,40 @@ const (
 )
 
 // newTestDocumentService builds a DocumentService over the fakes with a
-// deterministic document id so object-key assertions are stable.
+// deterministic document id so object-key assertions are stable. It wires no
+// analyzer (analysis disabled).
 func newTestDocumentService(t *testing.T, store domain.DocumentStore, media domain.MediaStore) *DocumentService {
 	t.Helper()
-	svc, err := NewDocumentService(store, media, DocumentConfig{
+	return newTestDocumentServiceWithAnalyzer(t, store, media, nil)
+}
+
+// newTestDocumentServiceWithAnalyzer is newTestDocumentService with an injected
+// analyzer, for the auto-start cases.
+func newTestDocumentServiceWithAnalyzer(t *testing.T, store domain.DocumentStore, media domain.MediaStore, analyzer AnalysisStarter) *DocumentService {
+	t.Helper()
+	svc, err := NewDocumentService(store, media, analyzer, DocumentConfig{
 		MaxSizeBytes: testMaxDocumentBytes,
 		MaxSentences: testMaxDocumentSentences,
-	})
+	}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewDocumentService: %v", err)
 	}
 	svc.newDocumentID = func() string { return testDocumentID }
 	return svc
+}
+
+// fakeAnalysisStarter records Start calls; enabled toggles Enabled().
+type fakeAnalysisStarter struct {
+	enabled  bool
+	startErr error
+	started  []string
+}
+
+func (f *fakeAnalysisStarter) Enabled() bool { return f.enabled }
+
+func (f *fakeAnalysisStarter) Start(_ context.Context, id string) error {
+	f.started = append(f.started, id)
+	return f.startErr
 }
 
 func validSentences(n int) []domain.DocumentSentence {
@@ -140,16 +162,16 @@ func validSentences(n int) []domain.DocumentSentence {
 func TestNewDocumentServiceValidation(t *testing.T) {
 	t.Parallel()
 	store, media := newFakeDocumentStore(), &fakeMediaStore{}
-	if _, err := NewDocumentService(nil, media, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 1}); err == nil {
+	if _, err := NewDocumentService(nil, media, nil, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 1}, discardLogger()); err == nil {
 		t.Error("nil store accepted")
 	}
-	if _, err := NewDocumentService(store, nil, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 1}); err == nil {
+	if _, err := NewDocumentService(store, nil, nil, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 1}, discardLogger()); err == nil {
 		t.Error("nil media accepted")
 	}
-	if _, err := NewDocumentService(store, media, DocumentConfig{MaxSizeBytes: 0, MaxSentences: 1}); err == nil {
+	if _, err := NewDocumentService(store, media, nil, DocumentConfig{MaxSizeBytes: 0, MaxSentences: 1}, discardLogger()); err == nil {
 		t.Error("non-positive size cap accepted")
 	}
-	if _, err := NewDocumentService(store, media, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 0}); err == nil {
+	if _, err := NewDocumentService(store, media, nil, DocumentConfig{MaxSizeBytes: 1, MaxSentences: 0}, discardLogger()); err == nil {
 		t.Error("non-positive sentence cap accepted")
 	}
 }
@@ -381,6 +403,71 @@ func TestDocumentIngestExtractionRejects(t *testing.T) {
 				t.Error("rejected extraction stored sentences")
 			}
 		})
+	}
+}
+
+func TestDocumentIngestExtractionAutoStartsAnalysis(t *testing.T) {
+	t.Parallel()
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
+	analyzer := &fakeAnalysisStarter{enabled: true}
+	svc := newTestDocumentServiceWithAnalyzer(t, store, media, analyzer)
+	if _, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1}); err != nil {
+		t.Fatalf("RequestUpload: %v", err)
+	}
+
+	ext := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1}}}
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, ext); err != nil {
+		t.Fatalf("IngestExtraction: %v", err)
+	}
+	if len(analyzer.started) != 1 || analyzer.started[0] != testDocumentID {
+		t.Errorf("auto-start = %v, want the document analyzed once", analyzer.started)
+	}
+
+	// A retried (idempotent) extraction must not re-trigger analysis.
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, ext); err != nil {
+		t.Fatalf("idempotent retry: %v", err)
+	}
+	if len(analyzer.started) != 1 {
+		t.Errorf("idempotent retry re-triggered analysis: %v", analyzer.started)
+	}
+}
+
+func TestDocumentIngestExtractionDisabledAnalyzerDoesNotStart(t *testing.T) {
+	t.Parallel()
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
+	analyzer := &fakeAnalysisStarter{enabled: false}
+	svc := newTestDocumentServiceWithAnalyzer(t, store, media, analyzer)
+	if _, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1}); err != nil {
+		t.Fatalf("RequestUpload: %v", err)
+	}
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, DocumentExtraction{
+		PageCount: 1, Sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1}},
+	}); err != nil {
+		t.Fatalf("IngestExtraction: %v", err)
+	}
+	if len(analyzer.started) != 0 {
+		t.Errorf("disabled analyzer was started: %v", analyzer.started)
+	}
+}
+
+// TestDocumentIngestExtractionAutoStartFailureIsSwallowed proves a failed
+// auto-start does not fail the extraction: the document is ready regardless.
+func TestDocumentIngestExtractionAutoStartFailureIsSwallowed(t *testing.T) {
+	t.Parallel()
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
+	analyzer := &fakeAnalysisStarter{enabled: true, startErr: errors.New("analyzer down")}
+	svc := newTestDocumentServiceWithAnalyzer(t, store, media, analyzer)
+	if _, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1}); err != nil {
+		t.Fatalf("RequestUpload: %v", err)
+	}
+	doc, err := svc.IngestExtraction(t.Context(), testDocumentID, DocumentExtraction{
+		PageCount: 1, Sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1}},
+	})
+	if err != nil {
+		t.Fatalf("IngestExtraction failed on a best-effort auto-start error: %v", err)
+	}
+	if doc.Status != domain.DocumentStatusReady {
+		t.Errorf("status = %q, want ready despite the auto-start failure", doc.Status)
 	}
 }
 
