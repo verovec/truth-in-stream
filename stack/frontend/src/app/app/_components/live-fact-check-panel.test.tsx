@@ -145,6 +145,9 @@ describe("LiveFactCheckPanel", () => {
     // hint is suppressed so the transcript is visible word by word.
     expect(screen.getByText(/the earth is/i)).toBeInTheDocument();
     expect(screen.queryByText(fr.app.panel.hints.idle)).not.toBeInTheDocument();
+    // Clamped to two lines so a long interim utterance cannot grow the subtitle
+    // region and shove the committed transcript below it.
+    expect(screen.getByText(/the earth is/i).className).toContain("line-clamp-2");
   });
 
   test("renders verdicts in the fact-check region and scrolls the origin subtitle into the list", async () => {
@@ -266,15 +269,21 @@ describe("LiveFactCheckPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("sticks the panel to the viewport so it stays fully visible", () => {
+  test("sticks the panel under the app header with a data-independent size", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
-    // The panel is sticky so the speaker-credibility strip pushing the column
-    // down never leaves its bottom below the fold; it pins as the page scrolls.
+    // The panel is sticky and pins just below the sticky app header. Its top
+    // offset and height anchor to the header-height token, never to the summary or
+    // speaker strips above it, so incoming statements, verdicts and speakers grow
+    // those strips without ever resizing the panel; content scrolls inside.
     const panel = screen.getByRole("complementary", {
       name: fr.app.panel.heading,
     });
     expect(panel.className).toContain("sticky");
-    expect(panel.className).toContain("top-4");
+    expect(panel.className).toContain("top-[calc(var(--app-header-h)+0.5rem)]");
+    expect(panel.className).toContain("h-[calc(100svh-var(--app-header-h)-1rem)]");
+    // The old magic offset that coupled the panel height to the strips is gone.
+    expect(panel.className).not.toContain("16rem");
+    expect(panel.className).not.toContain("top-4");
   });
 
   test("re-selecting the same fact-check entry scrolls its origin in again", async () => {

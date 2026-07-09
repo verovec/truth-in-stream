@@ -54,7 +54,7 @@ export const LiveFactCheckList = memo(function LiveFactCheckList({
               onClick={() => onSelect(entry.statementId)}
               className="flex w-full items-baseline gap-2 rounded-t-lg px-3 py-1.5 text-left hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-bleu-flag dark:hover:bg-white/5 dark:focus-visible:outline-paper/60"
             >
-              <span className="font-mono text-[11px] tabular-nums text-ink/50 dark:text-paper/50">
+              <span className="text-[11px] tabular-nums text-ink/50 dark:text-paper/50">
                 {formatTime(entry.start)}
               </span>
               <span className="line-clamp-1 min-w-0 flex-1 text-xs italic text-ink/50 dark:text-paper/50">

@@ -91,16 +91,16 @@ export function LiveFactCheckPanel() {
   return (
     <aside
       aria-labelledby="live-analysis-heading"
-      // Sticky so the panel stays fully on screen as the page scrolls. Its height
-      // is the viewport minus the stack above the grid - the page header, the
-      // summary strip, and the speaker-credibility strip plus their gaps, ~16rem -
-      // so the bottom clears the fold even before any scroll, when that stack has
-      // pushed the column furthest down. A fixed svh could not account for the
-      // credibility strip and fell below the fold once it appeared. Pinned at the
-      // small top inset, the same height keeps it within the viewport. Works
-      // because the grid is items-start, so the taller left column gives this
-      // column travel to stick.
-      className="sticky top-4 flex h-[calc(100svh-16rem)] flex-col gap-3 rounded-2xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-white/5"
+      // Sticky under the sticky app header so the panel stays on screen as the
+      // page scrolls. Its outer size is derived only from the viewport and the
+      // header-height token (--app-header-h), never from the summary or speaker
+      // strips above it, so incoming statements, verdicts and speakers can grow
+      // those strips without ever resizing this panel - content scrolls inside
+      // instead. Pinned just below the header (top clears the header height plus a
+      // small gap); the matching height keeps the bottom within the viewport once
+      // pinned. Works because the grid is items-start, so the taller left column
+      // gives this column travel to stick.
+      className="sticky top-[calc(var(--app-header-h)+0.5rem)] flex h-[calc(100svh-var(--app-header-h)-1rem)] flex-col gap-3 rounded-2xl border border-black/10 bg-white p-4 dark:border-white/10 dark:bg-white/5"
     >
       <header className="flex items-baseline justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -208,7 +208,10 @@ function LiveCaption({ text }: { text: string }) {
         aria-hidden="true"
         className="mt-1.5 size-1.5 shrink-0 animate-pulse rounded-full bg-rouge dark:bg-rouge-flag"
       />
-      {text}
+      {/* Clamped to two lines so a long interim utterance can never grow the
+          subtitle region and push the committed transcript; the full text lands
+          in the transcript the moment the utterance commits. */}
+      <span className="line-clamp-2">{text}</span>
     </p>
   );
 }

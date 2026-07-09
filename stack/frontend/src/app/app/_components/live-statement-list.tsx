@@ -177,7 +177,7 @@ export const LiveStatementList = memo(function LiveStatementList({
                     </span>
                   ) : null}
                   <span
-                    className={`font-mono tabular-nums ${
+                    className={`tabular-nums ${
                       active
                         ? "text-bleu dark:text-sky-300"
                         : "text-ink/40 dark:text-paper/40"
@@ -186,7 +186,7 @@ export const LiveStatementList = memo(function LiveStatementList({
                     {formatTime(statement.start)} – {formatTime(statement.end)}
                   </span>
                 </span>
-                <span className="text-[0.9375rem] leading-6 break-words text-ink/90 dark:text-paper/90">
+                <span className="text-[0.9375rem] leading-6 break-words text-ink dark:text-paper">
                   {statement.text}
                 </span>
               </button>

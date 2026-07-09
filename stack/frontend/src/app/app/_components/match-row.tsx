@@ -17,7 +17,7 @@ const MATCH_SOURCE_LINK_CLASS = `min-w-0 break-words text-xs ${SOURCE_LINK_CLASS
 function SimilarityScore({ similarity }: { similarity: number }) {
   const { t } = useAppI18n();
   return (
-    <span className="font-mono text-[11px] tabular-nums text-ink/40 dark:text-paper/40">
+    <span className="text-[11px] tabular-nums text-ink/40 dark:text-paper/40">
       {formatTemplate(t.legacy.similarity, {
         percent: Math.round(similarity * 100),
       })}
@@ -41,7 +41,7 @@ function ProvenanceDetail({
     return null;
   }
   return (
-    <p className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] tabular-nums text-ink/40 dark:text-paper/40">
+    <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] tabular-nums text-ink/40 dark:text-paper/40">
       {evidenceId ? <span>{evidenceId}</span> : null}
       {contribution !== undefined ? (
         <span>contribution {contribution.toFixed(2)}</span>
@@ -57,7 +57,7 @@ function ClaimRow({ match }: { match: ClaimMatch }) {
         <VerdictBadge verdict={match.verdict} />
         <SimilarityScore similarity={match.similarity} />
       </div>
-      <p className="text-sm leading-5 break-words text-ink/80 dark:text-paper/80">
+      <p className="text-sm leading-6 break-words text-ink/90 dark:text-paper/90">
         {match.claim}
       </p>
       <p className="flex flex-wrap gap-x-3 gap-y-1">
@@ -92,7 +92,7 @@ function EvidenceRow({ match }: { match: EvidenceMatch }) {
         </span>
         <SimilarityScore similarity={match.similarity} />
       </div>
-      <p className="text-sm leading-5 break-words text-ink/80 dark:text-paper/80">
+      <p className="text-sm leading-6 break-words text-ink/90 dark:text-paper/90">
         {match.excerpt}
       </p>
       {sources.length > 0 ? (

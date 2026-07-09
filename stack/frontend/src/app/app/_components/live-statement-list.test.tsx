@@ -40,6 +40,21 @@ function subtitleList() {
 }
 
 describe("LiveStatementList", () => {
+  test("renders timestamps in tabular sans numerals, not a mono face", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "a checked statement")]}
+        selectedStatementId={null}
+      />,
+    );
+    // Timestamps read as clean UI numerals - tabular figures on the sans face -
+    // rather than the terminal-like monospace they used to carry.
+    const timestamp = subtitleList().querySelector("span.tabular-nums");
+    expect(timestamp?.textContent).toMatch(/\d+:\d{2}/);
+    expect(timestamp?.className).not.toContain("font-mono");
+    expect(timestamp?.className).toContain("tabular-nums");
+  });
+
   test("renders a statement's atomic claims under it, suppressing the generic marker", () => {
     renderWithPlayback(
       <LiveStatementList

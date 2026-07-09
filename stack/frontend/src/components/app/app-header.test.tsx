@@ -29,4 +29,16 @@ describe("AppHeader", () => {
     expect(screen.getByText(fr.brand.name)).toBeInTheDocument();
     expect(screen.getByText(fr.app.header.signOut)).toBeInTheDocument();
   });
+
+  test("pins to the top as a sticky, translucent bar", () => {
+    render(<AppHeader dict={fr} locale="fr" currentSection="videos" />);
+    // The header stays visible while the operator scrolls the analysis view, so
+    // the navigation and brand remain reachable. It is a translucent, blurred bar
+    // layered above the scrolling content.
+    const header = screen.getByRole("banner");
+    expect(header.className).toContain("sticky");
+    expect(header.className).toContain("top-0");
+    expect(header.className).toContain("z-40");
+    expect(header.className).toContain("backdrop-blur");
+  });
 });

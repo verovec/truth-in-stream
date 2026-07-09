@@ -5,7 +5,7 @@ import type { Dictionary } from "./fr";
 // lengths, which the type alone does not.
 export const en: Dictionary = {
   meta: {
-    title: "jeminforme.fr - Live fact-checking for political debate",
+    title: "jeminforme.fr — Live fact-checking for political debate",
     description:
       "jeminforme.fr checks political claims against trusted sources in real time, so debate stays anchored to the facts.",
   },
@@ -209,7 +209,7 @@ export const en: Dictionary = {
       speaker: "Speaker",
       checking: "Checking this statement…",
       checkFailed: "This statement could not be checked.",
-      notChecked: "Not checked - {reason}.",
+      notChecked: "Not checked — {reason}.",
       skipReasons: {
         notAClaim: "no verifiable claim",
         notCovered: "not covered by the reference corpus",
@@ -325,7 +325,7 @@ export const en: Dictionary = {
     },
   },
   login: {
-    metaTitle: "Sign in - jeminforme.fr",
+    metaTitle: "Sign in — jeminforme.fr",
     intro: "Sign in to continue",
     signIn: "Sign in with Keycloak",
     modalTitle: "Sign in",
