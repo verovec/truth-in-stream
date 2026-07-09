@@ -3,7 +3,7 @@
 import { useTransition } from "react";
 import type { Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionaries/fr";
-import { setLocalePreference } from "../_actions/set-locale";
+import { setLocalePreference } from "@/app/app/_actions/set-locale";
 
 const OPTIONS: { locale: Locale; short: string }[] = [
   { locale: "fr", short: "FR" },

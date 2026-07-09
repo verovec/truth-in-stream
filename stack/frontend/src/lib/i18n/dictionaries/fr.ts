@@ -118,6 +118,50 @@ export const fr = {
     header: {
       signOut: "Se déconnecter",
     },
+    nav: {
+      ariaLabel: "Navigation principale",
+      videos: "Vidéos",
+      documents: "Documents",
+    },
+    documents: {
+      heading: "Documents",
+      loadingAria: "Chargement des documents",
+      loadError: "Les documents n'ont pas pu se charger : {message}",
+      loadErrorFallback: "Les documents n'ont pas pu se charger.",
+      retry: "Réessayer",
+      empty: "Aucun document pour le moment.",
+      emptyAdmin: "Aucun document pour le moment. Importez un PDF pour commencer.",
+      pageCount: { one: "{count} page", other: "{count} pages" },
+      status: { ready: "Prêt", pending: "En cours", failed: "Échec" },
+      analysis: {
+        none: "Non analysé",
+        analysing: "Analyse en cours",
+        complete: "Analysé",
+        failed: "Échec de l'analyse",
+      },
+      counts: {
+        credible: { one: "{count} fiable", other: "{count} fiables" },
+        disputed: { one: "{count} contesté", other: "{count} contestés" },
+      },
+      uploader: {
+        prompt: "Déposez un PDF ici, ou cliquez pour choisir",
+        formats: "PDF avec texte (les documents numérisés ne sont pas pris en charge)",
+        inputAria: "Importer un document PDF",
+        extracting: "Extraction du texte…",
+        preparing: "Préparation…",
+        finalizing: "Finalisation…",
+        dismiss: "Fermer",
+        uploadingAria: "Envoi de {title}",
+        errors: {
+          unsupported: "Type de fichier non pris en charge. Importez un PDF.",
+          scanned:
+            "Ce PDF ne contient pas de texte extractible (document numérisé). Importez un PDF avec du texte.",
+          tooLong:
+            "Ce document dépasse la limite de {max} phrases. Importez un document plus court.",
+          failed: "L'import a échoué.",
+        },
+      },
+    },
     summary: {
       heading: "Constats en direct",
       ariaLabel: "Résumé des constats en direct",
