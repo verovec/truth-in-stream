@@ -20,16 +20,16 @@ func contentFor(page, idx int) string {
 
 // fakeEmbedSource serves a fixed remaining count to the dry-run estimate.
 type fakeEmbedSource struct {
-	remaining domain.WikiRemaining
+	remaining domain.EvidenceRemaining
 }
 
-func (f fakeEmbedSource) StagingRemaining(context.Context) (domain.WikiRemaining, error) {
+func (f fakeEmbedSource) StagingRemaining(context.Context) (domain.EvidenceRemaining, error) {
 	return f.remaining, nil
 }
 
 func TestEstimateBulkEmbed(t *testing.T) {
 	t.Parallel()
-	src := fakeEmbedSource{remaining: domain.WikiRemaining{Pages: 10, Chunks: 100, Chars: 5000}}
+	src := fakeEmbedSource{remaining: domain.EvidenceRemaining{Documents: 10, Chunks: 100, Chars: 5000}}
 
 	est, err := EstimateBulkEmbed(t.Context(), src)
 	if err != nil {

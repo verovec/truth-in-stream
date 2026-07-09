@@ -75,7 +75,7 @@ func (s *WikiSearch) Search(ctx context.Context, query string) ([]WikiHit, error
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.evidence.SearchWiki(ctx, vec, s.cfg.TopK)
+	hits, err := s.evidence.SearchEvidence(ctx, vec, s.cfg.TopK)
 	if err != nil {
 		return nil, fmt.Errorf("service: search wiki: %w", err)
 	}

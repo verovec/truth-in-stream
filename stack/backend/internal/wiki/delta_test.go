@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -11,19 +12,65 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
+// --- test helpers for the generalized evidence_chunks shape ---
+
+// parseID reverses the stringified external id back to the numeric page id the
+// fakes key their maps by.
+func parseID(s string) int64 {
+	id, _ := strconv.ParseInt(s, 10, 64)
+	return id
+}
+
+// chunkRevision reads the wiki revision id out of a chunk's metadata, the field
+// that used to be domain.EvidenceChunk.RevisionID before provenance moved into
+// the generic metadata map.
+func chunkRevision(c domain.EvidenceChunk) int64 {
+	wm, _ := domain.ParseWikiMetadata(c.Metadata)
+	return wm.RevisionID
+}
+
+// chunkSection reads the section heading out of a chunk's metadata.
+func chunkSection(c domain.EvidenceChunk) string {
+	wm, _ := domain.ParseWikiMetadata(c.Metadata)
+	return wm.Section
+}
+
+// afterCursor reports whether c sorts strictly after cur in (source, external
+// id, chunk index) keyset order, the order evidence_chunks pages in.
+func afterCursor(c domain.EvidenceChunk, cur domain.EvidenceCursor) bool {
+	if c.Source != cur.Source {
+		return c.Source > cur.Source
+	}
+	if c.ExternalID != cur.ExternalID {
+		return c.ExternalID > cur.ExternalID
+	}
+	return int32(c.ChunkIndex) > cur.ChunkIndex
+}
+
+// lessChunk orders two chunks in that same keyset order.
+func lessChunk(a, b domain.EvidenceChunk) bool {
+	if a.Source != b.Source {
+		return a.Source < b.Source
+	}
+	if a.ExternalID != b.ExternalID {
+		return a.ExternalID < b.ExternalID
+	}
+	return a.ChunkIndex < b.ChunkIndex
+}
+
 // --- fakes ---
 
 type storedChunk struct {
-	chunk    domain.WikiChunk
+	chunk    domain.EvidenceChunk
 	embedded bool
 }
 
 type fakeDeltaStore struct {
 	mu              sync.Mutex
 	chunks          map[[2]int64]storedChunk
-	state           domain.WikiSyncState
+	state           domain.EvidenceSyncState
 	hasState        bool
-	syncStates      []domain.WikiSyncState
+	syncStates      []domain.EvidenceSyncState
 	embedInProgress bool
 	upsertErr       error
 	setStateErr     error
@@ -33,11 +80,11 @@ func newFakeDeltaStore() *fakeDeltaStore {
 	return &fakeDeltaStore{chunks: make(map[[2]int64]storedChunk)}
 }
 
-func (f *fakeDeltaStore) seed(c domain.WikiChunk, embedded bool) {
-	f.chunks[[2]int64{c.PageID, int64(c.ChunkIndex)}] = storedChunk{chunk: c, embedded: embedded}
+func (f *fakeDeltaStore) seed(c domain.EvidenceChunk, embedded bool) {
+	f.chunks[[2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}] = storedChunk{chunk: c, embedded: embedded}
 }
 
-func (f *fakeDeltaStore) GetSyncState(_ context.Context, _ string) (domain.WikiSyncState, bool, error) {
+func (f *fakeDeltaStore) GetSyncState(_ context.Context, _ string) (domain.EvidenceSyncState, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state, f.hasState, nil
@@ -49,7 +96,7 @@ func (f *fakeDeltaStore) EmbedInProgress(_ context.Context) (bool, error) {
 	return f.embedInProgress, nil
 }
 
-func (f *fakeDeltaStore) CountPages(_ context.Context) (int64, error) {
+func (f *fakeDeltaStore) CountDocuments(_ context.Context) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	pages := map[int64]struct{}{}
@@ -59,7 +106,7 @@ func (f *fakeDeltaStore) CountPages(_ context.Context) (int64, error) {
 	return int64(len(pages)), nil
 }
 
-func (f *fakeDeltaStore) StoredRevisions(_ context.Context, pageIDs []int64) (map[int64]int64, error) {
+func (f *fakeDeltaStore) StoredRevisions(_ context.Context, _ string, pageIDs []int64) (map[int64]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	want := map[int64]struct{}{}
@@ -68,31 +115,29 @@ func (f *fakeDeltaStore) StoredRevisions(_ context.Context, pageIDs []int64) (ma
 	}
 	out := map[int64]int64{}
 	for key, sc := range f.chunks {
-		if _, ok := want[key[0]]; ok && sc.chunk.RevisionID > out[key[0]] {
-			out[key[0]] = sc.chunk.RevisionID
+		if _, ok := want[key[0]]; ok {
+			if rev := chunkRevision(sc.chunk); rev > out[key[0]] {
+				out[key[0]] = rev
+			}
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeDeltaStore) UnembeddedChunks(_ context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error) {
+func (f *fakeDeltaStore) UnembeddedChunks(_ context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var pending []domain.WikiChunk
+	var pending []domain.EvidenceChunk
 	for _, sc := range f.chunks {
 		if sc.embedded {
 			continue
 		}
-		c := sc.chunk
-		if c.PageID > cur.PageID || (c.PageID == cur.PageID && int32(c.ChunkIndex) > cur.ChunkIndex) {
-			pending = append(pending, c)
+		if afterCursor(sc.chunk, cur) {
+			pending = append(pending, sc.chunk)
 		}
 	}
 	sort.Slice(pending, func(i, j int) bool {
-		if pending[i].PageID != pending[j].PageID {
-			return pending[i].PageID < pending[j].PageID
-		}
-		return pending[i].ChunkIndex < pending[j].ChunkIndex
+		return lessChunk(pending[i], pending[j])
 	})
 	if len(pending) > limit {
 		pending = pending[:limit]
@@ -100,14 +145,14 @@ func (f *fakeDeltaStore) UnembeddedChunks(_ context.Context, cur domain.WikiCurs
 	return pending, nil
 }
 
-func (f *fakeDeltaStore) UpsertChunks(_ context.Context, chunks []domain.WikiChunk) error {
+func (f *fakeDeltaStore) UpsertChunks(_ context.Context, chunks []domain.EvidenceChunk) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
 	for _, c := range chunks {
-		key := [2]int64{c.PageID, int64(c.ChunkIndex)}
+		key := [2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}
 		embedded := false
 		if old, ok := f.chunks[key]; ok && old.chunk.Content == c.Content {
 			embedded = old.embedded
@@ -117,12 +162,13 @@ func (f *fakeDeltaStore) UpsertChunks(_ context.Context, chunks []domain.WikiChu
 	return nil
 }
 
-func (f *fakeDeltaStore) TrimPages(_ context.Context, trims []domain.WikiTrim) error {
+func (f *fakeDeltaStore) TrimDocuments(_ context.Context, trims []domain.EvidenceTrim) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, tr := range trims {
+		id := parseID(tr.ExternalID)
 		for key := range f.chunks {
-			if key[0] == tr.PageID && key[1] >= int64(tr.FromIndex) {
+			if key[0] == id && key[1] >= int64(tr.FromIndex) {
 				delete(f.chunks, key)
 			}
 		}
@@ -130,7 +176,7 @@ func (f *fakeDeltaStore) TrimPages(_ context.Context, trims []domain.WikiTrim) e
 	return nil
 }
 
-func (f *fakeDeltaStore) DeletePagesByTitle(_ context.Context, titles []string) error {
+func (f *fakeDeltaStore) DeleteByTitle(_ context.Context, _ string, titles []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	drop := map[string]struct{}{}
@@ -145,11 +191,11 @@ func (f *fakeDeltaStore) DeletePagesByTitle(_ context.Context, titles []string) 
 	return nil
 }
 
-func (f *fakeDeltaStore) SetChunkEmbeddings(_ context.Context, chunks []domain.WikiChunk) error {
+func (f *fakeDeltaStore) SetChunkEmbeddings(_ context.Context, chunks []domain.EvidenceChunk) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, c := range chunks {
-		key := [2]int64{c.PageID, int64(c.ChunkIndex)}
+		key := [2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}
 		if sc, ok := f.chunks[key]; ok {
 			sc.embedded = true
 			sc.chunk.Embedding = c.Embedding
@@ -159,7 +205,7 @@ func (f *fakeDeltaStore) SetChunkEmbeddings(_ context.Context, chunks []domain.W
 	return nil
 }
 
-func (f *fakeDeltaStore) SetSyncState(_ context.Context, st domain.WikiSyncState) error {
+func (f *fakeDeltaStore) SetSyncState(_ context.Context, st domain.EvidenceSyncState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.setStateErr != nil {
@@ -239,9 +285,9 @@ func deltaCfg() DeltaConfig {
 	return DeltaConfig{Corpus: "simplewiki", RetentionDays: 30, BulkFraction: 0.9, BatchSize: 10, Concurrency: 2}
 }
 
-func baselineStore(chunks ...domain.WikiChunk) *fakeDeltaStore {
+func baselineStore(chunks ...domain.EvidenceChunk) *fakeDeltaStore {
 	s := newFakeDeltaStore()
-	s.state = domain.WikiSyncState{Corpus: "simplewiki", LastChangeTS: baseTS, DumpVersion: "v1"}
+	s.state = domain.EvidenceSyncState{Source: "simplewiki", LastChangeTS: baseTS, DumpVersion: "v1"}
 	s.hasState = true
 	for _, c := range chunks {
 		s.seed(c, true)
@@ -251,8 +297,15 @@ func baselineStore(chunks ...domain.WikiChunk) *fakeDeltaStore {
 
 // chunk builds a baseline chunk at revision 100; delta runs move pages to a
 // higher revision via the extract fixtures.
-func chunk(pageID int64, idx int, title, content string) domain.WikiChunk {
-	return domain.WikiChunk{PageID: pageID, ChunkIndex: idx, Title: title, Corpus: "simplewiki", RevisionID: 100, Content: content}
+func chunk(pageID int64, idx int, title, content string) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source:     "simplewiki",
+		ExternalID: strconv.FormatInt(pageID, 10),
+		ChunkIndex: idx,
+		Title:      title,
+		Content:    content,
+		Metadata:   domain.WikiMetadata{RevisionID: 100}.Map(),
+	}
 }
 
 // --- tests ---
@@ -278,7 +331,7 @@ func TestRunDeltaRefetchesEditsAndEmbeds(t *testing.T) {
 		t.Errorf("expected chunks embedded, got Embedded=%d calls=%d", stats.Embedded, emb.calls)
 	}
 	got := store.chunks[[2]int64{1, 0}]
-	if got.chunk.RevisionID != 200 || !got.embedded {
+	if chunkRevision(got.chunk) != 200 || !got.embedded {
 		t.Errorf("chunk (1,0) = %+v, want revid 200 embedded", got)
 	}
 	if len(store.syncStates) != 1 || !store.syncStates[0].LastChangeTS.Equal(baseTS.Add(time.Hour)) {
@@ -417,7 +470,7 @@ func TestRunDeltaRestoreRefetchesNotDeletes(t *testing.T) {
 	if store.pageChunks(1) == 0 {
 		t.Fatal("restored page has no chunks; it was lost")
 	}
-	if got := store.chunks[[2]int64{1, 0}]; got.chunk.RevisionID != 250 || !got.embedded {
+	if got := store.chunks[[2]int64{1, 0}]; chunkRevision(got.chunk) != 250 || !got.embedded {
 		t.Errorf("restored chunk = %+v, want revid 250 embedded", got)
 	}
 }
@@ -436,8 +489,8 @@ func TestRunDeltaFallsBackToReportedRevision(t *testing.T) {
 	if _, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, deltaCfg(), nowTS); err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
-	if got := store.chunks[[2]int64{1, 0}]; got.chunk.RevisionID != 200 {
-		t.Errorf("chunk revid = %d, want 200 (fell back to the reported revision)", got.chunk.RevisionID)
+	if got := store.chunks[[2]int64{1, 0}]; chunkRevision(got.chunk) != 200 {
+		t.Errorf("chunk revid = %d, want 200 (fell back to the reported revision)", chunkRevision(got.chunk))
 	}
 }
 

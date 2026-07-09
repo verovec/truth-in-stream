@@ -58,8 +58,8 @@ func run(logger *slog.Logger) error {
 // clusterStore is the slice of the store the clustering job drives: it reads the
 // embedded corpus and writes each chunk's cluster id and importance back.
 type clusterStore interface {
-	EmbeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
-	SetChunkClustering(ctx context.Context, chunks []domain.WikiChunk) error
+	EmbeddedChunks(ctx context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
+	SetChunkClustering(ctx context.Context, chunks []domain.EvidenceChunk) error
 }
 
 // stats summarizes a clustering run for the operator: how many chunks were
@@ -102,15 +102,15 @@ func clusterCorpus(ctx context.Context, logger *slog.Logger, store clusterStore,
 		return stats{}, fmt.Errorf("wikicluster: cluster corpus: %w", err)
 	}
 
-	scored := make([]domain.WikiChunk, len(chunks))
+	scored := make([]domain.EvidenceChunk, len(chunks))
 	for i := range chunks {
 		clusterID := assignments[i].Cluster
 		importance := assignments[i].Importance
-		scored[i] = domain.WikiChunk{
-			PageID:     chunks[i].PageID,
+		scored[i] = domain.EvidenceChunk{
+			Source:     chunks[i].Source,
+			ExternalID: chunks[i].ExternalID,
 			ChunkIndex: chunks[i].ChunkIndex,
-			ClusterID:  &clusterID,
-			Importance: &importance,
+			Metadata:   domain.WikiMetadata{ClusterID: &clusterID, Importance: &importance}.Map(),
 		}
 	}
 	if err := writeClustering(ctx, store, scored, cfg.WriteBatch); err != nil {
@@ -132,10 +132,10 @@ func clusterCorpus(ctx context.Context, logger *slog.Logger, store clusterStore,
 // corpus must fit in memory to be clustered in one pass; for a simplewiki-sized
 // corpus that is well within a worker's footprint (a larger corpus needs a
 // streaming or mini-batch variant, noted as future work).
-func readEmbedded(ctx context.Context, store clusterStore, batch int) ([]domain.WikiChunk, error) {
+func readEmbedded(ctx context.Context, store clusterStore, batch int) ([]domain.EvidenceChunk, error) {
 	var (
-		all []domain.WikiChunk
-		cur domain.WikiCursor
+		all []domain.EvidenceChunk
+		cur domain.EvidenceCursor
 	)
 	for {
 		page, err := store.EmbeddedChunks(ctx, cur, batch)
@@ -147,7 +147,7 @@ func readEmbedded(ctx context.Context, store clusterStore, batch int) ([]domain.
 		}
 		all = append(all, page...)
 		last := page[len(page)-1]
-		cur = domain.WikiCursor{PageID: last.PageID, ChunkIndex: int32(last.ChunkIndex)}
+		cur = domain.EvidenceCursor{Source: last.Source, ExternalID: last.ExternalID, ChunkIndex: int32(last.ChunkIndex)}
 		if len(page) < batch {
 			break
 		}
@@ -157,7 +157,7 @@ func readEmbedded(ctx context.Context, store clusterStore, batch int) ([]domain.
 
 // writeClustering writes the scored chunks back in batch-sized groups, so one
 // huge SendBatch does not pin the whole corpus in a single round-trip.
-func writeClustering(ctx context.Context, store clusterStore, scored []domain.WikiChunk, batch int) error {
+func writeClustering(ctx context.Context, store clusterStore, scored []domain.EvidenceChunk, batch int) error {
 	for start := 0; start < len(scored); start += batch {
 		end := min(start+batch, len(scored))
 		if err := store.SetChunkClustering(ctx, scored[start:end]); err != nil {

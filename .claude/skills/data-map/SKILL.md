@@ -15,7 +15,7 @@ This file is a map, not the source. The authoritative schema is the migrations; 
 access patterns are the sqlc queries.
 
 - Schema: `stack/backend/migrations/*.up.sql` (applied in numeric order).
-- Queries: `stack/backend/queries/{claims,wiki,videos}.sql`.
+- Queries: `stack/backend/queries/{claims,evidence,political,videos}.sql`.
 
 - You MUST verify a column, type, or constraint against those files (or the live database via the
   read-only `postgres` MCP) before depending on it. NEVER assert a column exists from this doc
@@ -55,38 +55,47 @@ The matching corpus: spoken segments are matched against these by cosine similar
 - Index `claims_embedding_hnsw` (HNSW `halfvec_cosine_ops`, `m=16`, `ef_construction=200`).
 - Retrieval: `SearchClaims` orders by `embedding <=> query_embedding` (cosine distance).
 - This table decides coverage / checkability. If a question is "is this segment checkable / covered",
-  the answer comes from `claims`, NOT from `wiki_chunks`.
+  the answer comes from `claims`, NOT from `evidence_chunks`.
 
-### `wiki_chunks` - Wikipedia evidence corpus (vector store)
+### `evidence_chunks` - generalized evidence corpus (vector store)
 
-Chunked Wikipedia lead sections, bulk-ingested. Evidence surfaced for matched claims.
+The source-extensible evidence store (VER-174; was `wiki_chunks`). Holds every evidence source under
+one `source` discriminator: chunked Wikipedia lead sections, the category crawl, and the statistical
+sources (`eurostat`, `interieur`, `insee-*`). Evidence surfaced for matched claims. **Adding a source
+is rows under a new `source` value - no migration and no new column** - because source-specific
+provenance lives in `metadata jsonb`.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `page_id` | `bigint` | Wikipedia page id. Part of PK. |
-| `chunk_index` | `integer` | Chunk ordinal within the page. Part of PK. |
-| `title` | `text` | Article title. |
-| `url` | `text` | Article URL. |
-| `revision_id` | `bigint` | Source revision; delta sync diffs against it. |
-| `corpus` | `text` | Which corpus this chunk belongs to (`WIKI_CORPUS`); provenance + checkpoint key. |
+| `source` | `text` | The source discriminator (a Wikipedia corpus name, a statistical source); the wiki-only reads exclude the stat sources by it. Part of PK. |
+| `external_id` | `text` | The source's stable document id (a Wikipedia page id, a statistical series key), as text. Part of PK. |
+| `chunk_index` | `integer` | Chunk ordinal within the document. Part of PK. |
+| `title` | `text` | Document title. |
+| `url` | `text` | Document URL. |
 | `content` | `text` | Chunk text. |
+| `kind` | `text` default `'lead'` | `'lead'` or `'body'`; the confidence weighter reads it, so it stays typed. |
 | `embedding` | `halfvec(1024)` NULLABLE | Filled by the embedding pipeline. NULL = unembedded. |
+| `metadata` | `jsonb` NOT NULL default `'{}'` | Source-specific provenance. Wiki/crawl keys: `revision_id`, `section`, `cluster_id`, `importance` (see `domain.WikiMetadata`). A stats chunk carries `{}`. **Nothing a query filters or ranks on lives here** - those are the typed columns above. |
 | `synced_at` | `timestamptz` | Last ingest/embed time. |
-| `section` | `text` default `''` | Article section a chunk came from; lead has `''`. |
-| `kind` | `text` default `'lead'` | `'lead'` today; `'body'` reserved for later. |
 
-- PK `(page_id, chunk_index)`. Index `wiki_chunks_embedding_hnsw` (same HNSW params; skips NULLs).
+- PK `(source, external_id, chunk_index)` - the generic natural key; including `source` lets two
+  sources share an `external_id` without colliding. Index `evidence_chunks_embedding_hnsw` (HNSW
+  `halfvec_cosine_ops`, `m=16`, `ef_construction=200`; skips NULLs). Single unpartitioned index per
+  the VER-173 benchmark verdict (`docs/datastore-scale-benchmark.md`).
 - `embedding` is NULLABLE on purpose: ingest never writes it, and re-ingesting changed `content`
-  resets it to NULL so a stale vector is never served (`UpsertWikiChunk` CASE). `SearchWikiChunks`
-  filters `WHERE embedding IS NOT NULL`.
+  resets it to NULL so a stale vector is never served (`UpsertEvidenceChunk` CASE).
+  `SearchEvidenceChunks` filters `WHERE embedding IS NOT NULL`.
+- The dimension has one Go source of truth (`domain.EmbeddingDim`, surfaced as
+  `domain.HalfvecColumnType()`) and one SQL declaration (the `halfvec(1024)` migration DDL); changing
+  it is `docs/embedding-model-migration.md`, not an ad-hoc edit.
 - Evidence-only. It enriches matched claims; it does NOT decide coverage.
 
-### `wiki_sync_state` - per-corpus ingestion checkpoint
+### `evidence_sync_state` - per-source ingestion checkpoint
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `corpus` | `text` PK | Corpus name. |
-| `last_change_ts` | `timestamptz` NULL | Point the corpus is current to; delta sync resumes here. |
+| `source` | `text` PK | Source name (was `corpus`). |
+| `last_change_ts` | `timestamptz` NULL | Point the source is current to; delta sync resumes here. |
 | `dump_version` | `text` NULL | Dump the bulk load came from. |
 | `synced_at` | `timestamptz` | Last sync time. |
 
@@ -176,10 +185,10 @@ matcher config (`ConfidenceClusterSize`, `ConfidenceLeadWeight`, `ConfidenceBody
 **Inputs (all closeness-derived):**
 
 - **Cosine similarity** of each match (`1 - distance`), the closeness of the spoken statement to
-  the matched `claims` row or `wiki_chunks` row.
+  the matched `claims` row or `evidence_chunks` row.
 - **Curated-claim verdict** (`corroborates` / `contradicts` / `unclear`) - the signed stance of a
   `claims` match.
-- **Chunk-kind weight** - a `wiki_chunks` evidence hit is scaled by its `kind`: `lead` at
+- **Chunk-kind weight** - a `evidence_chunks` evidence hit is scaled by its `kind`: `lead` at
   `ConfidenceLeadWeight`, `body` at `ConfidenceBodyWeight` (both in `[0, 1]`; an unknown kind
   defaults to the lead weight). A curated claim always weighs at its full similarity.
 
@@ -213,7 +222,7 @@ statement that was already deemed checkable. Documented for ingestion/scoring co
 
 - Bulk vector loads MUST use text-format CSV `COPY`, never binary `CopyFrom`/binary `COPY`: pgx
   binary copy corrupts `halfvec` columns (phantom rows). `pg_dump`/`pg_restore` are safe (text I/O).
-- Coverage / checkability is decided by `claims`; `wiki_chunks` is evidence-only. Populating the
+- Coverage / checkability is decided by `claims`; `evidence_chunks` is evidence-only. Populating the
   wiki corpus cannot change whether a segment is covered.
 - Live fact-check results are ephemeral - streamed over the WebSocket, not stored. If asked "where
   are the verdicts for video X", the answer is "nowhere; they are emitted live, not persisted".

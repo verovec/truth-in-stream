@@ -82,7 +82,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")
@@ -102,11 +102,11 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	}
 }
 
-func chunk(pageID int64, content string) domain.WikiChunk {
-	return domain.WikiChunk{
-		PageID: pageID, ChunkIndex: 0, Title: "Paris",
-		URL: "https://simple.wikipedia.org/wiki/Paris", RevisionID: 100,
-		Corpus: "simplewiki", Content: content, Kind: domain.WikiChunkKindLead,
+func chunk(pageID int64, content string) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source: "simplewiki", ExternalID: strconv.FormatInt(pageID, 10), ChunkIndex: 0, Title: "Paris",
+		URL: "https://simple.wikipedia.org/wiki/Paris", Content: content, Kind: domain.EvidenceKindLead,
+		Metadata: domain.WikiMetadata{RevisionID: 100}.Map(),
 	}
 }
 
@@ -117,7 +117,7 @@ func publishJob(ctx context.Context, t *testing.T, client *queue.Client, j embed
 		t.Fatalf("marshal job: %v", err)
 	}
 	if err := client.Publish(ctx, queue.Message{Body: body, Priority: priority}); err != nil {
-		t.Fatalf("publish job page %d: %v", j.PageID, err)
+		t.Fatalf("publish job %s/%s: %v", j.Source, j.ExternalID, err)
 	}
 }
 
@@ -156,19 +156,19 @@ func TestWorkerEmbedsQueuedChunksEndToEnd(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 	if err := store.ResetStaging(ctx, "v2"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
 	}
-	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{chunk(1, "v1"), chunk(2, "v2"), chunk(3, "v3")}); err != nil {
+	if err := store.UpsertStagingChunks(ctx, []domain.EvidenceChunk{chunk(1, "v1"), chunk(2, "v2"), chunk(3, "v3")}); err != nil {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
 
 	client := newQueue(t, broker, "embedding.jobs.embedworker_e2e")
 	for _, pid := range []int64{1, 2, 3} {
-		publishJob(ctx, t, client, embedjob.Job{PageID: pid, ChunkIndex: 0, Content: "v" + strconv.FormatInt(pid, 10)}, 5)
+		publishJob(ctx, t, client, embedjob.Job{Source: "simplewiki", ExternalID: strconv.FormatInt(pid, 10), ChunkIndex: 0, Content: "v" + strconv.FormatInt(pid, 10)}, 5)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -192,9 +192,9 @@ func TestWorkerEmbedsQueuedChunksEndToEnd(t *testing.T) {
 	}
 	q := make([]float32, domain.EmbeddingDim)
 	q[2] = 1
-	got, err := store.SearchWiki(ctx, q, 1)
+	got, err := store.SearchEvidence(ctx, q, 1)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 1 || got[0].Content != "v2" {
 		t.Fatalf("nearest = %+v; want the chunk embedded with content v2", got)
@@ -211,21 +211,21 @@ func TestWorkerEmbedsHigherPriorityFirst(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 	if err := store.ResetStaging(ctx, "v2"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
 	}
-	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{chunk(1, "v1"), chunk(2, "v2")}); err != nil {
+	if err := store.UpsertStagingChunks(ctx, []domain.EvidenceChunk{chunk(1, "v1"), chunk(2, "v2")}); err != nil {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
 
 	// Enqueue both jobs before the worker starts, low priority first. With a
 	// single-slot worker the broker must hand back the high-priority job first.
 	client := newQueue(t, broker, "embedding.jobs.embedworker_prio")
-	publishJob(ctx, t, client, embedjob.Job{PageID: 1, ChunkIndex: 0, Content: "v1"}, 1)
-	publishJob(ctx, t, client, embedjob.Job{PageID: 2, ChunkIndex: 0, Content: "v2"}, 9)
+	publishJob(ctx, t, client, embedjob.Job{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Content: "v1"}, 1)
+	publishJob(ctx, t, client, embedjob.Job{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Content: "v2"}, 9)
 
 	rec := &recordingEmbedder{}
 	runCtx, cancel := context.WithCancel(ctx)

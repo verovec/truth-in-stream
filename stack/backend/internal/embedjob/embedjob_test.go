@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// testSource is the evidence source every job fixture is stamped with. A chunk is
+// keyed on (source, external_id, chunk_index), so a valid job needs a non-empty
+// source and external id; the fixtures carry the old page id as the external id.
+const testSource = "wiki"
 
 // testVec returns a full-dimension embedding whose first element is hot, so a
 // store fake can assert which vector it was handed.
@@ -53,7 +59,8 @@ func (f *fakeEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]fl
 }
 
 type writeRec struct {
-	pageID     int64
+	source     string
+	externalID string
 	chunkIndex int
 	embedding  []float32
 	staging    bool
@@ -70,19 +77,19 @@ type fakeStore struct {
 	err     error
 }
 
-func (f *fakeStore) SetLiveChunkEmbeddings(_ context.Context, chunks []domain.WikiChunk) (int, error) {
+func (f *fakeStore) SetLiveChunkEmbeddings(_ context.Context, chunks []domain.EvidenceChunk) (int, error) {
 	return f.record(chunks, false)
 }
 
-func (f *fakeStore) SetStagingChunkEmbeddings(_ context.Context, chunks []domain.WikiChunk) (int, error) {
+func (f *fakeStore) SetStagingChunkEmbeddings(_ context.Context, chunks []domain.EvidenceChunk) (int, error) {
 	return f.record(chunks, true)
 }
 
-func (f *fakeStore) record(chunks []domain.WikiChunk, staging bool) (int, error) {
+func (f *fakeStore) record(chunks []domain.EvidenceChunk, staging bool) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, c := range chunks {
-		f.writes = append(f.writes, writeRec{c.PageID, c.ChunkIndex, c.Embedding, staging})
+		f.writes = append(f.writes, writeRec{c.Source, c.ExternalID, c.ChunkIndex, c.Embedding, staging})
 	}
 	if f.err != nil {
 		return 0, f.err
@@ -109,7 +116,7 @@ func TestProcessEmbedsAndWrites(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 42, ChunkIndex: 1, Content: "hello"}), 5)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "42", ChunkIndex: 1, Content: "hello"}), 5)
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck", got.Action)
@@ -118,8 +125,8 @@ func TestProcessEmbedsAndWrites(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("store writes = %d, want 1", len(writes))
 	}
-	if writes[0].pageID != 42 || writes[0].chunkIndex != 1 || writes[0].embedding[0] != 7 {
-		t.Fatalf("write = %+v, want page 42 chunk 1 vec[0]=7", writes[0])
+	if writes[0].externalID != "42" || writes[0].chunkIndex != 1 || writes[0].embedding[0] != 7 {
+		t.Fatalf("write = %+v, want external 42 chunk 1 vec[0]=7", writes[0])
 	}
 	if emb.calls.Load() != 1 {
 		t.Fatalf("embed calls = %d, want 1", emb.calls.Load())
@@ -151,10 +158,11 @@ func TestProcessInvalidJobDropsWithoutEmbedding(t *testing.T) {
 		name string
 		job  Job
 	}{
-		{name: "zero page id", job: Job{PageID: 0, ChunkIndex: 0, Content: "x"}},
-		{name: "negative chunk index", job: Job{PageID: 1, ChunkIndex: -1, Content: "x"}},
-		{name: "empty content", job: Job{PageID: 1, ChunkIndex: 0, Content: ""}},
-		{name: "negative attempt", job: Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: -1}},
+		{name: "empty source", job: Job{ExternalID: "1", ChunkIndex: 0, Content: "x"}},
+		{name: "empty external id", job: Job{Source: testSource, ChunkIndex: 0, Content: "x"}},
+		{name: "negative chunk index", job: Job{Source: testSource, ExternalID: "1", ChunkIndex: -1, Content: "x"}},
+		{name: "empty content", job: Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: ""}},
+		{name: "negative attempt", job: Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: -1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,7 +189,7 @@ func TestProcessObsoleteChunkDrops(t *testing.T) {
 	st := &fakeStore{updated: false} // no staging row matches
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "gone"}), 5)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "gone"}), 5)
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck (drop obsolete job)", got.Action)
@@ -194,7 +202,7 @@ func TestProcessTransientEmbedFailureRepublishes(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: 0}), 9)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: 0}), 9)
 
 	if got.Action != ActionRepublish {
 		t.Fatalf("action = %v, want ActionRepublish", got.Action)
@@ -209,7 +217,7 @@ func TestProcessTransientEmbedFailureRepublishes(t *testing.T) {
 	if requeued.Attempt != 1 {
 		t.Fatalf("republished attempt = %d, want 1", requeued.Attempt)
 	}
-	if requeued.PageID != 1 || requeued.Content != "x" {
+	if requeued.ExternalID != "1" || requeued.Content != "x" {
 		t.Fatalf("republished job = %+v, want same identity/content", requeued)
 	}
 }
@@ -220,7 +228,7 @@ func TestProcessTransientWriteFailureRepublishes(t *testing.T) {
 	st := &fakeStore{updated: false, err: errors.New("db down")}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), 4)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), 4)
 
 	if got.Action != ActionRepublish {
 		t.Fatalf("action = %v, want ActionRepublish on write failure", got.Action)
@@ -234,7 +242,7 @@ func TestProcessExhaustedRetriesDrops(t *testing.T) {
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
 	// Attempt 2 is the third (final) try for MaxAttempts=3.
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: 2}), 5)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: 2}), 5)
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck (drop after exhausting attempts)", got.Action)
@@ -250,7 +258,7 @@ func TestProcessHugeAttemptDropsWithoutLooping(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 5})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x", Attempt: math.MaxInt}), 5)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: math.MaxInt}), 5)
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck (a near-max attempt must drop, not loop)", got.Action)
@@ -265,7 +273,7 @@ func TestProcessContextCanceledRequeues(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(ctx, mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), 5)
+	got := w.Process(ctx, mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), 5)
 
 	if got.Action != ActionRequeue {
 		t.Fatalf("action = %v, want ActionRequeue (shutdown must not drop or burn an attempt)", got.Action)
@@ -278,7 +286,7 @@ func TestProcessWrongEmbeddingShapeDrops(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
 
-	got := w.Process(t.Context(), mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), 5)
+	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), 5)
 
 	if got.Action != ActionAck {
 		t.Fatalf("action = %v, want ActionAck (a deterministic bad shape must not loop)", got.Action)
@@ -293,7 +301,7 @@ func TestProcessRedeliveryIsIdempotent(t *testing.T) {
 	emb := &fakeEmbedder{vec: testVec(3)}
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3})
-	body := mustJob(t, Job{PageID: 5, ChunkIndex: 2, Content: "dup"})
+	body := mustJob(t, Job{Source: testSource, ExternalID: "5", ChunkIndex: 2, Content: "dup"})
 
 	first := w.Process(t.Context(), body, 5)
 	second := w.Process(t.Context(), body, 5)
@@ -306,8 +314,8 @@ func TestProcessRedeliveryIsIdempotent(t *testing.T) {
 		t.Fatalf("store writes = %d, want 2 (each delivery writes the same vector safely)", len(writes))
 	}
 	for _, wr := range writes {
-		if wr.pageID != 5 || wr.chunkIndex != 2 || wr.embedding[0] != 3 {
-			t.Fatalf("write = %+v, want page 5 chunk 2 vec[0]=3", wr)
+		if wr.externalID != "5" || wr.chunkIndex != 2 || wr.embedding[0] != 3 {
+			t.Fatalf("write = %+v, want external 5 chunk 2 vec[0]=3", wr)
 		}
 	}
 }
@@ -395,8 +403,8 @@ func (e *recEnqueuer) count() int {
 // version is parked rather than mis-processed; a known version still flows.
 func TestRunDropsUnknownVersionWithoutEmbedding(t *testing.T) {
 	t.Parallel()
-	unknown := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "stray"}), priority: 5, version: "2"}
-	known := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "ok"}), priority: 5, version: "1"}
+	unknown := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "stray"}), priority: 5, version: "2"}
+	known := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "ok"}), priority: 5, version: "1"}
 	emb := &fakeEmbedder{vec: testVec(1)}
 	st := &fakeStore{updated: true}
 	w := NewWorker(emb, st, &sliceStream{[]Delivery{unknown, known}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
@@ -420,8 +428,8 @@ func TestRunDropsUnknownVersionWithoutEmbedding(t *testing.T) {
 
 func TestRunAcksSuccessfulDeliveries(t *testing.T) {
 	t.Parallel()
-	d1 := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "a"}), priority: 5}
-	d2 := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "b"}), priority: 5}
+	d1 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "a"}), priority: 5}
+	d2 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "b"}), priority: 5}
 	emb := &fakeEmbedder{vec: testVec(1)}
 	st := &fakeStore{updated: true}
 	enq := &recEnqueuer{}
@@ -443,7 +451,7 @@ func TestRunAcksSuccessfulDeliveries(t *testing.T) {
 
 func TestRunRepublishesThenAcksOriginal(t *testing.T) {
 	t.Parallel()
-	d := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), priority: 8}
+	d := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), priority: 8}
 	emb := &fakeEmbedder{err: errors.New("transient")}
 	st := &fakeStore{updated: true}
 	enq := &recEnqueuer{}
@@ -463,7 +471,7 @@ func TestRunRepublishesThenAcksOriginal(t *testing.T) {
 
 func TestRunRequeuesOriginalWhenRepublishFails(t *testing.T) {
 	t.Parallel()
-	d := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), priority: 8}
+	d := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), priority: 8}
 	emb := &fakeEmbedder{err: errors.New("transient")}
 	st := &fakeStore{updated: true}
 	enq := &recEnqueuer{err: errors.New("broker down")}
@@ -485,7 +493,7 @@ func TestRunNacksRequeueOnShutdown(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	d := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "x"}), priority: 5}
+	d := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), priority: 5}
 	emb := &fakeEmbedder{err: context.Canceled}
 	st := &fakeStore{updated: true}
 	enq := &recEnqueuer{}
@@ -516,7 +524,7 @@ func TestRunBoundsConcurrency(t *testing.T) {
 
 	deliveries := make([]Delivery, jobs)
 	for i := range deliveries {
-		deliveries[i] = &recDelivery{body: mustJob(t, Job{PageID: int64(i + 1), ChunkIndex: 0, Content: "x"}), priority: 5}
+		deliveries[i] = &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: strconv.Itoa(i + 1), ChunkIndex: 0, Content: "x"}), priority: 5}
 	}
 	// BatchSize 1 makes each delivery its own batch, so the test observes the
 	// loop's concurrency over batches directly.
@@ -583,7 +591,7 @@ func recDeliveries(t *testing.T, n int, staging bool) []Delivery {
 	t.Helper()
 	out := make([]Delivery, n)
 	for i := range out {
-		out[i] = &recDelivery{body: mustJob(t, Job{PageID: int64(i + 1), ChunkIndex: 0, Content: "c", Staging: staging}), priority: 5}
+		out[i] = &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: strconv.Itoa(i + 1), ChunkIndex: 0, Content: "c", Staging: staging}), priority: 5}
 	}
 	return out
 }
@@ -628,8 +636,8 @@ func TestRunEmbedsWholeBatchInOneCall(t *testing.T) {
 // bulk-into-live default and an atomic rebuild.
 func TestRunRoutesStagingFlagToCorpus(t *testing.T) {
 	t.Parallel()
-	live := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "live"}), priority: 5}
-	staged := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "stage", Staging: true}), priority: 5}
+	live := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "live"}), priority: 5}
+	staged := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "stage", Staging: true}), priority: 5}
 	emb := &fakeEmbedder{vec: testVec(1)}
 	st := &fakeStore{updated: true}
 	w := NewWorker(emb, st, &sliceStream{[]Delivery{live, staged}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
@@ -643,14 +651,14 @@ func TestRunRoutesStagingFlagToCorpus(t *testing.T) {
 		t.Fatalf("writes = %d, want 2", len(writes))
 	}
 	for _, wr := range writes {
-		switch wr.pageID {
-		case 1:
+		switch wr.externalID {
+		case "1":
 			if wr.staging {
-				t.Errorf("page 1 routed to staging, want live")
+				t.Errorf("external 1 routed to staging, want live")
 			}
-		case 2:
+		case "2":
 			if !wr.staging {
-				t.Errorf("page 2 routed to live, want staging")
+				t.Errorf("external 2 routed to live, want staging")
 			}
 		}
 	}
@@ -724,9 +732,9 @@ func (e *shapeEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]f
 
 func TestRunBatchDropsBadShapeKeepsRest(t *testing.T) {
 	t.Parallel()
-	good1 := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "g1"}), priority: 5}
-	bad := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "bad"}), priority: 5}
-	good2 := &recDelivery{body: mustJob(t, Job{PageID: 3, ChunkIndex: 0, Content: "g2"}), priority: 5}
+	good1 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "g1"}), priority: 5}
+	bad := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "bad"}), priority: 5}
+	good2 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "3", ChunkIndex: 0, Content: "g2"}), priority: 5}
 	emb := &shapeEmbedder{vec: testVec(1), badContent: "bad"}
 	st := &fakeStore{updated: true}
 	w := NewWorker(emb, st, &sliceStream{[]Delivery{good1, bad, good2}}, &recEnqueuer{}, slog.New(slog.DiscardHandler),
@@ -740,8 +748,8 @@ func TestRunBatchDropsBadShapeKeepsRest(t *testing.T) {
 		t.Fatalf("writes = %d, want 2 (the bad-shape chunk is never written)", len(writes))
 	}
 	for _, wr := range writes {
-		if wr.pageID == 2 {
-			t.Errorf("bad-shape chunk page 2 was written")
+		if wr.externalID == "2" {
+			t.Errorf("bad-shape chunk external 2 was written")
 		}
 	}
 	// All three deliveries are acked: the two good written, the bad dropped.
@@ -771,8 +779,8 @@ func TestRunBatchWriteFailureRepublishesJobs(t *testing.T) {
 // never fills is embedded once the window elapses, so a quiet queue still drains.
 func TestRunBatchWaitFlushesPartialBatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		d1 := &recDelivery{body: mustJob(t, Job{PageID: 1, ChunkIndex: 0, Content: "a"}), priority: 5}
-		d2 := &recDelivery{body: mustJob(t, Job{PageID: 2, ChunkIndex: 0, Content: "b"}), priority: 5}
+		d1 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "a"}), priority: 5}
+		d2 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "b"}), priority: 5}
 		emb := &fakeEmbedder{vec: testVec(1)}
 		st := &fakeStore{updated: true}
 		ctx, cancel := context.WithCancel(t.Context())

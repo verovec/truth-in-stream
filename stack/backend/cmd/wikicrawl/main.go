@@ -1,7 +1,7 @@
 // Command wikicrawl walks one or more Wikipedia categories over the MediaWiki
 // Action API, chunks each article's lead (and optionally body), and publishes one
 // self-contained chunk job per chunk to the crawl queue, then exits. It needs no
-// database: every field a live wiki_chunks row requires travels in the message,
+// database: every field a live evidence_chunks row requires travels in the message,
 // so the crawl worker (cmd/crawlworker) drains the queue into the corpus
 // independently. The broker comes from RABBITMQ_URL; CRAWL_* selects the
 // categories and shape.

@@ -74,45 +74,51 @@ func (b *InsertDocumentSentenceBatchResults) Close() error {
 	return b.br.Close()
 }
 
-const setWikiChunkClustering = `-- name: SetWikiChunkClustering :batchexec
-UPDATE wiki_chunks
-SET cluster_id = $1::integer,
-    importance = $2::double precision
-WHERE page_id = $3::bigint AND chunk_index = $4::integer
+const setEvidenceChunkClustering = `-- name: SetEvidenceChunkClustering :batchexec
+UPDATE evidence_chunks
+SET metadata = metadata || jsonb_build_object(
+        'cluster_id', $1::integer,
+        'importance', $2::double precision)
+WHERE source = $3
+  AND external_id = $4
+  AND chunk_index = $5::integer
 `
 
-type SetWikiChunkClusteringBatchResults struct {
+type SetEvidenceChunkClusteringBatchResults struct {
 	br     pgx.BatchResults
 	tot    int
 	closed bool
 }
 
-type SetWikiChunkClusteringParams struct {
+type SetEvidenceChunkClusteringParams struct {
 	ClusterID  int32
 	Importance float64
-	PageID     int64
+	Source     string
+	ExternalID string
 	ChunkIndex int32
 }
 
-// The clustering job writes each chunk's cluster id and importance back into the
-// live table. The casts pin the params to plain integer/double so a non-null
+// The clustering job writes each chunk's cluster id and importance into the
+// metadata jsonb, merging with the || operator so the revision id and section
+// keys survive. The casts pin the params to plain integer/double so a non-null
 // write is a value, not a nullable pointer.
-func (q *Queries) SetWikiChunkClustering(ctx context.Context, arg []SetWikiChunkClusteringParams) *SetWikiChunkClusteringBatchResults {
+func (q *Queries) SetEvidenceChunkClustering(ctx context.Context, arg []SetEvidenceChunkClusteringParams) *SetEvidenceChunkClusteringBatchResults {
 	batch := &pgx.Batch{}
 	for _, a := range arg {
 		vals := []interface{}{
 			a.ClusterID,
 			a.Importance,
-			a.PageID,
+			a.Source,
+			a.ExternalID,
 			a.ChunkIndex,
 		}
-		batch.Queue(setWikiChunkClustering, vals...)
+		batch.Queue(setEvidenceChunkClustering, vals...)
 	}
 	br := q.db.SendBatch(ctx, batch)
-	return &SetWikiChunkClusteringBatchResults{br, len(arg), false}
+	return &SetEvidenceChunkClusteringBatchResults{br, len(arg), false}
 }
 
-func (b *SetWikiChunkClusteringBatchResults) Exec(f func(int, error)) {
+func (b *SetEvidenceChunkClusteringBatchResults) Exec(f func(int, error)) {
 	defer b.br.Close()
 	for t := 0; t < b.tot; t++ {
 		if b.closed {
@@ -128,46 +134,48 @@ func (b *SetWikiChunkClusteringBatchResults) Exec(f func(int, error)) {
 	}
 }
 
-func (b *SetWikiChunkClusteringBatchResults) Close() error {
+func (b *SetEvidenceChunkClusteringBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
 
-const setWikiChunkEmbedding = `-- name: SetWikiChunkEmbedding :batchexec
-UPDATE wiki_chunks
+const setEvidenceChunkEmbedding = `-- name: SetEvidenceChunkEmbedding :batchexec
+UPDATE evidence_chunks
 SET embedding = $1, synced_at = now()
-WHERE page_id = $2 AND chunk_index = $3
+WHERE source = $2 AND external_id = $3 AND chunk_index = $4
 `
 
-type SetWikiChunkEmbeddingBatchResults struct {
+type SetEvidenceChunkEmbeddingBatchResults struct {
 	br     pgx.BatchResults
 	tot    int
 	closed bool
 }
 
-type SetWikiChunkEmbeddingParams struct {
+type SetEvidenceChunkEmbeddingParams struct {
 	Embedding  *pgvector.HalfVector
-	PageID     int64
+	Source     string
+	ExternalID string
 	ChunkIndex int32
 }
 
 // Delta sync writes embeddings straight into the live table: at delta volume the
 // HNSW index absorbs the inserts incrementally, so no staging swap is needed.
-func (q *Queries) SetWikiChunkEmbedding(ctx context.Context, arg []SetWikiChunkEmbeddingParams) *SetWikiChunkEmbeddingBatchResults {
+func (q *Queries) SetEvidenceChunkEmbedding(ctx context.Context, arg []SetEvidenceChunkEmbeddingParams) *SetEvidenceChunkEmbeddingBatchResults {
 	batch := &pgx.Batch{}
 	for _, a := range arg {
 		vals := []interface{}{
 			a.Embedding,
-			a.PageID,
+			a.Source,
+			a.ExternalID,
 			a.ChunkIndex,
 		}
-		batch.Queue(setWikiChunkEmbedding, vals...)
+		batch.Queue(setEvidenceChunkEmbedding, vals...)
 	}
 	br := q.db.SendBatch(ctx, batch)
-	return &SetWikiChunkEmbeddingBatchResults{br, len(arg), false}
+	return &SetEvidenceChunkEmbeddingBatchResults{br, len(arg), false}
 }
 
-func (b *SetWikiChunkEmbeddingBatchResults) Exec(f func(int, error)) {
+func (b *SetEvidenceChunkEmbeddingBatchResults) Exec(f func(int, error)) {
 	defer b.br.Close()
 	for t := 0; t < b.tot; t++ {
 		if b.closed {
@@ -183,42 +191,44 @@ func (b *SetWikiChunkEmbeddingBatchResults) Exec(f func(int, error)) {
 	}
 }
 
-func (b *SetWikiChunkEmbeddingBatchResults) Close() error {
+func (b *SetEvidenceChunkEmbeddingBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
 
-const trimWikiPageChunks = `-- name: TrimWikiPageChunks :batchexec
-DELETE FROM wiki_chunks WHERE page_id = $1 AND chunk_index >= $2
+const trimEvidenceDocumentChunks = `-- name: TrimEvidenceDocumentChunks :batchexec
+DELETE FROM evidence_chunks WHERE source = $1 AND external_id = $2 AND chunk_index >= $3
 `
 
-type TrimWikiPageChunksBatchResults struct {
+type TrimEvidenceDocumentChunksBatchResults struct {
 	br     pgx.BatchResults
 	tot    int
 	closed bool
 }
 
-type TrimWikiPageChunksParams struct {
-	PageID     int64
+type TrimEvidenceDocumentChunksParams struct {
+	Source     string
+	ExternalID string
 	ChunkIndex int32
 }
 
-// Removes the stale tail of a page after a re-sync produced fewer chunks
-// (from_index 0 removes the page entirely, e.g. it became a redirect).
-func (q *Queries) TrimWikiPageChunks(ctx context.Context, arg []TrimWikiPageChunksParams) *TrimWikiPageChunksBatchResults {
+// Removes the stale tail of a document after a re-sync produced fewer chunks
+// (from_index 0 removes the document entirely, e.g. it became a redirect).
+func (q *Queries) TrimEvidenceDocumentChunks(ctx context.Context, arg []TrimEvidenceDocumentChunksParams) *TrimEvidenceDocumentChunksBatchResults {
 	batch := &pgx.Batch{}
 	for _, a := range arg {
 		vals := []interface{}{
-			a.PageID,
+			a.Source,
+			a.ExternalID,
 			a.ChunkIndex,
 		}
-		batch.Queue(trimWikiPageChunks, vals...)
+		batch.Queue(trimEvidenceDocumentChunks, vals...)
 	}
 	br := q.db.SendBatch(ctx, batch)
-	return &TrimWikiPageChunksBatchResults{br, len(arg), false}
+	return &TrimEvidenceDocumentChunksBatchResults{br, len(arg), false}
 }
 
-func (b *TrimWikiPageChunksBatchResults) Exec(f func(int, error)) {
+func (b *TrimEvidenceDocumentChunksBatchResults) Exec(f func(int, error)) {
 	defer b.br.Close()
 	for t := 0; t < b.tot; t++ {
 		if b.closed {
@@ -234,7 +244,7 @@ func (b *TrimWikiPageChunksBatchResults) Exec(f func(int, error)) {
 	}
 }
 
-func (b *TrimWikiPageChunksBatchResults) Close() error {
+func (b *TrimEvidenceDocumentChunksBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
@@ -300,66 +310,68 @@ func (b *UpsertClaimBatchResults) Close() error {
 	return b.br.Close()
 }
 
-const upsertWikiChunk = `-- name: UpsertWikiChunk :batchexec
-INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content, section, kind)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (page_id, chunk_index) DO UPDATE
+const upsertEvidenceChunk = `-- name: UpsertEvidenceChunk :batchexec
+INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (source, external_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
-        revision_id = EXCLUDED.revision_id,
-        corpus = EXCLUDED.corpus,
         content = EXCLUDED.content,
-        section = EXCLUDED.section,
         kind = EXCLUDED.kind,
+        metadata = evidence_chunks.metadata || EXCLUDED.metadata,
         embedding = CASE
-            WHEN wiki_chunks.content = EXCLUDED.content THEN wiki_chunks.embedding
+            WHEN evidence_chunks.content = EXCLUDED.content THEN evidence_chunks.embedding
             ELSE NULL
         END,
         synced_at = now()
 `
 
-type UpsertWikiChunkBatchResults struct {
+type UpsertEvidenceChunkBatchResults struct {
 	br     pgx.BatchResults
 	tot    int
 	closed bool
 }
 
-type UpsertWikiChunkParams struct {
-	PageID     int64
+type UpsertEvidenceChunkParams struct {
+	Source     string
+	ExternalID string
 	ChunkIndex int32
 	Title      string
 	Url        string
-	RevisionID int64
-	Corpus     string
 	Content    string
-	Section    string
 	Kind       string
+	Metadata   []byte
 }
 
 // Ingest never writes embeddings; the CASE keeps an existing embedding only
 // while the content it was computed from is unchanged, so re-ingesting a
-// changed revision invalidates the stale vector instead of serving it.
-func (q *Queries) UpsertWikiChunk(ctx context.Context, arg []UpsertWikiChunkParams) *UpsertWikiChunkBatchResults {
+// changed revision invalidates the stale vector instead of serving it. metadata
+// MERGES (`existing || new`) rather than replacing, so the ingest keys the
+// writer supplies (revision id, section) overwrite while the offline clustering
+// keys (cluster_id, importance) the ingest does not carry survive a re-ingest -
+// the old schema kept importance in a dedicated column the upsert never touched,
+// and UnembeddedLive reads that importance to embed the most important content
+// first.
+func (q *Queries) UpsertEvidenceChunk(ctx context.Context, arg []UpsertEvidenceChunkParams) *UpsertEvidenceChunkBatchResults {
 	batch := &pgx.Batch{}
 	for _, a := range arg {
 		vals := []interface{}{
-			a.PageID,
+			a.Source,
+			a.ExternalID,
 			a.ChunkIndex,
 			a.Title,
 			a.Url,
-			a.RevisionID,
-			a.Corpus,
 			a.Content,
-			a.Section,
 			a.Kind,
+			a.Metadata,
 		}
-		batch.Queue(upsertWikiChunk, vals...)
+		batch.Queue(upsertEvidenceChunk, vals...)
 	}
 	br := q.db.SendBatch(ctx, batch)
-	return &UpsertWikiChunkBatchResults{br, len(arg), false}
+	return &UpsertEvidenceChunkBatchResults{br, len(arg), false}
 }
 
-func (b *UpsertWikiChunkBatchResults) Exec(f func(int, error)) {
+func (b *UpsertEvidenceChunkBatchResults) Exec(f func(int, error)) {
 	defer b.br.Close()
 	for t := 0; t < b.tot; t++ {
 		if b.closed {
@@ -375,7 +387,7 @@ func (b *UpsertWikiChunkBatchResults) Exec(f func(int, error)) {
 	}
 }
 
-func (b *UpsertWikiChunkBatchResults) Close() error {
+func (b *UpsertEvidenceChunkBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }

@@ -34,7 +34,7 @@ func TestNewWikiSearchRejectsBadConfig(t *testing.T) {
 func TestWikiSearchReturnsNeighboursWithSimilarity(t *testing.T) {
 	t.Parallel()
 	embedder := &fakeEmbedder{vecs: [][]float32{queryVec()}}
-	evidence := &fakeEvidence{hits: []domain.WikiEvidence{
+	evidence := &fakeEvidence{hits: []domain.EvidenceHit{
 		{Title: "Red fox", URL: "https://en.wikipedia.org/wiki/Red_fox", Content: "foxes are fast", Distance: 0.1},
 		{Title: "Dog", URL: "https://en.wikipedia.org/wiki/Dog", Content: "dogs are loyal", Distance: 0.4},
 	}}

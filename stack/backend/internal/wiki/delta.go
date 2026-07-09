@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -51,33 +52,33 @@ type DeltaStats struct {
 // DeltaSource is the read side of the store a delta run needs.
 type DeltaSource interface {
 	// GetSyncState loads the corpus checkpoint; ok is false when never synced.
-	GetSyncState(ctx context.Context, corpus string) (domain.WikiSyncState, bool, error)
-	// CountPages returns the number of distinct pages in the live corpus.
-	CountPages(ctx context.Context) (int64, error)
-	// StoredRevisions returns the stored revision id of each requested page that
-	// has chunks; absent pages are omitted.
-	StoredRevisions(ctx context.Context, pageIDs []int64) (map[int64]int64, error)
+	GetSyncState(ctx context.Context, corpus string) (domain.EvidenceSyncState, bool, error)
+	// CountDocuments returns the number of distinct documents in the live corpus.
+	CountDocuments(ctx context.Context) (int64, error)
+	// StoredRevisions returns the stored revision id of each requested page of the
+	// source that has chunks; absent pages are omitted.
+	StoredRevisions(ctx context.Context, source string, pageIDs []int64) (map[int64]int64, error)
 	// EmbedInProgress reports whether a bulk embed is mid-flight, in which case
 	// the live corpus is not yet fully embedded and delta must not run.
 	EmbedInProgress(ctx context.Context) (bool, error)
 	// UnembeddedChunks returns up to limit live chunks lacking an embedding,
 	// ordered after cur.
-	UnembeddedChunks(ctx context.Context, cur domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
+	UnembeddedChunks(ctx context.Context, cur domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
 }
 
 // DeltaSink is the write side of the store a delta run drives.
 type DeltaSink interface {
 	// UpsertChunks inserts or replaces chunks by (page, chunk index), clearing
 	// the embedding of any chunk whose content changed.
-	UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) error
-	// TrimPages removes the stale tail of each page's chunks.
-	TrimPages(ctx context.Context, trims []domain.WikiTrim) error
-	// DeletePagesByTitle removes every chunk of each named page.
-	DeletePagesByTitle(ctx context.Context, titles []string) error
+	UpsertChunks(ctx context.Context, chunks []domain.EvidenceChunk) error
+	// TrimDocuments removes the stale tail of each document's chunks.
+	TrimDocuments(ctx context.Context, trims []domain.EvidenceTrim) error
+	// DeleteByTitle removes every chunk of each named document within the source.
+	DeleteByTitle(ctx context.Context, source string, titles []string) error
 	// SetChunkEmbeddings writes each chunk's embedding into the live table.
-	SetChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error
+	SetChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) error
 	// SetSyncState advances the corpus checkpoint after a successful run.
-	SetSyncState(ctx context.Context, st domain.WikiSyncState) error
+	SetSyncState(ctx context.Context, st domain.EvidenceSyncState) error
 }
 
 // DeltaStore is the full store surface a delta run drives.
@@ -143,7 +144,7 @@ func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder 
 	}
 	stats.RecommendBulk = recommend
 
-	refetch, skipped, err := unchangedFiltered(ctx, store, plan.edits)
+	refetch, skipped, err := unchangedFiltered(ctx, store, cfg.Corpus, plan.edits)
 	if err != nil {
 		return DeltaStats{}, err
 	}
@@ -156,7 +157,7 @@ func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder 
 	chunks, trims, missing := buildDeltaChunks(extracts, plan.edits, cfg.Corpus)
 	stats.Changed = len(trims)
 
-	if err := store.TrimPages(ctx, trims); err != nil {
+	if err := store.TrimDocuments(ctx, trims); err != nil {
 		return DeltaStats{}, fmt.Errorf("wiki: trim stale chunks: %w", err)
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
@@ -164,7 +165,7 @@ func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder 
 	}
 
 	deletes := dedupeTitles(plan.deletes, missing)
-	if err := store.DeletePagesByTitle(ctx, deletes); err != nil {
+	if err := store.DeleteByTitle(ctx, cfg.Corpus, deletes); err != nil {
 		return DeltaStats{}, fmt.Errorf("wiki: delete pages: %w", err)
 	}
 	stats.Deleted = len(deletes)
@@ -219,7 +220,7 @@ func planChanges(changes []Change) changePlan {
 // overBulkThreshold reports whether the change set exceeds the configured share
 // of the corpus, signaling that a bulk re-run would beat incremental inserts.
 func overBulkThreshold(ctx context.Context, src DeltaSource, changedPages int, fraction float64) (bool, error) {
-	total, err := src.CountPages(ctx)
+	total, err := src.CountDocuments(ctx)
 	if err != nil {
 		return false, fmt.Errorf("wiki: count corpus pages: %w", err)
 	}
@@ -230,14 +231,14 @@ func overBulkThreshold(ctx context.Context, src DeltaSource, changedPages int, f
 // RecentChanges reported, returning the titles still to refetch and the count
 // skipped - so a page seen again in an overlap window is neither refetched nor
 // re-embedded.
-func unchangedFiltered(ctx context.Context, src DeltaSource, edits map[string]Change) ([]string, int, error) {
+func unchangedFiltered(ctx context.Context, src DeltaSource, source string, edits map[string]Change) ([]string, int, error) {
 	pageIDs := make([]int64, 0, len(edits))
 	for _, ch := range edits {
 		if ch.PageID > 0 {
 			pageIDs = append(pageIDs, ch.PageID)
 		}
 	}
-	stored, err := src.StoredRevisions(ctx, pageIDs)
+	stored, err := src.StoredRevisions(ctx, source, pageIDs)
 	if err != nil {
 		return nil, 0, fmt.Errorf("wiki: read stored revisions: %w", err)
 	}
@@ -259,9 +260,9 @@ func unchangedFiltered(ctx context.Context, src DeltaSource, edits map[string]Ch
 // page for come back as deletions. The revision id is the one the extract
 // reports, falling back to the revision RecentChanges reported so a page is
 // never stored at revision 0 (which would refetch it every run).
-func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string) (chunks []domain.WikiChunk, trims []domain.WikiTrim, missing []string) {
-	chunks = make([]domain.WikiChunk, 0, len(extracts))
-	trims = make([]domain.WikiTrim, 0, len(extracts))
+func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string) (chunks []domain.EvidenceChunk, trims []domain.EvidenceTrim, missing []string) {
+	chunks = make([]domain.EvidenceChunk, 0, len(extracts))
+	trims = make([]domain.EvidenceTrim, 0, len(extracts))
 	for _, ex := range extracts {
 		if ex.Missing {
 			missing = append(missing, ex.Title)
@@ -272,17 +273,17 @@ func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string
 			revID = edits[ex.Title].RevisionID
 		}
 		pieces := Chunk(ex.Title, ex.Text)
-		trims = append(trims, domain.WikiTrim{PageID: ex.PageID, FromIndex: len(pieces)})
+		trims = append(trims, domain.EvidenceTrim{Source: corpus, ExternalID: strconv.FormatInt(ex.PageID, 10), FromIndex: len(pieces)})
 		for i, content := range pieces {
-			chunks = append(chunks, domain.WikiChunk{
-				PageID:     ex.PageID,
+			chunks = append(chunks, domain.EvidenceChunk{
+				Source:     corpus,
+				ExternalID: strconv.FormatInt(ex.PageID, 10),
 				ChunkIndex: i,
 				Title:      ex.Title,
 				URL:        pageURL(corpus, ex.Title),
-				RevisionID: revID,
-				Corpus:     corpus,
 				Content:    content,
-				Kind:       domain.WikiChunkKindLead,
+				Kind:       domain.EvidenceKindLead,
+				Metadata:   domain.WikiMetadata{RevisionID: revID}.Map(),
 			})
 		}
 	}
@@ -301,7 +302,7 @@ func embedPending(ctx context.Context, store DeltaStore, embedder Embedder, cfg 
 	const unknownTotal = -1
 	var progress atomic.Int64
 	embedded := 0
-	cur := domain.WikiCursor{}
+	cur := domain.EvidenceCursor{}
 	superBatch := cfg.BatchSize * cfg.Concurrency
 	for {
 		chunks, err := store.UnembeddedChunks(ctx, cur, superBatch)
@@ -320,7 +321,7 @@ func embedPending(ctx context.Context, store DeltaStore, embedder Embedder, cfg 
 		}
 		embedded += len(done)
 		last := chunks[len(chunks)-1]
-		cur = domain.WikiCursor{PageID: last.PageID, ChunkIndex: int32(last.ChunkIndex)}
+		cur = domain.EvidenceCursor{Source: last.Source, ExternalID: last.ExternalID, ChunkIndex: int32(last.ChunkIndex)}
 	}
 }
 

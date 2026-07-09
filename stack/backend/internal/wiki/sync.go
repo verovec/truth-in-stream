@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,18 +19,20 @@ import (
 )
 
 // Store is the slice of the wiki store the bulk ingest needs. Ingest builds the
-// next corpus in the staging table, never touching live wiki_chunks, which keeps
+// next corpus in the staging table, never touching live evidence_chunks, which keeps
 // serving the current corpus until the embed run swaps staging over it.
 type Store interface {
-	// EnsureCorpus claims the store for one corpus; it fails when the store
-	// already holds a different one. wiki_chunks keys rows by (page, chunk
-	// index) only, so page ids from two corpora would silently collide.
-	EnsureCorpus(ctx context.Context, corpus string) error
+	// EnsureSource claims the store for one encyclopedic corpus; it fails when the
+	// store already holds a different one. The delta sync's change-fraction
+	// denominator and bulk plan assume a single encyclopedic corpus, so a second
+	// one is refused even though the (source, external_id, chunk_index) key would
+	// no longer collide on its own.
+	EnsureSource(ctx context.Context, corpus string) error
 	// ResetStaging drops any surviving staging table and creates a fresh one
 	// stamped building:version, the empty target this ingest fills.
 	ResetStaging(ctx context.Context, version string) error
 	// UpsertStagingChunks inserts chunks (NULL embedding) into staging.
-	UpsertStagingChunks(ctx context.Context, chunks []domain.WikiChunk) error
+	UpsertStagingChunks(ctx context.Context, chunks []domain.EvidenceChunk) error
 	// CarryForwardEmbeddings copies unchanged chunks' embeddings from live into
 	// staging by content match, so only changed and new chunks are re-embedded.
 	CarryForwardEmbeddings(ctx context.Context) (int64, error)
@@ -48,14 +51,14 @@ type Stats struct {
 }
 
 // LiveStore is the slice of the wiki store the bulk-into-live ingest needs. It
-// upserts chunks straight into the live wiki_chunks table (clearing the embedding
+// upserts chunks straight into the live evidence_chunks table (clearing the embedding
 // only where content changed, so unchanged chunks keep their vector) and trims a
 // page's stale chunk tail, so the corpus stays queryable throughout the ingest
 // rather than waiting for a swap.
 type LiveStore interface {
-	EnsureCorpus(ctx context.Context, corpus string) error
-	UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) error
-	TrimPages(ctx context.Context, trims []domain.WikiTrim) error
+	EnsureSource(ctx context.Context, corpus string) error
+	UpsertChunks(ctx context.Context, chunks []domain.EvidenceChunk) error
+	TrimDocuments(ctx context.Context, trims []domain.EvidenceTrim) error
 }
 
 // RunBulk ingests a downloaded multistream dump into the staging table for an
@@ -66,11 +69,11 @@ type LiveStore interface {
 // the current dump, pages that left the corpus simply never enter it - no orphans
 // accrue. Once every page is staged, unchanged chunks carry their embeddings
 // forward from live (so only changed and new chunks are re-embedded) and staging
-// is stamped ready for the embed run. Live wiki_chunks is untouched until the
+// is stamped ready for the embed run. Live evidence_chunks is untouched until the
 // swap. This is the opt-in wholesale-cutover path; the default ingest is
 // RunBulkLive.
 func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (Stats, error) {
-	if err := store.EnsureCorpus(ctx, corpus); err != nil {
+	if err := store.EnsureSource(ctx, corpus); err != nil {
 		return Stats{}, fmt.Errorf("wiki: claim corpus %q: %w", corpus, err)
 	}
 	if err := store.ResetStaging(ctx, files.Version); err != nil {
@@ -96,7 +99,7 @@ func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (
 }
 
 // RunBulkLive ingests a downloaded multistream dump straight into the live
-// wiki_chunks table, the default path that makes the corpus queryable mid-ingest.
+// evidence_chunks table, the default path that makes the corpus queryable mid-ingest.
 // It streams and chunks pages exactly as RunBulk does, but upserts each page's
 // chunks into the live table (the upsert keeps an unchanged chunk's existing
 // embedding and clears it only where content changed) and trims each page's stale
@@ -106,7 +109,7 @@ func RunBulk(ctx context.Context, store Store, files DumpFiles, corpus string) (
 // (gone from the dump entirely) are not pruned here, which the atomic RunBulk path
 // exists to do for a clean wholesale cutover.
 func RunBulkLive(ctx context.Context, store LiveStore, files DumpFiles, corpus string) (Stats, error) {
-	if err := store.EnsureCorpus(ctx, corpus); err != nil {
+	if err := store.EnsureSource(ctx, corpus); err != nil {
 		return Stats{}, fmt.Errorf("wiki: claim corpus %q: %w", corpus, err)
 	}
 	return streamDump(ctx, files, func(ctx context.Context, pages []Page) (Stats, error) {
@@ -172,7 +175,7 @@ func streamDump(ctx context.Context, files DumpFiles, store func(ctx context.Con
 // chunkPage turns one page into its lead chunks, or nil when the page is skipped
 // (not an article, or an empty lead). It is the shared chunking the staging and
 // live ingests both use, so they produce byte-identical chunks.
-func chunkPage(p Page, corpus string) []domain.WikiChunk {
+func chunkPage(p Page, corpus string) []domain.EvidenceChunk {
 	if !keepPage(p) {
 		return nil
 	}
@@ -180,17 +183,17 @@ func chunkPage(p Page, corpus string) []domain.WikiChunk {
 	if len(pieces) == 0 {
 		return nil
 	}
-	chunks := make([]domain.WikiChunk, len(pieces))
+	chunks := make([]domain.EvidenceChunk, len(pieces))
 	for i, content := range pieces {
-		chunks[i] = domain.WikiChunk{
-			PageID:     p.ID,
+		chunks[i] = domain.EvidenceChunk{
+			Source:     corpus,
+			ExternalID: strconv.FormatInt(p.ID, 10),
 			ChunkIndex: i,
 			Title:      p.Title,
 			URL:        pageURL(corpus, p.Title),
-			RevisionID: p.RevisionID,
-			Corpus:     corpus,
 			Content:    content,
-			Kind:       domain.WikiChunkKindLead,
+			Kind:       domain.EvidenceKindLead,
+			Metadata:   domain.WikiMetadata{RevisionID: p.RevisionID}.Map(),
 		}
 	}
 	return chunks
@@ -202,7 +205,7 @@ func chunkPage(p Page, corpus string) []domain.WikiChunk {
 func storePages(ctx context.Context, store Store, pages []Page, corpus string) (Stats, error) {
 	var (
 		stats  Stats
-		chunks []domain.WikiChunk
+		chunks []domain.EvidenceChunk
 	)
 	for _, p := range pages {
 		stats.PagesSeen++
@@ -231,8 +234,8 @@ func storePages(ctx context.Context, store Store, pages []Page, corpus string) (
 func storePagesLive(ctx context.Context, store LiveStore, pages []Page, corpus string) (Stats, error) {
 	var (
 		stats  Stats
-		chunks []domain.WikiChunk
-		trims  []domain.WikiTrim
+		chunks []domain.EvidenceChunk
+		trims  []domain.EvidenceTrim
 	)
 	for _, p := range pages {
 		stats.PagesSeen++
@@ -243,14 +246,14 @@ func storePagesLive(ctx context.Context, store LiveStore, pages []Page, corpus s
 		}
 		stats.PagesStored++
 		chunks = append(chunks, pieces...)
-		trims = append(trims, domain.WikiTrim{PageID: p.ID, FromIndex: len(pieces)})
+		trims = append(trims, domain.EvidenceTrim{Source: corpus, ExternalID: strconv.FormatInt(p.ID, 10), FromIndex: len(pieces)})
 	}
 	stats.Chunks = len(chunks)
 	if len(chunks) > 0 {
 		if err := store.UpsertChunks(ctx, chunks); err != nil {
 			return Stats{}, fmt.Errorf("wiki: upsert live chunks: %w", err)
 		}
-		if err := store.TrimPages(ctx, trims); err != nil {
+		if err := store.TrimDocuments(ctx, trims); err != nil {
 			return Stats{}, fmt.Errorf("wiki: trim live chunks: %w", err)
 		}
 	}

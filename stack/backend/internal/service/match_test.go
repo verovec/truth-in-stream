@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -53,13 +54,13 @@ func (f *fakeSearcher) Search(_ context.Context, query []float32, topK int) ([]d
 }
 
 type fakeEvidence struct {
-	hits     []domain.WikiEvidence
+	hits     []domain.EvidenceHit
 	err      error
 	gotQuery []float32
 	gotTopK  int
 }
 
-func (f *fakeEvidence) SearchWiki(_ context.Context, query []float32, topK int) ([]domain.WikiEvidence, error) {
+func (f *fakeEvidence) SearchEvidence(_ context.Context, query []float32, topK int) ([]domain.EvidenceHit, error) {
 	f.gotQuery = query
 	f.gotTopK = topK
 	if f.err != nil {
@@ -250,9 +251,10 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 			Distance: distance,
 		}
 	}
-	evidenceHit := func(pageID int64, chunkIndex int, title string, distance float32) domain.WikiEvidence {
-		return domain.WikiEvidence{
-			PageID:     pageID,
+	evidenceHit := func(pageID int64, chunkIndex int, title string, distance float32) domain.EvidenceHit {
+		return domain.EvidenceHit{
+			Source:     "enwiki",
+			ExternalID: strconv.FormatInt(pageID, 10),
 			ChunkIndex: chunkIndex,
 			Title:      title,
 			URL:        "https://en.wikipedia.org/wiki/" + title,
@@ -270,7 +272,7 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 	searcher := &fakeSearcher{hits: []domain.ClaimMatch{claimHit("a", 0.05), claimHit("b", 0.5)}}
 	// ev2 at distance 0.45 scores 0.55, below the 0.6 evidence threshold, so it
 	// is dropped even though it would clear the laxer claim threshold.
-	evidence := &fakeEvidence{hits: []domain.WikiEvidence{evidenceHit(42, 3, "Wall", 0.1), evidenceHit(99, 0, "Trivia", 0.45)}}
+	evidence := &fakeEvidence{hits: []domain.EvidenceHit{evidenceHit(42, 3, "Wall", 0.1), evidenceHit(99, 0, "Trivia", 0.45)}}
 
 	m, err := NewMatcher(&fakeEmbedder{vecs: [][]float32{queryVec()}}, searcher, evidence, cfg)
 	if err != nil {
@@ -284,7 +286,7 @@ func TestMatchSegmentMergesClaimsAndEvidence(t *testing.T) {
 
 	want := []Match{
 		{Kind: domain.MatchKindClaim, ClaimID: "a", Text: "claim a", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S a", URL: "https://c/a"}}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, "a", 0), Score: 0.95},
-		{Kind: domain.MatchKindEvidence, Text: "lead Wall", Article: domain.Article{Title: "Wall", URL: "https://en.wikipedia.org/wiki/Wall"}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, "42", 3), Score: 0.9},
+		{Kind: domain.MatchKindEvidence, Text: "lead Wall", Article: domain.Article{Title: "Wall", URL: "https://en.wikipedia.org/wiki/Wall"}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindEvidence, "enwiki/42", 3), Score: 0.9},
 		{Kind: domain.MatchKindClaim, ClaimID: "b", Text: "claim b", Verdict: domain.VerdictCorroborates, Sources: []domain.Source{{Title: "S b", URL: "https://c/b"}}, EvidenceID: domain.ComposeEvidenceID(domain.MatchKindClaim, "b", 0), Score: 0.5},
 	}
 	if diff := cmp.Diff(want, got, scoreApprox); diff != "" {
@@ -337,8 +339,8 @@ func TestMatchSegmentEvidenceIDResolvesToSourceRow(t *testing.T) {
 	cfg := testMatcherConfig()
 	cfg.EvidenceTopK = 5
 	cfg.EvidenceThreshold = 0.5
-	hit := domain.WikiEvidence{PageID: 7331, ChunkIndex: 4, Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China", Content: "lead", Kind: domain.WikiChunkKindLead, Distance: 0.1}
-	evidence := &fakeEvidence{hits: []domain.WikiEvidence{hit}}
+	hit := domain.EvidenceHit{Source: "enwiki", ExternalID: "7331", ChunkIndex: 4, Title: "Great Wall of China", URL: "https://en.wikipedia.org/wiki/Great_Wall_of_China", Content: "lead", Kind: domain.EvidenceKindLead, Distance: 0.1}
+	evidence := &fakeEvidence{hits: []domain.EvidenceHit{hit}}
 
 	m, err := NewMatcher(&fakeEmbedder{vecs: [][]float32{queryVec()}}, &fakeSearcher{}, evidence, cfg)
 	if err != nil {
@@ -360,8 +362,8 @@ func TestMatchSegmentEvidenceIDResolvesToSourceRow(t *testing.T) {
 	if kind != domain.MatchKindEvidence {
 		t.Errorf("kind = %q, want %q", kind, domain.MatchKindEvidence)
 	}
-	if source != "7331" || chunk != 4 {
-		t.Errorf("round-trip = (page %q, chunk %d), want (page \"7331\", chunk 4)", source, chunk)
+	if source != "enwiki/7331" || chunk != 4 {
+		t.Errorf("round-trip = (source %q, chunk %d), want (source \"enwiki/7331\", chunk 4)", source, chunk)
 	}
 }
 
@@ -370,7 +372,7 @@ func TestMatchSegmentDisabledEvidenceSkipsSearch(t *testing.T) {
 
 	cfg := testMatcherConfig() // EvidenceTopK 0
 	searcher := &fakeSearcher{hits: []domain.ClaimMatch{{ID: "a", Text: "claim a", Verdict: domain.VerdictUnclear, Distance: 0.1}}}
-	evidence := &fakeEvidence{hits: []domain.WikiEvidence{{Title: "X", URL: "https://x", Content: "y", Distance: 0}}}
+	evidence := &fakeEvidence{hits: []domain.EvidenceHit{{Title: "X", URL: "https://x", Content: "y", Distance: 0}}}
 
 	m, err := NewMatcher(&fakeEmbedder{vecs: [][]float32{queryVec()}}, searcher, evidence, cfg)
 	if err != nil {
@@ -479,7 +481,7 @@ func (stubSearcher) Search(context.Context, []float32, int) ([]domain.ClaimMatch
 // stubEvidence is the evidence-corpus counterpart to stubSearcher.
 type stubEvidence struct{}
 
-func (stubEvidence) SearchWiki(context.Context, []float32, int) ([]domain.WikiEvidence, error) {
+func (stubEvidence) SearchEvidence(context.Context, []float32, int) ([]domain.EvidenceHit, error) {
 	return nil, nil
 }
 

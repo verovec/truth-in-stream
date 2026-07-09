@@ -21,8 +21,8 @@ func claimHits(distance float32) []domain.ClaimMatch {
 	return []domain.ClaimMatch{{ID: "c", Distance: distance}}
 }
 
-func wikiHits(distance float32) []domain.WikiEvidence {
-	return []domain.WikiEvidence{{Title: "w", Distance: distance}}
+func wikiHits(distance float32) []domain.EvidenceHit {
+	return []domain.EvidenceHit{{Title: "w", Distance: distance}}
 }
 
 func newCombined(t *testing.T, embedder QueryEmbedder, claims ClaimSearcher, wiki EvidenceSearcher, cfg CoverageConfig) *CombinedCoverage {

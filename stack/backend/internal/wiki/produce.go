@@ -48,8 +48,8 @@ type ProducerStore interface {
 	// UnembeddedStaging returns up to limit staging chunks lacking an embedding,
 	// ordered after the cursor, so the producer pages the whole un-embedded set
 	// without re-reading rows the fleet has since filled.
-	UnembeddedStaging(ctx context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
-	// FinalizeStaging indexes staging and swaps it into wiki_chunks atomically,
+	UnembeddedStaging(ctx context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
+	// FinalizeStaging indexes staging and swaps it into evidence_chunks atomically,
 	// checkpointing the corpus at version.
 	FinalizeStaging(ctx context.Context, corpus, version string, lastChangeTS time.Time, maintenanceWorkMem string, maxParallelWorkers int) error
 }
@@ -92,9 +92,9 @@ const staticImportanceLengthMidpoint = 1000.0
 // and a partial corpus is useful within minutes; the clustering loop refines
 // priority for later builds. Both paths are bounded by the queue's configured
 // MaxPriority.
-func priorityFor(c domain.WikiChunk, maxPriority uint8) uint8 {
-	if c.Importance != nil {
-		return priorityFromImportance(*c.Importance, maxPriority)
+func priorityFor(c domain.EvidenceChunk, maxPriority uint8) uint8 {
+	if wm, err := domain.ParseWikiMetadata(c.Metadata); err == nil && wm.Importance != nil {
+		return priorityFromImportance(*wm.Importance, maxPriority)
 	}
 	return priorityFromImportance(staticImportance(c), maxPriority)
 }
@@ -105,13 +105,13 @@ func priorityFor(c domain.WikiChunk, maxPriority uint8) uint8 {
 // and body prose in the lower) and its content length orders it within that band
 // via a saturating curve, so a longer, more substantive chunk outranks a stub.
 // An unknown kind floors to zero.
-func staticImportance(c domain.WikiChunk) float64 {
+func staticImportance(c domain.EvidenceChunk) float64 {
 	length := float64(len(c.Content))
 	lengthScore := length / (length + staticImportanceLengthMidpoint)
 	switch c.Kind {
-	case domain.WikiChunkKindLead:
+	case domain.EvidenceKindLead:
 		return 0.5 + 0.5*lengthScore
-	case domain.WikiChunkKindBody:
+	case domain.EvidenceKindBody:
 		return 0.5 * lengthScore
 	default:
 		return 0
@@ -135,7 +135,7 @@ func priorityFromImportance(importance float64, maxPriority uint8) uint8 {
 
 // RunBulkEnqueue publishes one prioritized embedding job per un-embedded staging
 // chunk, waits for the worker fleet to drain the queue, then indexes and swaps
-// staging into wiki_chunks atomically. It pages the un-embedded chunks in keyset
+// staging into evidence_chunks atomically. It pages the un-embedded chunks in keyset
 // order, so a crash mid-publish or a fleet that races ahead never re-publishes a
 // chunk, and a re-run enqueues only what is still un-embedded - preserving the
 // resume behavior of the old inline embed. Publishing is at-least-once with
@@ -172,12 +172,12 @@ func RunBulkEnqueue(ctx context.Context, logger *slog.Logger, store ProducerStor
 		return EnqueueStats{}, err
 	}
 
-	logger.InfoContext(ctx, "fleet drained staging; building index and swapping into wiki_chunks",
+	logger.InfoContext(ctx, "fleet drained staging; building index and swapping into evidence_chunks",
 		slog.String("corpus", cfg.Corpus))
 	if err := store.FinalizeStaging(ctx, cfg.Corpus, cfg.DumpVersion, parseDumpTime(cfg.DumpVersion), cfg.MaintenanceWorkMem, cfg.MaxParallelWorkers); err != nil {
 		return EnqueueStats{}, fmt.Errorf("wiki: finalize staging: %w", err)
 	}
-	logger.InfoContext(ctx, "bulk enqueue finalized; wiki_chunks now serves the embedded corpus",
+	logger.InfoContext(ctx, "bulk enqueue finalized; evidence_chunks now serves the embedded corpus",
 		slog.String("corpus", cfg.Corpus))
 	return EnqueueStats{Published: published}, nil
 }
@@ -224,12 +224,12 @@ func RunBulkPublish(ctx context.Context, logger *slog.Logger, store ProducerStor
 // has no finalize step - the corpus is already live, so there is nothing to swap.
 type LiveProducerStore interface {
 	CountUnembeddedLive(ctx context.Context) (int64, error)
-	UnembeddedLive(ctx context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
+	UnembeddedLive(ctx context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
 }
 
 // RunBulkLivePublish publishes one prioritized embedding job per un-embedded
 // chunk in the live corpus and returns. It is the bulk-into-live path: ingest has
-// already upserted the chunks straight into wiki_chunks (embedding NULL) on the
+// already upserted the chunks straight into evidence_chunks (embedding NULL) on the
 // live HNSW index, so each chunk is searchable the moment the fleet writes its
 // vector and the corpus grows monotonically - there is no staging table and no
 // swap. The jobs are stamped for the live corpus so the fleet writes vectors back
@@ -296,7 +296,7 @@ func (cfg ProducerConfig) validate() error {
 // chunkPager pages un-embedded chunks in keyset order after a cursor, so the
 // producer drains either the staging table (atomic rebuild) or the live table
 // (bulk-into-live) through the same publish loop.
-type chunkPager func(ctx context.Context, after domain.WikiCursor, limit int) ([]domain.WikiChunk, error)
+type chunkPager func(ctx context.Context, after domain.EvidenceCursor, limit int) ([]domain.EvidenceChunk, error)
 
 // publishJobs pages the un-embedded chunks in keyset order and publishes one
 // embedding job per chunk at a priority derived from its metadata. staging stamps
@@ -312,7 +312,7 @@ type chunkPager func(ctx context.Context, after domain.WikiCursor, limit int) ([
 // jobs.
 func publishJobs(ctx context.Context, logger *slog.Logger, read chunkPager, staging bool, pub Publisher, cfg ProducerConfig) (int, error) {
 	var (
-		cursor    domain.WikiCursor
+		cursor    domain.EvidenceCursor
 		published atomic.Int64
 	)
 	for {
@@ -328,12 +328,12 @@ func publishJobs(ctx context.Context, logger *slog.Logger, read chunkPager, stag
 		g.SetLimit(publishConcurrency)
 		for _, c := range chunks {
 			g.Go(func() error {
-				body, err := json.Marshal(embedjob.Job{PageID: c.PageID, ChunkIndex: c.ChunkIndex, Content: c.Content, Staging: staging})
+				body, err := json.Marshal(embedjob.Job{Source: c.Source, ExternalID: c.ExternalID, ChunkIndex: c.ChunkIndex, Content: c.Content, Staging: staging})
 				if err != nil {
-					return fmt.Errorf("wiki: encode embedding job for page %d chunk %d: %w", c.PageID, c.ChunkIndex, err)
+					return fmt.Errorf("wiki: encode embedding job for %s/%s chunk %d: %w", c.Source, c.ExternalID, c.ChunkIndex, err)
 				}
 				if err := pub.Publish(gctx, body, priorityFor(c, cfg.MaxPriority)); err != nil {
-					return fmt.Errorf("wiki: publish embedding job for page %d chunk %d: %w", c.PageID, c.ChunkIndex, err)
+					return fmt.Errorf("wiki: publish embedding job for %s/%s chunk %d: %w", c.Source, c.ExternalID, c.ChunkIndex, err)
 				}
 				published.Add(1)
 				return nil
@@ -346,7 +346,7 @@ func publishJobs(ctx context.Context, logger *slog.Logger, read chunkPager, stag
 		// chunks came back in keyset order, so the last is the page's high-water
 		// mark; advancing only after the whole page confirmed keeps resume cheap.
 		last := chunks[len(chunks)-1]
-		cursor = domain.WikiCursor{PageID: last.PageID, ChunkIndex: int32(last.ChunkIndex)}
+		cursor = domain.EvidenceCursor{Source: last.Source, ExternalID: last.ExternalID, ChunkIndex: int32(last.ChunkIndex)}
 		logger.InfoContext(ctx, "enqueued embedding jobs",
 			slog.String("corpus", cfg.Corpus),
 			slog.Int64("published", published.Load()))

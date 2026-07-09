@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,7 +39,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	ups, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))
@@ -76,13 +77,13 @@ func TestClusterCorpusWritesScoresEndToEnd(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 
 	// Two well-separated groups of embedded chunks, so a healthy clustering finds
 	// two clusters and scores everything.
-	chunks := make([]domain.WikiChunk, 0, 10)
+	chunks := make([]domain.EvidenceChunk, 0, 10)
 	for i := range 6 {
 		c := chunk(int64(i+1), "v1")
 		c.Embedding = unitVec(1)
@@ -124,7 +125,7 @@ func TestClusterCorpusWritesScoresEndToEnd(t *testing.T) {
 	var scored int
 	if err := verify.QueryRow(
 		ctx,
-		"SELECT count(*)::int FROM wiki_chunks WHERE cluster_id IS NOT NULL AND importance IS NOT NULL",
+		"SELECT count(*)::int FROM evidence_chunks WHERE metadata->>'cluster_id' IS NOT NULL AND metadata->>'importance' IS NOT NULL",
 	).Scan(&scored); err != nil {
 		t.Fatalf("count scored: %v", err)
 	}
@@ -140,36 +141,41 @@ func TestClusterCorpusWritesScoresEndToEnd(t *testing.T) {
 	after := importanceSnapshot(ctx, t, verify)
 	for page, imp := range before {
 		if after[page] != imp {
-			t.Errorf("page %d importance moved on a re-run: %v -> %v (must be idempotent)", page, imp, after[page])
+			t.Errorf("page %s importance moved on a re-run: %v -> %v (must be idempotent)", page, imp, after[page])
 		}
 	}
 }
 
-func chunk(pageID int64, content string) domain.WikiChunk {
-	return domain.WikiChunk{
-		PageID: pageID, ChunkIndex: 0, Title: "T",
-		URL: "https://simple.wikipedia.org/wiki/T", RevisionID: 1,
-		Corpus: "simplewiki", Content: content, Kind: domain.WikiChunkKindLead,
+func chunk(pageID int64, content string) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source:     "simplewiki",
+		ExternalID: strconv.FormatInt(pageID, 10),
+		ChunkIndex: 0,
+		Title:      "T",
+		URL:        "https://simple.wikipedia.org/wiki/T",
+		Content:    content,
+		Kind:       domain.EvidenceKindLead,
+		Metadata:   domain.WikiMetadata{RevisionID: 1}.Map(),
 	}
 }
 
-func importanceSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) map[int64]float64 {
+func importanceSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) map[string]float64 {
 	t.Helper()
-	rows, err := pool.Query(ctx, "SELECT page_id, importance FROM wiki_chunks WHERE importance IS NOT NULL")
+	rows, err := pool.Query(ctx, "SELECT external_id, (metadata->>'importance')::float8 FROM evidence_chunks WHERE metadata->>'importance' IS NOT NULL")
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	defer rows.Close()
-	out := map[int64]float64{}
+	out := map[string]float64{}
 	for rows.Next() {
 		var (
-			page int64
-			imp  float64
+			externalID string
+			imp        float64
 		)
-		if err := rows.Scan(&page, &imp); err != nil {
+		if err := rows.Scan(&externalID, &imp); err != nil {
 			t.Fatalf("snapshot scan: %v", err)
 		}
-		out[page] = imp
+		out[externalID] = imp
 	}
 	return out
 }

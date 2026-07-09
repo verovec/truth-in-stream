@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -12,17 +14,35 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/store/db"
 )
 
-func wikiChunk(pageID int64, idx int, content string) domain.WikiChunk {
-	return domain.WikiChunk{
-		PageID:     pageID,
+func wikiChunk(pageID int64, idx int, content string) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source:     "simplewiki",
+		ExternalID: strconv.FormatInt(pageID, 10),
 		ChunkIndex: idx,
 		Title:      "Paris",
 		URL:        "https://simple.wikipedia.org/wiki/Paris",
-		RevisionID: 100,
-		Corpus:     "simplewiki",
 		Content:    content,
-		Kind:       domain.WikiChunkKindLead,
+		Kind:       domain.EvidenceKindLead,
+		Metadata:   domain.WikiMetadata{RevisionID: 100}.Map(),
 	}
+}
+
+// chunkMeta decodes a stored jsonb metadata payload back into the typed wiki
+// view, so a test can assert the revision/section a chunk carries without
+// comparing raw jsonb bytes (whose key order and spacing Postgres normalizes).
+func chunkMeta(t *testing.T, raw []byte) domain.WikiMetadata {
+	t.Helper()
+	m := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+	}
+	wm, err := domain.ParseWikiMetadata(m)
+	if err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+	return wm
 }
 
 // setEmbedding writes an embedding onto an existing chunk so it becomes
@@ -32,8 +52,8 @@ func setEmbedding(ctx context.Context, t *testing.T, store *Store, pageID int64,
 	emb := pgvector.NewHalfVector(v)
 	if _, err := store.pool.Exec(
 		ctx,
-		"UPDATE wiki_chunks SET embedding = $1 WHERE page_id = $2 AND chunk_index = $3",
-		emb, pageID, idx,
+		"UPDATE evidence_chunks SET embedding = $1 WHERE source = 'simplewiki' AND external_id = $2 AND chunk_index = $3",
+		emb, strconv.FormatInt(pageID, 10), idx,
 	); err != nil {
 		t.Fatalf("set embedding page %d chunk %d: %v", pageID, idx, err)
 	}
@@ -43,10 +63,10 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "Alpha", URL: "https://w/alpha", RevisionID: 1, Corpus: "simplewiki", Content: "alpha lead", Kind: domain.WikiChunkKindLead},
-		{PageID: 2, ChunkIndex: 0, Title: "Bravo", URL: "https://w/bravo", RevisionID: 1, Corpus: "simplewiki", Content: "bravo lead", Kind: domain.WikiChunkKindLead},
-		{PageID: 3, ChunkIndex: 0, Title: "Charlie", URL: "https://w/charlie", RevisionID: 1, Corpus: "simplewiki", Content: "charlie lead, never embedded", Kind: domain.WikiChunkKindLead},
+	chunks := []domain.EvidenceChunk{
+		{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0, Title: "Alpha", URL: "https://w/alpha", Content: "alpha lead", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
+		{Source: "simplewiki", ExternalID: "2", ChunkIndex: 0, Title: "Bravo", URL: "https://w/bravo", Content: "bravo lead", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
+		{Source: "simplewiki", ExternalID: "3", ChunkIndex: 0, Title: "Charlie", URL: "https://w/charlie", Content: "charlie lead, never embedded", Kind: domain.EvidenceKindLead, Metadata: domain.WikiMetadata{RevisionID: 1}.Map()},
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
@@ -68,9 +88,9 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := store.SearchWiki(ctx, tc.query, tc.topK)
+			got, err := store.SearchEvidence(ctx, tc.query, tc.topK)
 			if err != nil {
-				t.Fatalf("SearchWiki: %v", err)
+				t.Fatalf("SearchEvidence: %v", err)
 			}
 			if len(got) != tc.wantLen {
 				t.Fatalf("got %d evidence, want %d", len(got), tc.wantLen)
@@ -95,8 +115,8 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 
 func TestSearchWikiRejectsWrongDimension(t *testing.T) {
 	store := setupStore(t)
-	if _, err := store.SearchWiki(t.Context(), []float32{1, 2, 3}, 5); err == nil {
-		t.Fatal("SearchWiki with wrong dimension: want error, got nil")
+	if _, err := store.SearchEvidence(t.Context(), []float32{1, 2, 3}, 5); err == nil {
+		t.Fatal("SearchEvidence with wrong dimension: want error, got nil")
 	}
 }
 
@@ -104,7 +124,7 @@ func TestUpsertChunksRoundTrip(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "Paris\n\nParis is the capital of France."),
 		wikiChunk(1, 1, "Paris\n\nIt sits on the Seine."),
 		wikiChunk(2, 0, "Lyon\n\nLyon is a city in France."),
@@ -113,24 +133,27 @@ func TestUpsertChunksRoundTrip(t *testing.T) {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 1})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 1})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
-	want := db.GetWikiChunkRow{
-		PageID:          1,
+	want := db.GetEvidenceChunkRow{
+		Source:          "simplewiki",
+		ExternalID:      "1",
 		ChunkIndex:      1,
 		Title:           "Paris",
 		Url:             "https://simple.wikipedia.org/wiki/Paris",
-		RevisionID:      100,
-		Corpus:          "simplewiki",
 		Content:         "Paris\n\nIt sits on the Seine.",
-		Section:         "",
 		Kind:            "lead",
 		EmbeddingIsNull: true,
 	}
+	gotMeta := chunkMeta(t, got.Metadata)
+	got.Metadata = nil
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("stored chunk mismatch (-want +got):\n%s", diff)
+	}
+	if gotMeta.RevisionID != 100 || gotMeta.Section != "" {
+		t.Errorf("stored metadata = %+v, want revision 100 / empty section", gotMeta)
 	}
 }
 
@@ -139,18 +162,18 @@ func TestUpsertChunksPersistsSectionAndKind(t *testing.T) {
 	ctx := t.Context()
 
 	chunk := wikiChunk(1, 0, "Paris\n\nParis is the capital of France.")
-	chunk.Section = "History"
-	chunk.Kind = domain.WikiChunkKindBody
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{chunk}); err != nil {
+	chunk.Metadata = domain.WikiMetadata{RevisionID: 100, Section: "History"}.Map()
+	chunk.Kind = domain.EvidenceKindBody
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{chunk}); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
-	if got.Section != "History" || got.Kind != "body" {
-		t.Errorf("stored (section, kind) = (%q, %q), want (History, body)", got.Section, got.Kind)
+	if section := chunkMeta(t, got.Metadata).Section; section != "History" || got.Kind != "body" {
+		t.Errorf("stored (section, kind) = (%q, %q), want (History, body)", section, got.Kind)
 	}
 }
 
@@ -158,22 +181,23 @@ func TestWikiChunkMetadataColumnsBackfillToDefaults(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	// A row written without the metadata columns - a pre-migration row, or any
-	// insert that omits them - falls to the column defaults: an empty section
-	// and the lead kind. This is the additive-backfill guarantee that lets the
-	// migration add the columns without a data backfill step.
+	// A row written without the metadata jsonb or the kind column - any insert
+	// that omits them - falls to the column defaults: an empty metadata object
+	// (so an empty section) and the lead kind. This is the additive default
+	// guarantee that lets ingest omit provenance it does not have without a data
+	// backfill step.
 	if _, err := store.pool.Exec(
 		ctx,
-		"INSERT INTO wiki_chunks (page_id, chunk_index, title, url, revision_id, corpus, content) VALUES (1, 0, 'Paris', 'https://w/p', 1, 'simplewiki', 'lead text')",
+		"INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content) VALUES ('simplewiki', '1', 0, 'Paris', 'https://w/p', 'lead text')",
 	); err != nil {
 		t.Fatalf("insert without metadata: %v", err)
 	}
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
-	if got.Section != "" || got.Kind != "lead" {
-		t.Errorf("defaulted (section, kind) = (%q, %q), want (\"\", lead)", got.Section, got.Kind)
+	if section := chunkMeta(t, got.Metadata).Section; section != "" || got.Kind != "lead" {
+		t.Errorf("defaulted (section, kind) = (%q, %q), want (\"\", lead)", section, got.Kind)
 	}
 }
 
@@ -182,27 +206,27 @@ func TestSearchWikiCarriesSectionAndKind(t *testing.T) {
 	ctx := t.Context()
 
 	chunk := wikiChunk(8675309, 3, "alpha body")
-	chunk.Section = "History"
-	chunk.Kind = domain.WikiChunkKindBody
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{chunk}); err != nil {
+	chunk.Metadata = domain.WikiMetadata{RevisionID: 100, Section: "History"}.Map()
+	chunk.Kind = domain.EvidenceKindBody
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{chunk}); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 	setEmbedding(ctx, t, store, 8675309, 3, unitVec(0))
 
-	got, err := store.SearchWiki(ctx, unitVec(0), 1)
+	got, err := store.SearchEvidence(ctx, unitVec(0), 1)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("got %d evidence, want 1", len(got))
 	}
-	if got[0].Section != "History" || got[0].Kind != domain.WikiChunkKindBody {
+	if got[0].Section != "History" || got[0].Kind != domain.EvidenceKindBody {
 		t.Errorf("evidence (section, kind) = (%q, %q), want (History, body)", got[0].Section, got[0].Kind)
 	}
-	// The (page_id, chunk_index) source coordinates must survive retrieval so a
-	// composed evidence_id resolves back to this exact row.
-	if got[0].PageID != 8675309 || got[0].ChunkIndex != 3 {
-		t.Errorf("evidence (pageID, chunkIndex) = (%d, %d), want (8675309, 3)", got[0].PageID, got[0].ChunkIndex)
+	// The (source, external_id, chunk_index) coordinates must survive retrieval so
+	// a composed evidence_id resolves back to this exact row.
+	if got[0].Source != "simplewiki" || got[0].ExternalID != "8675309" || got[0].ChunkIndex != 3 {
+		t.Errorf("evidence coordinates = (%q, %q, %d), want (simplewiki, 8675309, 3)", got[0].Source, got[0].ExternalID, got[0].ChunkIndex)
 	}
 }
 
@@ -210,7 +234,7 @@ func TestUpsertChunksRejectsInvalidKind(t *testing.T) {
 	store := setupStore(t)
 	chunk := wikiChunk(1, 0, "Paris\n\nLead.")
 	chunk.Kind = "bogus"
-	if err := store.UpsertChunks(t.Context(), []domain.WikiChunk{chunk}); err == nil {
+	if err := store.UpsertChunks(t.Context(), []domain.EvidenceChunk{chunk}); err == nil {
 		t.Fatal("UpsertChunks accepted an invalid kind, want error")
 	}
 }
@@ -223,7 +247,7 @@ func TestUpsertStagingChunksRejectsInvalidKind(t *testing.T) {
 	}
 	chunk := wikiChunk(1, 0, "Paris\n\nLead.")
 	chunk.Kind = "bogus"
-	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{chunk}); err == nil {
+	if err := store.UpsertStagingChunks(ctx, []domain.EvidenceChunk{chunk}); err == nil {
 		t.Fatal("UpsertStagingChunks accepted an invalid kind, want error")
 	}
 }
@@ -232,7 +256,7 @@ func TestUpsertChunksIdempotent(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "Paris\n\nFirst."),
 		wikiChunk(1, 1, "Paris\n\nSecond."),
 	}
@@ -242,9 +266,9 @@ func TestUpsertChunksIdempotent(t *testing.T) {
 		}
 	}
 
-	n, err := store.queries.CountWikiChunksForPage(ctx, 1)
+	n, err := store.queries.CountEvidenceChunksForDocument(ctx, db.CountEvidenceChunksForDocumentParams{Source: "simplewiki", ExternalID: "1"})
 	if err != nil {
-		t.Fatalf("CountWikiChunksForPage: %v", err)
+		t.Fatalf("CountEvidenceChunksForDocument: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("page 1 has %d chunks after re-run, want 2", n)
@@ -255,33 +279,33 @@ func TestUpsertChunksEmbeddingInvalidation(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{wikiChunk(1, 0, "Paris\n\nOriginal.")}); err != nil {
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{wikiChunk(1, 0, "Paris\n\nOriginal.")}); err != nil {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 	emb := pgvector.NewHalfVector(unitVec(0))
-	if _, err := store.pool.Exec(ctx, "UPDATE wiki_chunks SET embedding = $1 WHERE page_id = 1 AND chunk_index = 0", emb); err != nil {
+	if _, err := store.pool.Exec(ctx, "UPDATE evidence_chunks SET embedding = $1 WHERE source = 'simplewiki' AND external_id = '1' AND chunk_index = 0", emb); err != nil {
 		t.Fatalf("seed embedding: %v", err)
 	}
 
 	// Same content: the embedding must survive the upsert.
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{wikiChunk(1, 0, "Paris\n\nOriginal.")}); err != nil {
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{wikiChunk(1, 0, "Paris\n\nOriginal.")}); err != nil {
 		t.Fatalf("UpsertChunks (same content): %v", err)
 	}
-	row, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	row, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
 	if row.EmbeddingIsNull {
 		t.Error("unchanged content dropped the embedding")
 	}
 
 	// Changed content: the stale embedding must be invalidated.
-	if err := store.UpsertChunks(ctx, []domain.WikiChunk{wikiChunk(1, 0, "Paris\n\nRewritten.")}); err != nil {
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{wikiChunk(1, 0, "Paris\n\nRewritten.")}); err != nil {
 		t.Fatalf("UpsertChunks (changed content): %v", err)
 	}
-	row, err = store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 1, ChunkIndex: 0})
+	row, err = store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki", ExternalID: "1", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
 	if !row.EmbeddingIsNull {
 		t.Error("changed content kept a stale embedding")
@@ -292,7 +316,7 @@ func TestTrimPages(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunks := []domain.WikiChunk{
+	chunks := []domain.EvidenceChunk{
 		wikiChunk(1, 0, "Paris\n\nOne."),
 		wikiChunk(1, 1, "Paris\n\nTwo."),
 		wikiChunk(1, 2, "Paris\n\nThree."),
@@ -302,24 +326,24 @@ func TestTrimPages(t *testing.T) {
 		t.Fatalf("UpsertChunks: %v", err)
 	}
 
-	trims := []domain.WikiTrim{
-		{PageID: 1, FromIndex: 1},
-		{PageID: 2, FromIndex: 0},
+	trims := []domain.EvidenceTrim{
+		{Source: "simplewiki", ExternalID: "1", FromIndex: 1},
+		{Source: "simplewiki", ExternalID: "2", FromIndex: 0},
 	}
-	if err := store.TrimPages(ctx, trims); err != nil {
-		t.Fatalf("TrimPages: %v", err)
+	if err := store.TrimDocuments(ctx, trims); err != nil {
+		t.Fatalf("TrimDocuments: %v", err)
 	}
 
-	n, err := store.queries.CountWikiChunksForPage(ctx, 1)
+	n, err := store.queries.CountEvidenceChunksForDocument(ctx, db.CountEvidenceChunksForDocumentParams{Source: "simplewiki", ExternalID: "1"})
 	if err != nil {
-		t.Fatalf("CountWikiChunksForPage(1): %v", err)
+		t.Fatalf("CountEvidenceChunksForDocument(1): %v", err)
 	}
 	if n != 1 {
 		t.Errorf("page 1 has %d chunks after trim from 1, want 1", n)
 	}
-	n, err = store.queries.CountWikiChunksForPage(ctx, 2)
+	n, err = store.queries.CountEvidenceChunksForDocument(ctx, db.CountEvidenceChunksForDocumentParams{Source: "simplewiki", ExternalID: "2"})
 	if err != nil {
-		t.Fatalf("CountWikiChunksForPage(2): %v", err)
+		t.Fatalf("CountEvidenceChunksForDocument(2): %v", err)
 	}
 	if n != 0 {
 		t.Errorf("page 2 has %d chunks after trim from 0, want 0", n)
@@ -330,16 +354,16 @@ func TestEnsureCorpus(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus (fresh store): %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource (fresh store): %v", err)
 	}
 	// Idempotent for the same corpus, even before any checkpoint exists.
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus (same corpus): %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource (same corpus): %v", err)
 	}
 	// A different corpus is refused: page ids would collide.
-	if err := store.EnsureCorpus(ctx, "enwiki"); err == nil {
-		t.Fatal("EnsureCorpus accepted a second corpus, want error")
+	if err := store.EnsureSource(ctx, "enwiki"); err == nil {
+		t.Fatal("EnsureSource accepted a second corpus, want error")
 	}
 
 	// The claim must not have created a fake checkpoint.
@@ -368,7 +392,7 @@ func TestSyncStateRoundTrip(t *testing.T) {
 	}
 
 	ts := time.Date(2026, 6, 1, 3, 14, 0, 0, time.UTC)
-	st := domain.WikiSyncState{Corpus: "simplewiki", LastChangeTS: ts, DumpVersion: "Mon, 01 Jun 2026 03:14:00 GMT"}
+	st := domain.EvidenceSyncState{Source: "simplewiki", LastChangeTS: ts, DumpVersion: "Mon, 01 Jun 2026 03:14:00 GMT"}
 	if err := store.SetSyncState(ctx, st); err != nil {
 		t.Fatalf("SetSyncState: %v", err)
 	}
@@ -403,7 +427,7 @@ func TestSyncStateZeroTimeStoresNull(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	st := domain.WikiSyncState{Corpus: "simplewiki", DumpVersion: "unknown"}
+	st := domain.EvidenceSyncState{Source: "simplewiki", DumpVersion: "unknown"}
 	if err := store.SetSyncState(ctx, st); err != nil {
 		t.Fatalf("SetSyncState: %v", err)
 	}
@@ -425,7 +449,7 @@ func TestEnsureCorpusConcurrentClaims(t *testing.T) {
 	// advisory lock serializes them, so exactly one wins.
 	errs := make(chan error, 2)
 	for _, corpus := range []string{"simplewiki", "enwiki"} {
-		go func() { errs <- store.EnsureCorpus(ctx, corpus) }()
+		go func() { errs <- store.EnsureSource(ctx, corpus) }()
 	}
 
 	failures := 0
@@ -453,18 +477,18 @@ func TestUpsertEmbeddedChunkRoundTrip(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunk := domain.WikiChunk{
-		PageID: 7, ChunkIndex: 0, Title: "Atom", URL: "https://simple.wikipedia.org/wiki/Atom",
-		RevisionID: 11, Corpus: "simplewiki-crawl", Content: "Atom\n\nAn atom is matter.",
-		Section: "", Kind: domain.WikiChunkKindBody, Embedding: fullEmbedding(),
+	chunk := domain.EvidenceChunk{
+		Source: "simplewiki-crawl", ExternalID: "7", ChunkIndex: 0, Title: "Atom", URL: "https://simple.wikipedia.org/wiki/Atom",
+		Content: "Atom\n\nAn atom is matter.", Kind: domain.EvidenceKindBody, Embedding: fullEmbedding(),
+		Metadata: domain.WikiMetadata{RevisionID: 11}.Map(),
 	}
 	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
 		t.Fatalf("UpsertEmbeddedChunk: %v", err)
 	}
 
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 7, ChunkIndex: 0})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki-crawl", ExternalID: "7", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
 	if got.Content != chunk.Content {
 		t.Errorf("content = %q, want %q", got.Content, chunk.Content)
@@ -472,11 +496,11 @@ func TestUpsertEmbeddedChunkRoundTrip(t *testing.T) {
 	if got.Kind != "body" {
 		t.Errorf("kind = %q, want body", got.Kind)
 	}
-	if got.Corpus != "simplewiki-crawl" {
-		t.Errorf("corpus = %q, want simplewiki-crawl", got.Corpus)
+	if got.Source != "simplewiki-crawl" {
+		t.Errorf("source = %q, want simplewiki-crawl", got.Source)
 	}
-	if got.RevisionID != 11 {
-		t.Errorf("revision = %d, want 11", got.RevisionID)
+	if rev := chunkMeta(t, got.Metadata).RevisionID; rev != 11 {
+		t.Errorf("revision = %d, want 11", rev)
 	}
 	if got.EmbeddingIsNull {
 		t.Error("embedding is null, want a stored vector")
@@ -487,34 +511,34 @@ func TestUpsertEmbeddedChunkIsIdempotent(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()
 
-	chunk := domain.WikiChunk{
-		PageID: 9, ChunkIndex: 0, Title: "Ion", URL: "u", RevisionID: 1,
-		Corpus: "simplewiki-crawl", Content: "Ion\n\ntext", Kind: domain.WikiChunkKindLead,
-		Embedding: fullEmbedding(),
+	chunk := domain.EvidenceChunk{
+		Source: "simplewiki-crawl", ExternalID: "9", ChunkIndex: 0, Title: "Ion", URL: "u",
+		Content: "Ion\n\ntext", Kind: domain.EvidenceKindLead, Embedding: fullEmbedding(),
+		Metadata: domain.WikiMetadata{RevisionID: 1}.Map(),
 	}
 	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 	// Re-apply with new content; the row is replaced in place, not duplicated.
 	chunk.Content = "Ion\n\nrevised"
-	chunk.RevisionID = 2
+	chunk.Metadata = domain.WikiMetadata{RevisionID: 2}.Map()
 	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
 		t.Fatalf("re-apply: %v", err)
 	}
-	got, err := store.queries.GetWikiChunk(ctx, db.GetWikiChunkParams{PageID: 9, ChunkIndex: 0})
+	got, err := store.queries.GetEvidenceChunk(ctx, db.GetEvidenceChunkParams{Source: "simplewiki-crawl", ExternalID: "9", ChunkIndex: 0})
 	if err != nil {
-		t.Fatalf("GetWikiChunk: %v", err)
+		t.Fatalf("GetEvidenceChunk: %v", err)
 	}
-	if got.Content != "Ion\n\nrevised" || got.RevisionID != 2 || got.EmbeddingIsNull {
-		t.Errorf("re-apply mismatch: content=%q rev=%d nullVec=%v", got.Content, got.RevisionID, got.EmbeddingIsNull)
+	if got.Content != "Ion\n\nrevised" || chunkMeta(t, got.Metadata).RevisionID != 2 || got.EmbeddingIsNull {
+		t.Errorf("re-apply mismatch: content=%q rev=%d nullVec=%v", got.Content, chunkMeta(t, got.Metadata).RevisionID, got.EmbeddingIsNull)
 	}
 }
 
 func TestUpsertEmbeddedChunkRejectsWrongDim(t *testing.T) {
 	store := setupStore(t)
-	chunk := domain.WikiChunk{
-		PageID: 1, ChunkIndex: 0, Corpus: "c", Content: "x",
-		Kind: domain.WikiChunkKindLead, Embedding: make([]float32, 3),
+	chunk := domain.EvidenceChunk{
+		Source: "c", ExternalID: "1", ChunkIndex: 0, Content: "x",
+		Kind: domain.EvidenceKindLead, Embedding: make([]float32, 3),
 	}
 	if err := store.UpsertEmbeddedChunk(t.Context(), chunk); err == nil {
 		t.Fatal("UpsertEmbeddedChunk with 3 dims = nil error, want error")
@@ -523,9 +547,9 @@ func TestUpsertEmbeddedChunkRejectsWrongDim(t *testing.T) {
 
 func TestUpsertEmbeddedChunkRejectsInvalidKind(t *testing.T) {
 	store := setupStore(t)
-	chunk := domain.WikiChunk{
-		PageID: 1, ChunkIndex: 0, Corpus: "c", Content: "x",
-		Kind: domain.WikiChunkKind("sidebar"), Embedding: fullEmbedding(),
+	chunk := domain.EvidenceChunk{
+		Source: "c", ExternalID: "1", ChunkIndex: 0, Content: "x",
+		Kind: domain.EvidenceChunkKind("sidebar"), Embedding: fullEmbedding(),
 	}
 	if err := store.UpsertEmbeddedChunk(t.Context(), chunk); err == nil {
 		t.Fatal("UpsertEmbeddedChunk with invalid kind = nil error, want error")

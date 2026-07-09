@@ -110,15 +110,15 @@ func TestBulkPublishFillsQueueWithoutSwapping(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 	if err := store.ResetStaging(ctx, "v2"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
 	}
-	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{
-		stagedChunk(1, "v1", domain.WikiChunkKindLead),
-		stagedChunk(2, "v2", domain.WikiChunkKindBody),
+	if err := store.UpsertStagingChunks(ctx, []domain.EvidenceChunk{
+		stagedChunk(1, "v1", domain.EvidenceKindLead),
+		stagedChunk(2, "v2", domain.EvidenceKindBody),
 	}); err != nil {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestBulkPublishFillsQueueWithoutSwapping(t *testing.T) {
 				t.Fatalf("job is not valid JSON: %v", err)
 			}
 			if job.Content == "" {
-				t.Errorf("job %d/%d has empty content; producer jobs must be self-contained", job.PageID, job.ChunkIndex)
+				t.Errorf("job %s/%s#%d has empty content; producer jobs must be self-contained", job.Source, job.ExternalID, job.ChunkIndex)
 			}
 			seen[job.Content] = true
 			_ = d.Ack()
@@ -200,7 +200,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")
@@ -220,11 +220,11 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	}
 }
 
-func stagedChunk(pageID int64, content string, kind domain.WikiChunkKind) domain.WikiChunk {
-	return domain.WikiChunk{
-		PageID: pageID, ChunkIndex: 0, Title: "T",
-		URL: "https://simple.wikipedia.org/wiki/T", RevisionID: 100,
-		Corpus: "simplewiki", Content: content, Kind: kind,
+func stagedChunk(pageID int64, content string, kind domain.EvidenceChunkKind) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source: "simplewiki", ExternalID: strconv.FormatInt(pageID, 10), ChunkIndex: 0, Title: "T",
+		URL: "https://simple.wikipedia.org/wiki/T", Content: content, Kind: kind,
+		Metadata: domain.WikiMetadata{RevisionID: 100}.Map(),
 	}
 }
 
@@ -238,17 +238,17 @@ func TestBulkEnqueueDrainsFleetAndSwapsLive(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 	if err := store.ResetStaging(ctx, "v2"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
 	}
 	// A mix of lead and body chunks exercises the priority mapping end to end.
-	if err := store.UpsertStagingChunks(ctx, []domain.WikiChunk{
-		stagedChunk(1, "v1", domain.WikiChunkKindLead),
-		stagedChunk(2, "v2", domain.WikiChunkKindBody),
-		stagedChunk(3, "v3", domain.WikiChunkKindLead),
+	if err := store.UpsertStagingChunks(ctx, []domain.EvidenceChunk{
+		stagedChunk(1, "v1", domain.EvidenceKindLead),
+		stagedChunk(2, "v2", domain.EvidenceKindBody),
+		stagedChunk(3, "v3", domain.EvidenceKindLead),
 	}); err != nil {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
@@ -297,9 +297,9 @@ func TestBulkEnqueueDrainsFleetAndSwapsLive(t *testing.T) {
 	// is searchable and the checkpoint advanced, so a re-plan is a no-op.
 	q := make([]float32, domain.EmbeddingDim)
 	q[2] = 1
-	got, err := store.SearchWiki(ctx, q, 1)
+	got, err := store.SearchEvidence(ctx, q, 1)
 	if err != nil {
-		t.Fatalf("SearchWiki: %v", err)
+		t.Fatalf("SearchEvidence: %v", err)
 	}
 	if len(got) != 1 || got[0].Content != "v2" {
 		t.Fatalf("nearest = %+v; want the chunk the fleet embedded with content v2", got)

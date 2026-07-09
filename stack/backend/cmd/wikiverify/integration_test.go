@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 		t.Fatalf("reset: connect: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	ups, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))
@@ -69,23 +70,23 @@ func unitVec(hot int) []float32 {
 // shape to what the reingest produces.
 func buildSwappedCorpus(ctx context.Context, t *testing.T, store *postgres.Store) {
 	t.Helper()
-	if err := store.EnsureCorpus(ctx, "simplewiki"); err != nil {
-		t.Fatalf("EnsureCorpus: %v", err)
+	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
 	}
 	if err := store.ResetStaging(ctx, "v1"); err != nil {
 		t.Fatalf("ResetStaging: %v", err)
 	}
-	chunks := []domain.WikiChunk{
-		{PageID: 1, ChunkIndex: 0, Title: "A", URL: "u1", RevisionID: 1, Corpus: "simplewiki", Content: "a", Kind: domain.WikiChunkKindLead},
-		{PageID: 2, ChunkIndex: 0, Title: "B", URL: "u2", RevisionID: 1, Corpus: "simplewiki", Content: "b", Kind: domain.WikiChunkKindLead},
-		{PageID: 3, ChunkIndex: 0, Title: "C", URL: "u3", RevisionID: 1, Corpus: "simplewiki", Content: "c", Kind: domain.WikiChunkKindLead},
+	chunks := []domain.EvidenceChunk{
+		stagingChunk(1, "A", "u1", "a"),
+		stagingChunk(2, "B", "u2", "b"),
+		stagingChunk(3, "C", "u3", "c"),
 	}
 	if err := store.UpsertStagingChunks(ctx, chunks); err != nil {
 		t.Fatalf("UpsertStagingChunks: %v", err)
 	}
-	for _, c := range chunks {
-		if _, err := store.SetStagingChunkEmbedding(ctx, c.PageID, c.ChunkIndex, unitVec(int(c.PageID))); err != nil {
-			t.Fatalf("SetStagingChunkEmbedding(%d): %v", c.PageID, err)
+	for i, c := range chunks {
+		if _, err := store.SetStagingChunkEmbedding(ctx, c.Source, c.ExternalID, c.ChunkIndex, unitVec(i+1)); err != nil {
+			t.Fatalf("SetStagingChunkEmbedding(%s): %v", c.ExternalID, err)
 		}
 	}
 	if err := store.MarkStagingReady(ctx, "v1"); err != nil {
@@ -93,6 +94,21 @@ func buildSwappedCorpus(ctx context.Context, t *testing.T, store *postgres.Store
 	}
 	if err := store.FinalizeStaging(ctx, "simplewiki", "v1", time.Time{}, "64MB", 0); err != nil {
 		t.Fatalf("FinalizeStaging: %v", err)
+	}
+}
+
+// stagingChunk builds a lead chunk of the simplewiki source, carrying its wiki
+// revision provenance in metadata.
+func stagingChunk(pageID int64, title, url, content string) domain.EvidenceChunk {
+	return domain.EvidenceChunk{
+		Source:     "simplewiki",
+		ExternalID: strconv.FormatInt(pageID, 10),
+		ChunkIndex: 0,
+		Title:      title,
+		URL:        url,
+		Content:    content,
+		Kind:       domain.EvidenceKindLead,
+		Metadata:   domain.WikiMetadata{RevisionID: 1}.Map(),
 	}
 }
 
@@ -114,9 +130,9 @@ func TestVerifierPassesHealthyAndFailsCorruptedCorpus(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 
 	// A fully embedded, swapped corpus passes every check.
-	healthy, err := store.WikiCorpusHealth(ctx)
+	healthy, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth (healthy): %v", err)
+		t.Fatalf("EvidenceCorpusHealth (healthy): %v", err)
 	}
 	if err := report(ctx, logger, healthy); err != nil {
 		t.Fatalf("verifier failed a healthy reingested corpus: %v", err)
@@ -130,12 +146,12 @@ func TestVerifierPassesHealthyAndFailsCorruptedCorpus(t *testing.T) {
 
 	// An un-embedded chunk is no longer a failure: a bulk-into-live corpus fills in
 	// over time, so coverage is reported, not gated. The verifier still passes.
-	if _, err := pool.Exec(ctx, "UPDATE wiki_chunks SET embedding = NULL WHERE page_id = 2"); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE evidence_chunks SET embedding = NULL WHERE source = 'simplewiki' AND external_id = '2'"); err != nil {
 		t.Fatalf("null one embedding: %v", err)
 	}
-	partial, err := store.WikiCorpusHealth(ctx)
+	partial, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth (partial): %v", err)
+		t.Fatalf("EvidenceCorpusHealth (partial): %v", err)
 	}
 	if err := report(ctx, logger, partial); err != nil {
 		t.Fatalf("verifier failed a partially embedded corpus; coverage is progress, not a gate: %v", err)
@@ -144,12 +160,12 @@ func TestVerifierPassesHealthyAndFailsCorruptedCorpus(t *testing.T) {
 	// A real consistency defect among the embedded rows (a zero-norm vector) must
 	// still exit non-zero.
 	zero := "[" + strings.TrimSuffix(strings.Repeat("0,", 1024), ",") + "]"
-	if _, err := pool.Exec(ctx, "UPDATE wiki_chunks SET embedding = $1::halfvec WHERE page_id = 1", zero); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE evidence_chunks SET embedding = $1::halfvec WHERE source = 'simplewiki' AND external_id = '1'", zero); err != nil {
 		t.Fatalf("write zero vector: %v", err)
 	}
-	corrupt, err := store.WikiCorpusHealth(ctx)
+	corrupt, err := store.EvidenceCorpusHealth(ctx)
 	if err != nil {
-		t.Fatalf("WikiCorpusHealth (corrupt): %v", err)
+		t.Fatalf("EvidenceCorpusHealth (corrupt): %v", err)
 	}
 	if err := report(ctx, logger, corrupt); err == nil {
 		t.Fatal("verifier passed a corpus with a zero-vector embedding; it must exit non-zero")

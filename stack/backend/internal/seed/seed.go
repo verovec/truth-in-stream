@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -23,9 +24,9 @@ type Embedder interface {
 // WikiStore is the slice of the wiki corpus store the wiki seed needs: claim
 // the corpus, insert the chunks, then fill their embeddings.
 type WikiStore interface {
-	EnsureCorpus(ctx context.Context, corpus string) error
-	UpsertChunks(ctx context.Context, chunks []domain.WikiChunk) error
-	SetChunkEmbeddings(ctx context.Context, chunks []domain.WikiChunk) error
+	EnsureSource(ctx context.Context, source string) error
+	UpsertChunks(ctx context.Context, chunks []domain.EvidenceChunk) error
+	SetChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) error
 }
 
 type wikiChunkFile struct {
@@ -41,7 +42,7 @@ type wikiChunkFile struct {
 // LoadWikiChunks decodes and validates the Wikipedia subset fixture: a JSON
 // array of chunks that all share one corpus and have unique (page_id,
 // chunk_index) keys. Embeddings are filled at seed time, not carried here.
-func LoadWikiChunks(r io.Reader) ([]domain.WikiChunk, error) {
+func LoadWikiChunks(r io.Reader) ([]domain.EvidenceChunk, error) {
 	var files []wikiChunkFile
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
@@ -54,7 +55,7 @@ func LoadWikiChunks(r io.Reader) ([]domain.WikiChunk, error) {
 
 	corpus := files[0].Corpus
 	seen := make(map[[2]int64]struct{}, len(files))
-	chunks := make([]domain.WikiChunk, len(files))
+	chunks := make([]domain.EvidenceChunk, len(files))
 	for i, f := range files {
 		switch {
 		case f.Title == "":
@@ -77,16 +78,16 @@ func LoadWikiChunks(r io.Reader) ([]domain.WikiChunk, error) {
 			return nil, fmt.Errorf("seed: wiki chunk %d: duplicate (page %d, chunk %d)", i, f.PageID, f.ChunkIndex)
 		}
 		seen[key] = struct{}{}
-		chunks[i] = domain.WikiChunk{
-			PageID:     f.PageID,
+		chunks[i] = domain.EvidenceChunk{
+			Source:     f.Corpus,
+			ExternalID: strconv.FormatInt(f.PageID, 10),
 			ChunkIndex: f.ChunkIndex,
 			Title:      f.Title,
 			URL:        f.URL,
-			RevisionID: f.RevisionID,
-			Corpus:     f.Corpus,
 			Content:    f.Content,
 			// Seed fixtures are lead-section chunks, like live ingestion.
-			Kind: domain.WikiChunkKindLead,
+			Kind:     domain.EvidenceKindLead,
+			Metadata: domain.WikiMetadata{RevisionID: f.RevisionID}.Map(),
 		}
 	}
 	return chunks, nil
@@ -95,11 +96,11 @@ func LoadWikiChunks(r io.Reader) ([]domain.WikiChunk, error) {
 // InsertWikiChunks claims the corpus, inserts the chunks, embeds their content
 // through embedder, and writes the embeddings back, leaving a searchable corpus.
 // It is idempotent: chunks upsert by (page_id, chunk_index).
-func InsertWikiChunks(ctx context.Context, store WikiStore, embedder Embedder, chunks []domain.WikiChunk) error {
+func InsertWikiChunks(ctx context.Context, store WikiStore, embedder Embedder, chunks []domain.EvidenceChunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
-	if err := store.EnsureCorpus(ctx, chunks[0].Corpus); err != nil {
+	if err := store.EnsureSource(ctx, chunks[0].Source); err != nil {
 		return fmt.Errorf("seed: wiki chunks: %w", err)
 	}
 	if err := store.UpsertChunks(ctx, chunks); err != nil {
@@ -118,7 +119,7 @@ func InsertWikiChunks(ctx context.Context, store WikiStore, embedder Embedder, c
 		return fmt.Errorf("seed: wiki chunks: got %d embeddings, want %d", len(embeddings), len(chunks))
 	}
 
-	embedded := make([]domain.WikiChunk, len(chunks))
+	embedded := make([]domain.EvidenceChunk, len(chunks))
 	for i, c := range chunks {
 		c.Embedding = embeddings[i]
 		embedded[i] = c

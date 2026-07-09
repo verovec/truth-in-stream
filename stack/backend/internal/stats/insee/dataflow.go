@@ -23,7 +23,7 @@ type DataflowSpec struct {
 	// ID is the BDM dataflow identifier as it appears in the catalog, e.g.
 	// "CHOMAGE-TRIM-NATIONAL". It is the dataset half of the provenance key.
 	ID string
-	// Corpus is the wiki_chunks.corpus label every member passage is stamped with;
+	// Corpus is the evidence_chunks.source label every member passage is stamped with;
 	// it must be one of domain.StatCorpora (an INSEE economic-theme corpus).
 	Corpus string
 	// Theme is a short French label for the dataflow, used as the passage title

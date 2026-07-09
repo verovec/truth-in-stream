@@ -164,7 +164,7 @@ func run(logger *slog.Logger, mode, dir string, dryRun, publishOnly, atomic bool
 // is what forces the rebuild.
 func runReset(ctx context.Context, logger *slog.Logger, store *postgres.Store) error {
 	logger.InfoContext(ctx, "resetting wiki corpus for a full reingest")
-	if err := store.ResetWikiCorpus(ctx); err != nil {
+	if err := store.ResetEvidenceCorpus(ctx); err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "wiki corpus reset; the next bulk run rebuilds it from scratch")
@@ -250,7 +250,7 @@ func runBulkLive(ctx context.Context, logger *slog.Logger, store *postgres.Store
 	// current (liveCurrentAt also requires zero un-embedded chunks, so this never
 	// reports current while the fleet is still filling in vectors).
 	lastChange, _ := http.ParseTime(files.Version)
-	if err := store.SetSyncState(ctx, domain.WikiSyncState{Corpus: wikiCfg.Corpus, DumpVersion: files.Version, LastChangeTS: lastChange}); err != nil {
+	if err := store.SetSyncState(ctx, domain.EvidenceSyncState{Source: wikiCfg.Corpus, DumpVersion: files.Version, LastChangeTS: lastChange}); err != nil {
 		return err
 	}
 
