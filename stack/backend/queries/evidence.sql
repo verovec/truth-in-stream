@@ -179,3 +179,30 @@ SET metadata = metadata || jsonb_build_object(
 WHERE source = sqlc.arg(source)
   AND external_id = sqlc.arg(external_id)
   AND chunk_index = sqlc.arg(chunk_index)::integer;
+
+-- name: SearchEvidenceChunksBinaryQuantized :many
+-- Two-stage binary-quantization search (VER-176), opt-in and off by default.
+-- Stage one gathers coarse_limit candidates by Hamming distance over the
+-- binary-quantized bit index (evidence_chunks_embedding_bit_hnsw): the ORDER BY
+-- expression matches the index expression exactly so the planner uses it, and
+-- the coarse working set is ~6x smaller in RAM than the halfvec HNSW. Stage two
+-- reranks those candidates by exact cosine distance on the full-precision
+-- halfvec column, so final ordering matches a single-stage search whenever the
+-- coarse pass captured the true neighbours (coarse_limit is a multiple of the
+-- final k). The CTE is MATERIALIZED so the planner cannot collapse the rerank
+-- into the coarse pass and defeat the two stages. query_embedding is referenced
+-- in both stages but sqlc collapses it to one parameter. The optional sources
+-- filter mirrors SearchEvidenceChunks so a scoped two-stage search is possible.
+WITH candidates AS MATERIALIZED (
+    SELECT source, external_id, chunk_index, title, url, content, kind, metadata, embedding
+    FROM evidence_chunks
+    WHERE embedding IS NOT NULL
+      AND (sqlc.narg(sources)::text[] IS NULL OR source = ANY(sqlc.narg(sources)::text[]))
+    ORDER BY binary_quantize(embedding)::bit(1024) <~> binary_quantize(sqlc.arg(query_embedding)::halfvec(1024))
+    LIMIT sqlc.arg(coarse_limit)
+)
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+       (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+FROM candidates
+ORDER BY embedding <=> sqlc.arg(query_embedding)
+LIMIT sqlc.arg(result_limit);

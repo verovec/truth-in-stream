@@ -118,6 +118,19 @@ type Querier interface {
 	// hnsw.iterative_scan (set by the tuned search path) so the WHERE does not
 	// under-return.
 	SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceChunksParams) ([]SearchEvidenceChunksRow, error)
+	// Two-stage binary-quantization search (VER-176), opt-in and off by default.
+	// Stage one gathers coarse_limit candidates by Hamming distance over the
+	// binary-quantized bit index (evidence_chunks_embedding_bit_hnsw): the ORDER BY
+	// expression matches the index expression exactly so the planner uses it, and
+	// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. Stage two
+	// reranks those candidates by exact cosine distance on the full-precision
+	// halfvec column, so final ordering matches a single-stage search whenever the
+	// coarse pass captured the true neighbours (coarse_limit is a multiple of the
+	// final k). The CTE is MATERIALIZED so the planner cannot collapse the rerank
+	// into the coarse pass and defeat the two stages. query_embedding is referenced
+	// in both stages but sqlc collapses it to one parameter. The optional sources
+	// filter mirrors SearchEvidenceChunks so a scoped two-stage search is possible.
+	SearchEvidenceChunksBinaryQuantized(ctx context.Context, arg SearchEvidenceChunksBinaryQuantizedParams) ([]SearchEvidenceChunksBinaryQuantizedRow, error)
 	// Approximate nearest-neighbor retrieval over the curated political claim DB,
 	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated
 	// talking point. query_embedding is referenced twice but sqlc collapses it to one

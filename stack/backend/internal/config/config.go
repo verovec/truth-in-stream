@@ -2227,6 +2227,19 @@ func intEnv(key string, fallback, low, high int) (int, error) {
 	return v, nil
 }
 
+// EvidenceBinaryQuantizationMultiplier reads EVIDENCE_BQ_MULTIPLIER, the coarse
+// candidate multiplier for the two-stage binary-quantization evidence search
+// (VER-176). 0 (the default) keeps the single-stage halfvec search; a positive
+// value enables the two-stage path, gathering multiplier x k coarse candidates
+// from the bit index before the halfvec rerank. It is off by default per the
+// VER-173 verdict - recall on the current corpus does not yet justify it - and
+// an operator flips it on when the corpus approaches the halfvec HNSW RAM
+// ceiling. The [0, 1000] bound keeps a fat-fingered multiplier from scanning the
+// whole corpus per query.
+func EvidenceBinaryQuantizationMultiplier() (int, error) {
+	return intEnv("EVIDENCE_BQ_MULTIPLIER", 0, 0, 1000)
+}
+
 // floatEnv reads a unit-interval float environment variable, applying fallback
 // when unset and enforcing an inclusive [0, 1] range.
 func floatEnv(key string, fallback float64) (float64, error) {

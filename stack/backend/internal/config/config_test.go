@@ -128,6 +128,44 @@ func TestLoadTranscription(t *testing.T) {
 	}
 }
 
+func TestEvidenceBinaryQuantizationMultiplier(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    int
+		wantErr bool
+	}{
+		{"unset defaults to off", "", 0, false},
+		{"explicit zero is off", "0", 0, false},
+		{"positive enables", "10", 10, false},
+		{"non-numeric fails", "lots", 0, true},
+		{"negative out of range", "-1", 0, true},
+		{"above the cap fails", "1001", 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.raw != "" {
+				t.Setenv("EVIDENCE_BQ_MULTIPLIER", tc.raw)
+			} else {
+				t.Setenv("EVIDENCE_BQ_MULTIPLIER", "")
+			}
+			got, err := EvidenceBinaryQuantizationMultiplier()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("multiplier = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEmbedding(t *testing.T) {
 	tests := []struct {
 		name    string

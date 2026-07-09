@@ -165,7 +165,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	pgStore, err := postgres.Open(ctx, cfg.DatabaseURL)
+	bqMultiplier, err := config.EvidenceBinaryQuantizationMultiplier()
+	if err != nil {
+		return err
+	}
+	pgStore, err := postgres.Open(ctx, cfg.DatabaseURL, postgres.WithBinaryQuantization(bqMultiplier))
 	if err != nil {
 		return err
 	}

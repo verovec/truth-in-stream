@@ -82,6 +82,12 @@ provenance lives in `metadata jsonb`.
   sources share an `external_id` without colliding. Index `evidence_chunks_embedding_hnsw` (HNSW
   `halfvec_cosine_ops`, `m=16`, `ef_construction=200`; skips NULLs). Single unpartitioned index per
   the VER-173 benchmark verdict (`docs/datastore-scale-benchmark.md`).
+- A second index `evidence_chunks_embedding_bit_hnsw` (HNSW over `binary_quantize(embedding)::bit(1024)`
+  with `bit_hamming_ops`, VER-176) backs the OPT-IN two-stage binary-quantization search: it is a
+  ~6x smaller RAM working set that gathers coarse candidates by Hamming distance before a halfvec
+  rerank. Off by default (`EVIDENCE_BQ_MULTIPLIER=0`); the single-stage halfvec search is the
+  default, and the bit index just sits unused until an operator enables the two-stage path
+  (`postgres.WithBinaryQuantization`, wired from `EVIDENCE_BQ_MULTIPLIER` in `cmd/server`).
 - `embedding` is NULLABLE on purpose: ingest never writes it, and re-ingesting changed `content`
   resets it to NULL so a stale vector is never served (`UpsertEvidenceChunk` CASE).
   `SearchEvidenceChunks` filters `WHERE embedding IS NOT NULL`.

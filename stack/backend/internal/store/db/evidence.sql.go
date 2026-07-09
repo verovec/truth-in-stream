@@ -303,6 +303,88 @@ func (q *Queries) SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceCh
 	return items, nil
 }
 
+const searchEvidenceChunksBinaryQuantized = `-- name: SearchEvidenceChunksBinaryQuantized :many
+WITH candidates AS MATERIALIZED (
+    SELECT source, external_id, chunk_index, title, url, content, kind, metadata, embedding
+    FROM evidence_chunks
+    WHERE embedding IS NOT NULL
+      AND ($3::text[] IS NULL OR source = ANY($3::text[]))
+    ORDER BY binary_quantize(embedding)::bit(1024) <~> binary_quantize($1::halfvec(1024))
+    LIMIT $4
+)
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+       (embedding <=> $1)::float8 AS distance
+FROM candidates
+ORDER BY embedding <=> $1
+LIMIT $2
+`
+
+type SearchEvidenceChunksBinaryQuantizedParams struct {
+	QueryEmbedding *pgvector.HalfVector
+	ResultLimit    int32
+	Sources        []string
+	CoarseLimit    int32
+}
+
+type SearchEvidenceChunksBinaryQuantizedRow struct {
+	Source     string
+	ExternalID string
+	ChunkIndex int32
+	Title      string
+	Url        string
+	Content    string
+	Kind       string
+	Metadata   []byte
+	Distance   float64
+}
+
+// Two-stage binary-quantization search (VER-176), opt-in and off by default.
+// Stage one gathers coarse_limit candidates by Hamming distance over the
+// binary-quantized bit index (evidence_chunks_embedding_bit_hnsw): the ORDER BY
+// expression matches the index expression exactly so the planner uses it, and
+// the coarse working set is ~6x smaller in RAM than the halfvec HNSW. Stage two
+// reranks those candidates by exact cosine distance on the full-precision
+// halfvec column, so final ordering matches a single-stage search whenever the
+// coarse pass captured the true neighbours (coarse_limit is a multiple of the
+// final k). The CTE is MATERIALIZED so the planner cannot collapse the rerank
+// into the coarse pass and defeat the two stages. query_embedding is referenced
+// in both stages but sqlc collapses it to one parameter. The optional sources
+// filter mirrors SearchEvidenceChunks so a scoped two-stage search is possible.
+func (q *Queries) SearchEvidenceChunksBinaryQuantized(ctx context.Context, arg SearchEvidenceChunksBinaryQuantizedParams) ([]SearchEvidenceChunksBinaryQuantizedRow, error) {
+	rows, err := q.db.Query(ctx, searchEvidenceChunksBinaryQuantized,
+		arg.QueryEmbedding,
+		arg.ResultLimit,
+		arg.Sources,
+		arg.CoarseLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchEvidenceChunksBinaryQuantizedRow{}
+	for rows.Next() {
+		var i SearchEvidenceChunksBinaryQuantizedRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.ExternalID,
+			&i.ChunkIndex,
+			&i.Title,
+			&i.Url,
+			&i.Content,
+			&i.Kind,
+			&i.Metadata,
+			&i.Distance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const storedEvidenceRevisions = `-- name: StoredEvidenceRevisions :many
 SELECT external_id, COALESCE(max((metadata->>'revision_id')::bigint), 0)::bigint AS revision_id
 FROM evidence_chunks

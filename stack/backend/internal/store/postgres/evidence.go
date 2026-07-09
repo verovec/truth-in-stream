@@ -107,6 +107,11 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 	vec := pgvector.NewHalfVector(query)
 	var rows []db.SearchEvidenceChunksRow
 	err := s.searchTuned(ctx, efSearch, scoped, func(q *db.Queries) error {
+		if s.bqMultiplier > 0 {
+			var e error
+			rows, e = s.searchEvidenceBQ(ctx, q, &vec, topK, sources)
+			return e
+		}
 		var e error
 		rows, e = q.SearchEvidenceChunks(ctx, db.SearchEvidenceChunksParams{
 			QueryEmbedding: &vec,
@@ -145,6 +150,33 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 		})
 	}
 	return hits, nil
+}
+
+// searchEvidenceBQ runs the two-stage binary-quantization search: the coarse
+// bit-index stage gathers bqMultiplier*topK candidates by Hamming distance and
+// the halfvec rerank restores exact cosine ordering. It returns the shared
+// SearchEvidenceChunksRow shape (a direct conversion from the field-identical
+// generated row) so the caller maps the result exactly as the single-stage
+// path does.
+func (s *Store) searchEvidenceBQ(ctx context.Context, q *db.Queries, vec *pgvector.HalfVector, topK int, sources []string) ([]db.SearchEvidenceChunksRow, error) {
+	coarse := int64(s.bqMultiplier) * int64(topK)
+	if coarse > math.MaxInt32 {
+		coarse = math.MaxInt32
+	}
+	bq, err := q.SearchEvidenceChunksBinaryQuantized(ctx, db.SearchEvidenceChunksBinaryQuantizedParams{
+		QueryEmbedding: vec,
+		Sources:        sources,
+		CoarseLimit:    int32(coarse),
+		ResultLimit:    int32(topK),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]db.SearchEvidenceChunksRow, len(bq))
+	for i, r := range bq {
+		rows[i] = db.SearchEvidenceChunksRow(r)
+	}
+	return rows, nil
 }
 
 // UpsertChunks inserts or replaces evidence chunks by (source, external_id,
