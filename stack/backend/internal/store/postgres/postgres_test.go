@@ -150,7 +150,7 @@ func TestSearchOrdersByCosineDistance(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := store.Search(ctx, tc.query, tc.topK)
+			got, err := store.Search(ctx, tc.query, tc.topK, 0)
 			if err != nil {
 				t.Fatalf("Search: %v", err)
 			}
@@ -184,7 +184,7 @@ func TestSearchRoundTripsSources(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	got, err := store.Search(ctx, unitVec(0), 1)
+	got, err := store.Search(ctx, unitVec(0), 1, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestUpsertReplacesByID(t *testing.T) {
 		t.Fatalf("Upsert replace: %v", err)
 	}
 
-	got, err := store.Search(ctx, unitVec(0), 5)
+	got, err := store.Search(ctx, unitVec(0), 5, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestUpsertRejectsWrongDimension(t *testing.T) {
 
 func TestSearchRejectsWrongDimension(t *testing.T) {
 	store := setupStore(t)
-	_, err := store.Search(t.Context(), []float32{1, 2, 3}, 5)
+	_, err := store.Search(t.Context(), []float32{1, 2, 3}, 5, 0)
 	if err == nil {
 		t.Fatal("Search with wrong dimension: want error, got nil")
 	}

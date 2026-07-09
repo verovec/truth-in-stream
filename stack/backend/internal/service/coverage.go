@@ -12,6 +12,15 @@ import (
 // similarity, not a ranked list.
 const coverageTopK = 1
 
+// coverageEfSearch raises hnsw.ef_search for the coverage probe above the
+// session default: coverage decides whether a segment is checkable at all, so
+// missing the true nearest neighbor is a false "not covered", and the VER-173
+// benchmark showed ef_search 200 reaches full recall for a marginal latency
+// cost. The political fast-path and the global matcher searches keep the
+// session default (a per-call efSearch of 0), trading recall for latency
+// independently, which is the point of threading ef_search per query.
+const coverageEfSearch = 200
+
 // corpusCoverage reports the best cosine similarity of an already-embedded
 // query vector against one reference corpus, and whether the corpus held
 // anything to compare against. Probing a shared vector rather than raw text is
@@ -28,7 +37,7 @@ type corpusCoverage interface {
 type claimsCoverage struct{ store ClaimSearcher }
 
 func (c claimsCoverage) topSimilarity(ctx context.Context, vec []float32) (float64, bool, error) {
-	hits, err := c.store.Search(ctx, vec, coverageTopK)
+	hits, err := c.store.Search(ctx, vec, coverageTopK, coverageEfSearch)
 	if err != nil {
 		return 0, false, fmt.Errorf("service: claims coverage search: %w", err)
 	}
@@ -47,7 +56,7 @@ func (c claimsCoverage) topSimilarity(ctx context.Context, vec []float32) (float
 type wikiCoverage struct{ store EvidenceSearcher }
 
 func (w wikiCoverage) topSimilarity(ctx context.Context, vec []float32) (float64, bool, error) {
-	hits, err := w.store.SearchEvidence(ctx, vec, coverageTopK)
+	hits, err := w.store.SearchEvidence(ctx, vec, coverageTopK, coverageEfSearch, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("service: wiki coverage search: %w", err)
 	}

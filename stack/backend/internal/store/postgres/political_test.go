@@ -49,7 +49,7 @@ func TestSearchPoliticalClaimsOrdersByCosineAndReturnsVerdictAndSource(t *testin
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := store.SearchPoliticalClaims(ctx, tc.query, tc.topK)
+			got, err := store.SearchPoliticalClaims(ctx, tc.query, tc.topK, 0)
 			if err != nil {
 				t.Fatalf("SearchPoliticalClaims: %v", err)
 			}
@@ -98,7 +98,7 @@ func TestUpsertPoliticalClaimIsIdempotent(t *testing.T) {
 		t.Fatalf("second upsert: %v", err)
 	}
 
-	got, err := store.SearchPoliticalClaims(ctx, unitVec(0), 5)
+	got, err := store.SearchPoliticalClaims(ctx, unitVec(0), 5, 0)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestPoliticalClaimEmbeddingRoundTripsTextForm(t *testing.T) {
 		t.Fatal("stored embedding is empty")
 	}
 	// Nearest-neighbor to itself must be distance ~0.
-	got, err := store.SearchPoliticalClaims(ctx, emb, 1)
+	got, err := store.SearchPoliticalClaims(ctx, emb, 1, 0)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

@@ -108,7 +108,7 @@ func TestBulkIntoLiveEndToEndQueryableMidDrain(t *testing.T) {
 	// invisible until their vectors land.
 	hot := make([]float32, domain.EmbeddingDim)
 	hot[len("alpha one")%domain.EmbeddingDim] = 1
-	got, err := store.SearchEvidence(ctx, hot, 5)
+	got, err := store.SearchEvidence(ctx, hot, 5, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

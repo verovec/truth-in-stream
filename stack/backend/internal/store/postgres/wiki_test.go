@@ -88,7 +88,7 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := store.SearchEvidence(ctx, tc.query, tc.topK)
+			got, err := store.SearchEvidence(ctx, tc.query, tc.topK, 0, nil)
 			if err != nil {
 				t.Fatalf("SearchEvidence: %v", err)
 			}
@@ -115,7 +115,7 @@ func TestSearchWikiOrdersByCosineDistanceAndExcludesUnembedded(t *testing.T) {
 
 func TestSearchWikiRejectsWrongDimension(t *testing.T) {
 	store := setupStore(t)
-	if _, err := store.SearchEvidence(t.Context(), []float32{1, 2, 3}, 5); err == nil {
+	if _, err := store.SearchEvidence(t.Context(), []float32{1, 2, 3}, 5, 0, nil); err == nil {
 		t.Fatal("SearchEvidence with wrong dimension: want error, got nil")
 	}
 }
@@ -213,7 +213,7 @@ func TestSearchWikiCarriesSectionAndKind(t *testing.T) {
 	}
 	setEmbedding(ctx, t, store, 8675309, 3, unitVec(0))
 
-	got, err := store.SearchEvidence(ctx, unitVec(0), 1)
+	got, err := store.SearchEvidence(ctx, unitVec(0), 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

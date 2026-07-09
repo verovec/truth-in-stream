@@ -72,6 +72,26 @@ func TestCombinedCoverageEitherCorpusCovers(t *testing.T) {
 	}
 }
 
+func TestCombinedCoverageUsesRecallEfSearch(t *testing.T) {
+	t.Parallel()
+	// Coverage is recall-critical, so its evidence probe raises ef_search above
+	// the session default (coverageEfSearch), unfiltered (nil sources). This
+	// pins the per-call-site threading the unified search builder adds - a
+	// different call site (the political top-1) passes 0 to keep the default.
+	embedder := &fakeEmbedder{vecs: [][]float32{queryVec()}}
+	wiki := &fakeEvidence{hits: wikiHits(0.25)}
+	c := newCombined(t, embedder, &fakeSearcher{hits: claimHits(0.75)}, wiki, bothEnabled())
+	if _, err := c.Covered(t.Context(), "a factual statement"); err != nil {
+		t.Fatalf("Covered: %v", err)
+	}
+	if wiki.gotEfSearch != coverageEfSearch {
+		t.Errorf("coverage evidence probe ef_search = %d, want %d", wiki.gotEfSearch, coverageEfSearch)
+	}
+	if wiki.gotSources != nil {
+		t.Errorf("coverage evidence probe sources = %v, want nil (global)", wiki.gotSources)
+	}
+}
+
 func TestCombinedCoverageEmbedsOnceAndSharesVector(t *testing.T) {
 	t.Parallel()
 	// Claims miss (score 0.25 < 0.5) so both corpora are probed; wiki covers.

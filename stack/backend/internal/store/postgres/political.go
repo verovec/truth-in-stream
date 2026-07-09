@@ -56,7 +56,7 @@ func (s *Store) UpsertPoliticalClaim(ctx context.Context, claim domain.Political
 
 // SearchPoliticalClaims returns the topK curated claims closest to query by
 // cosine distance, nearest first.
-func (s *Store) SearchPoliticalClaims(ctx context.Context, query []float32, topK int) ([]domain.PoliticalClaimMatch, error) {
+func (s *Store) SearchPoliticalClaims(ctx context.Context, query []float32, topK, efSearch int) ([]domain.PoliticalClaimMatch, error) {
 	if topK <= 0 || topK > math.MaxInt32 {
 		return nil, fmt.Errorf("postgres: search political claims: topK %d out of range", topK)
 	}
@@ -64,9 +64,14 @@ func (s *Store) SearchPoliticalClaims(ctx context.Context, query []float32, topK
 		return nil, fmt.Errorf("postgres: search political claims: query has %d dims, want %d", len(query), domain.EmbeddingDim)
 	}
 
-	rows, err := s.queries.SearchPoliticalClaims(ctx, db.SearchPoliticalClaimsParams{
-		QueryEmbedding: pgvector.NewHalfVector(query),
-		ResultLimit:    int32(topK),
+	var rows []db.SearchPoliticalClaimsRow
+	err := s.searchTuned(ctx, efSearch, false, func(q *db.Queries) error {
+		var e error
+		rows, e = q.SearchPoliticalClaims(ctx, db.SearchPoliticalClaimsParams{
+			QueryEmbedding: pgvector.NewHalfVector(query),
+			ResultLimit:    int32(topK),
+		})
+		return e
 	})
 	if err != nil {
 		return nil, fmt.Errorf("postgres: search political claims: %w", err)

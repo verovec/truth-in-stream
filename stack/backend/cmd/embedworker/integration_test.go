@@ -192,7 +192,7 @@ func TestWorkerEmbedsQueuedChunksEndToEnd(t *testing.T) {
 	}
 	q := make([]float32, domain.EmbeddingDim)
 	q[2] = 1
-	got, err := store.SearchEvidence(ctx, q, 1)
+	got, err := store.SearchEvidence(ctx, q, 1, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}

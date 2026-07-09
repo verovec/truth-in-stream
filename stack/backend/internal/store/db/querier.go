@@ -112,7 +112,11 @@ type Querier interface {
 	// the result regardless of the chosen plan; the HNSW index only indexes
 	// non-null rows, so the filter does not degrade index use. query_embedding is
 	// referenced twice but sqlc collapses it to one parameter, so the index still
-	// drives the ORDER BY.
+	// drives the ORDER BY. The optional sources filter scopes the search to a set of
+	// sources: a NULL array (the default) leaves the global search unchanged, so an
+	// unfiltered caller pays nothing, while a scoped caller runs under
+	// hnsw.iterative_scan (set by the tuned search path) so the WHERE does not
+	// under-return.
 	SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceChunksParams) ([]SearchEvidenceChunksRow, error)
 	// Approximate nearest-neighbor retrieval over the curated political claim DB,
 	// mirroring SearchClaims: the fast path borrows an instant verdict for a repeated

@@ -240,12 +240,14 @@ SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
        (embedding <=> $1)::float8 AS distance
 FROM evidence_chunks
 WHERE embedding IS NOT NULL
+  AND ($2::text[] IS NULL OR source = ANY($2::text[]))
 ORDER BY embedding <=> $1
-LIMIT $2
+LIMIT $3
 `
 
 type SearchEvidenceChunksParams struct {
 	QueryEmbedding *pgvector.HalfVector
+	Sources        []string
 	ResultLimit    int32
 }
 
@@ -266,9 +268,13 @@ type SearchEvidenceChunksRow struct {
 // the result regardless of the chosen plan; the HNSW index only indexes
 // non-null rows, so the filter does not degrade index use. query_embedding is
 // referenced twice but sqlc collapses it to one parameter, so the index still
-// drives the ORDER BY.
+// drives the ORDER BY. The optional sources filter scopes the search to a set of
+// sources: a NULL array (the default) leaves the global search unchanged, so an
+// unfiltered caller pays nothing, while a scoped caller runs under
+// hnsw.iterative_scan (set by the tuned search path) so the WHERE does not
+// under-return.
 func (q *Queries) SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceChunksParams) ([]SearchEvidenceChunksRow, error) {
-	rows, err := q.db.Query(ctx, searchEvidenceChunks, arg.QueryEmbedding, arg.ResultLimit)
+	rows, err := q.db.Query(ctx, searchEvidenceChunks, arg.QueryEmbedding, arg.Sources, arg.ResultLimit)
 	if err != nil {
 		return nil, err
 	}

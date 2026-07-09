@@ -151,7 +151,7 @@ func TestSeedWikiChunksSearchable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedQueries: %v", err)
 	}
-	got, err := store.SearchEvidence(ctx, qvecs[0], 3)
+	got, err := store.SearchEvidence(ctx, qvecs[0], 3, 0, nil)
 	if err != nil {
 		t.Fatalf("SearchEvidence: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestSeedPoliticalClaimsSearchable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedQueries: %v", err)
 	}
-	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], 3)
+	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], 3, 0)
 	if err != nil {
 		t.Fatalf("SearchPoliticalClaims: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestSeedPoliticalClaimsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedQueries: %v", err)
 	}
-	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], len(claims)+1)
+	got, err := store.SearchPoliticalClaims(ctx, qvecs[0], len(claims)+1, 0)
 	if err != nil {
 		t.Fatalf("SearchPoliticalClaims: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestSeedClaimsSearchable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedQueries: %v", err)
 	}
-	got, err := store.Search(ctx, qvecs[0], 3)
+	got, err := store.Search(ctx, qvecs[0], 3, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

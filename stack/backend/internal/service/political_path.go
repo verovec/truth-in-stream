@@ -77,7 +77,7 @@ type PoliticalVerifier interface {
 // consumer-side port the political path depends on; *postgres.Store satisfies it via
 // SearchPoliticalClaims.
 type PoliticalClaimSearcher interface {
-	SearchPoliticalClaims(ctx context.Context, query []float32, topK int) ([]domain.PoliticalClaimMatch, error)
+	SearchPoliticalClaims(ctx context.Context, query []float32, topK, efSearch int) ([]domain.PoliticalClaimMatch, error)
 }
 
 // PoliticalConfig wires the political verify path's collaborators. Classifier,
@@ -319,7 +319,7 @@ func (vp *VerifyPath) politicalFastMatch(ctx context.Context, embedding []float3
 	if vp.pol.CuratedStore == nil || len(embedding) == 0 {
 		return nil, false
 	}
-	matches, err := vp.pol.CuratedStore.SearchPoliticalClaims(ctx, embedding, 1)
+	matches, err := vp.pol.CuratedStore.SearchPoliticalClaims(ctx, embedding, 1, 0)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.WarnContext(ctx, "political curated fast-path search failed", slog.Any("err", err))

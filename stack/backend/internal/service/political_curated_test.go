@@ -20,7 +20,7 @@ type stubPoliticalClaimSearcher struct {
 	calls   int
 }
 
-func (s *stubPoliticalClaimSearcher) SearchPoliticalClaims(_ context.Context, _ []float32, _ int) ([]domain.PoliticalClaimMatch, error) {
+func (s *stubPoliticalClaimSearcher) SearchPoliticalClaims(_ context.Context, _ []float32, _ int, _ int) ([]domain.PoliticalClaimMatch, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err
