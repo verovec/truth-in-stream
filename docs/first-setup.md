@@ -15,20 +15,24 @@ are deliberate human actions. Local development needs none of this — see the
 ### 1. Local tooling and configuration
 
 - Install Terraform (>= 1.11), AWS CLI v2 with the Session Manager plugin, Docker
-  Engine + Compose v2, and GNU make. `make doctor` checks the local basics.
+  Engine + Compose v2, and GNU make. `make doctor` verifies the Docker and make
+  basics only — it does not check Terraform, the AWS CLI, or the Session Manager
+  plugin.
 - Configure the AWS SSO profile the terraform tooling uses, once per machine:
   `aws configure sso --profile truth-in-stream-dev` — see
   [AWS SSO profile](../stack/terraform/README.md#aws-sso-profile). The secret-push
-  and database scripts default to their own profiles (`verovec-dev` /
-  `verovec-prod`, overridable via `SECRETS_DEV_PROFILE` / `SECRETS_PROD_PROFILE`).
+  script defaults to its own profiles (`verovec-dev` / `verovec-prod`, overridable
+  via `SECRETS_DEV_PROFILE` / `SECRETS_PROD_PROFILE`); the database scripts default
+  to the same `verovec-*` names and are overridden via `AWS_PROFILE`.
 - Copy `.env.example` to `.env` and fill the real API keys — at minimum
   `EMBEDDING_API_KEY` (Voyage) and `TRANSCRIPTION_API_KEY` (AssemblyAI). The file is
   gitignored and later feeds `make push-secrets`. Key inventory:
   [Configuration](configuration.md#environment-variables).
 - Copy `deploy/targets.example.json` to `deploy/targets.json` and fill the real
   account ids. The file is gitignored; the account guard
-  (`scripts/aws-target-guard.sh`) refuses every ingestion and database run until the
-  placeholder ids are replaced.
+  (`scripts/aws-target-guard.sh`) refuses every ingestion run until the placeholder
+  ids are replaced. The database scripts do not read it — they target whatever
+  account the active profile resolves to, so check the profile before tunnelling.
 
 ### 2. Bootstrap the Terraform state backend (once)
 
@@ -52,33 +56,36 @@ cd stack/terraform/dev && terraform init && terraform apply
   deliberate elevated run — CI's pre-apply guard names the missing actions.
 - The `dev` root owns the account-global GitHub OIDC provider; `prod` only
   references it. Apply `dev` before `prod`.
-- Backend and frontend services flap until images exist — expected until step 8.
+- Backend and frontend services flap until images exist in dev's registry —
+  expected on a fresh account. A production release never feeds `dev`: its images
+  arrive only when you dispatch the deploy wrappers with the deploy variables
+  pointed at `dev` (step 6).
 
 Detail: [First deploy of an environment](../stack/terraform/README.md#first-deploy-of-an-environment).
 
-### 4. Wire GitHub to AWS (once)
+### 4. Wire terraform CI to AWS (once)
 
-1. Write the CI apply role's OIDC trust policy:
+1. Create the CI apply role, out of band with elevated credentials — it is
+   deliberately not managed by the terraform it runs. Grant it the actions each
+   root enumerates as `terraform output apply_required_actions` (the list already
+   includes the `iam:SimulatePrincipalPolicy` and `iam:GetRole` the pre-apply
+   guard itself needs).
+2. Write that role's OIDC trust policy:
    ```sh
    APPLY_ROLE_NAME=<apply-role-name> ./scripts/apply-role-trust.sh
    ```
    It trusts exactly two subjects — `ref:refs/heads/main` and
-   `environment:production` — and deliberately never the `pull_request` subject, so
-   PRs validate offline.
-2. Set the repository secret `AWS_ROLE_ARN` to the apply role's ARN.
-3. Set the repository variables (Settings, Secrets and variables, Actions,
-   Variables): `AWS_DEPLOY_ROLE_ARN` (from the `deploy_role_arn` terraform output),
-   `AWS_REGION` (`eu-west-3`), `DEPLOY_PROJECT` (`truth-in-stream`),
-   `DEPLOY_ENVIRONMENT` (`dev` or `prod`). Optional: `DEPLOY_KEYCLOAK=false` skips
-   the release's Keycloak job.
+   `environment:production` — and deliberately never the `pull_request` subject.
+3. Set the repository secret `AWS_ROLE_ARN` to the apply role's ARN.
 4. Create the `production` GitHub Environment and give it a required reviewer. The
    release's prod terraform apply binds this environment, so that single approval
-   gates every release.
+   gates every release. GitHub auto-creates the environment with no protection
+   rules the first time a workflow references it — create it deliberately.
 
-From here CI is live: PRs plan offline, merges to `main` auto-apply `dev`, and the
-pre-apply IAM guard fails CI before any apply the role cannot complete, printing the
-one elevated apply to run. Detail:
-[CI/CD roles and the pre-apply IAM guard](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard).
+From here terraform CI is live: PRs validate offline (no plan, no credentials),
+merges to `main` plan and auto-apply `dev`, and the pre-apply IAM guard fails CI
+before any apply the role cannot complete, printing the one elevated apply to run.
+Detail: [CI/CD roles and the pre-apply IAM guard](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard).
 
 ### 5. First apply of `prod` (human, elevated credentials)
 
@@ -89,12 +96,31 @@ cd stack/terraform/prod && terraform init && terraform apply
 - On by default: RDS (pgvector), Valkey (analysis cache), Keycloak, CloudFront +
   WAF in front of an internal ALB, observability (alarms, dashboard, Slack
   forwarder).
-- Off by default, enabled per-run when needed: `enable_bastion` (step 9),
+- Off by default, enabled per-run when needed: `enable_bastion` (step 10),
   `enable_wiki_sync`, `enable_db_backup`, the ingestion worker fleets.
 - The TLS certificate is requested in `us-east-1` and stays `PENDING_VALIDATION`
-  until step 7 publishes its validation records.
+  until step 8 publishes its validation records.
 
-### 6. Fill the application secrets
+### 6. Point the deploy engine at production
+
+The deploy engine (`release.yml` and every `deploy-*` dispatch wrapper) reads one
+set of repository variables (Settings, Secrets and variables, Actions, Variables),
+so the set targets exactly one environment at a time. For the production bring-up:
+
+- `AWS_DEPLOY_ROLE_ARN` — the **prod** root's `terraform output deploy_role_arn`
+  (each root creates its own deploy role, so this exists only after step 5).
+- `AWS_REGION` — `eu-west-3`.
+- `DEPLOY_PROJECT` — `truth-in-stream`.
+- `DEPLOY_ENVIRONMENT` — `prod`. With `dev` here, a release would apply prod
+  terraform but push images to and roll the dev services.
+- Optional: `DEPLOY_KEYCLOAK=false` skips the release's Keycloak job.
+
+To roll dev images (step 3's flapping services), temporarily point
+`AWS_DEPLOY_ROLE_ARN` at the dev root's output and `DEPLOY_ENVIRONMENT` at `dev`,
+dispatch the wrappers, then point the set back at prod. The deploy engine fails
+fast, naming any variable left unset.
+
+### 7. Fill the application secrets
 
 Terraform creates the Secrets Manager containers empty on purpose; tasks cannot
 start without values.
@@ -112,10 +138,13 @@ login trio. Three secrets are outside the allowlist and are set by hand with
 - `truth-in-stream/prod/app/factcheck-api-key` (fact-check archive producer)
 - `truth-in-stream/prod/keycloak/bootstrap-admin-password`
 
-Never set `DATABASE_URL` or `RABBITMQ_URL` by hand — terraform owns those. Detail:
+Never set `DATABASE_URL` or `RABBITMQ_URL` by hand — terraform owns those. The
+`dev` environment has its own set of containers under `truth-in-stream/dev/...`;
+fill them the same way with `ENV=dev` and dev-path `put-secret-value` calls when
+dev needs to run (part 2's cloud path does). Detail:
 [Application secrets](../stack/terraform/README.md#application-secrets).
 
-### 7. Publish DNS from the main account (hand-applied, CI-excluded)
+### 8. Publish DNS from the main account (hand-applied, CI-excluded)
 
 The `jeminforme.fr` hosted zone lives in the main account; the app account never
 writes to it. A dedicated terraform root creates the ACM validation CNAMEs and the
@@ -133,7 +162,7 @@ This root is deliberately excluded from CI — never add it to the terraform
 workflow. Runbook: [`stack/terraform/main-account/README.md`](../stack/terraform/main-account/README.md);
 background: [Cross-account ACM validation](../stack/terraform/README.md#cross-account-acm-validation).
 
-### 8. First release
+### 9. First release
 
 Production deploys only when a human pushes a semver tag whose commit is on `main`:
 
@@ -148,7 +177,7 @@ frontend. For ad-hoc single-service rolls or a rollback, dispatch `deploy-backen
 `deploy-frontend`, `deploy-keycloak`, or `deploy-backup` from the Actions tab.
 Detail: [Deploys (human-gated)](infrastructure.md#deploys-human-gated).
 
-### 9. One-time corpus load into prod RDS
+### 10. One-time corpus load into prod RDS
 
 After the first release the production database has schema but no corpus. Load the
 locally built one (seeded claims, curated political claims, embedded evidence
@@ -191,9 +220,11 @@ One-time prerequisites (all human-gated — detail:
 1. `deploy/targets.json` filled with the real `dev` account id (part 1, step 1).
 2. Hosts provisioned: `terraform apply -var enable_ingestion_hosts=true` in
    `stack/terraform/dev` (implies the managed database).
-3. The `app/*` secrets populated for the target environment (part 1, step 6 with
-   `ENV=dev`): the consumer host reads the embedding key; the crawler host reads
-   the check-worthiness and fact-check keys.
+3. The dev secrets populated: `make push-secrets ENV=dev` covers the consumer
+   host's `embedding-api-key`; the crawler host's two keys sit outside the
+   allowlist and are set by hand —
+   `aws secretsmanager put-secret-value` on `truth-in-stream/dev/app/checkworthy-api-key`
+   and `truth-in-stream/dev/app/factcheck-api-key`.
 4. An open SSO session (`aws sso login`) and the Session Manager plugin.
 
 Then, per source — `wikipedia`, `stats`, `factcheck`, `scrutins` (queue and
@@ -228,7 +259,7 @@ make scrutins-workers                                     # then: make scrutins-
 ```
 
 Workers up first, then the matching producer; watch the drain at the local broker
-console. When the corpus is ready, push it to production (part 1, step 9). Full
+console. When the corpus is ready, push it to production (part 1, step 10). Full
 reference, diagrams, and troubleshooting:
 [Ingestion pipeline](ingestion-pipeline.md).
 
