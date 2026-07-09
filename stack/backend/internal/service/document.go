@@ -205,11 +205,18 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 	if doc.Status != domain.DocumentStatusPending {
 		// A retry of the extraction that already succeeded (the response was
 		// lost) is idempotent, mirroring VideoService.Confirm: the ready
-		// document is returned unchanged when the posted shape matches what is
-		// stored. A different shape is a real conflict.
-		if doc.Status == domain.DocumentStatusReady &&
-			doc.PageCount == ext.PageCount && doc.SentencesTotal == len(ext.Sentences) {
-			return doc, nil
+		// document is returned unchanged when the posted extraction is
+		// identical to what is stored. The match is on the full sentence
+		// content, not just the counts, so a genuinely different re-extraction
+		// is a real conflict rather than being silently discarded.
+		if doc.Status == domain.DocumentStatusReady {
+			matches, err := s.extractionMatchesStored(ctx, doc, ext)
+			if err != nil {
+				return domain.Document{}, err
+			}
+			if matches {
+				return doc, nil
+			}
 		}
 		return domain.Document{}, domain.ErrDocumentNotPending
 	}
@@ -234,6 +241,31 @@ func (s *DocumentService) IngestExtraction(ctx context.Context, id string, ext D
 		return domain.Document{}, fmt.Errorf("document: ingest extraction %s: %w", id, err)
 	}
 	return updated, nil
+}
+
+// extractionMatchesStored reports whether the posted extraction is identical
+// to what a prior successful ingest stored, so a retry after a lost response is
+// a no-op rather than a conflict. It compares the page count and every
+// sentence field, not just the counts, so a genuinely different extraction
+// that happens to share the page and sentence totals is still a conflict.
+func (s *DocumentService) extractionMatchesStored(ctx context.Context, doc domain.Document, ext DocumentExtraction) (bool, error) {
+	if doc.PageCount != ext.PageCount || doc.SentencesTotal != len(ext.Sentences) {
+		return false, nil
+	}
+	stored, err := s.store.ListDocumentSentences(ctx, doc.ID)
+	if err != nil {
+		return false, fmt.Errorf("document: compare extraction %s: %w", doc.ID, err)
+	}
+	if len(stored) != len(ext.Sentences) {
+		return false, nil
+	}
+	for i, want := range ext.Sentences {
+		got := stored[i]
+		if got.Seq != want.Seq || got.Page != want.Page || got.Text != want.Text || got.Occurrence != want.Occurrence {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // validateExtraction enforces the extraction shape: a page count in
@@ -344,12 +376,14 @@ func (s *DocumentService) Claims(ctx context.Context, id string) (DocumentAnalys
 // Delete removes the document's storage object, then its rows (sentences and
 // claims cascade). The object goes first: if the row deletion fails the record
 // stays visible and the operator retries, whereas rows-first would strand an
-// invisible object in storage. After the rows are gone the object is swept
-// once more, best-effort: the write-once presigned PUT stays live for its TTL,
-// so an in-flight upload finishing between the two passes would otherwise land
-// an object no record references. A PUT completing after the sweep can still
-// orphan the object; that residual window is accepted (its cost is one bounded
-// PDF) rather than blocking deletion for the ticket's lifetime.
+// invisible object in storage. For a pending document the object is swept once
+// more after the rows, best-effort: its write-once presigned PUT is still live
+// for its TTL, so an in-flight upload finishing between the two passes would
+// otherwise land an object no record references. A ready document's upload
+// already completed and its write-once URL is dead (a retry gets 412), so no
+// second sweep is needed. A PUT completing after the sweep can still orphan the
+// object; that residual window is accepted (its cost is one bounded PDF) rather
+// than blocking deletion for the ticket's lifetime.
 func (s *DocumentService) Delete(ctx context.Context, id string) error {
 	doc, err := s.store.GetDocument(ctx, id)
 	if err != nil {
@@ -361,6 +395,8 @@ func (s *DocumentService) Delete(ctx context.Context, id string) error {
 	if err := s.store.DeleteDocument(ctx, doc.ID); err != nil {
 		return fmt.Errorf("document: delete %s: %w", id, err)
 	}
-	_ = s.media.Delete(ctx, doc.ObjectKey)
+	if doc.Status == domain.DocumentStatusPending {
+		_ = s.media.Delete(ctx, doc.ObjectKey)
+	}
 	return nil
 }

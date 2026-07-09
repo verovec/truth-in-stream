@@ -415,11 +415,23 @@ func TestDocumentIngestExtractionIdempotentRetry(t *testing.T) {
 		t.Errorf("retry re-stored the extraction (%d calls, want %d)", store.extractCalls, storeCalls)
 	}
 
-	different := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+	// A different sentence count is a conflict.
+	fewer := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
 		{Seq: 0, Page: 1, Text: "Autre.", Occurrence: 1},
 	}}
-	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, different); !errors.Is(err, domain.ErrDocumentNotPending) {
-		t.Errorf("different extraction err = %v, want ErrDocumentNotPending", err)
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, fewer); !errors.Is(err, domain.ErrDocumentNotPending) {
+		t.Errorf("fewer-sentence extraction err = %v, want ErrDocumentNotPending", err)
+	}
+
+	// Same page count AND same sentence count but different text is still a
+	// conflict: the retry is idempotent only when the content actually matches,
+	// so a re-extraction is never silently discarded.
+	sameShape := DocumentExtraction{PageCount: 1, Sentences: []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Trois.", Occurrence: 1},
+		{Seq: 1, Page: 1, Text: "Quatre.", Occurrence: 1},
+	}}
+	if _, err := svc.IngestExtraction(t.Context(), testDocumentID, sameShape); !errors.Is(err, domain.ErrDocumentNotPending) {
+		t.Errorf("same-shape different-content extraction err = %v, want ErrDocumentNotPending", err)
 	}
 }
 
@@ -558,13 +570,14 @@ func TestDocumentDelete(t *testing.T) {
 		t.Fatalf("RequestUpload: %v", err)
 	}
 
+	// A pending document's write-once PUT may still be in flight, so the object
+	// is deleted before the rows and swept once more after them: a PUT landing
+	// between the two passes does not orphan an object.
 	if err := svc.Delete(t.Context(), ticket.Document.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// The object is deleted before the rows and swept once more after them, so
-	// a presigned PUT landing between the two passes does not orphan an object.
 	if len(media.deletedKeys) != 2 || media.deletedKeys[0] != ticket.Document.ObjectKey || media.deletedKeys[1] != ticket.Document.ObjectKey {
-		t.Errorf("deleted keys = %v, want the object key deleted before and swept after the rows", media.deletedKeys)
+		t.Errorf("pending deleted keys = %v, want the object key deleted before and swept after the rows", media.deletedKeys)
 	}
 	if len(store.deletedIDs) != 1 || store.deletedIDs[0] != ticket.Document.ID {
 		t.Errorf("deleted ids = %v, want the record", store.deletedIDs)
@@ -572,6 +585,32 @@ func TestDocumentDelete(t *testing.T) {
 
 	if err := svc.Delete(t.Context(), "missing"); !errors.Is(err, domain.ErrDocumentNotFound) {
 		t.Errorf("absent id err = %v, want ErrDocumentNotFound", err)
+	}
+}
+
+// TestDocumentDeleteReadyDocumentSweepsOnce proves a ready document is deleted
+// with a single storage call: its write-once upload already completed, so no
+// in-flight PUT can re-create the object and the extra sweep would be waste.
+func TestDocumentDeleteReadyDocumentSweepsOnce(t *testing.T) {
+	t.Parallel()
+	store, media := newFakeDocumentStore(), &fakeMediaStore{exists: true}
+	svc := newTestDocumentService(t, store, media)
+	ticket, err := svc.RequestUpload(t.Context(), DocumentUploadRequest{Title: "t", ContentType: "application/pdf", SizeBytes: 1})
+	if err != nil {
+		t.Fatalf("RequestUpload: %v", err)
+	}
+	if _, err := svc.IngestExtraction(t.Context(), ticket.Document.ID, DocumentExtraction{
+		PageCount: 1,
+		Sentences: []domain.DocumentSentence{{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1}},
+	}); err != nil {
+		t.Fatalf("IngestExtraction: %v", err)
+	}
+
+	if err := svc.Delete(t.Context(), ticket.Document.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(media.deletedKeys) != 1 || media.deletedKeys[0] != ticket.Document.ObjectKey {
+		t.Errorf("ready deleted keys = %v, want a single delete", media.deletedKeys)
 	}
 }
 
