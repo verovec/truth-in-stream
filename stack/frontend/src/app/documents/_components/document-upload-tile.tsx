@@ -4,7 +4,7 @@ import type {
   DocumentUploadError,
   DocumentUploadJob,
 } from "@/hooks/use-document-uploads";
-import { useAppI18n } from "@/components/i18n/app-i18n";
+import { type AppDictionary, useAppI18n } from "@/components/i18n/app-i18n";
 import { formatTemplate } from "@/lib/i18n/text";
 
 // DocumentUploadTile shows one in-flight (or failed) upload job while its PDF is
@@ -83,9 +83,7 @@ function UploadProgress({
 }
 
 function errorMessage(
-  copy: {
-    errors: { unsupported: string; scanned: string; tooLong: string; failed: string };
-  },
+  copy: AppDictionary["documents"]["uploader"],
   error: DocumentUploadError,
 ): string {
   switch (error.kind) {
