@@ -122,6 +122,21 @@ export const fr = {
       ariaLabel: "Navigation principale",
       videos: "Vidéos",
       documents: "Documents",
+      backoffice: "Back-office",
+    },
+    backoffice: {
+      heading: "Back-office",
+      intro:
+        "Espace réservé aux administrateurs pour alimenter la bibliothèque analysée.",
+      videos: {
+        heading: "Vidéos",
+        description:
+          "Importez des vidéos et des liens YouTube, et gérez la bibliothèque.",
+      },
+      documents: {
+        heading: "Documents",
+        description: "Importez des PDF à analyser.",
+      },
     },
     documents: {
       heading: "Documents",

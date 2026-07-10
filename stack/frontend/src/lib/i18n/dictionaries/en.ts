@@ -119,6 +119,19 @@ export const en: Dictionary = {
       ariaLabel: "Primary navigation",
       videos: "Videos",
       documents: "Documents",
+      backoffice: "Backoffice",
+    },
+    backoffice: {
+      heading: "Backoffice",
+      intro: "An admin-only area for stocking the analysed library.",
+      videos: {
+        heading: "Videos",
+        description: "Upload videos and YouTube links, and manage the library.",
+      },
+      documents: {
+        heading: "Documents",
+        description: "Upload PDFs to analyse.",
+      },
     },
     documents: {
       heading: "Documents",
