@@ -340,13 +340,21 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// The TV hub runs one live analysis session per channel over the same
+	// analyzer the browser path uses: each Run call gets fresh per-session state,
+	// so a single analyzer instance serves every channel and every viewer.
+	tvHub, err := service.NewTVHub(liveAnalyzer, logger)
+	if err != nil {
+		return err
+	}
+
 	liveOrigins := liveAllowedOrigins(cfg.CORSAllowedOrigin)
 	if cfg.CORSAllowedOrigin != "" && len(liveOrigins) == 0 {
 		logger.Warn("live websocket enforces same-origin: CORS_ALLOWED_ORIGIN has no parseable host",
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvHub, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

@@ -30,7 +30,7 @@ func (r *exportReplayer) Snapshot(_ context.Context, _ string) ([]service.LiveEv
 func newExportServer(videos VideoService, replayer AnalysisReplayer) http.Handler {
 	health := service.NewHealthChecker(fakePinger{})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, stubLiveAnalyzer{}, nil, replayer, nil, false, nil, "", globalTestAuth, logger)
+	return NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, testTVHub(), stubLiveAnalyzer{}, nil, replayer, nil, false, nil, "", globalTestAuth, logger)
 }
 
 func exportSnapshot() []service.LiveEvent {
