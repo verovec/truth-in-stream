@@ -86,6 +86,12 @@ full transcript and verdicts instantly** with no re-transcription or LLM calls; 
 through to the live pipeline unchanged (see
 [the analysis cache](docs/configuration.md#analysis-cache-instant-replay)).
 
+Fact-checking also extends beyond live streams to documents. An admin can upload a PDF (a press
+article, report, or official publication) on the **Documents** surface; the same retrieve-then-verify
+pipeline analyses its sentences once and persists the verdicts, so any authenticated user can read
+the document with credible and disputed sentences highlighted in place (see
+[PDF fact-check](docs/pdf-fact-check.md)).
+
 ## Tech stack
 
 | Layer | Tech | Location |
@@ -111,6 +117,7 @@ Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observabilit
 | Infrastructure & operations (AWS edge, deploy, backups, observability) | [`docs/infrastructure.md`](docs/infrastructure.md) |
 | Ingestion pipeline (local + cloud, diagrams, consistency) | [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md) |
 | Fact-check evidence sources | [`docs/fact-check-sources.md`](docs/fact-check-sources.md) |
+| PDF fact-check (Documents surface, upload -> analyse -> in-PDF highlights) | [`docs/pdf-fact-check.md`](docs/pdf-fact-check.md) |
 | Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |
 | Always-on rules and engineering standards | [`CLAUDE.md`](CLAUDE.md) |
 
