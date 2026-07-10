@@ -22,6 +22,9 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `SESSION_TTL` | no (default `24h`) | Legacy session lifetime (only with `LEGACY_PASSWORD_LOGIN=true`) |
 | `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev |
 | `PORT` | no (default `8080`) | Backend listen port |
+| `DOCUMENT_MAX_SIZE_BYTES` | no (default 30 MB) | Upload-size cap for a PDF on the Documents surface; must be a positive integer. See [PDF documents](#pdf-documents) |
+| `DOCUMENT_MAX_SENTENCES` | no (default `1500`) | Cap on how many sentences one document may submit for analysis; must be a positive integer |
+| `DOCUMENT_ANALYSIS_TIMEOUT` | no (default `30m`) | Bounds one document analysis run; must be a positive Go duration |
 
 ## Analysis cache (instant replay)
 
@@ -43,6 +46,31 @@ everything at once, with no AssemblyAI transcription and no LLM calls.
 
 In production the cache is backed by ElastiCache Valkey; see
 [Infrastructure -> Analysis cache](infrastructure.md#analysis-cache).
+
+## PDF documents
+
+The Documents surface lets an admin upload a PDF and fact-check it once through the same pipeline as
+live streams; see [PDF fact-check](pdf-fact-check.md) for the full flow and access model. Three
+backend caps bound LLM cost and abuse. All keep the defaults when unset:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DOCUMENT_MAX_SIZE_BYTES` | `31457280` (30 MB) | Rejects an upload larger than this. Positive integer |
+| `DOCUMENT_MAX_SENTENCES` | `1500` | Rejects an extraction with more sentences than this. Positive integer |
+| `DOCUMENT_ANALYSIS_TIMEOUT` | `30m` | Bounds one whole analysis run; most sentences are gated out, so real runs are far shorter. Positive Go duration |
+
+**Analysis depends on the verify path.** The document analyzer reuses the retrieve-then-verify
+pipeline, so analysis runs only when the verify path is configured (`FACTCHECK_VERIFY_PATH` active
+with its Anthropic key). With the verify path off, upload, extraction, listing, and viewing still
+work, but analysis is disabled: extraction stores the sentences and flips the document `ready` while
+leaving `analysis_status = none`, and a reanalyse request returns a clear "analysis is disabled"
+error.
+
+**Compose forwards the verify-path variables.** A variable set in `.env` does nothing unless
+`docker-compose.yml` passes it through. The backend service forwards the document caps and the whole
+`FACTCHECK_VERIFY_*` (and `FACTCHECK_POLITICAL`) set, so the analyzer's behaviour in local dev is
+governed by those forwarded verify-path variables. To exercise document analysis locally, set
+`FACTCHECK_VERIFY_PATH=true` and `FACTCHECK_VERIFY_API_KEY` in `.env` before `make up`.
 
 ## Authentication (Keycloak identity gate)
 
