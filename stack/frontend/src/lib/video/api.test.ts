@@ -1,7 +1,8 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { ApiError } from "@/lib/http";
 import {
   confirmVideo,
+  deleteVideo,
   getVideo,
   listVideos,
   requestUpload,
@@ -16,6 +17,8 @@ function mockFetch(status: number, body: unknown) {
     }),
   );
 }
+
+afterEach(() => vi.restoreAllMocks());
 
 const sampleWire = {
   id: "vid-1",
@@ -241,5 +244,32 @@ describe("confirmVideo", () => {
     await expect(confirmVideo("vid-9")).rejects.toThrow(
       new ApiError("upload not found in storage", 409),
     );
+  });
+});
+
+describe("deleteVideo", () => {
+  test("issues a DELETE and resolves on a 204 without parsing a body", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(deleteVideo("vid-9")).resolves.toBeUndefined();
+
+    expect(fetchSpy).toHaveBeenCalledWith("/api/videos/vid-9", {
+      method: "DELETE",
+      signal: undefined,
+    });
+  });
+
+  test("encodes the id and throws an ApiError carrying the backend message", async () => {
+    const fetchSpy = mockFetch(404, { error: "unknown video" });
+
+    await expect(deleteVideo("a/b")).rejects.toThrow(
+      new ApiError("unknown video", 404),
+    );
+    expect(fetchSpy).toHaveBeenCalledWith("/api/videos/a%2Fb", {
+      method: "DELETE",
+      signal: undefined,
+    });
   });
 });

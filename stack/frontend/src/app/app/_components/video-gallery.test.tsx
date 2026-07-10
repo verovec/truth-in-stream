@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { fr } from "@/lib/i18n/dictionaries/fr";
 import type { LibraryVideo } from "@/lib/video/api";
-import type { UploadJob } from "@/hooks/use-video-uploads";
 import { VideoGallery } from "./video-gallery";
 
 function video(overrides: Partial<LibraryVideo> = {}): LibraryVideo {
@@ -28,10 +27,8 @@ describe("VideoGallery", () => {
           video(),
           video({ id: "vid-2", title: "My Upload", kind: "upload", status: "pending" }),
         ]}
-        jobs={[]}
         selectedId="vid-1"
         onSelect={() => {}}
-        onDismiss={() => {}}
       />,
     );
 
@@ -50,10 +47,8 @@ describe("VideoGallery", () => {
           video(),
           video({ id: "vid-2", title: "My Upload", kind: "upload", status: "pending" }),
         ]}
-        jobs={[]}
         selectedId={null}
         onSelect={onSelect}
-        onDismiss={() => {}}
       />,
     );
 
@@ -65,13 +60,7 @@ describe("VideoGallery", () => {
 
   test("marks the selected video as pressed", () => {
     render(
-      <VideoGallery
-        videos={[video()]}
-        jobs={[]}
-        selectedId="vid-1"
-        onSelect={() => {}}
-        onDismiss={() => {}}
-      />,
+      <VideoGallery videos={[video()]} selectedId="vid-1" onSelect={() => {}} />,
     );
     expect(screen.getByRole("button", { name: /common myths/i })).toHaveAttribute(
       "aria-pressed",
@@ -79,60 +68,8 @@ describe("VideoGallery", () => {
     );
   });
 
-  test("renders an in-flight upload job with progress", () => {
-    const job: UploadJob = {
-      id: "job-1",
-      title: "New Clip",
-      fileName: "new-clip.mp4",
-      state: { status: "uploading", progress: 0.4 },
-    };
-    render(
-      <VideoGallery
-        videos={[]}
-        jobs={[job]}
-        selectedId={null}
-        onSelect={() => {}}
-        onDismiss={() => {}}
-      />,
-    );
-
-    expect(screen.getByText("New Clip")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
-  });
-
-  test("hides ready jobs, which are shown as library rows instead", () => {
-    const job: UploadJob = {
-      id: "job-1",
-      title: "Done Clip",
-      fileName: "done.mp4",
-      state: {
-        status: "ready",
-        video: video({ id: "vid-9", title: "Done Clip", kind: "upload" }),
-      },
-    };
-    render(
-      <VideoGallery
-        videos={[video({ id: "vid-9", title: "Done Clip", kind: "upload" })]}
-        jobs={[job]}
-        selectedId={null}
-        onSelect={() => {}}
-        onDismiss={() => {}}
-      />,
-    );
-    // Exactly one tile labelled "Done Clip" (the library row), not the job too.
-    expect(screen.getAllByText("Done Clip")).toHaveLength(1);
-  });
-
   test("shows an empty state when there is nothing to show", () => {
-    render(
-      <VideoGallery
-        videos={[]}
-        jobs={[]}
-        selectedId={null}
-        onSelect={() => {}}
-        onDismiss={() => {}}
-      />,
-    );
+    render(<VideoGallery videos={[]} selectedId={null} onSelect={() => {}} />);
     expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
   });
 });

@@ -191,3 +191,19 @@ export async function confirmVideo(
   const wire = (await response.json()) as VideoWire;
   return normalizeVideo(wire);
 }
+
+// deleteVideo removes a video record and its media object. The endpoint is
+// admin-gated on the backend; it answers 204 with no body on success, 404 when
+// the id is unknown. Nothing is parsed on success, so callers await void.
+export async function deleteVideo(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/api/videos/${encodeURIComponent(id)}`,
+    { method: "DELETE", signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+}
