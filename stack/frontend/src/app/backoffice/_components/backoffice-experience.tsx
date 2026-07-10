@@ -1,4 +1,5 @@
 import type { Dictionary } from "@/lib/i18n/dictionaries/fr";
+import { BackofficeDocumentsSection } from "./backoffice-documents-section";
 import { BackofficeVideosSection } from "./backoffice-videos-section";
 
 type BackofficeCopy = Dictionary["app"]["backoffice"];
@@ -6,11 +7,11 @@ type BackofficeCopy = Dictionary["app"]["backoffice"];
 // BackofficeExperience is the operator work area: an intro and two labelled
 // sections - videos and documents. The videos section carries its ingestion
 // controls (uploader, YouTube form, and the delete-capable management list); the
-// documents section gains its own client leaf in a later card. It stays a server
-// component - the scaffold needs no interactivity and renders each section's
-// client leaf as a child. The page's level-1 heading is the brand in the header,
-// so the area title is a level-2 heading and the sections are level-3, keeping
-// one heading outline per page.
+// documents section carries the PDF uploader and its in-flight tiles. It stays a
+// server component - the scaffold needs no interactivity and renders each
+// section's client leaf as a child. The page's level-1 heading is the brand in
+// the header, so the area title is a level-2 heading and the sections are
+// level-3, keeping one heading outline per page.
 export function BackofficeExperience({ copy }: { copy: BackofficeCopy }) {
   return (
     <div className="flex flex-col gap-8">
@@ -50,6 +51,7 @@ export function BackofficeExperience({ copy }: { copy: BackofficeCopy }) {
             {copy.documents.description}
           </p>
         </div>
+        <BackofficeDocumentsSection />
       </section>
     </div>
   );
