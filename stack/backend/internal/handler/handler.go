@@ -25,7 +25,7 @@ import (
 // served under /demo/ so the browser can play and live-analyze the bundled
 // sample. The only public route is /healthz for load balancer checks; the legacy
 // login and logout routes exist only when the legacy flag is on.
-func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, tvHub TVHub, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). Ingestion is a
 	// backoffice operation: the mutating routes (upload, YouTube import, confirm,
@@ -52,10 +52,15 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	// authenticated user (it drives the /tv page and the capture worker's
 	// reconcile loop); create, edit, and delete are admin-only, so the mutating
 	// routes carry the RequireAdmin gate. See tv_channels.go.
-	api.HandleFunc("GET /api/tv/channels", listTVChannelsHandler(tvChannels))
+	api.HandleFunc("GET /api/tv/channels", listTVChannelsHandler(tvChannels, tvHub))
 	api.Handle("POST /api/tv/channels", middleware.RequireAdmin(createTVChannelHandler(tvChannels)))
 	api.Handle("PATCH /api/tv/channels/{id}", middleware.RequireAdmin(updateTVChannelHandler(tvChannels)))
 	api.Handle("DELETE /api/tv/channels/{id}", middleware.RequireAdmin(deleteTVChannelHandler(tvChannels)))
+	// TV live hub (WebSocket). The publisher feed is admin/service-only (the
+	// capture worker); the viewer stream serves any authenticated user. See
+	// tv_live.go.
+	api.Handle("GET /api/tv/channels/{id}/feed", middleware.RequireAdmin(tvFeedHandler(tvHub, liveAllowedOrigins, logger)))
+	api.HandleFunc("GET /api/tv/channels/{id}/live", tvViewerHandler(tvHub, liveAllowedOrigins))
 	// Live fact-check stream (WebSocket). See live.go.
 	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, recorder, replayer, liveAllowedOrigins, debugFactCheck, logger))
 	// Admin-only exports of a completed video's cached analysis: an SRT transcript

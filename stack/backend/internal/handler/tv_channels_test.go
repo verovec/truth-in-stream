@@ -59,14 +59,23 @@ func (f *fakeTVChannelService) Delete(_ context.Context, id string) error {
 	return f.deleteErr
 }
 
+// fakeTVLiveStatus reports channel liveness from a fixed set, standing in for
+// the hub in list-handler tests.
+type fakeTVLiveStatus struct{ live map[string]bool }
+
+func (f fakeTVLiveStatus) Live(channelID string) bool { return f.live[channelID] }
+
 func TestListTVChannelsHandler(t *testing.T) {
 	t.Parallel()
 	svc := &fakeTVChannelService{channels: []domain.TVChannel{
-		{ID: "c1", Slug: "franceinfo", Name: "franceinfo", SourceKind: domain.TVSourceYouTube, SourceRef: "u", Enabled: false, ArchiveEnabled: true},
+		{ID: "c1", Slug: "franceinfo", Name: "franceinfo", SourceKind: domain.TVSourceYouTube, SourceRef: "u", Enabled: true, ArchiveEnabled: true},
+		{ID: "c2", Slug: "bfmtv", Name: "BFMTV", SourceKind: domain.TVSourceYouTube, SourceRef: "u", Enabled: true, ArchiveEnabled: true},
 	}}
+	// c1 has a connected capture feed, c2 does not.
+	live := fakeTVLiveStatus{live: map[string]bool{"c1": true}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/tv/channels", nil)
-	listTVChannelsHandler(svc).ServeHTTP(rec, req)
+	listTVChannelsHandler(svc, live).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -75,14 +84,18 @@ func TestListTVChannelsHandler(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got.Channels) != 1 {
-		t.Fatalf("channels = %d, want 1", len(got.Channels))
+	if len(got.Channels) != 2 {
+		t.Fatalf("channels = %d, want 2", len(got.Channels))
 	}
-	if got.Channels[0].Live {
-		t.Fatalf("live should be false until the hub card enriches it")
+	byID := map[string]tvChannelJSON{got.Channels[0].ID: got.Channels[0], got.Channels[1].ID: got.Channels[1]}
+	if !byID["c1"].Live {
+		t.Fatalf("c1 should be live (has a feed)")
 	}
-	if got.Channels[0].Slug != "franceinfo" {
-		t.Fatalf("slug = %q, want franceinfo", got.Channels[0].Slug)
+	if byID["c2"].Live {
+		t.Fatalf("c2 should not be live (no feed)")
+	}
+	if byID["c1"].Slug != "franceinfo" {
+		t.Fatalf("slug = %q, want franceinfo", byID["c1"].Slug)
 	}
 }
 

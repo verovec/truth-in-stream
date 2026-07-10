@@ -76,7 +76,7 @@ func TestExportEndToEndOverRedis(t *testing.T) {
 
 	videos := &fakeVideoService{playable: service.PlayableVideo{Video: domain.Video{ID: cachedVideo, Title: "Débat 2026"}}}
 	health := service.NewHealthChecker(fakePinger{})
-	srv := httptest.NewServer(NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, stubLiveAnalyzer{}, persister, reader, nil, false, nil, "", globalTestAuth, logger))
+	srv := httptest.NewServer(NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, testTVHub(), stubLiveAnalyzer{}, persister, reader, nil, false, nil, "", globalTestAuth, logger))
 	t.Cleanup(srv.Close)
 
 	get := func(t *testing.T, path, token string) *http.Response {

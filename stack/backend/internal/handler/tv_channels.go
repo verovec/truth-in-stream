@@ -38,9 +38,9 @@ type TVChannelService interface {
 const maxTVChannelBodyBytes = 1 << 20
 
 // tvChannelJSON is the wire form of one domain.TVChannel plus the computed live
-// flag. Live is hardcoded false until the live hub card (VER-211) enriches the
-// list from connected publisher feeds; the field ships now so consumers never
-// change shape when it goes live.
+// flag. Live reports whether a capture feed is currently connected for the
+// channel; the list handler enriches it from the hub, while a mutation response
+// (create/edit) reports false and the client re-lists for live status.
 type tvChannelJSON struct {
 	ID             string    `json:"id"`
 	Slug           string    `json:"slug"`
@@ -80,7 +80,14 @@ type patchTVChannelBody struct {
 	ArchiveEnabled *bool   `json:"archive_enabled"`
 }
 
-func listTVChannelsHandler(svc TVChannelService) http.HandlerFunc {
+// TVLiveStatus reports whether a channel currently has a connected capture feed.
+// *service.TVHub satisfies it; the channel list enriches each channel's live
+// flag through it.
+type TVLiveStatus interface {
+	Live(channelID string) bool
+}
+
+func listTVChannelsHandler(svc TVChannelService, live TVLiveStatus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channels, err := svc.List(r.Context())
 		if err != nil {
@@ -89,7 +96,7 @@ func listTVChannelsHandler(svc TVChannelService) http.HandlerFunc {
 		}
 		out := make([]tvChannelJSON, 0, len(channels))
 		for _, c := range channels {
-			out = append(out, toTVChannelJSON(c))
+			out = append(out, toTVChannelJSON(c, live.Live(c.ID)))
 		}
 		httpx.JSON(w, http.StatusOK, listTVChannelsResponse{Channels: out})
 	}
@@ -127,7 +134,7 @@ func createTVChannelHandler(svc TVChannelService) http.HandlerFunc {
 		case err != nil:
 			httpx.Error(w, http.StatusInternalServerError, "internal error")
 		default:
-			httpx.JSON(w, http.StatusCreated, toTVChannelJSON(channel))
+			httpx.JSON(w, http.StatusCreated, toTVChannelJSON(channel, false))
 		}
 	}
 }
@@ -161,7 +168,7 @@ func updateTVChannelHandler(svc TVChannelService) http.HandlerFunc {
 		case err != nil:
 			httpx.Error(w, http.StatusInternalServerError, "internal error")
 		default:
-			httpx.JSON(w, http.StatusOK, toTVChannelJSON(channel))
+			httpx.JSON(w, http.StatusOK, toTVChannelJSON(channel, false))
 		}
 	}
 }
@@ -184,7 +191,7 @@ func deleteTVChannelHandler(svc TVChannelService) http.HandlerFunc {
 	}
 }
 
-func toTVChannelJSON(c domain.TVChannel) tvChannelJSON {
+func toTVChannelJSON(c domain.TVChannel, live bool) tvChannelJSON {
 	return tvChannelJSON{
 		ID:             c.ID,
 		Slug:           c.Slug,
@@ -193,7 +200,7 @@ func toTVChannelJSON(c domain.TVChannel) tvChannelJSON {
 		SourceRef:      c.SourceRef,
 		Enabled:        c.Enabled,
 		ArchiveEnabled: c.ArchiveEnabled,
-		Live:           false,
+		Live:           live,
 		CreatedAt:      c.CreatedAt,
 		UpdatedAt:      c.UpdatedAt,
 	}
