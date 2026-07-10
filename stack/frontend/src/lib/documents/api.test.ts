@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { json, stubBackend } from "@/test/fact-check";
+import { ApiError } from "@/lib/http";
 import {
+  getDocument,
+  getDocumentClaims,
   ingestExtraction,
   listDocuments,
+  reanalyseDocument,
   requestDocumentUpload,
 } from "./api";
 
@@ -146,5 +150,142 @@ describe("ingestExtraction", () => {
     await expect(
       ingestExtraction("doc-1", { pageCount: 1, sentences: [{ seq: 0, page: 1, text: "x", occurrence: 1 }] }),
     ).rejects.toThrow("document is not pending extraction");
+  });
+});
+
+describe("getDocument", () => {
+  test("maps the metadata and surfaces the presigned PDF URL", async () => {
+    stubBackend([
+      {
+        match: (url) => url.endsWith("/api/documents/doc-1"),
+        responses: [
+          json(200, {
+            ...documentWire,
+            pdf: { url: "https://get/doc-1.pdf", method: "GET", headers: {} },
+          }),
+        ],
+      },
+    ]);
+    const detail = await getDocument("doc-1");
+    expect(detail.document).toMatchObject({ id: "doc-1", pageCount: 3 });
+    expect(detail.pdfUrl).toBe("https://get/doc-1.pdf");
+  });
+
+  test("a document with no presigned PDF yields a null URL", async () => {
+    stubBackend([
+      {
+        match: (url) => url.endsWith("/api/documents/doc-1"),
+        responses: [json(200, { ...documentWire, status: "pending" })],
+      },
+    ]);
+    expect((await getDocument("doc-1")).pdfUrl).toBeNull();
+  });
+});
+
+describe("getDocumentClaims", () => {
+  test("maps sentences and their claims onto the shared verdict shape", async () => {
+    stubBackend([
+      {
+        match: (url) => url.endsWith("/api/documents/doc-1/claims"),
+        responses: [
+          json(200, {
+            document: documentWire,
+            sentences: [
+              {
+                seq: 0,
+                page: 1,
+                text: "Le chômage a baissé.",
+                occurrence: 1,
+                claims: [
+                  {
+                    id: "row-1",
+                    claim_id: "c-1",
+                    text: "Le chômage a baissé.",
+                    status: "verified",
+                    source: "verified",
+                    verdict: "credible",
+                    basis: "evidence",
+                    confidence: 0.82,
+                    rationale: "Corroboré.",
+                    citations: [
+                      {
+                        kind: "claim",
+                        claim: "Baisse du chômage",
+                        verdict: "corroborates",
+                        sources: [{ title: "INSEE", url: "https://insee.fr" }],
+                        similarity: 0.9,
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                seq: 1,
+                page: 1,
+                text: "Bonjour.",
+                occurrence: 1,
+                skip_reason: "not_a_claim",
+                claims: [],
+              },
+            ],
+          }),
+        ],
+      },
+    ]);
+    const analysis = await getDocumentClaims("doc-1");
+    expect(analysis.document).toMatchObject({ id: "doc-1", analysisStatus: "complete" });
+    expect(analysis.sentences).toHaveLength(2);
+
+    const [first, second] = analysis.sentences;
+    expect(first).toMatchObject({ seq: 0, page: 1, skipReason: "" });
+    expect(first?.claims[0]).toMatchObject({
+      claimId: "c-1",
+      status: "verified",
+      verdict: "credible",
+      confidence: 0.82,
+    });
+    expect(first?.claims[0]?.matches?.[0]).toMatchObject({
+      kind: "claim",
+      claim: "Baisse du chômage",
+      verdict: "corroborates",
+    });
+
+    expect(second).toMatchObject({ seq: 1, skipReason: "not_a_claim", claims: [] });
+  });
+
+  test("an absent sentences array yields an empty list", async () => {
+    stubBackend([
+      {
+        match: (url) => url.endsWith("/api/documents/doc-1/claims"),
+        responses: [json(200, { document: documentWire })],
+      },
+    ]);
+    expect((await getDocumentClaims("doc-1")).sentences).toEqual([]);
+  });
+});
+
+describe("reanalyseDocument", () => {
+  test("resolves on a 202 accepted", async () => {
+    stubBackend([
+      {
+        match: (url, init) =>
+          url.endsWith("/api/documents/doc-1/reanalyse") && init?.method === "POST",
+        responses: [() => new Response(null, { status: 202 })],
+      },
+    ]);
+    await expect(reanalyseDocument("doc-1")).resolves.toBeUndefined();
+  });
+
+  test("surfaces a 409 concurrent-run conflict as an ApiError with its status", async () => {
+    stubBackend([
+      {
+        match: (url) => url.endsWith("/api/documents/doc-1/reanalyse"),
+        responses: [json(409, { error: "analysis is already in progress" })],
+      },
+    ]);
+    await expect(reanalyseDocument("doc-1")).rejects.toMatchObject({
+      status: 409,
+    });
+    await expect(reanalyseDocument("doc-1")).rejects.toBeInstanceOf(ApiError);
   });
 });
