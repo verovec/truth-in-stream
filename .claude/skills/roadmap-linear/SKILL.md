@@ -43,10 +43,15 @@ the same area. Granularity is not the goal; clean parallelism is.
 An epic is a set of related cards delivered as a unit. One epic is owned by one agent, so
 that separate agents can each take a different epic and run in parallel without colliding.
 
-Whenever you create (or materially reshape) an epic, record it in
-`agent/<org_slug>/plans/EPICS-<ORG_UPPER>.md` and keep it in sync. That file is the coarse
-epic-level handoff map; `ROADMAP-<ORG_UPPER>.md` stays the fine per-card ready queue. Every
-epic entry MUST have the same shape, in this order:
+Whenever you create (or materially reshape) an epic, do both of these and keep them in sync:
+- Record it in `agent/<org_slug>/plans/EPICS-<ORG_UPPER>.md` (the coarse epic-level handoff
+  map; `ROADMAP-<ORG_UPPER>.md` stays the fine per-card ready queue).
+- Give it a Linear label `epic:<slug>` and apply that label to every card in the epic, so the
+  grouping is visible and filterable on the board. Labels are metadata only - they do not
+  affect `/pick` or the ready queue. (Linear has no native epic object in this workspace; the
+  label plus the map are how an epic is represented.)
+
+Every epic entry in the map MUST have the same shape, in this order:
 
 1. **Scope for its agent** - one sentence naming what the owning agent builds.
 2. **Context** - two or three sentences: where it sits, key decisions, spec path.

@@ -8,6 +8,10 @@ two epics in parallel - they are what keep the branches from colliding at merge.
 Source of truth for card ordering stays `ROADMAP-TRUTH-IN-STREAM.md` (the per-card ready
 queue). This file is the coarser epic-level view. Keep both in sync when cards change.
 
+On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `epic:tv`)
+applied to all its cards - group-by-label to see the three swimlanes. Labels are metadata
+only and do not affect `/pick` or the ready queue.
+
 ---
 
 ## Epic A - Ingestion robustness & source expansion (VER-188..204, 17 cards)
