@@ -86,6 +86,10 @@ changes. A card is not Done until its review passes.
 
 ## State
 `.factory-state.json` (gitignored) holds identity, Linear ids, and the `stack` choices.
+`agent/truth-in-stream/plans/EPICS-TRUTH-IN-STREAM.md` is the epic-level handoff map (one
+epic per agent, with cross-epic dependencies and shared-file conflict rules);
+`ROADMAP-TRUTH-IN-STREAM.md` is the fine per-card ready queue. Both are maintained by the
+roadmap-linear skill.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
