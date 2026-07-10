@@ -287,10 +287,8 @@ Every card carries the standard gates: tests with the change, e2e check of the
 card's surface, code review, rebase, green CI, merge. The epic-end
 maintaining-documentation pass folds into F.
 
-Card tracking (2026-07-10): A = VER-210, B = VER-211, C = VER-212. D, E, and F
-could not be created because the Linear workspace hit its issue limit; create
-them from this section (D blocked by VER-210, VER-211, VER-206; E blocked by
-VER-210, VER-206; F blocked by VER-212) once capacity is freed.
+Card tracking (2026-07-10): A = VER-210, B = VER-211, C = VER-212, D = VER-213,
+E = VER-214, F = VER-215.
 
 ## 10. Testing
 
