@@ -9,11 +9,17 @@ package handler
 // digest there. Uploads go direct to object storage via presigned URLs; the
 // backend never proxies the bytes.
 //
-//	POST /api/videos/uploads      mint a presigned PUT and a pending record
-//	POST /api/videos/{id}/confirm verify the object landed, mark the record ready
-//	POST /api/videos/youtube      ingest a video from a YouTube link (202, async)
-//	GET  /api/videos              list curated samples and uploads together
-//	GET  /api/videos/{id}         metadata plus a presigned playback URL
+// Ingestion mutations (upload, confirm, YouTube import) and delete are
+// admin-only, gated by middleware.RequireAdmin at registration; the reads serve
+// any authenticated user. Video ingestion is a backoffice operation while
+// playback and live analysis stay open to every signed-in caller.
+//
+//	POST   /api/videos/uploads      mint a presigned PUT and a pending record (admin)
+//	POST   /api/videos/{id}/confirm verify the object landed, mark the record ready (admin)
+//	POST   /api/videos/youtube      ingest a video from a YouTube link (202, async) (admin)
+//	DELETE /api/videos/{id}         remove a record and its media object (admin)
+//	GET    /api/videos              list curated samples and uploads together
+//	GET    /api/videos/{id}         metadata plus a presigned playback URL
 
 import (
 	"context"
@@ -33,6 +39,7 @@ type VideoService interface {
 	Confirm(ctx context.Context, id string) (domain.Video, error)
 	List(ctx context.Context) ([]domain.Video, error)
 	Get(ctx context.Context, id string) (service.PlayableVideo, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // YouTubeService is the slice of the ingest service the YouTube endpoint
@@ -194,6 +201,23 @@ func getVideoHandler(svc VideoService) http.HandlerFunc {
 				videoJSON: toVideoJSON(playable.Video),
 				Playback:  toPresignedJSON(playable.Playback),
 			})
+		}
+	}
+}
+
+// deleteVideoHandler removes a video record and its media object. It is
+// registered admin-gated, so a non-admin never reaches it. An unknown id is
+// 404; success is 204 with no body, mirroring the document delete handler.
+func deleteVideoHandler(svc VideoService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := svc.Delete(r.Context(), r.PathValue("id"))
+		switch {
+		case errors.Is(err, domain.ErrVideoNotFound):
+			httpx.Error(w, http.StatusNotFound, "unknown video")
+		case err != nil:
+			httpx.Error(w, http.StatusInternalServerError, "internal error")
+		default:
+			w.WriteHeader(http.StatusNoContent)
 		}
 	}
 }

@@ -8,6 +8,12 @@ SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at
 FROM videos
 WHERE id = $1;
 
+-- name: DeleteVideo :execrows
+-- Remove one video record by id. The affected-row count lets the store map an
+-- unknown id (0 rows) to ErrVideoNotFound without a prior existence query.
+DELETE FROM videos
+WHERE id = $1;
+
 -- name: ListVideos :many
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 FROM videos

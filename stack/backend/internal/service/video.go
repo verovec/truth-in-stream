@@ -195,6 +195,26 @@ func (s *VideoService) Get(ctx context.Context, id string) (PlayableVideo, error
 	return PlayableVideo{Video: video, Playback: presigned}, nil
 }
 
+// Delete removes a video: its stored media object first, then its record. The
+// object goes first so a record deletion that fails leaves the record visible
+// for a retry rather than stranding an object no record references. Deleting an
+// absent object succeeds (S3 semantics), so a video whose bytes are already
+// gone still deletes cleanly. An unknown id surfaces as domain.ErrVideoNotFound
+// from the initial load, unwrapped so the handler maps it to 404.
+func (s *VideoService) Delete(ctx context.Context, id string) error {
+	video, err := s.store.GetVideo(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.media.Delete(ctx, video.ObjectKey); err != nil {
+		return fmt.Errorf("video: delete %s: %w", id, err)
+	}
+	if err := s.store.DeleteVideo(ctx, video.ID); err != nil {
+		return fmt.Errorf("video: delete %s: %w", id, err)
+	}
+	return nil
+}
+
 // uploadObjectKey mints a unique storage key for an upload of contentType under
 // the uploads/ prefix. The UUID guarantees uniqueness; the extension is purely
 // for readability.

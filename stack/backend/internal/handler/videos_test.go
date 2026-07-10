@@ -26,10 +26,12 @@ type fakeVideoService struct {
 	confirmErr error
 	listErr    error
 	getErr     error
+	deleteErr  error
 
 	lastUpload    service.UploadRequest
 	lastConfirmID string
 	lastGetID     string
+	lastDeleteID  string
 }
 
 func (f *fakeVideoService) RequestUpload(_ context.Context, req service.UploadRequest) (service.UploadTicket, error) {
@@ -61,6 +63,11 @@ func (f *fakeVideoService) Get(_ context.Context, id string) (service.PlayableVi
 		return service.PlayableVideo{}, f.getErr
 	}
 	return f.playable, nil
+}
+
+func (f *fakeVideoService) Delete(_ context.Context, id string) error {
+	f.lastDeleteID = id
+	return f.deleteErr
 }
 
 var _ VideoService = (*fakeVideoService)(nil)
@@ -327,6 +334,83 @@ func TestGetVideoHandlerNotFound(t *testing.T) {
 	getVideoHandler(&fakeVideoService{getErr: domain.ErrVideoNotFound})(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestDeleteVideoHandler(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		svc      *fakeVideoService
+		wantCode int
+	}{
+		{name: "ok", svc: &fakeVideoService{}, wantCode: http.StatusNoContent},
+		{name: "not found", svc: &fakeVideoService{deleteErr: domain.ErrVideoNotFound}, wantCode: http.StatusNotFound},
+		{name: "internal", svc: &fakeVideoService{deleteErr: errors.New("boom")}, wantCode: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/videos/v1", nil)
+			req.SetPathValue("id", "v1")
+			deleteVideoHandler(tc.svc)(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+			if tc.svc.lastDeleteID != "v1" {
+				t.Errorf("service saw id %q, want v1", tc.svc.lastDeleteID)
+			}
+		})
+	}
+}
+
+// TestVideoRoutesRoleGating proves the backoffice split: the ingestion
+// mutations (upload, YouTube import, confirm) and delete require a verified
+// admin claim (403 for a guest), the reads serve any authenticated user, and
+// nothing is reachable anonymously. It runs through NewMux so the real identity
+// and admin gates are exercised.
+func TestVideoRoutesRoleGating(t *testing.T) {
+	t.Parallel()
+	uploadBody := `{"title":"x","content_type":"video/mp4","size_bytes":1}`
+	youtubeBody := `{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"}`
+
+	tests := []struct {
+		name         string
+		method, path string
+		body         string
+		bearer       string
+		wantCode     int
+	}{
+		{name: "upload as admin", method: http.MethodPost, path: "/api/videos/uploads", body: uploadBody, bearer: testAdminToken, wantCode: http.StatusCreated},
+		{name: "upload as guest", method: http.MethodPost, path: "/api/videos/uploads", body: uploadBody, bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "upload anonymous", method: http.MethodPost, path: "/api/videos/uploads", body: uploadBody, wantCode: http.StatusUnauthorized},
+		{name: "youtube as admin", method: http.MethodPost, path: "/api/videos/youtube", body: youtubeBody, bearer: testAdminToken, wantCode: http.StatusAccepted},
+		{name: "youtube as guest", method: http.MethodPost, path: "/api/videos/youtube", body: youtubeBody, bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "youtube anonymous", method: http.MethodPost, path: "/api/videos/youtube", body: youtubeBody, wantCode: http.StatusUnauthorized},
+		{name: "confirm as admin", method: http.MethodPost, path: "/api/videos/v1/confirm", bearer: testAdminToken, wantCode: http.StatusOK},
+		{name: "confirm as guest", method: http.MethodPost, path: "/api/videos/v1/confirm", bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "delete as admin", method: http.MethodDelete, path: "/api/videos/v1", bearer: testAdminToken, wantCode: http.StatusNoContent},
+		{name: "delete as guest", method: http.MethodDelete, path: "/api/videos/v1", bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "delete anonymous", method: http.MethodDelete, path: "/api/videos/v1", wantCode: http.StatusUnauthorized},
+		{name: "list as guest", method: http.MethodGet, path: "/api/videos", bearer: testGuestToken, wantCode: http.StatusOK},
+		{name: "get as guest", method: http.MethodGet, path: "/api/videos/v1", bearer: testGuestToken, wantCode: http.StatusOK},
+		{name: "list anonymous", method: http.MethodGet, path: "/api/videos", wantCode: http.StatusUnauthorized},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newTestServer(nil)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.bearer != "" {
+				bearer(req, tc.bearer)
+			}
+			srv.ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("%s %s = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
 	}
 }
 

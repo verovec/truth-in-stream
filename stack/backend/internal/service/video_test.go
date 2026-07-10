@@ -19,10 +19,12 @@ type fakeVideoStore struct {
 	listErr   error
 	setErr    error
 	upsertErr error
+	deleteErr error
 
 	created  []domain.Video
 	upserts  []domain.Video
 	setCalls []setCall
+	deleted  []string
 }
 
 type setCall struct {
@@ -54,6 +56,18 @@ func (f *fakeVideoStore) GetVideo(_ context.Context, id string) (domain.Video, e
 		return domain.Video{}, domain.ErrVideoNotFound
 	}
 	return v, nil
+}
+
+func (f *fakeVideoStore) DeleteVideo(_ context.Context, id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	if _, ok := f.videos[id]; !ok {
+		return domain.ErrVideoNotFound
+	}
+	delete(f.videos, id)
+	f.deleted = append(f.deleted, id)
+	return nil
 }
 
 func (f *fakeVideoStore) ListVideos(_ context.Context) ([]domain.Video, error) {
@@ -495,6 +509,94 @@ func TestUploadObjectKeyShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVideoDelete(t *testing.T) {
+	t.Parallel()
+	const objectKey = "uploads/doomed.mp4"
+
+	seeded := func(status domain.VideoStatus) *fakeVideoStore {
+		store := newFakeVideoStore()
+		store.videos["v1"] = domain.Video{ID: "v1", ObjectKey: objectKey, Status: status, Kind: domain.VideoKindUpload}
+		return store
+	}
+
+	t.Run("deletes object then record", func(t *testing.T) {
+		t.Parallel()
+		store := seeded(domain.VideoStatusReady)
+		media := &fakeMediaStore{}
+		svc := newTestService(t, store, media)
+
+		if err := svc.Delete(t.Context(), "v1"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, ok := store.videos["v1"]; ok {
+			t.Error("record survived delete")
+		}
+		if len(media.deletedKeys) != 1 || media.deletedKeys[0] != objectKey {
+			t.Errorf("media delete keys = %v, want [%s]", media.deletedKeys, objectKey)
+		}
+		if len(store.deleted) != 1 || store.deleted[0] != "v1" {
+			t.Errorf("store deleted = %v, want [v1]", store.deleted)
+		}
+	})
+
+	t.Run("object already gone still deletes cleanly", func(t *testing.T) {
+		// A pending video whose bytes never landed: media.Delete succeeds for an
+		// absent object (S3 semantics), so the record deletes rather than sticking.
+		t.Parallel()
+		store := seeded(domain.VideoStatusPending)
+		svc := newTestService(t, store, &fakeMediaStore{})
+
+		if err := svc.Delete(t.Context(), "v1"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, ok := store.videos["v1"]; ok {
+			t.Error("record survived delete")
+		}
+	})
+
+	t.Run("unknown id is ErrVideoNotFound and touches no storage", func(t *testing.T) {
+		t.Parallel()
+		store := seeded(domain.VideoStatusReady)
+		media := &fakeMediaStore{}
+		svc := newTestService(t, store, media)
+
+		if err := svc.Delete(t.Context(), "missing"); !errors.Is(err, domain.ErrVideoNotFound) {
+			t.Fatalf("Delete unknown = %v, want ErrVideoNotFound", err)
+		}
+		if len(media.deletedKeys) != 0 || len(store.deleted) != 0 {
+			t.Errorf("unknown id touched storage: media=%v store=%v", media.deletedKeys, store.deleted)
+		}
+	})
+
+	t.Run("media failure keeps the record for retry", func(t *testing.T) {
+		// Object-first order: a failed object delete must not remove the record,
+		// or the operator loses the handle to retry.
+		t.Parallel()
+		store := seeded(domain.VideoStatusReady)
+		mediaErr := errors.New("s3 down")
+		svc := newTestService(t, store, &fakeMediaStore{deleteErr: mediaErr})
+
+		err := svc.Delete(t.Context(), "v1")
+		if !errors.Is(err, mediaErr) {
+			t.Fatalf("Delete error = %v, want it to wrap the media failure", err)
+		}
+		if _, ok := store.videos["v1"]; !ok {
+			t.Error("record removed despite media failure")
+		}
+	})
+
+	t.Run("store failure surfaces wrapped", func(t *testing.T) {
+		t.Parallel()
+		store := seeded(domain.VideoStatusReady)
+		store.deleteErr = errors.New("db down")
+		svc := newTestService(t, store, &fakeMediaStore{})
+
+		if err := svc.Delete(t.Context(), "v1"); !errors.Is(err, store.deleteErr) {
+			t.Fatalf("Delete error = %v, want it to wrap the store failure", err)
+		}
+	})
 }
 
 // guard ensures the fakes satisfy the ports they stand in for.

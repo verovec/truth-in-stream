@@ -108,6 +108,21 @@ func (q *Queries) CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideo
 	return i, err
 }
 
+const deleteVideo = `-- name: DeleteVideo :execrows
+DELETE FROM videos
+WHERE id = $1
+`
+
+// Remove one video record by id. The affected-row count lets the store map an
+// unknown id (0 rows) to ErrVideoNotFound without a prior existence query.
+func (q *Queries) DeleteVideo(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteVideo, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getVideo = `-- name: GetVideo :one
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error
 FROM videos
