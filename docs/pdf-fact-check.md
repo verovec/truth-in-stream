@@ -1,19 +1,19 @@
 # PDF fact-check (Documents)
 
 Fact-checking extends beyond live streams to documents people read. An admin uploads a PDF (a press
-article, report, or official publication); the same retrieve-then-verify pipeline that scores live
-transcripts analyses its sentences once and persists the results in Postgres. Any authenticated user
-then opens the document in an embedded viewer where credible and disputed sentences are highlighted
-in place.
+article, report, or official publication) from the [backoffice](backoffice.md); the same
+retrieve-then-verify pipeline that scores live transcripts analyses its sentences once and persists
+the results in Postgres. Any authenticated user then opens the document on the Documents surface in
+an embedded viewer where credible and disputed sentences are highlighted in place.
 
-This is the Documents surface (`/documents`). For the live-stream path, see
-[How it works](../README.md#how-it-works); for the verify-path settings this feature depends on, see
-[Configuration](configuration.md).
+Ingestion lives in the backoffice; the Documents surface (`/documents`) is consumption-only - it
+lists and reads. For the live-stream path, see [How it works](../README.md#how-it-works); for the
+verify-path settings this feature depends on, see [Configuration](configuration.md).
 
 ## The flow, end to end
 
 ```
-  Admin uploads a PDF          /documents, admin only
+  Admin uploads a PDF          /backoffice, admin only
      |
      v
   Browser text extraction      pdf.js reads the text layer, normalizes it (NFKC,
