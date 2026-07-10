@@ -214,3 +214,39 @@ func TestUpsertSampleVideoKeepsKnownSizeAgainstZero(t *testing.T) {
 		t.Errorf("SizeBytes = %d, want 8192 (a real size must still update)", third.SizeBytes)
 	}
 }
+
+func TestDeleteVideo(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	created, err := store.CreateVideo(ctx, domain.Video{
+		Title:       "Doomed",
+		ObjectKey:   "uploads/doomed.mp4",
+		ContentType: "video/mp4",
+		SizeBytes:   1024,
+		Status:      domain.VideoStatusPending,
+		Kind:        domain.VideoKindUpload,
+	})
+	if err != nil {
+		t.Fatalf("CreateVideo: %v", err)
+	}
+
+	if err := store.DeleteVideo(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteVideo: %v", err)
+	}
+	if _, err := store.GetVideo(ctx, created.ID); !errors.Is(err, domain.ErrVideoNotFound) {
+		t.Errorf("video survives delete: err = %v", err)
+	}
+
+	// A second delete, an unknown id, and a malformed id all report not-found:
+	// none names a live record.
+	if err := store.DeleteVideo(ctx, created.ID); !errors.Is(err, domain.ErrVideoNotFound) {
+		t.Errorf("second delete err = %v, want ErrVideoNotFound", err)
+	}
+	if err := store.DeleteVideo(ctx, "11111111-1111-1111-1111-111111111111"); !errors.Is(err, domain.ErrVideoNotFound) {
+		t.Errorf("unknown id err = %v, want ErrVideoNotFound", err)
+	}
+	if err := store.DeleteVideo(ctx, "not-a-uuid"); !errors.Is(err, domain.ErrVideoNotFound) {
+		t.Errorf("malformed id err = %v, want ErrVideoNotFound", err)
+	}
+}

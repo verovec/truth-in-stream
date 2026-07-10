@@ -52,6 +52,9 @@ type Querier interface {
 	// another source safe.
 	DeleteEvidenceByTitle(ctx context.Context, arg DeleteEvidenceByTitleParams) error
 	DeleteEvidenceDocument(ctx context.Context, arg DeleteEvidenceDocumentParams) error
+	// Remove one video record by id. The affected-row count lets the store map an
+	// unknown id (0 rows) to ErrVideoNotFound without a prior existence query.
+	DeleteVideo(ctx context.Context, id uuid.UUID) (int64, error)
 	// The clustering job reads the embedded live corpus in keyset order to group it
 	// into topic clusters and score importance. The embedding IS NOT NULL filter
 	// scopes the scan to the chunks that actually carry a vector to cluster, and the

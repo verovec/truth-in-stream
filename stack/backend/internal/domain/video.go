@@ -124,6 +124,9 @@ type VideoStore interface {
 	CreateVideo(ctx context.Context, v Video) (Video, error)
 	// GetVideo returns the record with the given id, or ErrVideoNotFound.
 	GetVideo(ctx context.Context, id string) (Video, error)
+	// DeleteVideo removes the record with the given id, or returns
+	// ErrVideoNotFound when no record matches.
+	DeleteVideo(ctx context.Context, id string) error
 	// ListVideos returns every record, newest first.
 	ListVideos(ctx context.Context) ([]Video, error)
 	// SetVideoStatus updates the status of the record with the given id and

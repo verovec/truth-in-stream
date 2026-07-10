@@ -56,6 +56,23 @@ func (s *Store) GetVideo(ctx context.Context, id string) (domain.Video, error) {
 	return videoFromRow(row), nil
 }
 
+// DeleteVideo removes the record with the given id. An unparseable id, like a
+// missing row, maps to domain.ErrVideoNotFound: neither can name a real record.
+func (s *Store) DeleteVideo(ctx context.Context, id string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return domain.ErrVideoNotFound
+	}
+	deleted, err := s.queries.DeleteVideo(ctx, uid)
+	if err != nil {
+		return fmt.Errorf("postgres: delete video %s: %w", id, err)
+	}
+	if deleted == 0 {
+		return domain.ErrVideoNotFound
+	}
+	return nil
+}
+
 // ListVideos returns every record, newest first.
 func (s *Store) ListVideos(ctx context.Context) ([]domain.Video, error) {
 	rows, err := s.queries.ListVideos(ctx)

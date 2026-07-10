@@ -27,10 +27,15 @@ import (
 // login and logout routes exist only when the legacy flag is on.
 func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
-	// Video records and uploads (id is the record UUID). See videos.go.
-	api.HandleFunc("POST /api/videos/uploads", requestUploadHandler(videos))
-	api.HandleFunc("POST /api/videos/youtube", ingestYouTubeHandler(youtube))
-	api.HandleFunc("POST /api/videos/{id}/confirm", confirmVideoHandler(videos))
+	// Video records and uploads (id is the record UUID). Ingestion is a
+	// backoffice operation: the mutating routes (upload, YouTube import, confirm,
+	// delete) carry the RequireAdmin gate so a guest gets 403, mirroring the
+	// document routes; reads and the live socket stay open to any authenticated
+	// caller. See videos.go.
+	api.Handle("POST /api/videos/uploads", middleware.RequireAdmin(requestUploadHandler(videos)))
+	api.Handle("POST /api/videos/youtube", middleware.RequireAdmin(ingestYouTubeHandler(youtube)))
+	api.Handle("POST /api/videos/{id}/confirm", middleware.RequireAdmin(confirmVideoHandler(videos)))
+	api.Handle("DELETE /api/videos/{id}", middleware.RequireAdmin(deleteVideoHandler(videos)))
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
 	// PDF document records and uploads (id is the record UUID). Reads serve any
