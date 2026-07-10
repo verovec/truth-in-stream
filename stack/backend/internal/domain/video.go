@@ -34,12 +34,16 @@ const (
 	// VideoKindYouTube is a video the backend downloaded from a YouTube link and
 	// wrote to storage server-side.
 	VideoKindYouTube VideoKind = "youtube"
+	// VideoKindTV is an archived hour captured from a live TV channel. Its
+	// ChannelID links it to the source channel and RecordedAt is the segment's
+	// start; it replays through the existing watch flow like any other video.
+	VideoKindTV VideoKind = "tv"
 )
 
 // Valid reports whether k is a known video kind.
 func (k VideoKind) Valid() bool {
 	switch k {
-	case VideoKindUpload, VideoKindSample, VideoKindYouTube:
+	case VideoKindUpload, VideoKindSample, VideoKindYouTube, VideoKindTV:
 		return true
 	default:
 		return false
@@ -92,9 +96,16 @@ type Video struct {
 	DurationMS int64
 	// Error is the reason a failed ingest will never become playable; empty
 	// otherwise.
-	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Error string
+	// ChannelID is the source TV channel of a kind `tv` recording; empty for
+	// uploads, samples, and YouTube imports. It nulls out if the channel is
+	// deleted, so a recording outlives its channel.
+	ChannelID string
+	// RecordedAt is the wall-clock start of a kind `tv` recording's captured
+	// segment; the zero time for every other kind.
+	RecordedAt time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // DownloadResult is the outcome of fetching a video from a source: the path to

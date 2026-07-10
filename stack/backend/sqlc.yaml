@@ -20,6 +20,14 @@ sql:
             go_type:
               import: "github.com/google/uuid"
               type: "UUID"
+          # videos.channel_id is a nullable FK to tv_channels. The global uuid
+          # override above maps to a non-nullable uuid.UUID, which cannot scan a
+          # NULL (every non-tv video), so map this one column to google/uuid's
+          # NullUUID (implements Scanner/Valuer) instead.
+          - column: "videos.channel_id"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "NullUUID"
           # sqlc has no built-in mapping for pgvector's halfvec; map the column
           # to pgvector-go's HalfVector (implements Scanner/Valuer).
           - column: "claims.embedding"

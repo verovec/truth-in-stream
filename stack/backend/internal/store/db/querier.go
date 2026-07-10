@@ -35,6 +35,7 @@ type Querier interface {
 	// The id is caller-minted (the object key embeds it), unlike videos whose id
 	// the database assigns.
 	CreateDocument(ctx context.Context, arg CreateDocumentParams) (Document, error)
+	CreateTVChannel(ctx context.Context, arg CreateTVChannelParams) (TvChannel, error)
 	CreateVideo(ctx context.Context, arg CreateVideoParams) (Video, error)
 	// Insert a pending YouTube ingest. source_id is the canonical video id; the
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
@@ -52,6 +53,10 @@ type Querier interface {
 	// another source safe.
 	DeleteEvidenceByTitle(ctx context.Context, arg DeleteEvidenceByTitleParams) error
 	DeleteEvidenceDocument(ctx context.Context, arg DeleteEvidenceDocumentParams) error
+	// Remove one channel by id. The affected-row count lets the store map an unknown
+	// id (0 rows) to ErrTVChannelNotFound without a prior existence query. Its
+	// recordings survive: the videos.channel_id FK is ON DELETE SET NULL.
+	DeleteTVChannel(ctx context.Context, id uuid.UUID) (int64, error)
 	// Remove one video record by id. The affected-row count lets the store map an
 	// unknown id (0 rows) to ErrVideoNotFound without a prior existence query.
 	DeleteVideo(ctx context.Context, id uuid.UUID) (int64, error)
@@ -68,6 +73,7 @@ type Querier interface {
 	GetEvidenceChunk(ctx context.Context, arg GetEvidenceChunkParams) (GetEvidenceChunkRow, error)
 	GetEvidenceSyncState(ctx context.Context, source string) (EvidenceSyncState, error)
 	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
+	GetTVChannel(ctx context.Context, id uuid.UUID) (TvChannel, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	// Persist one atomic claim's verdict. ordinal is assigned by the identity
@@ -86,6 +92,7 @@ type Querier interface {
 	// rejection, an abandoned or failed upload), so it is not a real library
 	// document and must not surface as a permanent "Pending" ghost card.
 	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
+	ListTVChannels(ctx context.Context) ([]TvChannel, error)
 	ListVideos(ctx context.Context) ([]Video, error)
 	// Claim a ready document for a fresh analysis run: flip it to analysing (the
 	// lock), zero the progress counter, and clear any prior error - all in one
@@ -190,6 +197,9 @@ type Querier interface {
 	// (source, external_id, chunk_index) because external_id is unique only within a
 	// source.
 	UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEvidenceChunksParams) ([]UnembeddedEvidenceChunksRow, error)
+	// Write the mutable fields of an existing channel. slug is immutable (it keys
+	// storage paths and seeds), so it is not updatable here.
+	UpdateTVChannel(ctx context.Context, arg UpdateTVChannelParams) (TvChannel, error)
 	UpsertClaim(ctx context.Context, arg []UpsertClaimParams) *UpsertClaimBatchResults
 	// Crawl ingestion writes content and embedding together: the worker embeds the
 	// self-contained message, then upserts the whole row in one statement so a chunk
@@ -217,6 +227,11 @@ type Querier interface {
 	// cached media seeds the record with size 0, which must not clobber the real
 	// size recorded when the media was last uploaded (the object still exists).
 	UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoParams) (Video, error)
+	// Idempotent seed: insert a channel or, when its slug already exists, refresh
+	// only the descriptive fields. enabled and archive_enabled are intentionally NOT
+	// overwritten so reseeding never re-arms a channel the operator turned off (or
+	// disarmed archiving on); the first insert seeds them from the params.
+	UpsertTVChannelBySlug(ctx context.Context, arg UpsertTVChannelBySlugParams) (TvChannel, error)
 	// Scrutins ingest writes one recorded position per person per scrutin. Re-running
 	// the ingest rewrites the same row, so a bulk re-run is idempotent.
 	UpsertVotingRecord(ctx context.Context, arg UpsertVotingRecordParams) error

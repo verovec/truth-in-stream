@@ -229,6 +229,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	tvChannelSvc, err := service.NewTVChannelService(pgStore)
+	if err != nil {
+		return err
+	}
+
 	health := service.NewHealthChecker(pgStore)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
@@ -341,7 +346,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
