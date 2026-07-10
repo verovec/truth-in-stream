@@ -33,7 +33,12 @@ export function AppShell({
       className="flex min-w-0 flex-1 flex-col bg-paper font-sans text-ink antialiased dark:bg-night dark:text-paper"
     >
       <AppI18nProvider locale={locale} dict={dict.app}>
-        <AppHeader dict={dict} locale={locale} currentSection="videos" />
+        <AppHeader
+          dict={dict}
+          locale={locale}
+          currentSection="videos"
+          role={role}
+        />
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
           <LibraryExperience role={role} />
         </main>

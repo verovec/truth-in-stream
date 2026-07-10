@@ -5,21 +5,21 @@ import type { Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionaries/fr";
 
 import { SessionKeepalive } from "@/app/app/_components/session-keepalive";
-import { DocumentExperience } from "./document-experience";
+import { BackofficeExperience } from "./backoffice-experience";
 
-// DocumentViewerShell is the synchronous, testable viewer surface: the shared app
-// header (Documents marked current), the document viewer experience, and the
-// session keepalive. The document id, role, authentication flag, locale, and
-// dictionary are resolved by the async page wrapper and passed in, so the shell
-// stays a pure function of its props and mirrors the documents library shell.
-export function DocumentViewerShell({
-  documentId,
+// BackofficeShell is the synchronous, testable backoffice surface: the shared app
+// header (Backoffice marked current), the sectioned operator experience, and the
+// session keepalive. The role, authentication flag, locale, and dictionary are
+// resolved by the async page wrapper and passed in, so the shell is a pure
+// function of its props and mirrors the app and documents shells - one header,
+// no drift. The locale labels the content wrapper (not <html>, owned by the root
+// layout).
+export function BackofficeShell({
   role,
   authenticated,
   locale,
   dict,
 }: {
-  documentId: string;
   role: Role;
   authenticated: boolean;
   locale: Locale;
@@ -34,11 +34,11 @@ export function DocumentViewerShell({
         <AppHeader
           dict={dict}
           locale={locale}
-          currentSection="documents"
+          currentSection="backoffice"
           role={role}
         />
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
-          <DocumentExperience documentId={documentId} role={role} />
+          <BackofficeExperience copy={dict.app.backoffice} />
         </main>
         {authenticated && <SessionKeepalive />}
       </AppI18nProvider>

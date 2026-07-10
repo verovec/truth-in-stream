@@ -30,7 +30,12 @@ export function DocumentsShell({
       className="flex min-w-0 flex-1 flex-col bg-paper font-sans text-ink antialiased dark:bg-night dark:text-paper"
     >
       <AppI18nProvider locale={locale} dict={dict.app}>
-        <AppHeader dict={dict} locale={locale} currentSection="documents" />
+        <AppHeader
+          dict={dict}
+          locale={locale}
+          currentSection="documents"
+          role={role}
+        />
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 sm:p-6">
           <DocumentsExperience role={role} />
         </main>
