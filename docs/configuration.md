@@ -22,7 +22,7 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `SESSION_TTL` | no (default `24h`) | Legacy session lifetime (only with `LEGACY_PASSWORD_LOGIN=true`) |
 | `CORS_ALLOWED_ORIGIN` | no | Leave unset for same-origin dev |
 | `PORT` | no (default `8080`) | Backend listen port |
-| `DOCUMENT_MAX_SIZE_BYTES` | no (default 30 MB) | Upload-size cap for a PDF on the Documents surface; must be a positive integer. See [PDF documents](#pdf-documents) |
+| `DOCUMENT_MAX_SIZE_BYTES` | no (default 30 MB) | Upload-size cap for a PDF ingested from the backoffice; must be a positive integer. See [PDF documents](#pdf-documents) |
 | `DOCUMENT_MAX_SENTENCES` | no (default `1500`) | Cap on how many sentences one document may submit for analysis; must be a positive integer |
 | `DOCUMENT_ANALYSIS_TIMEOUT` | no (default `30m`) | Bounds one document analysis run; must be a positive Go duration |
 
@@ -49,9 +49,10 @@ In production the cache is backed by ElastiCache Valkey; see
 
 ## PDF documents
 
-The Documents surface lets an admin upload a PDF and fact-check it once through the same pipeline as
-live streams; see [PDF fact-check](pdf-fact-check.md) for the full flow and access model. Three
-backend caps bound LLM cost and abuse. All keep the defaults when unset:
+An admin uploads a PDF from the [backoffice](backoffice.md) to fact-check it once through the same
+pipeline as live streams; any authenticated user then reads it on the Documents surface. See
+[PDF fact-check](pdf-fact-check.md) for the full flow and access model. Three backend caps bound LLM
+cost and abuse. All keep the defaults when unset:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

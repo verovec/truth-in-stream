@@ -72,8 +72,9 @@ Switch to the `truth-in-stream` realm (top-left realm selector), then:
 1. **Users -> Add user**: create the real admin user (username, email, email verified on).
 2. **Credentials -> Set password**: set a strong password and turn **Temporary off** so it is not forced
    to reset on first login.
-3. **Role mapping -> Assign role**: assign the `admin` realm role. This is what grants the debug tools and
-   the `admin`-gated routes (the backend and frontend read `realm_access.roles`).
+3. **Role mapping -> Assign role**: assign the `admin` realm role. This is what grants the debug tools,
+   the [backoffice](backoffice.md) ingestion area, and the `admin`-gated routes (the backend and
+   frontend read `realm_access.roles`).
 4. Confirm `guest` is the realm **default role** (Realm settings -> User registration -> Default roles);
    every new user carries `guest` automatically.
 5. Create any other operator users the same way (assign `admin` only to those who need it; everyone else is
@@ -91,8 +92,9 @@ no longer a standing credential.
 - Sign in at `https://jeminforme.fr` as the real admin user; you should land authenticated with the
   `admin` role.
 - Confirm `/api/*` responds (the whole `/api` subtree is gated on the verified Keycloak identity) and that
-  the admin-only debug tools are visible to the `admin` user.
-- Sign in as a `guest` user and confirm the debug tools are hidden and `admin`-only routes return `403`.
+  the admin-only debug tools and the [backoffice](backoffice.md) are visible to the `admin` user.
+- Sign in as a `guest` user and confirm the debug tools are hidden, `/backoffice` redirects to `/app`, and
+  `admin`-only routes return `403`.
 
 ## Realm re-import idempotency
 
