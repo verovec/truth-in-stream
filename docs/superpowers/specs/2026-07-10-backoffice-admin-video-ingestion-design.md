@@ -135,21 +135,22 @@ Cards 2 -> 3 -> 4 share the frontend shell/nav/experience files, so they are a s
 dependency chain. Card 1 (Go) is file-disjoint and runs in parallel with card 2. Card 5
 closes out.
 
-1. **Backend: admin-only video ingestion + video delete** — wrap uploads/youtube/confirm in
-   `RequireAdmin`; add `DELETE /api/videos/{id}` (service + store + handler, documents
-   pattern). Table tests: guest 403 / admin success for all four routes; delete service
-   tests. (parallel-safe)
-2. **Backoffice foundation** — `/backoffice` route with server-side admin redirect,
+1. **VER-205 Backend: admin-only video ingestion + video delete** — wrap
+   uploads/youtube/confirm in `RequireAdmin`; add `DELETE /api/videos/{id}` (service + store +
+   handler, documents pattern). Table tests: guest 403 / admin success for all four routes;
+   delete service tests. (parallel-safe)
+2. **VER-206 Backoffice foundation** — `/backoffice` route with server-side admin redirect,
    `BackofficeShell`, admin-only nav entry (`AppHeader` role prop), fr/en dictionary keys,
    empty sectioned scaffold. Tests: page redirect matrix, shell, nav gating. (parallel-safe)
-3. **Video ingestion moves to the backoffice** — videos section (uploader, YouTube form,
-   upload tiles, management list with delete); strip ingestion UI from
-   `library-experience.tsx`. Updates both surfaces' tests. (depends on 1, 2)
-4. **Document ingestion joins the backoffice** — documents section (PDF uploader, upload
-   tiles); `/documents` becomes consumption-only. Tests updated. (depends on 3, shared files)
-5. **Docs + e2e close-out** — backoffice section in `docs/`, `docs/keycloak-prod-setup.md`
-   note, README touch per the maintaining-documentation skill; full e2e sweep (below).
-   (depends on 1-4)
+3. **VER-207 Video ingestion moves to the backoffice** — videos section (uploader, YouTube
+   form, upload tiles, management list with delete); strip ingestion UI from
+   `library-experience.tsx`. Updates both surfaces' tests. (depends on VER-205, VER-206)
+4. **VER-208 Document ingestion joins the backoffice** — documents section (PDF uploader,
+   upload tiles); `/documents` becomes consumption-only. Tests updated. (depends on VER-207,
+   shared files)
+5. **VER-209 Docs + e2e close-out** — backoffice section in `docs/`,
+   `docs/keycloak-prod-setup.md` note, README touch per the maintaining-documentation skill;
+   full e2e sweep (below). (depends on VER-205, VER-208)
 
 Sequencing note: after card 1 merges and until card 3 does, a guest briefly sees an uploader
 that answers 403. Closing the backend gate first is the deliberate order — never ship a window
