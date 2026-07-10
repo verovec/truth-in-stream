@@ -39,6 +39,32 @@ the same area. Granularity is not the goal; clean parallelism is.
   (see the editing rule above), so fold any newly-found overlap into a still-`Todo` card or a
   brand-new card - never into a started one.
 
+## Epics (group cards for parallel agent handoff)
+An epic is a set of related cards delivered as a unit. One epic is owned by one agent, so
+that separate agents can each take a different epic and run in parallel without colliding.
+
+Whenever you create (or materially reshape) an epic, record it in
+`agent/<org_slug>/plans/EPICS-<ORG_UPPER>.md` and keep it in sync. That file is the coarse
+epic-level handoff map; `ROADMAP-<ORG_UPPER>.md` stays the fine per-card ready queue. Every
+epic entry MUST have the same shape, in this order:
+
+1. **Scope for its agent** - one sentence naming what the owning agent builds.
+2. **Context** - two or three sentences: where it sits, key decisions, spec path.
+3. **Cards & internal order** - the card IDs and their intra-epic `->` dependency chains.
+4. **Entry cards** - the cards with no unmet dependency (where the agent starts).
+5. **Owns / touches** - the files/areas the epic edits (paths in inline code).
+6. **Cross-epic dependencies** - hard `blocks` links into or out of other epics, plus any
+   soft "shared hot file" links that need a rebase warning.
+7. **Parallelism** - can it start now, and which other epics does it run beside.
+
+Sizing an epic follows the same conflict rule as sizing a card (above), one level up: two
+epics that will be worked in parallel MUST be file-disjoint except through explicit
+cross-epic links. Where two epics must touch the same file (a single route-registration
+file, a shared nav shell, one Terraform dir), name it a **shared hot file** with one owning
+epic; serialize the other epic's edits behind a `blocks` link, or record an append-only
+rebase note so the second-to-merge branch rebases rather than rewrites. Never split one
+epic across two agents.
+
 ## Card structure
 Every card MUST contain these seven sections, in order. Bold headings (not `#`), inline code
 for paths/env vars. A card missing Context, Definition of Done, or Code review is incomplete.
