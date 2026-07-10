@@ -127,6 +127,17 @@ export const en: Dictionary = {
       videos: {
         heading: "Videos",
         description: "Upload videos and YouTube links, and manage the library.",
+        list: {
+          heading: "Video library",
+          empty: "No videos yet.",
+          delete: "Delete",
+          confirm: "Delete this video? This cannot be undone.",
+          confirmYes: "Confirm",
+          confirmNo: "Cancel",
+          deleting: "Deleting…",
+          deleteError: "Delete failed: {message}",
+          deleteErrorFallback: "Delete failed.",
+        },
       },
       documents: {
         heading: "Documents",

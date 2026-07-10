@@ -132,6 +132,17 @@ export const fr = {
         heading: "Vidéos",
         description:
           "Importez des vidéos et des liens YouTube, et gérez la bibliothèque.",
+        list: {
+          heading: "Bibliothèque vidéo",
+          empty: "Aucune vidéo pour le moment.",
+          delete: "Supprimer",
+          confirm: "Supprimer cette vidéo ? Cette action est irréversible.",
+          confirmYes: "Confirmer",
+          confirmNo: "Annuler",
+          deleting: "Suppression…",
+          deleteError: "La suppression a échoué : {message}",
+          deleteErrorFallback: "La suppression a échoué.",
+        },
       },
       documents: {
         heading: "Documents",
