@@ -3,6 +3,12 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* Rendered height of the shared sticky AppHeader: the tricolore rule plus the
+     py-3 row (whose tallest control is the min-h-9 sign-out button) plus the
+     border. Content that pins below it - the live fact-check panel - anchors its
+     top offset and height to this token so it clears the header without a magic
+     constant tied to unrelated blocks. */
+  --app-header-h: 4rem;
 }
 
 @theme inline {
@@ -66,5 +72,4 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }

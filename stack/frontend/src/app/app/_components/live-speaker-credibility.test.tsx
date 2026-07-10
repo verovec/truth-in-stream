@@ -97,4 +97,19 @@ describe("SpeakerCredibilityView", () => {
     expect(container.querySelector(".text-emerald-700")).toBeNull();
     expect(container.querySelector(".text-rose-700")).toBeNull();
   });
+
+  test("caps the speaker list with internal scroll so it cannot shift the layout", () => {
+    const { container } = render(
+      <SpeakerCredibilityView
+        speakers={[speaker({ speaker: "A" }), speaker({ speaker: "B" })]}
+      />,
+    );
+    // Many speakers scroll within the list rather than growing the strip and
+    // pushing the analysis grid below it down as each new speaker arrives.
+    const list = container.querySelector("ul");
+    expect(list?.className).toContain("overflow-y-auto");
+    expect(list?.className).toContain("max-h-[4.5rem]");
+    // The capped scroll region must stay reachable by keyboard, not mouse only.
+    expect(list?.getAttribute("tabindex")).toBe("0");
+  });
 });

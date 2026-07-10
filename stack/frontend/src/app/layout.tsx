@@ -34,7 +34,7 @@ export default function RootLayout({
       {/* overflow-x-hidden is the app-wide guard against horizontal scroll: a
           single long token in a verdict or source title can never push the
           viewport wider than the screen on mobile. */}
-      <body className="flex min-h-full flex-col overflow-x-hidden">
+      <body className="flex min-h-full flex-col overflow-x-hidden font-sans">
         {children}
         {auth}
       </body>

@@ -4,7 +4,7 @@
 export const fr = {
   meta: {
     title:
-      "jeminforme.fr - Vérification des faits en direct pour le débat politique",
+      "jeminforme.fr — Vérification des faits en direct pour le débat politique",
     description:
       "jeminforme.fr confronte les affirmations politiques à des sources fiables, en temps réel, pour que le débat reste ancré aux faits.",
   },
@@ -212,7 +212,7 @@ export const fr = {
       speaker: "Intervenant",
       checking: "Vérification de cette déclaration…",
       checkFailed: "Cette déclaration n'a pas pu être vérifiée.",
-      notChecked: "Non vérifiée - {reason}.",
+      notChecked: "Non vérifiée — {reason}.",
       skipReasons: {
         notAClaim: "aucune affirmation vérifiable",
         notCovered: "hors du corpus de référence",
@@ -332,7 +332,7 @@ export const fr = {
     },
   },
   login: {
-    metaTitle: "Connexion - jeminforme.fr",
+    metaTitle: "Connexion — jeminforme.fr",
     intro: "Connectez-vous pour continuer",
     signIn: "Se connecter avec Keycloak",
     modalTitle: "Connexion",

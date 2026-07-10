@@ -36,7 +36,15 @@ export function SpeakerCredibilityView({
       <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
         {t.speakers.heading}
       </h2>
-      <ul className="flex flex-wrap gap-x-6 gap-y-2">
+      {/* Capped with internal scroll so a stream that surfaces many speakers
+          scrolls this list rather than growing the strip and pushing the layout
+          below it down as each new speaker arrives. tabIndex makes the scroll
+          region focusable and arrow-scrollable by keyboard - not mouse-wheel or
+          touch only - so a keyboard user can still reach speakers past the cap. */}
+      <ul
+        tabIndex={0}
+        className="flex max-h-[4.5rem] flex-wrap gap-x-6 gap-y-2 overflow-y-auto"
+      >
         {speakers.map((speaker) => (
           <SpeakerRow key={speaker.speaker} speaker={speaker} />
         ))}

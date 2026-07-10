@@ -124,7 +124,7 @@ export function VerifiedClaim({ claim }: { claim: LiveClaim }) {
           <SourceLabelChip label={claim.sourceLabel} url={claim.sourceUrl} />
         ) : null}
         {typeof claim.confidence === "number" ? (
-          <span className="font-mono text-[10px] tabular-nums text-ink/40 dark:text-paper/40">
+          <span className="text-[10px] tabular-nums text-ink/40 dark:text-paper/40">
             {Math.round(claim.confidence * 100)}%
           </span>
         ) : null}

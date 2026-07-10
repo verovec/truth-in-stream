@@ -136,6 +136,23 @@ describe("SummaryStripView", () => {
       screen.getByText(formatTemplate(fr.app.summary.inProgress, { count: 2 })),
     ).toBeInTheDocument();
   });
+
+  test("reserves a stable minimum height across idle and active", () => {
+    const { container, rerender } = render(
+      <SummaryStripView summary={null} status="idle" />,
+    );
+    // The strip holds the same floor when idle and when counts arrive, so it does
+    // not resize and shove the layout below it the moment analysis starts.
+    expect(container.querySelector("section")?.className).toContain(
+      "min-h-[3.5rem]",
+    );
+    rerender(
+      <SummaryStripView summary={summary({ checked: 3 })} status="live" />,
+    );
+    expect(container.querySelector("section")?.className).toContain(
+      "min-h-[3.5rem]",
+    );
+  });
 });
 
 describe("verify-path unverifiable verdict end to end", () => {

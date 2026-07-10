@@ -69,7 +69,7 @@ export function SummaryStripView({
   return (
     <section
       aria-label={t.summary.ariaLabel}
-      className="flex w-full flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-black/10 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/5"
+      className="flex min-h-[3.5rem] w-full flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-black/10 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/5"
     >
       <div className="flex items-center gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">

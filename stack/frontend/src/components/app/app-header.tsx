@@ -35,7 +35,7 @@ export function AppHeader({
   currentSection: AppSection;
 }) {
   return (
-    <header className="border-b border-black/5 bg-paper/85 dark:border-white/10 dark:bg-night/85">
+    <header className="sticky top-0 z-40 border-b border-black/5 bg-paper/85 backdrop-blur-md supports-[backdrop-filter]:bg-paper/70 dark:border-white/10 dark:bg-night/85 dark:supports-[backdrop-filter]:bg-night/70">
       <TricoloreRule />
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-4 sm:gap-6">
