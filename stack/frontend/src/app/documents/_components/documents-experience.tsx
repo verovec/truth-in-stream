@@ -21,6 +21,30 @@ import { DocumentUploader } from "./document-uploader";
 // polling the persisted state.
 const DEFAULT_ANALYSIS_POLL_MS = 2500;
 
+// DEFAULT_MAX_IDLE_POLLS bounds polling by consecutive ticks with no observable
+// progress, not by a flat attempt count. A document still advancing - or a fresh
+// upload appearing in the list - changes the progress signature and resets the
+// idle counter, so active work keeps the poll alive; only a genuinely stuck
+// document (analyzer crash, or a watched upload the backend never advances) runs
+// the counter to the bound, after which polling stops and the admin can refresh.
+// At the default interval this is ~2 minutes of total stall - far longer than any
+// gap in a real analysis. Bounding on stall rather than a session attempt count
+// means an unrelated document completing cannot silently refresh a stuck
+// document's budget.
+const DEFAULT_MAX_IDLE_POLLS = 48;
+
+// progressSignature captures the settling-relevant state of a listed catalog:
+// each document's id, analysis status, and processed-sentence count. It changes
+// whenever any analysis advances, completes, or a new document appears, and stays
+// constant only while nothing moves - which is exactly when polling should stop.
+// listDocuments returns a deterministic order, so the joined string is stable
+// across ticks.
+function progressSignature(docs: LibraryDocument[]): string {
+  return docs
+    .map((doc) => `${doc.id}:${doc.analysisStatus}:${doc.sentencesProcessed}`)
+    .join("|");
+}
+
 const GRID_CLASS =
   "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3";
 
@@ -84,13 +108,15 @@ export function DocumentsExperience({
   uploader,
   extractor,
   pollIntervalMs = DEFAULT_ANALYSIS_POLL_MS,
+  maxIdlePolls = DEFAULT_MAX_IDLE_POLLS,
 }: {
   role?: Role;
   loadDocuments?: (signal?: AbortSignal) => Promise<LibraryDocument[]>;
   pollDocuments?: (signal?: AbortSignal) => Promise<LibraryDocument[]>;
   uploader?: PutUploader;
-  extractor?: (file: File) => Promise<ExtractionResult>;
+  extractor?: (file: File, signal?: AbortSignal) => Promise<ExtractionResult>;
   pollIntervalMs?: number;
+  maxIdlePolls?: number;
 }) {
   const isAdmin = role === "admin";
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
@@ -133,7 +159,15 @@ export function DocumentsExperience({
         if (controller.signal.aborted) {
           return;
         }
-        setDocuments(loaded);
+        // Merge rather than replace: an upload whose onUploaded prepended a card
+        // before this load resolved is not in the backend list yet, so a blind
+        // setDocuments(loaded) would drop it. Keep any such optimistic row (its
+        // id is absent from loaded) ahead of the freshly listed catalog.
+        setDocuments((prev) => {
+          const loadedIds = new Set(loaded.map((doc) => doc.id));
+          const optimistic = prev.filter((doc) => !loadedIds.has(doc.id));
+          return optimistic.length === 0 ? loaded : [...optimistic, ...loaded];
+        });
         setListState({ status: "loaded" });
       })
       .catch((err: unknown) => {
@@ -163,6 +197,23 @@ export function DocumentsExperience({
       return;
     }
     const controller = new AbortController();
+    // A settling document that never reaches a terminal state would otherwise
+    // poll forever. Bound polling by consecutive no-progress ticks: each tick
+    // that observes a change resets the counter, so active analysis (or a new
+    // upload) keeps polling alive, while a genuinely stuck document runs the
+    // counter to maxIdlePolls and stops the background churn.
+    let idleTicks = 0;
+    let lastSignature = "";
+    const halt = () => {
+      controller.abort();
+      clearInterval(handle);
+    };
+    const noteIdle = () => {
+      idleTicks += 1;
+      if (idleTicks >= maxIdlePolls) {
+        halt();
+      }
+    };
     const tick = () => {
       pollRef
         .current(controller.signal)
@@ -191,10 +242,19 @@ export function DocumentsExperience({
             }
             return changed ? next : prev;
           });
+          const signature = progressSignature(listed);
+          if (signature === lastSignature) {
+            noteIdle();
+          } else {
+            lastSignature = signature;
+            idleTicks = 0;
+          }
         })
         .catch(() => {
-          // A transient poll failure is ignored; the next tick retries while a
-          // document is still settling.
+          // A failing poll makes no progress; count it toward the idle bound so
+          // a permanently erroring poll also terminates instead of retrying
+          // forever.
+          noteIdle();
         });
     };
     const handle = setInterval(tick, pollIntervalMs);
@@ -202,7 +262,7 @@ export function DocumentsExperience({
       controller.abort();
       clearInterval(handle);
     };
-  }, [hasSettling, pollIntervalMs]);
+  }, [hasSettling, pollIntervalMs, maxIdlePolls]);
 
   const { t } = useAppI18n();
   // A succeeded upload becomes a real document card via onUploaded, so only the
@@ -242,6 +302,46 @@ function DocumentsList({
   onDismiss: (id: string) => void;
   isAdmin: boolean;
 }) {
+  // Upload tiles render above the catalog regardless of the catalog's load
+  // state, so an in-flight or rejected upload always shows its progress or error
+  // - even while the initial list is still loading or has failed to load. Only
+  // the catalog portion below swaps for the skeleton, the error/retry block, or
+  // the empty state.
+  return (
+    <div className="flex flex-col gap-3">
+      {activeJobs.length > 0 ? (
+        <ul className={GRID_CLASS}>
+          {activeJobs.map((job) => (
+            <li key={job.id}>
+              <DocumentUploadTile job={job} onDismiss={onDismiss} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <DocumentsCatalog
+        listState={listState}
+        onRetry={onRetry}
+        documents={documents}
+        hasActiveJobs={activeJobs.length > 0}
+        isAdmin={isAdmin}
+      />
+    </div>
+  );
+}
+
+function DocumentsCatalog({
+  listState,
+  onRetry,
+  documents,
+  hasActiveJobs,
+  isAdmin,
+}: {
+  listState: ListState;
+  onRetry: () => void;
+  documents: LibraryDocument[];
+  hasActiveJobs: boolean;
+  isAdmin: boolean;
+}) {
   const { t } = useAppI18n();
   if (listState.status === "loading") {
     return <DocumentsSkeleton />;
@@ -266,8 +366,10 @@ function DocumentsList({
       </div>
     );
   }
-  if (documents.length === 0 && activeJobs.length === 0) {
-    return (
+  if (documents.length === 0) {
+    // With upload tiles already shown above, an empty catalog needs no empty
+    // copy; show it only when nothing at all is on screen.
+    return hasActiveJobs ? null : (
       <p className="text-sm text-ink/60 dark:text-paper/60">
         {isAdmin ? t.documents.emptyAdmin : t.documents.empty}
       </p>
@@ -275,11 +377,6 @@ function DocumentsList({
   }
   return (
     <ul className={GRID_CLASS}>
-      {activeJobs.map((job) => (
-        <li key={job.id}>
-          <DocumentUploadTile job={job} onDismiss={onDismiss} />
-        </li>
-      ))}
       {documents.map((doc) => (
         <li key={doc.id}>
           <DocumentCard doc={doc} />

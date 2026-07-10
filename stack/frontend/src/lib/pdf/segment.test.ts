@@ -30,11 +30,28 @@ describe("segmentPages", () => {
   });
 
   test("normalizes each page's text before segmenting", () => {
-    // A ligature and a line-broken word are folded by the shared normalizer, so a
-    // stored sentence matches what the viewer will render.
-    const sentences = segmentPages(["Le conﬂit inter-\nnational perdure."]);
+    // A ligature and a soft-hyphen line break are folded by the shared
+    // normalizer, so a stored sentence matches what the viewer will render.
+    const sentences = segmentPages(["Le conﬂit inter­\nnational perdure."]);
     expect(sentences).toEqual([
       { seq: 0, page: 1, text: "Le conflit international perdure.", occurrence: 1 },
+    ]);
+  });
+
+  test("keeps a French honorific with the sentence it introduces", () => {
+    // V8's Intl.Segmenter ends a sentence after "M."; the abbreviation merge
+    // re-joins it so the subject is not stripped from the claim.
+    const sentences = segmentPages(["M. Macron a déclaré que la dette a doublé."]);
+    expect(sentences).toEqual([
+      { seq: 0, page: 1, text: "M. Macron a déclaré que la dette a doublé.", occurrence: 1 },
+    ]);
+  });
+
+  test("keeps a bare initial with its sentence and still splits real boundaries", () => {
+    const sentences = segmentPages(["J. Dupont a écrit un rapport. Il est clair."]);
+    expect(sentences).toEqual([
+      { seq: 0, page: 1, text: "J. Dupont a écrit un rapport.", occurrence: 1 },
+      { seq: 1, page: 1, text: "Il est clair.", occurrence: 1 },
     ]);
   });
 

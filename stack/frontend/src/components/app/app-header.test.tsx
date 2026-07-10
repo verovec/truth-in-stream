@@ -4,24 +4,32 @@ import { fr } from "@/lib/i18n/dictionaries/fr";
 import { AppHeader } from "./app-header";
 
 describe("AppHeader", () => {
-  test("renders Videos and Documents nav links to their routes", () => {
+  test("links only the inactive section to its route", () => {
     render(<AppHeader dict={fr} locale="fr" currentSection="videos" />);
     const nav = screen.getByRole("navigation", { name: fr.app.nav.ariaLabel });
-    const videos = within(nav).getByRole("link", { name: fr.app.nav.videos });
+    // The other section is a real navigating link.
     const documents = within(nav).getByRole("link", { name: fr.app.nav.documents });
-    expect(videos).toHaveAttribute("href", "/app");
     expect(documents).toHaveAttribute("href", "/documents");
+    // The current section is not a link at all, so it cannot navigate.
+    expect(
+      within(nav).queryByRole("link", { name: fr.app.nav.videos }),
+    ).not.toBeInTheDocument();
   });
 
-  test("marks the current section with aria-current", () => {
+  test("marks the current section inert with aria-current and never links to itself", () => {
     render(<AppHeader dict={fr} locale="fr" currentSection="documents" />);
     const nav = screen.getByRole("navigation", { name: fr.app.nav.ariaLabel });
+    // The current section: present, aria-current, but not a link (a click on it
+    // must not hard-navigate and tear down a live-analysis session).
+    const current = within(nav).getByText(fr.app.nav.documents);
+    expect(current).toHaveAttribute("aria-current", "page");
     expect(
-      within(nav).getByRole("link", { name: fr.app.nav.documents }),
-    ).toHaveAttribute("aria-current", "page");
-    expect(
-      within(nav).getByRole("link", { name: fr.app.nav.videos }),
-    ).not.toHaveAttribute("aria-current");
+      within(nav).queryByRole("link", { name: fr.app.nav.documents }),
+    ).not.toBeInTheDocument();
+    // The inactive section stays a link with no aria-current.
+    const videos = within(nav).getByRole("link", { name: fr.app.nav.videos });
+    expect(videos).toHaveAttribute("href", "/app");
+    expect(videos).not.toHaveAttribute("aria-current");
   });
 
   test("shows the brand wordmark and the sign-out control", () => {

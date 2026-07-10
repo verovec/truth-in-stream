@@ -46,12 +46,14 @@ describe("anchorSentence", () => {
     expect(range?.endOffset).toBe(7);
   });
 
-  test("anchors across a hyphenated line break (item boundary)", () => {
-    // "inter-" ends one visual line, "national" continues the next; extraction
-    // stored the de-hyphenated "international".
+  test("anchors across an item boundary with a preserved hard hyphen", () => {
+    // "inter-" ends one visual line, "national" continues the next. A hard hyphen
+    // is left intact (only soft hyphens are stripped), so extraction stored
+    // "inter- national concerne" and the anchor index reproduces it identically -
+    // both engines share the normalizer, so the sentence still anchors.
     const index = buildPageAnchorIndex(["inter-", "national concerne"]);
-    expect(index.text).toBe("international concerne");
-    const range = anchorSentence(index, "international concerne", 1);
+    expect(index.text).toBe("inter- national concerne");
+    const range = anchorSentence(index, "inter- national concerne", 1);
     expect(range).not.toBeNull();
     // The 'i' of "inter-" starts the match; the item still owns raw offset 0.
     expect(range?.startItem).toBe(0);

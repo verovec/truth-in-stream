@@ -8,6 +8,7 @@ import {
   requestUpload,
 } from "@/lib/video/api";
 import { putWithProgress, type PutUploader } from "@/lib/video/upload";
+import { deriveTitle, failureMessage } from "@/lib/upload/filename";
 
 // UploadError is why a job failed, kept as data rather than a rendered string so
 // the tile can localize it: an unsupported file type is a fixed, translatable
@@ -39,18 +40,6 @@ type UseVideoUploadsOptions = {
   // onUploaded fires once a job's object is confirmed ready in storage.
   onUploaded?: (video: LibraryVideo) => void;
 };
-
-function deriveTitle(fileName: string): string {
-  const dot = fileName.lastIndexOf(".");
-  const base = dot > 0 ? fileName.slice(0, dot) : fileName;
-  return base.trim() || "Untitled video";
-}
-
-// The raw backend/transport message when the failure carried one, else null so
-// the tile shows its localized generic fallback rather than baked-in English.
-function failureMessage(err: unknown): string | null {
-  return err instanceof Error ? err.message : null;
-}
 
 export function useVideoUploads({
   uploader = putWithProgress,
@@ -137,7 +126,7 @@ export function useVideoUploads({
       const toRun: { id: string; title: string; file: File }[] = [];
       for (const file of files) {
         const id = crypto.randomUUID();
-        const title = deriveTitle(file.name);
+        const title = deriveTitle(file.name, "Untitled video");
         if (!isAcceptedVideoType(file.type)) {
           started.push({
             id,

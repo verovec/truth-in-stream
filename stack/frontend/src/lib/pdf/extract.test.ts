@@ -36,4 +36,35 @@ describe("extractDocument", () => {
     expect(received).not.toBeNull();
     expect(new Uint8Array(received!)).toEqual(new Uint8Array([1, 2, 3]));
   });
+
+  test("threads the abort signal to the reader", async () => {
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    await extractDocument(
+      pdfFile(),
+      async (_data, signal) => {
+        seen = signal;
+        return ["Une phrase."];
+      },
+      controller.signal,
+    );
+    expect(seen).toBe(controller.signal);
+  });
+
+  test("rejects before reading when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let readerCalled = false;
+    await expect(
+      extractDocument(
+        pdfFile(),
+        async () => {
+          readerCalled = true;
+          return ["Une phrase."];
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow();
+    expect(readerCalled).toBe(false);
+  });
 });

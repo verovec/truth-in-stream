@@ -65,7 +65,7 @@ const resolvingUploader: PutUploader = async (_p, _f, onProgress) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("useDocumentUploads", () => {
-  test("extracts, requests, uploads, and confirms a PDF to a ready record", async () => {
+  test("extracts, requests, uploads, and confirms a PDF, then drops the ready job", async () => {
     stubBackend(uploadRoutes());
     const onUploaded = vi.fn();
     const { result } = renderHook(() =>
@@ -81,7 +81,9 @@ describe("useDocumentUploads", () => {
     expect(result.current.jobs[0].title).toBe("Mon Rapport");
     expect(result.current.jobs[0].state.status).toBe("extracting");
 
-    await waitFor(() => expect(result.current.jobs[0].state.status).toBe("ready"));
+    // On success the parent lifts the record to a real card via onUploaded and
+    // the ready job is pruned, so state does not accumulate dead entries.
+    await waitFor(() => expect(result.current.jobs).toHaveLength(0));
     expect(onUploaded).toHaveBeenCalledWith(expect.objectContaining({ id: "doc-9", status: "ready" }));
   });
 
@@ -139,6 +141,37 @@ describe("useDocumentUploads", () => {
     await waitFor(() => expect(result.current.jobs[0].state.status).toBe("error"));
     const state = result.current.jobs[0].state;
     expect(state.status === "error" && state.error.kind).toBe("failed");
+  });
+
+  test("accepts a drag-dropped PDF whose browser reports an empty MIME", async () => {
+    stubBackend(uploadRoutes());
+    const { result } = renderHook(() =>
+      useDocumentUploads({ uploader: resolvingUploader, extractor: async () => extraction(2) }),
+    );
+    // A file dragged from some OS contexts reports type "" but is a real PDF.
+    act(() =>
+      result.current.startUploads([new File(["x".repeat(20)], "rapport.pdf", { type: "" })]),
+    );
+    expect(result.current.jobs[0].state.status).toBe("extracting");
+    await waitFor(() => expect(result.current.jobs).toHaveLength(0));
+  });
+
+  test("passes the job's abort signal to the extractor", async () => {
+    stubBackend(uploadRoutes());
+    let seenSignal: AbortSignal | undefined;
+    const { result } = renderHook(() =>
+      useDocumentUploads({
+        uploader: resolvingUploader,
+        extractor: async (_file, signal) => {
+          seenSignal = signal;
+          return extraction(2);
+        },
+      }),
+    );
+    act(() => result.current.startUploads([pdf()]));
+    await waitFor(() => expect(result.current.jobs).toHaveLength(0));
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenSignal?.aborted).toBe(false);
   });
 
   test("dismiss aborts an in-flight job and removes it", async () => {

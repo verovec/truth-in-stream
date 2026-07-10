@@ -213,8 +213,13 @@ func TestListDocumentsCountsAndOrder(t *testing.T) {
 		{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1},
 		{Seq: 1, Page: 1, Text: "Deux.", Occurrence: 1},
 	}
+	// Both documents complete extraction so they are ready library rows; a
+	// pending document is excluded from the list (asserted separately).
 	if _, err := store.StoreDocumentExtraction(ctx, older.ID, 1, sentences); err != nil {
 		t.Fatalf("extraction: %v", err)
+	}
+	if _, err := store.StoreDocumentExtraction(ctx, newer.ID, 1, sentences); err != nil {
+		t.Fatalf("extraction newer: %v", err)
 	}
 	seedTestClaim(ctx, t, store, older.ID, 0, "c-1", "credible", "[]")
 	seedTestClaim(ctx, t, store, older.ID, 0, "c-2", "credible", "[]")
@@ -243,6 +248,38 @@ func TestListDocumentsCountsAndOrder(t *testing.T) {
 	}
 	if list[0].CredibleClaims != 0 || list[0].DisputedClaims != 0 {
 		t.Errorf("claimless counts = %d/%d, want 0/0", list[0].CredibleClaims, list[0].DisputedClaims)
+	}
+}
+
+func TestListDocumentsExcludesPending(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	// A pending document is an upload whose extraction was never ingested (an
+	// over-cap rejection or an abandoned upload); it must not surface in the
+	// library as a permanent "Pending" ghost card.
+	pending := createTestDocument(ctx, t, store, "Pending")
+	ready := createTestDocument(ctx, t, store, "Ready")
+	if _, err := store.StoreDocumentExtraction(ctx, ready.ID, 1, []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Une.", Occurrence: 1},
+	}); err != nil {
+		t.Fatalf("extraction: %v", err)
+	}
+
+	list, err := store.ListDocuments(ctx)
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("listed %d documents, want 1 (pending excluded)", len(list))
+	}
+	if list[0].ID != ready.ID {
+		t.Errorf("listed id = %s, want the ready document %s", list[0].ID, ready.ID)
+	}
+	for _, item := range list {
+		if item.ID == pending.ID {
+			t.Errorf("pending document %s appeared in the library list", pending.ID)
+		}
 	}
 }
 

@@ -5,12 +5,13 @@ import {
   DOCUMENT_CONTENT_TYPE,
   type DocumentRecord,
   ingestExtraction,
-  isAcceptedDocumentType,
+  isAcceptedDocumentFile,
   requestDocumentUpload,
 } from "@/lib/documents/api";
 import { extractDocument, ScannedPdfError } from "@/lib/pdf/extract";
 import type { ExtractionResult } from "@/lib/pdf/extract";
 import { putWithProgress, type PutUploader } from "@/lib/video/upload";
+import { deriveTitle, failureMessage } from "@/lib/upload/filename";
 
 // DocumentUploadError is why a job failed, kept as data so the tile localizes
 // it. unsupported (not a PDF) and scanned (no extractable text) are rejected
@@ -44,25 +45,22 @@ type UseDocumentUploadsOptions = {
   // uploader is the PUT transport; injected so tests avoid XMLHttpRequest.
   uploader?: PutUploader;
   // extractor runs the browser pdf.js text extraction; injected so tests avoid
-  // loading pdf.js.
-  extractor?: (file: File) => Promise<ExtractionResult>;
+  // loading pdf.js. The signal cancels a long parse when the job is dismissed or
+  // the hook unmounts.
+  extractor?: (file: File, signal?: AbortSignal) => Promise<ExtractionResult>;
   // onUploaded fires once a document's extraction is confirmed ready.
   onUploaded?: (document: DocumentRecord) => void;
 };
 
-function deriveTitle(fileName: string): string {
-  const dot = fileName.lastIndexOf(".");
-  const base = dot > 0 ? fileName.slice(0, dot) : fileName;
-  return base.trim() || "Untitled document";
-}
-
-function failureMessage(err: unknown): string | null {
-  return err instanceof Error ? err.message : null;
-}
+// defaultExtractor adapts extractDocument (whose second parameter is the page
+// reader seam) to the hook's (file, signal) shape so the abort signal reaches
+// pdf.js while the real reader stays the default.
+const defaultExtractor = (file: File, signal?: AbortSignal) =>
+  extractDocument(file, undefined, signal);
 
 export function useDocumentUploads({
   uploader = putWithProgress,
-  extractor = extractDocument,
+  extractor = defaultExtractor,
   onUploaded,
 }: UseDocumentUploadsOptions) {
   const [jobs, setJobs] = useState<DocumentUploadJob[]>([]);
@@ -99,8 +97,12 @@ export function useDocumentUploads({
       let confirmed: DocumentRecord | null = null;
       try {
         // Extract-first: a scanned PDF throws here and is rejected before any
-        // server call.
-        const extraction = await callbacks.current.extractor(file);
+        // server call. The signal cancels the parse if the job is dismissed
+        // mid-extraction.
+        const extraction = await callbacks.current.extractor(
+          file,
+          controller.signal,
+        );
         setState(id, { status: "requesting" });
         const ticket = await requestDocumentUpload(
           {
@@ -112,7 +114,9 @@ export function useDocumentUploads({
         );
         if (extraction.sentences.length > ticket.maxSentences) {
           // The document exceeds the analysis cap; stop before the upload PUT so
-          // no bytes are transferred (the pending record can be deleted).
+          // no bytes are transferred. The pending record left behind never
+          // reaches ready, and the library list excludes pending rows, so it
+          // does not surface as a ghost card.
           setState(id, {
             status: "error",
             error: { kind: "tooLong", max: ticket.maxSentences },
@@ -157,9 +161,13 @@ export function useDocumentUploads({
       }
       // Notify outside the try so a throw in onUploaded cannot reclassify a
       // genuine success as failed. confirmed is non-null only on the success
-      // path (the catch always returns).
+      // path (the catch always returns). The parent lifts the confirmed record
+      // to a real document card, so the ready job is then dropped from state -
+      // without this, a succeeded upload leaves a permanent {status:'ready'}
+      // entry that the display filters out but never garbage-collects.
       if (confirmed) {
         callbacks.current.onUploaded?.(confirmed);
+        setJobs((prev) => prev.filter((job) => job.id !== id));
       }
     },
     [setState],
@@ -171,8 +179,8 @@ export function useDocumentUploads({
       const toRun: { id: string; title: string; file: File }[] = [];
       for (const file of files) {
         const id = crypto.randomUUID();
-        const title = deriveTitle(file.name);
-        if (!isAcceptedDocumentType(file.type)) {
+        const title = deriveTitle(file.name, "Untitled document");
+        if (!isAcceptedDocumentFile(file.name, file.type)) {
           started.push({
             id,
             title,

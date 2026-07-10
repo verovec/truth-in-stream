@@ -5,6 +5,7 @@ import {
   getDocument,
   getDocumentClaims,
   ingestExtraction,
+  isAcceptedDocumentFile,
   listDocuments,
   reanalyseDocument,
   requestDocumentUpload,
@@ -108,6 +109,18 @@ describe("requestDocumentUpload", () => {
       maxSentences: 1500,
     });
     expect(ticket.upload).toMatchObject({ url: "https://put/doc-1", method: "PUT" });
+  });
+});
+
+describe("isAcceptedDocumentFile", () => {
+  test.each([
+    ["a declared PDF", "rapport.pdf", "application/pdf", true],
+    ["an empty MIME with a .pdf name", "rapport.pdf", "", true],
+    ["a generic binary MIME with a .pdf name", "RAPPORT.PDF", "application/octet-stream", true],
+    ["an empty MIME without a .pdf name", "rapport", "", false],
+    ["a declared non-PDF even with a .pdf name", "rapport.pdf", "image/png", false],
+  ])("%s -> %s", (_name, fileName, type, expected) => {
+    expect(isAcceptedDocumentFile(fileName, type)).toBe(expected);
   });
 });
 

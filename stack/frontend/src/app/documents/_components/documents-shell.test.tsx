@@ -18,9 +18,14 @@ describe("DocumentsShell", () => {
       <DocumentsShell role="guest" authenticated locale="fr" dict={fr} />,
     );
     const nav = screen.getByRole("navigation", { name: fr.app.nav.ariaLabel });
+    // The current section is inert (aria-current, not a link) so it cannot
+    // navigate; the Videos section is the link.
     expect(
-      within(nav).getByRole("link", { name: fr.app.nav.documents }),
+      within(nav).getByText(fr.app.nav.documents),
     ).toHaveAttribute("aria-current", "page");
+    expect(
+      within(nav).getByRole("link", { name: fr.app.nav.videos }),
+    ).toHaveAttribute("href", "/app");
     // The documents area heading renders under the header.
     expect(
       screen.getByRole("heading", { name: fr.app.documents.heading }),

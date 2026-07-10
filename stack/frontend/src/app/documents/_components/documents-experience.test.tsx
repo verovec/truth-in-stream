@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { json, stubBackend } from "@/test/fact-check";
@@ -138,6 +138,160 @@ describe("DocumentsExperience", () => {
     await waitFor(() =>
       expect(screen.getByText(fr.app.documents.analysis.analysing)).toBeInTheDocument(),
     );
+  });
+
+  test("keeps upload tiles visible while the catalog load has failed", async () => {
+    // A hanging extractor keeps the job in its first state so the tile stays on
+    // screen; the catalog below shows its error at the same time.
+    const extractor = () => new Promise<ExtractionResult>(() => {});
+    render(
+      <DocumentsExperience
+        role="admin"
+        loadDocuments={async () => {
+          throw new Error("network down");
+        }}
+        extractor={extractor}
+        uploader={async () => {}}
+      />,
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("network down");
+
+    const input = screen.getByLabelText(fr.app.documents.uploader.inputAria);
+    const file = new File(["x".repeat(20)], "Rapport.pdf", { type: "application/pdf" });
+    await userEvent.upload(input, file);
+
+    // The upload feedback appears even though the list failed to load, and the
+    // load error is still shown.
+    expect(
+      await screen.findByText(fr.app.documents.uploader.extracting),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("network down");
+  });
+
+  test("stops polling a stuck document after the no-progress idle bound", async () => {
+    // A document stuck at "analysing" that never advances: the poll returns the
+    // same signature every tick, so idle ticks accrue and polling halts.
+    const stuck = libraryDoc({ id: "doc-stuck", analysisStatus: "analysing", sentencesProcessed: 3 });
+    const poll = vi.fn(async () => [stuck]);
+    render(
+      <DocumentsExperience
+        loadDocuments={async () => [stuck]}
+        pollDocuments={poll}
+        pollIntervalMs={5}
+        maxIdlePolls={2}
+      />,
+    );
+    await screen.findByText("Rapport annuel");
+    // Once no progress is seen for maxIdlePolls ticks the interval is cleared, so
+    // the call count stops growing.
+    await waitFor(() => expect(poll.mock.calls.length).toBeGreaterThanOrEqual(3));
+    const stopped = poll.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(poll).toHaveBeenCalledTimes(stopped);
+  });
+
+  test("keeps polling while a document is still making progress", async () => {
+    // sentencesProcessed climbs each tick, so the progress signature changes and
+    // the idle counter never reaches the bound - polling continues well past it.
+    let processed = 0;
+    const poll = vi.fn(async () => {
+      processed += 1;
+      return [
+        libraryDoc({
+          id: "doc-progress",
+          analysisStatus: "analysing",
+          sentencesProcessed: processed,
+        }),
+      ];
+    });
+    render(
+      <DocumentsExperience
+        loadDocuments={async () => [
+          libraryDoc({ id: "doc-progress", analysisStatus: "analysing", sentencesProcessed: 0 }),
+        ]}
+        pollDocuments={poll}
+        pollIntervalMs={5}
+        maxIdlePolls={2}
+      />,
+    );
+    await screen.findByText("Rapport annuel");
+    // Far more polls than maxIdlePolls, because each tick observes progress.
+    await waitFor(() => expect(poll.mock.calls.length).toBeGreaterThan(6));
+  });
+
+  test("preserves an optimistic upload card when the initial load resolves later", async () => {
+    stubBackend([
+      {
+        match: (u, i) => u.endsWith("/api/documents/uploads") && i?.method === "POST",
+        responses: [
+          json(201, {
+            document_id: "doc-9",
+            object_key: "documents/doc-9/original.pdf",
+            status: "pending",
+            upload: { url: "https://storage/put", method: "PUT", headers: {} },
+            max_sentences: 1500,
+          }),
+        ],
+      },
+      {
+        match: (u) => u.includes("/api/documents/doc-9/extraction"),
+        responses: [
+          json(200, {
+            id: "doc-9",
+            title: "Nouveau",
+            status: "ready",
+            analysis_status: "complete",
+            content_type: "application/pdf",
+            size_bytes: 20,
+            page_count: 1,
+            sentences_total: 1,
+            sentences_processed: 1,
+            analysis_runs: 1,
+            created_at: "2026-07-09T11:00:00Z",
+            updated_at: "2026-07-09T11:00:00Z",
+          }),
+        ],
+      },
+    ]);
+    // The initial catalog load is deferred so the upload's onUploaded fires while
+    // it is still in flight - the exact race that a blind setDocuments(loaded)
+    // would lose.
+    let resolveLoad: (docs: LibraryDocument[]) => void = () => {};
+    const loadDocuments = () =>
+      new Promise<LibraryDocument[]>((resolve) => {
+        resolveLoad = resolve;
+      });
+    const extractor = async (): Promise<ExtractionResult> => ({
+      pageCount: 1,
+      sentences: [{ seq: 0, page: 1, text: "Une phrase.", occurrence: 1 }],
+    });
+    const uploader: PutUploader = async (_p, _f, onProgress) => onProgress(10, 10);
+
+    render(
+      <DocumentsExperience
+        role="admin"
+        loadDocuments={loadDocuments}
+        pollDocuments={async () => []}
+        extractor={extractor}
+        uploader={uploader}
+      />,
+    );
+
+    const input = await screen.findByLabelText(fr.app.documents.uploader.inputAria);
+    const file = new File(["x".repeat(20)], "Nouveau.pdf", { type: "application/pdf" });
+    await userEvent.upload(input, file);
+    // Wait until the upload has confirmed (its tile is pruned) before the load
+    // resolves, so the optimistic card is the only trace of the new document.
+    await waitFor(() =>
+      expect(
+        screen.queryByText(fr.app.documents.uploader.finalizing),
+      ).not.toBeInTheDocument(),
+    );
+
+    // The backend list, captured before the upload existed, comes back empty.
+    act(() => resolveLoad([]));
+    expect(await screen.findByText("Nouveau")).toBeInTheDocument();
   });
 
   test("rejects a scanned PDF inline without listing a card", async () => {

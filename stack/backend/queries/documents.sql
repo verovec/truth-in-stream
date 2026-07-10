@@ -14,12 +14,16 @@ WHERE id = $1;
 -- Library rows, newest first, each with its verdict summary counts. The FILTER
 -- counts read stored claims only; a document with no claims counts zero.
 -- sqlc.embed keeps the row a real db.Document, so a future documents column
--- cannot silently drop out of the list mapping.
+-- cannot silently drop out of the list mapping. Pending documents are excluded:
+-- a pending row is an upload whose extraction was never ingested (an over-cap
+-- rejection, an abandoned or failed upload), so it is not a real library
+-- document and must not surface as a permanent "Pending" ghost card.
 SELECT sqlc.embed(d),
        count(c.id) FILTER (WHERE c.verdict = 'credible') AS credible_claims,
        count(c.id) FILTER (WHERE c.verdict = 'disputed') AS disputed_claims
 FROM documents d
 LEFT JOIN document_claims c ON c.document_id = d.id
+WHERE d.status <> 'pending'
 GROUP BY d.id
 ORDER BY d.created_at DESC, d.id;
 

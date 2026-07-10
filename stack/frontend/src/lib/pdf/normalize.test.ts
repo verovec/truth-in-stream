@@ -9,11 +9,15 @@ describe("normalizeText", () => {
     // extractor agree on the same code points at anchor time.
     ["folds the fi ligature (NFKC)", "ﬁnance", "finance"],
     ["folds the fl ligature (NFKC)", "conﬂit", "conflit"],
-    // De-hyphenation joins a word split across a line break (hyphen + whitespace
-    // + continuation) while leaving genuine compounds intact.
-    ["joins a line-broken word", "inter-\nnational", "international"],
-    ["joins a space-broken hyphenation", "inter- national", "international"],
+    // A soft hyphen (U+00AD) is the invisible line-break hyphenation marker;
+    // stripping it rejoins the word.
+    ["strips a soft hyphen to rejoin a word", "inter­national", "international"],
+    ["strips a soft hyphen at a line break", "inter­\nnational", "international"],
+    // A hard hyphen is left intact: French compounds (peut-être, arc-en-ciel)
+    // carry meaning-bearing hyphens, and joining a hyphen-broken compound would
+    // corrupt far more words than the rare born-digital hard line-break hyphen.
     ["keeps a genuine compound hyphen", "arc-en-ciel", "arc-en-ciel"],
+    ["keeps a hyphenated compound broken across a line", "peut-\nêtre", "peut- être"],
     ["keeps a numeric range with spaced hyphen", "12 - 15", "12 - 15"],
     ["leaves an already-clean sentence unchanged", "La France compte 68 millions d'habitants.", "La France compte 68 millions d'habitants."],
   ])("%s", (_name, input, expected) => {
@@ -21,7 +25,7 @@ describe("normalizeText", () => {
   });
 
   test("is idempotent (normalizing twice equals once)", () => {
-    const messy = "conﬂit inter-\nnational  déjà  normalisé";
+    const messy = "conﬂit inter­national  déjà  normalisé";
     const once = normalizeText(messy);
     expect(normalizeText(once)).toBe(once);
   });
@@ -41,12 +45,16 @@ describe("normalizeWithMap", () => {
     ["  bonjour  "],
     ["ﬁnance"],
     ["conﬂit"],
+    // Soft hyphen inline and at a line break: both engines strip it identically.
+    ["inter­national"],
+    ["inter­\nnational"],
+    // Hard hyphens are preserved identically by both engines.
     ["inter-\nnational"],
     ["inter- national"],
     ["arc-en-ciel"],
     ["12 - 15"],
     ["La France compte 68 millions d'habitants."],
-    ["conﬂit inter-\nnational  déjà  normalisé"],
+    ["conﬂit inter­\nnational  déjà  normalisé"],
     ["  \n\t  "],
     [""],
     // A precomposed accent (é as U+00E9) and a decomposed one (e + U+0301) must
@@ -59,7 +67,7 @@ describe("normalizeWithMap", () => {
   });
 
   test("the map has one source index per output character, in range and ordered", () => {
-    const raw = "conﬂit inter-\nnational  déjà";
+    const raw = "conﬂit inter­\nnational  déjà";
     const { text, sourceIndex } = normalizeWithMap(raw);
     expect(sourceIndex).toHaveLength(text.length);
     for (let i = 0; i < sourceIndex.length; i += 1) {
@@ -116,12 +124,14 @@ describe("normalizeWithMap", () => {
     expect(sourceIndex[3]).toBe(4);
   });
 
-  test("a line-broken word maps the continuation past the dropped hyphen and break", () => {
-    const raw = "inter- national";
+  test("a soft-hyphen line break maps the continuation past the dropped marker and break", () => {
+    // "inter" + U+00AD + "\n" + "national": the soft hyphen (index 5) and the
+    // line break (index 6) are dropped so the word rejoins.
+    const raw = "inter­\nnational";
     const { text, sourceIndex } = normalizeWithMap(raw);
     expect(text).toBe("international");
-    // "inter" maps to 0..4; the continuation 'n' skips the dropped "- " to the
-    // raw 'n' at index 7.
+    // "inter" maps to 0..4; the continuation 'n' skips the dropped soft hyphen and
+    // newline to the raw 'n' at index 7.
     expect(sourceIndex[4]).toBe(4);
     expect(sourceIndex[5]).toBe(7);
   });
