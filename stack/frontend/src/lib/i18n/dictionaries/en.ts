@@ -142,6 +142,7 @@ export const en: Dictionary = {
       documents: {
         heading: "Documents",
         description: "Upload PDFs to analyse.",
+        hint: "Once uploaded, the PDF appears on the Documents page for every user to read.",
       },
     },
     documents: {
@@ -151,7 +152,6 @@ export const en: Dictionary = {
       loadErrorFallback: "Documents could not load.",
       retry: "Retry",
       empty: "No documents yet.",
-      emptyAdmin: "No documents yet. Upload a PDF to get started.",
       pageCount: { one: "{count} page", other: "{count} pages" },
       status: { ready: "Ready", pending: "Pending", failed: "Failed" },
       analysis: {

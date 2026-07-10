@@ -147,6 +147,7 @@ export const fr = {
       documents: {
         heading: "Documents",
         description: "Importez des PDF à analyser.",
+        hint: "Une fois importé, le PDF apparaît sur la page Documents, consultable par tous les utilisateurs.",
       },
     },
     documents: {
@@ -156,7 +157,6 @@ export const fr = {
       loadErrorFallback: "Les documents n'ont pas pu se charger.",
       retry: "Réessayer",
       empty: "Aucun document pour le moment.",
-      emptyAdmin: "Aucun document pour le moment. Importez un PDF pour commencer.",
       pageCount: { one: "{count} page", other: "{count} pages" },
       status: { ready: "Prêt", pending: "En cours", failed: "Échec" },
       analysis: {
