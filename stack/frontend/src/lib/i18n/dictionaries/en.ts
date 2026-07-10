@@ -191,6 +191,10 @@ export const en: Dictionary = {
           not_covered: "Outside the reference corpus",
         },
       },
+      highlight: {
+        layerAria: "Highlighted sentences",
+        aria: "{verdict}: {snippet}",
+      },
       reanalyse: {
         action: "Reanalyze",
         retry: "Retry analysis",

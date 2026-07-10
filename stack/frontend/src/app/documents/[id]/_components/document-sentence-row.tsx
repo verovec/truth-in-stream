@@ -35,6 +35,7 @@ export const DocumentSentenceRow = memo(function DocumentSentenceRow({
 
   return (
     <li
+      data-seq={sentence.seq}
       aria-current={selected ? "true" : undefined}
       className={`rounded-lg border transition-colors ${
         selected ? LIVE_ROW_EMPHASIZED_CLASS : LIVE_ROW_BASE_CLASS

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useDocumentAnalysis } from "@/hooks/use-document-analysis";
@@ -15,7 +15,22 @@ import {
 import { formatTemplate } from "@/lib/i18n/text";
 import { DocumentProgress } from "./document-progress";
 import { FactCheckPanel } from "./fact-check-panel";
+import {
+  toHighlightSentences,
+  type PageHighlightSentence,
+} from "./highlight-sentences";
 import { ReanalyseControl } from "./reanalyse-control";
+
+// The viewer accepts the highlight sentences and the shared selection seam so it
+// can draw and drive the in-PDF highlights; the panel-only stub in tests just
+// ignores them. Defaulted optional so a plain `url`-only stub stays a valid seam.
+type PdfViewerProps = {
+  url: string;
+  sentences?: readonly PageHighlightSentence[];
+  selectedSeq?: number | null;
+  selectToken?: number;
+  onSelect?: (seq: number) => void;
+};
 
 // The react-pdf viewer touches browser globals during import, so it loads
 // client-side only. Tests inject a stub through the pdfViewer prop, so this
@@ -46,7 +61,7 @@ export function DocumentExperience({
   loadClaims?: (id: string, signal?: AbortSignal) => Promise<DocumentAnalysis>;
   reanalyse?: (id: string, signal?: AbortSignal) => Promise<void>;
   pollIntervalMs?: number;
-  pdfViewer?: ComponentType<{ url: string }>;
+  pdfViewer?: ComponentType<PdfViewerProps>;
 }) {
   const { t } = useAppI18n();
   const { snapshot, refresh } = useDocumentAnalysis({
@@ -55,7 +70,28 @@ export function DocumentExperience({
     loadClaims,
     pollIntervalMs,
   });
-  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+  // One selection seam drives both panes in both directions. The token bumps on
+  // every select so re-selecting the same sentence still re-scrolls and re-flashes
+  // the PDF, and the panel re-scrolls to its card.
+  const [selection, setSelection] = useState<{
+    seq: number | null;
+    token: number;
+  }>({ seq: null, token: 0 });
+  // Stable identity (the updater is functional, no external deps) so the memoized
+  // sentence rows re-render only when their own emphasis flips, not because the
+  // onSelect handler changed reference on every render or poll tick.
+  const select = useCallback(
+    (seq: number) =>
+      setSelection((previous) => ({ seq, token: previous.token + 1 })),
+    [],
+  );
+  const highlightSentences = useMemo(
+    () =>
+      snapshot.status === "ready"
+        ? toHighlightSentences(snapshot.sentences)
+        : [],
+    [snapshot],
+  );
 
   if (snapshot.status === "loading") {
     return (
@@ -141,7 +177,13 @@ export function DocumentExperience({
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0">
           {pdfUrl ? (
-            <PdfViewer url={pdfUrl} />
+            <PdfViewer
+              url={pdfUrl}
+              sentences={highlightSentences}
+              selectedSeq={selection.seq}
+              selectToken={selection.token}
+              onSelect={select}
+            />
           ) : (
             <p className="rounded-xl border border-black/10 p-4 text-sm text-ink/60 dark:border-white/10 dark:text-paper/60">
               {t.viewer.pdf.unavailable}
@@ -154,8 +196,9 @@ export function DocumentExperience({
           </h2>
           <FactCheckPanel
             sentences={sentences}
-            selectedSeq={selectedSeq}
-            onSelect={setSelectedSeq}
+            selectedSeq={selection.seq}
+            selectToken={selection.token}
+            onSelect={select}
           />
         </section>
       </div>

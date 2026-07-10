@@ -5,20 +5,42 @@
 // render, so it must never be imported on the server. Importing the pdfjs config
 // module configures the worker (served from public/) on the same pinned build as
 // the viewer. The text-layer and annotation-layer stylesheets align the selectable
-// text spans with the rendered canvas, which the in-PDF highlight card depends on.
+// text spans with the rendered canvas, which the in-PDF highlight overlay depends on.
 import "@/lib/pdf/pdfjs";
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 
-import { useEffect, useRef, useState } from "react";
-import { Document, Page } from "react-pdf";
-import { formatTemplate } from "@/lib/i18n/text";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Document } from "react-pdf";
 import { useAppI18n } from "@/components/i18n/app-i18n";
+import type { AnchoredSentence } from "@/lib/pdf/overlay";
+import type { PageHighlightSentence } from "./highlight-sentences";
+import { PdfPage } from "./pdf-page";
 
-// PdfViewer renders every page of the PDF in a single scrollable column. Pages
-// are sized to the measured container width so the document is responsive and the
-// text layer stays aligned with the canvas at any width.
-export default function PdfViewer({ url }: { url: string }) {
+// A stable empty array for the no-highlights case (both the whole-document
+// default and a page with none), so an unhighlighted page never hands the overlay
+// a fresh array identity that would re-run its measure effect on every render.
+const NO_SENTENCES: readonly PageHighlightSentence[] = [];
+
+// PdfViewer renders every page of the PDF in a single scrollable column with its
+// fact-check highlights overlaid. Pages are sized to the measured container width
+// so the document is responsive and the text layer stays aligned with the canvas
+// at any width. Selection is bidirectional: clicking a highlight calls onSelect
+// (which scrolls the side panel to the sentence's card), and a selection made in
+// the panel scrolls the matching page into view and flashes its highlight.
+export default function PdfViewer({
+  url,
+  sentences = NO_SENTENCES,
+  selectedSeq = null,
+  selectToken = 0,
+  onSelect = () => {},
+}: {
+  url: string;
+  sentences?: readonly PageHighlightSentence[];
+  selectedSeq?: number | null;
+  selectToken?: number;
+  onSelect?: (seq: number) => void;
+}) {
   const { t } = useAppI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number | undefined>(undefined);
@@ -35,6 +57,19 @@ export default function PdfViewer({ url }: { url: string }) {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+
+  const sentencesByPage = useMemo(() => {
+    const map = new Map<number, AnchoredSentence[]>();
+    for (const sentence of sentences) {
+      const list = map.get(sentence.page);
+      if (list) {
+        list.push(sentence);
+      } else {
+        map.set(sentence.page, [sentence]);
+      }
+    }
+    return map;
+  }, [sentences]);
 
   return (
     <div
@@ -57,15 +92,20 @@ export default function PdfViewer({ url }: { url: string }) {
         }
         className="flex w-full flex-col items-center gap-4"
       >
-        {Array.from({ length: numPages }, (_value, index) => (
-          <Page
-            key={index + 1}
-            pageNumber={index + 1}
-            width={width}
-            aria-label={formatTemplate(t.viewer.pdf.page, { page: index + 1 })}
-            className="max-w-full overflow-hidden rounded-md shadow-sm"
-          />
-        ))}
+        {Array.from({ length: numPages }, (_value, index) => {
+          const pageNumber = index + 1;
+          return (
+            <PdfPage
+              key={pageNumber}
+              pageNumber={pageNumber}
+              width={width}
+              sentences={sentencesByPage.get(pageNumber) ?? NO_SENTENCES}
+              selectedSeq={selectedSeq}
+              selectToken={selectToken}
+              onSelect={onSelect}
+            />
+          );
+        })}
       </Document>
     </div>
   );

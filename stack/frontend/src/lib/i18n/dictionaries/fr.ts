@@ -194,6 +194,10 @@ export const fr = {
           not_covered: "Hors du corpus de référence",
         },
       },
+      highlight: {
+        layerAria: "Phrases surlignées",
+        aria: "{verdict} : {snippet}",
+      },
       reanalyse: {
         action: "Relancer l'analyse",
         retry: "Réessayer l'analyse",
