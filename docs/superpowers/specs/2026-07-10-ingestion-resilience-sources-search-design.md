@@ -124,6 +124,19 @@ queue messages consumed by the existing workers into `evidence_chunks` rows (new
 new `source` value); one connector per protocol family, many datasets per connector; strict
 legal guardrails.
 
+Operational parity: every new connector runs through the exact same channel as the four
+existing sources — scheduled producer publishing to a versioned RabbitMQ queue, an existing
+consumer draining it — and is operable on the on-demand EC2 ingestion hosts (crawler and
+consumer) through the existing SSM host tooling. The connector framework (B0) owns this:
+a registry entry extends the host compose file (`docker-compose.ingest.yml`), the source
+list `scripts/ingest-host.sh` validates, and the on-host secret materialisation
+(`scripts/ingest-fetch-env.sh`), so `ingest-host.sh crawler|consumer <source>` works for a
+new source with no bespoke wiring. No per-source Terraform: the `ingestion-host` module
+stays generic; per-source API keys are named Secrets Manager entries pushed with the
+existing secrets tooling and read on-host, never forwarded by the operator. Sources that
+publish existing job shapes (generic evidence, claim, vote) reuse the existing workers and
+queues, so the metrics lambda, alarms, and `/consumer` status paths cover them unchanged.
+
 Legal guardrails (apply to every source card):
 - Store claim text + categorical verdict + source URL only for fact-check outlets; never bulk
   full-text of editorial articles. Repeated systematic extraction from one outlet's site is a
@@ -134,7 +147,10 @@ Legal guardrails (apply to every source card):
 
 Priority connectors (from the 2026-07 source research):
 - B0 — Connector framework (after A2): a source-adapter registry so the scheduler and
-  compose wiring are table-driven; a generic evidence job shape; shared pagination/backoff.
+  compose wiring are table-driven; a generic evidence job shape; shared pagination/backoff;
+  registry-driven EC2-host wiring (ingest compose services, host-script source list, on-host
+  secret mapping) so every registered source is crawler/consumer-host operable like the
+  existing four.
 - B1 — SDMX connector: Eurostat (expanded datasets), ECB, OECD, Banque de France Webstat,
   INSEE Melodi/BDM where SDMX-compatible. One client, many endpoints.
 - B2 — OpenDataSoft connector: DREES (health/social), DARES (labor), URSSAF (employment),
