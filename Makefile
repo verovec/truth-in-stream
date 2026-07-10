@@ -7,6 +7,15 @@ COMPOSE    := docker compose
 # the one-shot migrate container the reset targets drive.
 COMPOSE_DB := postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable
 
+# Dedicated throwaway database for the backend integration tests. The store and
+# seed integration suites reset the schema (drop every known table, then reapply
+# all migrations) on each run, so they must NEVER point at the seeded
+# `truthinstream` dev database. `make itest` creates it on demand; this mirrors
+# CI's dedicated `test` database (.github/workflows/_test.yml). The DSN is the
+# host view (localhost + the published port), since `go test` runs on the host.
+TEST_DB_NAME      ?= truthinstream_test
+TEST_DATABASE_URL ?= postgres://postgres:dev@localhost:5432/$(TEST_DB_NAME)?sslmode=disable
+
 # Go toolchain used by `make bootstrap` to generate the operator credentials.
 # Override if `go` is not on PATH, e.g. `make bootstrap GO=/usr/local/go/bin/go`.
 GO         ?= go
@@ -73,7 +82,7 @@ ENV ?= prod
 SOURCE ?= wikipedia
 ACTION ?= up
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate test-db itest logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -249,6 +258,12 @@ insee-idempotency-check: ## INSEE re-run idempotency checkpoint against the real
 
 migrate: ## Apply all up migrations to the running Postgres
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up
+
+test-db: ## Create the throwaway integration-test database (truthinstream_test) if missing; idempotent, never touches the seeded dev DB
+	COMPOSE="$(COMPOSE)" TEST_DB_NAME="$(TEST_DB_NAME)" scripts/test-db.sh
+
+itest: test-db ## Run the backend integration suite against real pgvector using a throwaway DB (truthinstream_test), never the seeded dev DB: provisions it, then `go test -race ./...`. The safe local equivalent of CI's Go job
+	cd stack/backend && TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race ./...
 
 logs: ## Tail logs for all services
 	$(COMPOSE) logs -f

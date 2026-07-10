@@ -42,8 +42,14 @@ vet: ## go vet
 test: ## Unit tests (store integration tests skip without TEST_DATABASE_URL)
 	go test -race ./...
 
-test-integration: ## Run all tests, pointing the store integration tests at DATABASE_URL
-	TEST_DATABASE_URL="$(DATABASE_URL)" go test -race ./...
+# Throwaway database for the integration suite. The store and seed integration
+# tests reset the schema (drop the known tables, reapply every migration), so
+# this must NEVER be the seeded `truthinstream` dev database. Prefer `make itest`
+# from the repo root, which creates this database first; override for CI.
+TEST_DATABASE_URL ?= postgres://postgres:dev@localhost:5432/truthinstream_test?sslmode=disable
+
+test-integration: ## Run the suite against TEST_DATABASE_URL (throwaway truthinstream_test by default, never the seeded dev DB). Create it first: `make itest` from the repo root
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race ./...
 
 tidy: ## go mod tidy
 	go mod tidy

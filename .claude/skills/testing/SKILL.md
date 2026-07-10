@@ -21,8 +21,13 @@ Backend, from `stack/backend`:
 make fmt && make vet            # gofmt + go vet (CI: _lint.yml)
 golangci-lint run ./...         # CI: golangci-lint-action
 make sqlc-verify                # sqlc diff - required whenever SQL/migrations changed
-make test                       # go test -race ./... (integration tests skip w/o DB)
-make test-integration           # same suite against real pgvector (compose postgres up)
+make test                       # go test -race ./... (store/seed integration tests skip w/o DB)
+```
+
+Then, from the repo root, the integration suite against real pgvector:
+
+```sh
+make itest                      # provision a throwaway truthinstream_test DB, then go test -race ./...
 ```
 
 Frontend, from `stack/frontend`:
@@ -33,7 +38,7 @@ npx tsc --noEmit                # type-check - run even though CI lacks this job
 npm test                        # vitest run (CI: _test.yml)
 ```
 
-All eight commands pass or the PR does not open. `make test` alone is not the full backend suite - the store integration tests only run with a database: `docker compose up -d postgres` (root compose file, `pgvector/pgvector:pg16`, same image as CI) matches the Makefile's default `DATABASE_URL` exactly, so `make test-integration` then works with no flags. Note `make sqlc-verify`, `migrate-*`, and the compose database all need Docker running - that is by design (pinned tooling, no local installs).
+All eight commands pass or the PR does not open. `make test` alone is not the full backend suite - the store and seed integration tests only run with a database, and they reset the schema (drop the known tables, reapply every migration) on each run, so they must never point at the seeded `truthinstream` dev database. `make itest` (repo root) creates a dedicated `truthinstream_test` database on `pgvector/pgvector:pg16` (same image as CI) and runs the suite against it, exactly as CI's Go job runs against its own `test` database; `make test-db` does just the provisioning, and `stack/backend`'s `make test-integration` runs `go test` against `TEST_DATABASE_URL` (defaulting to that throwaway DB, which must already exist). Never point an integration run at the dev `DATABASE_URL`. Note `make sqlc-verify`, `migrate-*`, and the compose database all need Docker running - that is by design (pinned tooling, no local installs).
 
 ## CI contract (what the reusable workflows guarantee)
 
