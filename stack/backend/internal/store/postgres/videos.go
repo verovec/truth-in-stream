@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,10 @@ func (s *Store) CreateVideo(ctx context.Context, v domain.Video) (domain.Video, 
 	if !v.Status.Valid() {
 		return domain.Video{}, fmt.Errorf("postgres: create video: invalid status %q", v.Status)
 	}
+	channelID, err := optionalUUID(v.ChannelID)
+	if err != nil {
+		return domain.Video{}, fmt.Errorf("postgres: create video: invalid channel id %q: %w", v.ChannelID, err)
+	}
 	row, err := s.queries.CreateVideo(ctx, db.CreateVideoParams{
 		Title:       v.Title,
 		ObjectKey:   v.ObjectKey,
@@ -32,6 +37,8 @@ func (s *Store) CreateVideo(ctx context.Context, v domain.Video) (domain.Video, 
 		SizeBytes:   v.SizeBytes,
 		Status:      string(v.Status),
 		Kind:        string(v.Kind),
+		ChannelID:   channelID,
+		RecordedAt:  timestamptzValue(v.RecordedAt),
 	})
 	if err != nil {
 		return domain.Video{}, fmt.Errorf("postgres: create video: %w", err)
@@ -232,7 +239,8 @@ func (s *Store) SetVideoFailed(ctx context.Context, id, reason string) (domain.V
 
 // videoFromRow maps a generated row to the domain type. The stored UUID renders
 // as its canonical string form, the timestamps drop their pgtype wrapper, and a
-// NULL text column maps to the empty string.
+// NULL text, uuid, or timestamp column maps to the zero value (empty string /
+// zero time).
 func videoFromRow(r db.Video) domain.Video {
 	return domain.Video{
 		ID:          r.ID.String(),
@@ -246,6 +254,8 @@ func videoFromRow(r db.Video) domain.Video {
 		SourceID:    r.SourceID.String,
 		DurationMS:  r.DurationMs,
 		Error:       r.Error.String,
+		ChannelID:   nullUUIDString(r.ChannelID),
+		RecordedAt:  r.RecordedAt.Time,
 		CreatedAt:   r.CreatedAt.Time,
 		UpdatedAt:   r.UpdatedAt.Time,
 	}
@@ -255,4 +265,33 @@ func videoFromRow(r db.Video) domain.Video {
 // NULL so an absent source id or error is stored as NULL, not "".
 func textValue(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: s != ""}
+}
+
+// timestamptzValue wraps a Go time as a pgtype.Timestamptz, mapping the zero
+// time to SQL NULL so an absent recorded_at is stored as NULL, not the epoch.
+func timestamptzValue(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()}
+}
+
+// optionalUUID parses a canonical UUID string into a uuid.NullUUID, mapping the
+// empty string to SQL NULL. A non-empty but malformed id is an error rather than
+// a silent NULL, so a bad channel reference is caught at the write, not hidden.
+func optionalUUID(s string) (uuid.NullUUID, error) {
+	if s == "" {
+		return uuid.NullUUID{}, nil
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.NullUUID{}, err
+	}
+	return uuid.NullUUID{UUID: id, Valid: true}, nil
+}
+
+// nullUUIDString renders a uuid.NullUUID as its canonical string form, or the
+// empty string when NULL.
+func nullUUIDString(n uuid.NullUUID) string {
+	if !n.Valid {
+		return ""
+	}
+	return n.UUID.String()
 }

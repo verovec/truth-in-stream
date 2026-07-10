@@ -98,6 +98,18 @@ type PoliticalClaim struct {
 	SyncedAt       pgtype.Timestamptz
 }
 
+type TvChannel struct {
+	ID             uuid.UUID
+	Slug           string
+	Name           string
+	SourceKind     string
+	SourceRef      string
+	Enabled        bool
+	ArchiveEnabled bool
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type Video struct {
 	ID          uuid.UUID
 	Title       string
@@ -112,6 +124,8 @@ type Video struct {
 	SourceID    pgtype.Text
 	DurationMs  int64
 	Error       pgtype.Text
+	ChannelID   uuid.NullUUID
+	RecordedAt  pgtype.Timestamptz
 }
 
 type VotingRecord struct {

@@ -54,13 +54,16 @@ const (
 // datasets selects which fixtures to seed. When none are requested on the
 // command line, every dataset is seeded.
 type datasets struct {
-	claims    bool
-	wiki      bool
-	videos    bool
-	political bool
+	claims     bool
+	wiki       bool
+	videos     bool
+	political  bool
+	tvChannels bool
 }
 
-func (d datasets) any() bool { return d.claims || d.wiki || d.videos || d.political }
+func (d datasets) any() bool {
+	return d.claims || d.wiki || d.videos || d.political || d.tvChannels
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -78,14 +81,15 @@ func run(logger *slog.Logger) error {
 	doWiki := flag.Bool("wiki", false, "seed the Wikipedia evidence subset")
 	doVideos := flag.Bool("videos", false, "seed the curated sample videos (records plus best-effort media)")
 	doPolitical := flag.Bool("political", false, "seed the curated two-axis political claims (immigration talking points)")
+	doTVChannels := flag.Bool("tvchannels", false, "seed the TV channel registry (all channels disabled)")
 	seedDir := flag.String("seed-dir", defaultSeedDir, "directory holding the seed fixtures")
 	cachePath := flag.String("cache", defaultCachePath, "embedding cache file")
 	mediaCacheDir := flag.String("media-cache", defaultMediaCacheDir, "directory caching fetched sample media across reseeds")
 	flag.Parse()
 
-	sel := datasets{claims: *doClaims, wiki: *doWiki, videos: *doVideos, political: *doPolitical}
+	sel := datasets{claims: *doClaims, wiki: *doWiki, videos: *doVideos, political: *doPolitical, tvChannels: *doTVChannels}
 	if !sel.any() {
-		sel = datasets{claims: true, wiki: true, videos: true, political: true}
+		sel = datasets{claims: true, wiki: true, videos: true, political: true, tvChannels: true}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -236,6 +240,24 @@ func seedAll(ctx context.Context, logger *slog.Logger, sel datasets, seedDir, ca
 			return err
 		}
 	}
+	if sel.tvChannels {
+		if err := seedTVChannels(ctx, logger, store); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedTVChannels upserts the TV channel registry, keyed by slug so reseeding is
+// idempotent and never re-arms an operator's toggle. It needs no external
+// dependency (no media, no embeddings): the channels are pure metadata the
+// capture worker and /tv page consume.
+func seedTVChannels(ctx context.Context, logger *slog.Logger, store *postgres.Store) error {
+	n, err := seed.InsertTVChannels(ctx, store)
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "seeded tv channels", slog.Int("channels", n))
 	return nil
 }
 
