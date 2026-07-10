@@ -73,3 +73,28 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
+
+/* A brief attention pulse played on a PDF sentence highlight when the reader
+   jumps to it from the side panel. It is a decorative layer over the selected
+   box that fades in then out, so it reads the same in both themes and leaves no
+   permanent tint (base opacity 0), and collapses to nothing under reduced-motion. */
+@keyframes pdf-highlight-flash {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+.pdf-highlight-flash {
+  opacity: 0;
+  animation: pdf-highlight-flash 0.9s ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-highlight-flash {
+    animation: none;
+  }
+}

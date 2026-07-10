@@ -10,6 +10,7 @@ import type {
 } from "@/lib/documents/api";
 import type { LiveClaim } from "@/lib/live/claims";
 import { DocumentExperience } from "./document-experience";
+import type { PageHighlightSentence } from "./highlight-sentences";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -98,6 +99,32 @@ function StubViewer({ url }: { url: string }) {
   return <div data-testid="pdf-viewer">{url}</div>;
 }
 
+// InteractiveStubViewer surfaces the highlight sentences the experience derives
+// and the selection seam it wires, so the bidirectional sync can be tested
+// without pdf.js: each highlight is a button that selects its sentence on click.
+function InteractiveStubViewer({
+  sentences = [],
+  onSelect,
+}: {
+  sentences?: readonly PageHighlightSentence[];
+  selectedSeq?: number | null;
+  onSelect?: (seq: number) => void;
+}) {
+  return (
+    <div data-testid="pdf-viewer">
+      {sentences.map((sentence) => (
+        <button
+          key={sentence.seq}
+          type="button"
+          onClick={() => onSelect?.(sentence.seq)}
+        >
+          highlight-{sentence.seq}-{sentence.verdict}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 describe("DocumentExperience", () => {
   test("a guest sees the whole PDF and every sentence with verdicts and working sources", async () => {
     render(
@@ -147,6 +174,32 @@ describe("DocumentExperience", () => {
     expect(row).not.toBeNull();
     expect(row).not.toHaveAttribute("aria-current");
     fireEvent.click(header);
+    expect(row).toHaveAttribute("aria-current", "true");
+  });
+
+  test("only credible/disputed sentences reach the PDF, and a highlight click selects the panel row", async () => {
+    render(
+      <DocumentExperience
+        documentId="d1"
+        role="guest"
+        loadDetail={async () => detail()}
+        loadClaims={async () => analysis()}
+        pdfViewer={InteractiveStubViewer}
+      />,
+    );
+    // The credible sentence (seq 0) is highlighted; the skipped one (seq 1) is
+    // panel-only, so it is never handed to the viewer.
+    const highlight = await screen.findByRole("button", {
+      name: "highlight-0-credible",
+    });
+    expect(
+      screen.queryByRole("button", { name: /highlight-1/ }),
+    ).not.toBeInTheDocument();
+
+    // Clicking the highlight selects the sentence: its panel row becomes current.
+    const row = screen.getByText("Le chomage a baisse.").closest("li");
+    expect(row).not.toHaveAttribute("aria-current");
+    fireEvent.click(highlight);
     expect(row).toHaveAttribute("aria-current", "true");
   });
 
