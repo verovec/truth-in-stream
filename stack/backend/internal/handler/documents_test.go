@@ -483,7 +483,7 @@ func TestDeleteDocumentHandler(t *testing.T) {
 func newDocumentsTestServer(svc *fakeDocumentService) http.Handler {
 	health := service.NewHealthChecker(fakePinger{})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, &fakeVideoService{}, svc, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
+	return NewMux(health, &fakeVideoService{}, svc, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
 }
 
 // TestDocumentRoutesRoleGating proves the split the design fixes: mutating

@@ -234,6 +234,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	tvRecordingSvc, err := service.NewTVRecordingService(pgStore, pgStore, mediaStore, 0)
+	if err != nil {
+		return err
+	}
+
 	health := service.NewHealthChecker(pgStore)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
@@ -354,7 +359,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvHub, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -491,7 +496,7 @@ func buildVerifier(ctx context.Context, cfg config.Keycloak, logger *slog.Logger
 	if err != nil {
 		return nil, fmt.Errorf("building keycloak jwks keyfunc: %w", err)
 	}
-	verifier, err := auth.NewVerifier(kf, auth.Config{Issuer: cfg.Issuer, ClientID: cfg.ClientID})
+	verifier, err := auth.NewVerifier(kf, auth.Config{Issuer: cfg.Issuer, ClientID: cfg.ClientID, AdditionalClientIDs: cfg.AdditionalClientIDs})
 	if err != nil {
 		return nil, fmt.Errorf("building keycloak verifier: %w", err)
 	}

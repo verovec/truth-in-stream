@@ -721,14 +721,31 @@ func TestLoadKeycloak(t *testing.T) {
 				JWKSURL:  "https://login.jeminforme.fr/realms/truth-in-stream/protocol/openid-connect/certs",
 			},
 		},
+		{
+			// The capture worker authenticates with a service-account client whose
+			// azp differs from the web client; the server must accept it, so the
+			// additional-client-ids list is parsed (comma-separated, trimmed).
+			name: "additional client ids are parsed for service accounts",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER":                "https://id.example.com/realms/prod",
+				"KEYCLOAK_CLIENT_ID":             "truth-in-stream-web",
+				"KEYCLOAK_ADDITIONAL_CLIENT_IDS": " tv-capture , other-worker ",
+			},
+			want: Keycloak{
+				Issuer:              "https://id.example.com/realms/prod",
+				ClientID:            "truth-in-stream-web",
+				JWKSURL:             "https://id.example.com/realms/prod/protocol/openid-connect/certs",
+				AdditionalClientIDs: []string{"tv-capture", "other-worker"},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			if got := LoadKeycloak(); got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
+			if diff := cmp.Diff(tc.want, LoadKeycloak()); diff != "" {
+				t.Fatalf("LoadKeycloak() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

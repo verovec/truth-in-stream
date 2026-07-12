@@ -98,9 +98,15 @@ func RequireAdmin(id Identity) error {
 // Config holds the Keycloak validation parameters. Issuer is the exact issuer
 // string the realm advertises (and that tokens carry in iss); ClientID is the
 // authorized party (azp) the public web client sets. Both are required.
+// AdditionalClientIDs is an optional allow-list of extra authorized parties the
+// verifier also accepts: service-account clients (Keycloak client-credentials
+// grants) carry their own azp, not the web client's, so the tvcapture worker's
+// token would otherwise be rejected. Every entry is a full client identifier the
+// realm issues; an empty list keeps the verifier single-client.
 type Config struct {
-	Issuer   string
-	ClientID string
+	Issuer              string
+	ClientID            string
+	AdditionalClientIDs []string
 }
 
 // Verifier validates a raw access token and returns the caller identity.
@@ -136,9 +142,9 @@ var asymmetricMethods = []string{
 // The keyfunc owns JWKS fetching, caching, and rotation; this type adds the
 // Keycloak-specific issuer and authorized-party checks and the role extraction.
 type KeycloakVerifier struct {
-	keys     keyfunc.Keyfunc
-	issuer   string
-	clientID string
+	keys      keyfunc.Keyfunc
+	issuer    string
+	clientIDs map[string]struct{}
 }
 
 // keycloakClaims are the access-token claims this service consults. The
@@ -165,7 +171,13 @@ func NewVerifier(kf keyfunc.Keyfunc, cfg Config) (*KeycloakVerifier, error) {
 	if cfg.ClientID == "" {
 		return nil, errors.New("auth: client id is required")
 	}
-	return &KeycloakVerifier{keys: kf, issuer: cfg.Issuer, clientID: cfg.ClientID}, nil
+	clientIDs := map[string]struct{}{cfg.ClientID: {}}
+	for _, id := range cfg.AdditionalClientIDs {
+		if id != "" {
+			clientIDs[id] = struct{}{}
+		}
+	}
+	return &KeycloakVerifier{keys: kf, issuer: cfg.Issuer, clientIDs: clientIDs}, nil
 }
 
 // Verify parses and validates the token: the signature against the cached JWKS,
@@ -193,8 +205,8 @@ func (v *KeycloakVerifier) Verify(ctx context.Context, rawToken string) (Identit
 	if !token.Valid {
 		return Identity{}, ErrInvalidToken
 	}
-	if claims.AuthorizedParty != v.clientID {
-		return Identity{}, fmt.Errorf("%w: azp %q is not the expected client", ErrInvalidToken, claims.AuthorizedParty)
+	if _, ok := v.clientIDs[claims.AuthorizedParty]; !ok {
+		return Identity{}, fmt.Errorf("%w: azp %q is not an accepted client", ErrInvalidToken, claims.AuthorizedParty)
 	}
 	return Identity{
 		Subject:  claims.Subject,

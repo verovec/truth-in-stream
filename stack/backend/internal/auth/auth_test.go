@@ -255,6 +255,55 @@ func TestVerify(t *testing.T) {
 	}
 }
 
+func TestVerifyAcceptsAdditionalClientID(t *testing.T) {
+	t.Parallel()
+	const serviceClientID = "tv-capture"
+	signer := newSigningKey(t, testKID)
+	kf, err := keyfunc.NewJWKSetJSON(jwksJSON(t, signer))
+	if err != nil {
+		t.Fatalf("building keyfunc: %v", err)
+	}
+	v, err := NewVerifier(kf, Config{
+		Issuer:              testIssuer,
+		ClientID:            testClientID,
+		AdditionalClientIDs: []string{serviceClientID},
+	})
+	if err != nil {
+		t.Fatalf("building verifier: %v", err)
+	}
+
+	base := func(azp string) tokenClaims {
+		return tokenClaims{
+			issuer: testIssuer,
+			azp:    azp,
+			aud:    "account",
+			roles:  []string{"admin"},
+			sub:    "service-account",
+			user:   "service-account-tv-capture",
+			expiry: time.Now().Add(time.Hour),
+		}
+	}
+
+	// The service-account azp is accepted and its admin role is honored.
+	id, err := v.Verify(t.Context(), signToken(t, signer, base(serviceClientID)))
+	if err != nil {
+		t.Fatalf("Verify service-account token: %v", err)
+	}
+	if !id.IsAdmin() {
+		t.Fatalf("service-account token IsAdmin() = false, want true")
+	}
+
+	// The primary web client still passes.
+	if _, err := v.Verify(t.Context(), signToken(t, signer, base(testClientID))); err != nil {
+		t.Fatalf("Verify web-client token: %v", err)
+	}
+
+	// An azp outside the allow-list is still rejected.
+	if _, err := v.Verify(t.Context(), signToken(t, signer, base("some-other-client"))); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("Verify unknown-client token error = %v, want %v", err, ErrInvalidToken)
+	}
+}
+
 func TestVerifyExtractsIdentity(t *testing.T) {
 	t.Parallel()
 	signer := newSigningKey(t, testKID)

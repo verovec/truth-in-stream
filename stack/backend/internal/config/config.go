@@ -342,6 +342,13 @@ type Keycloak struct {
 	Issuer   string
 	ClientID string
 	JWKSURL  string
+	// AdditionalClientIDs are extra authorized parties (azp) the verifier accepts
+	// beyond the web ClientID: service-account clients that authenticate with the
+	// client-credentials grant carry their own azp. The tvcapture worker uses the
+	// tv-capture service client, so KEYCLOAK_ADDITIONAL_CLIENT_IDS is set to that
+	// client id wherever the worker runs. Comma-separated; empty keeps the
+	// verifier single-client.
+	AdditionalClientIDs []string
 }
 
 // LoadKeycloak reads the Keycloak OIDC configuration from the environment.
@@ -354,10 +361,17 @@ type Keycloak struct {
 // well formed.
 func LoadKeycloak() Keycloak {
 	issuer := strings.TrimRight(getenv("KEYCLOAK_ISSUER", defaultKeycloakIssuer), "/")
+	var additional []string
+	for _, p := range strings.Split(os.Getenv("KEYCLOAK_ADDITIONAL_CLIENT_IDS"), ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			additional = append(additional, v)
+		}
+	}
 	return Keycloak{
-		Issuer:   issuer,
-		ClientID: getenv("KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
-		JWKSURL:  getenv("KEYCLOAK_JWKS_URL", issuer+keycloakCertsPath),
+		Issuer:              issuer,
+		ClientID:            getenv("KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
+		JWKSURL:             getenv("KEYCLOAK_JWKS_URL", issuer+keycloakCertsPath),
+		AdditionalClientIDs: additional,
 	}
 }
 
