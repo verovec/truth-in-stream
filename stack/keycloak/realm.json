@@ -71,6 +71,24 @@
         "organization",
         "microprofile-jwt"
       ]
+    },
+    {
+      "clientId": "tv-capture",
+      "name": "TV Capture Worker",
+      "description": "Service-account client the tvcapture worker authenticates as (client-credentials grant). Carries the admin realm role so it can drive the TV feed and recording endpoints. The secret below is a local-dev value only; production sets it out of band (SSM) and never uses this default.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "tv-capture-dev-secret",
+      "defaultClientScopes": [
+        "roles",
+        "basic"
+      ]
     }
   ],
   "users": [
@@ -105,6 +123,12 @@
         }
       ],
       "realmRoles": ["guest"]
+    },
+    {
+      "username": "service-account-tv-capture",
+      "enabled": true,
+      "serviceAccountClientId": "tv-capture",
+      "realmRoles": ["admin"]
     }
   ]
 }

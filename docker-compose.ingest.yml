@@ -231,7 +231,44 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinsworker"
         awslogs-stream-prefix: "scrutinsworker"
 
+  # tv capture: long-running headless viewer. Reconciles the enabled TV channels
+  # against running capture pipelines (streamlink|ffmpeg), feeds PCM to the
+  # backend's live hub, and archives hourly MPEG-TS segments as kind `tv`
+  # recordings via the presign/register API. Unlike the queue workers it talks to
+  # the backend HTTP API (TV_CAPTURE_BACKEND_URL) with a Keycloak client-
+  # credentials service token, not the broker/DB directly. Idles when
+  # TV_CAPTURE_ENABLED is unset. The salvage volume keeps partial segments across a
+  # restart. Runtime wiring (host, SSM params, alerts) lands in the infra card.
+  tvcapture:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/tvcapture"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      TV_CAPTURE_ENABLED: "${TV_CAPTURE_ENABLED:-}"
+      TV_CAPTURE_BACKEND_URL: "${TV_CAPTURE_BACKEND_URL:-}"
+      TV_CAPTURE_TOKEN_URL: "${TV_CAPTURE_TOKEN_URL:-}"
+      TV_CAPTURE_CLIENT_ID: "${TV_CAPTURE_CLIENT_ID:-}"
+      TV_CAPTURE_CLIENT_SECRET: "${TV_CAPTURE_CLIENT_SECRET:-}"
+      TV_SEGMENT_SECONDS: "${TV_SEGMENT_SECONDS:-}"
+      TV_RECORDING_RETENTION_DAYS: "${TV_RECORDING_RETENTION_DAYS:-}"
+      TV_FEED_STALL_SECONDS: "${TV_FEED_STALL_SECONDS:-}"
+      TV_CAPTURE_POLL_SECONDS: "${TV_CAPTURE_POLL_SECONDS:-}"
+      TV_CAPTURE_WORK_DIR: "${TV_CAPTURE_WORK_DIR:-/work}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - tv-capture-work:/work
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/tvcapture"
+        awslogs-stream-prefix: "tvcapture"
+
 volumes:
   # Persists the scrutins-archive conditional-GET marker across producer runs on
   # the same host, so an unchanged archive is a 304 and re-runs skip the download.
   scrutins-state:
+  # Holds in-progress TV capture segments before upload, so a host restart leaves
+  # partial .ts for the worker's startup salvage pass.
+  tv-capture-work:

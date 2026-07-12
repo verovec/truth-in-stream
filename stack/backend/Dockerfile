@@ -7,6 +7,15 @@
 ARG YTDLP_VERSION=2026.06.09
 ARG YTDLP_SHA256=bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66
 
+# streamlink resolves official YouTube live simulcasts for the tvcapture worker
+# (it pipes the stream into ffmpeg). Debian's apt package lags well behind
+# upstream, so it is pinned by version and installed from PyPI. HLS parliamentary
+# sources need only ffmpeg (already installed), not streamlink. Bump deliberately
+# and re-verify YouTube resolution still works (streamlink#6922 tracks YouTube's
+# n-challenge churn). streamlink has no PO-token mechanism, so no token sidecar is
+# needed for the pure-streamlink pipeline.
+ARG STREAMLINK_VERSION=8.4.0
+
 # Shared base. Pure-Go build (no cgo) now that the store is Postgres + pgvector.
 FROM golang:1.26 AS base
 WORKDIR /app
@@ -20,12 +29,14 @@ ENV CGO_ENABLED=0
 FROM base AS dev
 ARG YTDLP_VERSION
 ARG YTDLP_SHA256
+ARG STREAMLINK_VERSION
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates ffmpeg; \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 python3-pip; \
     curl -fsSL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux"; \
     echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/yt-dlp; \
+    pip install --no-cache-dir --break-system-packages "streamlink==${STREAMLINK_VERSION}"; \
     rm -rf /var/lib/apt/lists/*
 EXPOSE 8080
 CMD ["go", "run", "./cmd/server"]
@@ -40,19 +51,22 @@ RUN go build -o /out/server ./cmd/server
 RUN go build -o /out/embedworker ./cmd/embedworker
 RUN go build -o /out/crawlworker ./cmd/crawlworker
 RUN go build -o /out/wikicrawl ./cmd/wikicrawl
+RUN go build -o /out/tvcapture ./cmd/tvcapture
 
 # Prod: a slim Debian base (not distroless/static) because the pinned yt-dlp
 # binary and ffmpeg both need a glibc userland. Runs as a non-root system user.
 FROM debian:bookworm-slim AS prod
 ARG YTDLP_VERSION
 ARG YTDLP_SHA256
+ARG STREAMLINK_VERSION
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates ffmpeg curl; \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg curl python3 python3-pip; \
     curl -fsSL -o /usr/local/bin/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux"; \
     echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/yt-dlp; \
-    apt-get purge -y curl; \
+    pip install --no-cache-dir --break-system-packages "streamlink==${STREAMLINK_VERSION}"; \
+    apt-get purge -y curl python3-pip; \
     apt-get autoremove -y --purge; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --uid 65532 --user-group --no-create-home nonroot
@@ -60,6 +74,7 @@ COPY --from=builder /out/server /server
 COPY --from=builder /out/embedworker /embedworker
 COPY --from=builder /out/crawlworker /crawlworker
 COPY --from=builder /out/wikicrawl /wikicrawl
+COPY --from=builder /out/tvcapture /tvcapture
 EXPOSE 8080
 USER 65532:65532
 ENTRYPOINT ["/server"]

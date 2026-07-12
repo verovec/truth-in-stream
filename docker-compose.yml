@@ -618,6 +618,56 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # TV capture worker. Reconciles the enabled TV channels against running capture
+  # pipelines: per enabled channel it resolves the live stream (streamlink for
+  # youtube, ffmpeg direct for hls), feeds 16 kHz mono PCM to the backend's live
+  # hub over the feed WebSocket, and (when archive_enabled) stream-copies hourly
+  # MPEG-TS segments, remuxes each closed hour to MP4, and registers it as a
+  # kind `tv` recording. Default OFF (TV_CAPTURE_ENABLED unset -> the worker
+  # idles), matching the cost-safety convention the paid profiles follow, because
+  # capture drives paid STT/LLM usage and touches YouTube. Enable it and set the
+  # service-account secret to run a local capture. The dev image bundles ffmpeg
+  # and streamlink. Restarts unless stopped; the reconcile loop and the salvage
+  # pass make a restart safe (idempotent register, partial segments salvaged).
+  tvcapture:
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/tvcapture"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      TV_CAPTURE_ENABLED: "${TV_CAPTURE_ENABLED:-}"
+      # Backend API base (channel list, presign, register, prune) and feed-WS host.
+      TV_CAPTURE_BACKEND_URL: "${TV_CAPTURE_BACKEND_URL:-http://backend:8080}"
+      # Service-account credentials. The worker fetches a client-credentials token
+      # from Keycloak's back-channel host (keycloak:8081 inside the compose
+      # network; the token still carries the public localhost:8081 issuer the
+      # backend validates). The dev secret matches the tv-capture client seeded in
+      # realm.json; production supplies both via SSM.
+      TV_CAPTURE_TOKEN_URL: "${TV_CAPTURE_TOKEN_URL:-http://keycloak:8081/realms/truth-in-stream/protocol/openid-connect/token}"
+      TV_CAPTURE_CLIENT_ID: "${TV_CAPTURE_CLIENT_ID:-tv-capture}"
+      TV_CAPTURE_CLIENT_SECRET: "${TV_CAPTURE_CLIENT_SECRET:-tv-capture-dev-secret}"
+      # Capture/archive/retention tunables (empty uses the binary defaults:
+      # 1h segments, 30d retention, 60s stall watchdog, 30s reconcile poll).
+      TV_SEGMENT_SECONDS: "${TV_SEGMENT_SECONDS:-}"
+      TV_RECORDING_RETENTION_DAYS: "${TV_RECORDING_RETENTION_DAYS:-}"
+      TV_FEED_STALL_SECONDS: "${TV_FEED_STALL_SECONDS:-}"
+      TV_CAPTURE_POLL_SECONDS: "${TV_CAPTURE_POLL_SECONDS:-}"
+      TV_CAPTURE_WORK_DIR: "/work"
+      # Slack incoming-webhook for capture-death run alerts. Empty -> silent no-op.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+      - tv-capture-work:/work
+    depends_on:
+      backend:
+        condition: service_started
+      keycloak:
+        condition: service_healthy
+
   # Offline topic-clustering job. Groups the embedded corpus into topic clusters
   # and scores each chunk's importance, writing cluster_id + importance back so
   # the next ingest's producer embeds the most important content first. Opt-in
@@ -920,6 +970,11 @@ services:
       # production both default to the single public HTTPS issuer.
       KEYCLOAK_ISSUER: "http://localhost:8081/realms/truth-in-stream"
       KEYCLOAK_JWKS_URL: "http://keycloak:8081/realms/truth-in-stream/protocol/openid-connect/certs"
+      # Extra authorized parties (azp) the token verifier accepts beyond the web
+      # client: the tvcapture worker authenticates as the tv-capture
+      # service-account client, whose azp is not the web client's. Dev accepts it
+      # by default; prod sets it to the same service client id via SSM.
+      KEYCLOAK_ADDITIONAL_CLIENT_IDS: "${KEYCLOAK_ADDITIONAL_CLIENT_IDS:-tv-capture}"
       # Object storage points at the local MinIO container (path-style, static
       # dev credentials). Production uses the ECS task role, an empty endpoint,
       # and virtual-hosted addressing. Consumed by the upload API.
@@ -1056,3 +1111,6 @@ volumes:
   # Persists the scrutins-archive conditional-GET marker (ETag/Last-Modified)
   # across producer runs, so an unchanged archive is skipped.
   scrutins-state:
+  # Scratch for in-progress TV capture segments before upload; a crash leaves
+  # partial .ts here for the worker's startup salvage pass.
+  tv-capture-work:

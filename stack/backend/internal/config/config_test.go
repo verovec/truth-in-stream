@@ -751,6 +751,62 @@ func TestLoadKeycloak(t *testing.T) {
 	}
 }
 
+func TestLoadTVCapture(t *testing.T) {
+	t.Run("disabled by default needs no secret", func(t *testing.T) {
+		cfg, err := LoadTVCapture()
+		if err != nil {
+			t.Fatalf("LoadTVCapture: %v", err)
+		}
+		if cfg.Enabled || cfg.Active() {
+			t.Fatalf("capture enabled by default")
+		}
+		if cfg.SegmentDuration != time.Hour {
+			t.Errorf("segment duration = %v, want 1h", cfg.SegmentDuration)
+		}
+		if cfg.RetentionDays != 30 {
+			t.Errorf("retention days = %d, want 30", cfg.RetentionDays)
+		}
+		if cfg.ClientID != "tv-capture" {
+			t.Errorf("client id = %q, want tv-capture", cfg.ClientID)
+		}
+	})
+
+	t.Run("enabled requires the client secret", func(t *testing.T) {
+		t.Setenv("TV_CAPTURE_ENABLED", "true")
+		if _, err := LoadTVCapture(); err == nil {
+			t.Fatal("LoadTVCapture accepted enabled capture with no client secret")
+		}
+	})
+
+	t.Run("tunables and derived token url", func(t *testing.T) {
+		t.Setenv("TV_CAPTURE_ENABLED", "true")
+		t.Setenv("TV_CAPTURE_CLIENT_SECRET", "s3cr3t")
+		t.Setenv("KEYCLOAK_ISSUER", "https://id.example.com/realms/prod")
+		t.Setenv("TV_SEGMENT_SECONDS", "1800")
+		t.Setenv("TV_RECORDING_RETENTION_DAYS", "7")
+		t.Setenv("TV_CAPTURE_BACKEND_URL", "http://backend:8080/")
+		cfg, err := LoadTVCapture()
+		if err != nil {
+			t.Fatalf("LoadTVCapture: %v", err)
+		}
+		if !cfg.Active() {
+			t.Fatal("capture not active")
+		}
+		if cfg.SegmentDuration != 30*time.Minute {
+			t.Errorf("segment duration = %v, want 30m", cfg.SegmentDuration)
+		}
+		if cfg.RetentionDays != 7 {
+			t.Errorf("retention days = %d, want 7", cfg.RetentionDays)
+		}
+		if cfg.BackendBaseURL != "http://backend:8080" {
+			t.Errorf("backend base url = %q, want trimmed", cfg.BackendBaseURL)
+		}
+		if want := "https://id.example.com/realms/prod/protocol/openid-connect/token"; cfg.TokenURL != want {
+			t.Errorf("token url = %q, want %q", cfg.TokenURL, want)
+		}
+	})
+}
+
 func TestLoadPrecheck(t *testing.T) {
 	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46}
 	tests := []struct {
