@@ -64,7 +64,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 
 	logger.InfoContext(ctx, "scrutins crawl started",
 		slog.String("legislature", archiveCfg.Legislature),

@@ -58,6 +58,37 @@ variable "username" {
   description = "Broker admin username. The password is generated and never set in Terraform variables or state input."
 }
 
+variable "maintenance_window_day" {
+  type    = string
+  default = "SUNDAY"
+  # Default off the daily producer cron slots (03:00 wikipedia, 04:00 factcheck,
+  # 04:30 scrutins UTC) and the RDS backup/maintenance windows (03:00-05:30 UTC),
+  # so a weekly broker reboot never lands on a scheduled ingestion run.
+  description = "Day of the weekly broker maintenance window. Defaults to SUNDAY, off the daily producer cron slots and RDS windows."
+
+  validation {
+    condition     = contains(["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"], var.maintenance_window_day)
+    error_message = "maintenance_window_day must be an uppercase English day name (MONDAY..SUNDAY)."
+  }
+}
+
+variable "maintenance_window_time" {
+  type        = string
+  default     = "07:00"
+  description = "Start time (HH:MM, 24h) of the weekly broker maintenance window, in maintenance_window_time_zone. Defaults to 07:00, clear of the 03:00-05:30 UTC ingestion/RDS windows."
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.maintenance_window_time))
+    error_message = "maintenance_window_time must be HH:MM in 24-hour form."
+  }
+}
+
+variable "maintenance_window_time_zone" {
+  type        = string
+  default     = "UTC"
+  description = "Time zone of the broker maintenance window. UTC keeps it aligned with the UTC producer crons."
+}
+
 variable "secret_recovery_window_days" {
   type        = number
   default     = 7

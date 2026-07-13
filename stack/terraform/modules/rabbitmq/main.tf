@@ -85,10 +85,12 @@ resource "aws_mq_broker" "main" {
     general = true
   }
 
+  # Weekly maintenance reboot, kept off the daily producer cron slots so a
+  # scheduled ingestion run never hits a rebooting broker (see the variable docs).
   maintenance_window_start_time {
-    day_of_week = "MONDAY"
-    time_of_day = "04:00"
-    time_zone   = "UTC"
+    day_of_week = var.maintenance_window_day
+    time_of_day = var.maintenance_window_time
+    time_zone   = var.maintenance_window_time_zone
   }
 }
 
