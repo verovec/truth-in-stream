@@ -1468,28 +1468,20 @@ func LoadWiki() (Wiki, error) {
 	return Wiki{Corpus: corpus}, nil
 }
 
-// Bulk-embedding defaults. A 128-input batch sits well under Voyage's 1000
-// input / 320k token per-request ceilings even for the longest chunks; four
-// concurrent requests stay inside the tier-1 rate limit; six retries ride out
-// transient throttling. A 30s per-request HTTP timeout is generous for a
-// healthy batch (Voyage returns a 128-input request in seconds) yet surfaces a
-// throttling stall fast, instead of burning two minutes on each hung request
-// before the retry. RequestsPerMinute is off by default (0 = unpaced, right for
-// a paid tier whose limit is thousands of RPM); set it to pace a run onto a
-// constrained tier's request budget rather than bursting past it and stalling.
-// 512MB maintenance_work_mem builds the simplewiki HNSW in memory and is safe on
-// a small instance - raise it for enwiki - and seven parallel workers matches
-// pgvector's index-build guidance.
+// Bulk index-build defaults. 512MB maintenance_work_mem builds the simplewiki
+// HNSW in memory and is safe on a small instance - raise it for enwiki - and
+// seven parallel workers matches pgvector's index-build guidance. (The embedding
+// itself runs on the worker fleet, tuned by EMBED_WORKER_*, so the bulk path no
+// longer carries its own batch/concurrency/retry knobs.)
 const (
-	defaultWikiEmbedBatchSize          = 128
-	defaultWikiEmbedConcurrency        = 4
-	defaultWikiEmbedMaxRetries         = 6
-	defaultWikiEmbedHTTPTimeout        = 30 * time.Second
-	defaultWikiEmbedRequestsPerMinute  = 0
 	defaultWikiEmbedMaintenanceWorkMem = "512MB"
 	defaultWikiEmbedMaxParallelWorkers = 7
 	// maxVoyageInputsPerRequest is Voyage's documented per-request input cap.
 	maxVoyageInputsPerRequest = 1000
+	// maxVoyageTokensPerRequest is Voyage's documented per-request token ceiling
+	// for voyage-4-large (docs.voyageai.com, verified 2026-07); a request over it
+	// returns HTTP 400, so a batch's token budget must stay under it.
+	maxVoyageTokensPerRequest = 120000
 )
 
 // workMemRe matches a Postgres memory size like "512MB" or "2GB". It guards
@@ -1497,52 +1489,24 @@ const (
 // not a bare size literal.
 var workMemRe = regexp.MustCompile(`^[1-9][0-9]*(kB|MB|GB|TB)$`)
 
-// WikiEmbed holds the bulk-embedding pipeline configuration. BatchSize and
-// Concurrency bound the embedding API load; RequestsPerMinute optionally paces
-// outbound embedding requests onto a tier's budget (0 = unpaced); HTTPTimeout
-// bounds each Voyage request on the bulk path; MaintenanceWorkMem and
-// MaxParallelWorkers tune the post-load HNSW index build.
+// WikiEmbed holds the bulk index-build configuration. MaintenanceWorkMem and
+// MaxParallelWorkers tune the post-load HNSW index build the atomic bulk finalize
+// runs; the embedding itself is fanned out to the worker fleet (EMBED_WORKER_*),
+// so this no longer carries batch/concurrency/retry/timeout knobs.
 type WikiEmbed struct {
-	BatchSize          int
-	Concurrency        int
-	MaxRetries         int
-	RequestsPerMinute  int
-	HTTPTimeout        time.Duration
 	MaintenanceWorkMem string
 	MaxParallelWorkers int
 }
 
-// LoadWikiEmbed reads the bulk-embedding configuration from the environment,
-// applying defaults and failing fast on values that would overrun the
-// embedding API limits or produce invalid index-build settings.
+// LoadWikiEmbed reads the bulk index-build configuration from the environment,
+// applying defaults and failing fast on values that would produce invalid
+// index-build settings.
 func LoadWikiEmbed() (WikiEmbed, error) {
 	w := WikiEmbed{
-		BatchSize:          defaultWikiEmbedBatchSize,
-		Concurrency:        defaultWikiEmbedConcurrency,
-		MaxRetries:         defaultWikiEmbedMaxRetries,
-		RequestsPerMinute:  defaultWikiEmbedRequestsPerMinute,
-		HTTPTimeout:        defaultWikiEmbedHTTPTimeout,
 		MaintenanceWorkMem: defaultWikiEmbedMaintenanceWorkMem,
 		MaxParallelWorkers: defaultWikiEmbedMaxParallelWorkers,
 	}
 	var err error
-	if w.BatchSize, err = intEnv("WIKI_EMBED_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.Concurrency, err = intEnv("WIKI_EMBED_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.MaxRetries, err = intEnv("WIKI_EMBED_MAX_RETRIES", w.MaxRetries, 1, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	// 0 disables pacing; a positive value caps outbound requests per minute so a
-	// constrained tier is not overrun.
-	if w.RequestsPerMinute, err = intEnv("WIKI_EMBED_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.HTTPTimeout, err = positiveDurationEnv("WIKI_EMBED_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
-		return WikiEmbed{}, err
-	}
 	if w.MaxParallelWorkers, err = intEnv("WIKI_EMBED_MAX_PARALLEL_WORKERS", w.MaxParallelWorkers, 0, math.MaxInt32); err != nil {
 		return WikiEmbed{}, err
 	}
@@ -2106,6 +2070,10 @@ const (
 	defaultEmbedWorkerHTTPTimeout       = 30 * time.Second
 	defaultEmbedWorkerRequestsPerMinute = 0
 	defaultEmbedWorkerEmbedMaxRetries   = 6
+	// defaultEmbedWorkerMaxBatchTokens packs each Voyage call to 80% of the
+	// per-request token ceiling for voyage-4-large, leaving headroom for the
+	// worker's character-based token estimate to under-count.
+	defaultEmbedWorkerMaxBatchTokens = maxVoyageTokensPerRequest * 8 / 10
 )
 
 // EmbedWorker holds the embedding-worker configuration. Concurrency bounds the
@@ -2117,11 +2085,15 @@ const (
 // request; RequestsPerMinute optionally paces outbound requests onto a tier's
 // budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry count
 // for a transient Voyage 429 or network timeout.
+// MaxBatchTokens caps a batch's estimated token count so a provider call stays
+// under Voyage's per-request token ceiling; an over-budget batch is split before
+// the call rather than failing it.
 type EmbedWorker struct {
 	Concurrency       int
 	BatchSize         int
 	BatchWait         time.Duration
 	MaxAttempts       int
+	MaxBatchTokens    int
 	HTTPTimeout       time.Duration
 	RequestsPerMinute int
 	EmbedMaxRetries   int
@@ -2142,6 +2114,12 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 		return EmbedWorker{}, err
 	}
 	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
+		return EmbedWorker{}, err
+	}
+	// Capped at Voyage's per-request token ceiling so a packed batch never exceeds
+	// what the provider accepts in one call; the worker splits an over-budget batch
+	// before sending it.
+	if w.MaxBatchTokens, err = intEnv("EMBED_WORKER_MAX_BATCH_TOKENS", w.MaxBatchTokens, 1, maxVoyageTokensPerRequest); err != nil {
 		return EmbedWorker{}, err
 	}
 	return w, nil
@@ -2170,6 +2148,7 @@ func defaultWorker() EmbedWorker {
 	return EmbedWorker{
 		Concurrency:       defaultEmbedWorkerConcurrency,
 		BatchSize:         defaultEmbedWorkerBatchSize,
+		MaxBatchTokens:    defaultEmbedWorkerMaxBatchTokens,
 		BatchWait:         defaultEmbedWorkerBatchWait,
 		MaxAttempts:       defaultEmbedWorkerMaxAttempts,
 		HTTPTimeout:       defaultEmbedWorkerHTTPTimeout,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -29,23 +28,26 @@ var ErrBulkEmbedInProgress = errors.New("wiki: a bulk embed is incomplete; finis
 
 // DeltaConfig tunes a delta run. RetentionDays bounds how stale the checkpoint
 // may be; BulkFraction is the change-set share of the corpus above which a bulk
-// re-run is recommended; BatchSize and Concurrency bound the embedding load,
-// mirroring the bulk-embedding pipeline.
+// re-run is recommended; MaxPriority is the queue's priority ceiling the
+// per-chunk priority mapping is bounded by; EnqueueBatchSize is how many
+// un-embedded chunks are read per keyset scan while publishing embedding jobs to
+// the fleet.
 type DeltaConfig struct {
-	Corpus        string
-	RetentionDays int
-	BulkFraction  float64
-	BatchSize     int
-	Concurrency   int
+	Corpus           string
+	RetentionDays    int
+	BulkFraction     float64
+	MaxPriority      uint8
+	EnqueueBatchSize int
 }
 
-// DeltaStats summarizes a completed delta run. RecommendBulk is set when the
+// DeltaStats summarizes a completed delta run. Published is how many embedding
+// jobs the run enqueued for the worker fleet. RecommendBulk is set when the
 // change set was large enough that a bulk re-run would have been preferable.
 type DeltaStats struct {
 	Changed       int
 	Skipped       int
 	Deleted       int
-	Embedded      int
+	Published     int
 	RecommendBulk bool
 }
 
@@ -75,8 +77,6 @@ type DeltaSink interface {
 	TrimDocuments(ctx context.Context, trims []domain.EvidenceTrim) error
 	// DeleteByTitle removes every chunk of each named document within the source.
 	DeleteByTitle(ctx context.Context, source string, titles []string) error
-	// SetChunkEmbeddings writes each chunk's embedding into the live table.
-	SetChunkEmbeddings(ctx context.Context, chunks []domain.EvidenceChunk) error
 	// SetSyncState advances the corpus checkpoint after a successful run.
 	SetSyncState(ctx context.Context, st domain.EvidenceSyncState) error
 }
@@ -97,13 +97,25 @@ type ChangeSource interface {
 
 // RunDelta brings the corpus up to date incrementally. It reads the checkpoint,
 // refuses a window the RecentChanges retention cannot cover, asks the API what
-// changed, refetches and re-embeds only pages whose revision moved, removes
-// deleted pages, and advances the checkpoint last - so a failure anywhere leaves
-// the checkpoint untouched and the next run retries the same window. A run that
-// finds nothing changed touches neither the embedding API nor the checkpoint.
-func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder Embedder, cfg DeltaConfig, now time.Time) (DeltaStats, error) {
-	if cfg.BatchSize < 1 || cfg.Concurrency < 1 {
-		return DeltaStats{}, fmt.Errorf("wiki: delta sync needs positive batch size and concurrency, got %d and %d", cfg.BatchSize, cfg.Concurrency)
+// changed, refetches only pages whose revision moved, upserts their re-chunked
+// content with a NULL embedding, removes deleted pages, publishes one embedding
+// job per still-un-embedded live chunk to the worker fleet, and advances the
+// checkpoint last.
+//
+// Publishing to the fleet rather than embedding inline is what makes a mid-window
+// failure cheap to resume: a re-run refetches nothing whose stored revision
+// already matches (unchangedFiltered), and republishes only chunks still lacking
+// an embedding (the NULL filter in the keyset scan), so no chunk a confirmed
+// batch already embedded is re-embedded (or re-billed). The publish itself
+// confirms each page before advancing its cursor, so an interrupted publish
+// re-enqueues at most one page of idempotent jobs. A run that finds nothing
+// changed touches neither the fleet nor the checkpoint.
+func RunDelta(ctx context.Context, logger *slog.Logger, store DeltaStore, api ChangeSource, pub Publisher, cfg DeltaConfig, now time.Time) (DeltaStats, error) {
+	if cfg.MaxPriority < 1 || cfg.EnqueueBatchSize < 1 {
+		return DeltaStats{}, fmt.Errorf("wiki: delta sync needs a positive max priority and enqueue batch size, got %d and %d", cfg.MaxPriority, cfg.EnqueueBatchSize)
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	state, ok, err := store.GetSyncState(ctx, cfg.Corpus)
@@ -170,11 +182,20 @@ func RunDelta(ctx context.Context, store DeltaStore, api ChangeSource, embedder 
 	}
 	stats.Deleted = len(deletes)
 
-	embedded, err := embedPending(ctx, store, embedder, cfg)
+	// Publish one embedding job per still-un-embedded live chunk (the ones this run
+	// just upserted with a NULL embedding) to the worker fleet, in keyset order with
+	// each page confirmed before the cursor advances. The fleet embeds them in
+	// place; a re-run's NULL filter skips whatever the fleet has since filled, so no
+	// confirmed chunk is re-embedded.
+	published, err := publishJobs(ctx, logger, store.UnembeddedChunks, false, pub, ProducerConfig{
+		Corpus:           cfg.Corpus,
+		MaxPriority:      cfg.MaxPriority,
+		EnqueueBatchSize: cfg.EnqueueBatchSize,
+	})
 	if err != nil {
 		return DeltaStats{}, err
 	}
-	stats.Embedded = embedded
+	stats.Published = published
 
 	state.LastChangeTS = plan.maxTS
 	if err := store.SetSyncState(ctx, state); err != nil {
@@ -288,41 +309,6 @@ func buildDeltaChunks(extracts []Extract, edits map[string]Change, corpus string
 		}
 	}
 	return chunks, trims, missing
-}
-
-// embedPending embeds every chunk left without an embedding by this run - the
-// changed chunks - writing each batch straight into the live table in keyset
-// order, mirroring the bulk pipeline's batching and concurrency.
-func embedPending(ctx context.Context, store DeltaStore, embedder Embedder, cfg DeltaConfig) (int, error) {
-	embedCfg := Config{BatchSize: cfg.BatchSize, Concurrency: cfg.Concurrency}
-	// The delta path embeds in place without a pending count, so it logs per
-	// batch against the process-wide default logger (main sets it via
-	// slog.SetDefault) with a negative, unknown total.
-	logger := slog.Default()
-	const unknownTotal = -1
-	var progress atomic.Int64
-	embedded := 0
-	cur := domain.EvidenceCursor{}
-	superBatch := cfg.BatchSize * cfg.Concurrency
-	for {
-		chunks, err := store.UnembeddedChunks(ctx, cur, superBatch)
-		if err != nil {
-			return 0, fmt.Errorf("wiki: read pending chunks: %w", err)
-		}
-		if len(chunks) == 0 {
-			return embedded, nil
-		}
-		done, err := embedChunks(ctx, logger, embedder, chunks, embedCfg, &progress, unknownTotal)
-		if err != nil {
-			return 0, err
-		}
-		if err := store.SetChunkEmbeddings(ctx, done); err != nil {
-			return 0, fmt.Errorf("wiki: write embeddings: %w", err)
-		}
-		embedded += len(done)
-		last := chunks[len(chunks)-1]
-		cur = domain.EvidenceCursor{Source: last.Source, ExternalID: last.ExternalID, ChunkIndex: int32(last.ChunkIndex)}
-	}
 }
 
 // dedupeTitles merges title slices into one with duplicates removed.

@@ -2,6 +2,7 @@ package wiki
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embedjob"
 )
 
 // --- test helpers for the generalized evidence_chunks shape ---
@@ -82,6 +84,18 @@ func newFakeDeltaStore() *fakeDeltaStore {
 
 func (f *fakeDeltaStore) seed(c domain.EvidenceChunk, embedded bool) {
 	f.chunks[[2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}] = storedChunk{chunk: c, embedded: embedded}
+}
+
+// markEmbedded simulates the worker fleet embedding a published chunk in place,
+// so a resume test can prove the next run never re-publishes it.
+func (f *fakeDeltaStore) markEmbedded(externalID string, chunkIndex int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := [2]int64{parseID(externalID), int64(chunkIndex)}
+	if sc, ok := f.chunks[key]; ok {
+		sc.embedded = true
+		f.chunks[key] = sc
+	}
 }
 
 func (f *fakeDeltaStore) GetSyncState(_ context.Context, _ string) (domain.EvidenceSyncState, bool, error) {
@@ -191,20 +205,6 @@ func (f *fakeDeltaStore) DeleteByTitle(_ context.Context, _ string, titles []str
 	return nil
 }
 
-func (f *fakeDeltaStore) SetChunkEmbeddings(_ context.Context, chunks []domain.EvidenceChunk) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, c := range chunks {
-		key := [2]int64{parseID(c.ExternalID), int64(c.ChunkIndex)}
-		if sc, ok := f.chunks[key]; ok {
-			sc.embedded = true
-			sc.chunk.Embedding = c.Embedding
-			f.chunks[key] = sc
-		}
-	}
-	return nil
-}
-
 func (f *fakeDeltaStore) SetSyncState(_ context.Context, st domain.EvidenceSyncState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -258,20 +258,59 @@ func (f *fakeAPI) Extracts(_ context.Context, titles []string) ([]Extract, error
 	return out, nil
 }
 
-type deltaEmbedder struct {
-	mu    sync.Mutex
-	calls int
+// publishedJob is one enqueued embedding job as the fake publisher decoded it.
+type publishedJob struct {
+	externalID string
+	chunkIndex int
+	staging    bool
+	priority   uint8
 }
 
-func (e *deltaEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
-	e.mu.Lock()
-	e.calls += len(texts)
-	e.mu.Unlock()
-	out := make([][]float32, len(texts))
-	for i := range texts {
-		out[i] = make([]float32, domain.EmbeddingDim)
+// deltaPublisher records the embedding jobs the delta run enqueues for the fleet.
+// failAfter > 0 makes the (failAfter+1)th publish fail, so a test can cut a
+// window short mid-publish and prove the resume behavior.
+type deltaPublisher struct {
+	mu        sync.Mutex
+	published []publishedJob
+	failAfter int
+	calls     int
+}
+
+func (p *deltaPublisher) Publish(_ context.Context, body []byte, priority uint8) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if p.failAfter > 0 && p.calls > p.failAfter {
+		return errors.New("broker down")
 	}
-	return out, nil
+	var job embedjob.Job
+	if err := json.Unmarshal(body, &job); err != nil {
+		return err
+	}
+	p.published = append(p.published, publishedJob{
+		externalID: job.ExternalID,
+		chunkIndex: job.ChunkIndex,
+		staging:    job.Staging,
+		priority:   priority,
+	})
+	return nil
+}
+
+func (p *deltaPublisher) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.published)
+}
+
+func (p *deltaPublisher) has(externalID string, chunkIndex int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, j := range p.published {
+		if j.externalID == externalID && j.chunkIndex == chunkIndex {
+			return true
+		}
+	}
+	return false
 }
 
 // --- fixtures ---
@@ -282,7 +321,7 @@ var (
 )
 
 func deltaCfg() DeltaConfig {
-	return DeltaConfig{Corpus: "simplewiki", RetentionDays: 30, BulkFraction: 0.9, BatchSize: 10, Concurrency: 2}
+	return DeltaConfig{Corpus: "simplewiki", RetentionDays: 30, BulkFraction: 0.9, MaxPriority: 10, EnqueueBatchSize: 10}
 }
 
 func baselineStore(chunks ...domain.EvidenceChunk) *fakeDeltaStore {
@@ -310,7 +349,7 @@ func chunk(pageID int64, idx int, title, content string) domain.EvidenceChunk {
 
 // --- tests ---
 
-func TestRunDeltaRefetchesEditsAndEmbeds(t *testing.T) {
+func TestRunDeltaRefetchesEditsAndPublishes(t *testing.T) {
 	t.Parallel()
 
 	store := baselineStore(chunk(1, 0, "Paris", "Paris\n\nold lead"))
@@ -318,21 +357,27 @@ func TestRunDeltaRefetchesEditsAndEmbeds(t *testing.T) {
 		changes:  []Change{{PageID: 1, Title: "Paris", RevisionID: 200, Timestamp: baseTS.Add(time.Hour)}},
 		extracts: map[string]Extract{"Paris": {PageID: 1, Title: "Paris", RevisionID: 200, Text: "Paris is the capital of France and sits on the Seine."}},
 	}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	stats, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
 	if stats.Changed != 1 || stats.Skipped != 0 || stats.Deleted != 0 {
 		t.Errorf("stats = %+v, want Changed 1", stats)
 	}
-	if stats.Embedded == 0 || emb.calls == 0 {
-		t.Errorf("expected chunks embedded, got Embedded=%d calls=%d", stats.Embedded, emb.calls)
+	if stats.Published != 1 || pub.count() != 1 {
+		t.Errorf("expected 1 chunk published, got Published=%d publishes=%d", stats.Published, pub.count())
+	}
+	if !pub.has("1", 0) || pub.published[0].staging {
+		t.Errorf("published %+v, want the live chunk (1,0)", pub.published)
 	}
 	got := store.chunks[[2]int64{1, 0}]
-	if chunkRevision(got.chunk) != 200 || !got.embedded {
-		t.Errorf("chunk (1,0) = %+v, want revid 200 embedded", got)
+	if chunkRevision(got.chunk) != 200 {
+		t.Errorf("chunk (1,0) revid = %d, want 200", chunkRevision(got.chunk))
+	}
+	if got.embedded {
+		t.Errorf("chunk (1,0) marked embedded inline; delta must leave embedding to the fleet")
 	}
 	if len(store.syncStates) != 1 || !store.syncStates[0].LastChangeTS.Equal(baseTS.Add(time.Hour)) {
 		t.Errorf("checkpoint = %+v, want advanced to the latest change", store.syncStates)
@@ -351,9 +396,9 @@ func TestRunDeltaSkipsUnchangedRevision(t *testing.T) {
 		changes:  []Change{{PageID: 1, Title: "Paris", RevisionID: 100, Timestamp: baseTS.Add(time.Hour)}},
 		extracts: map[string]Extract{"Paris": {PageID: 1, Title: "Paris", RevisionID: 100, Text: "changed"}},
 	}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	stats, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
@@ -363,8 +408,8 @@ func TestRunDeltaSkipsUnchangedRevision(t *testing.T) {
 	if len(api.requested) != 0 {
 		t.Errorf("refetched %v despite an unchanged revision", api.requested)
 	}
-	if emb.calls != 0 {
-		t.Errorf("embedded despite no content change: %d calls", emb.calls)
+	if pub.count() != 0 {
+		t.Errorf("published despite no content change: %d", pub.count())
 	}
 	// The window is still processed, so the checkpoint advances.
 	if len(store.syncStates) != 1 {
@@ -380,9 +425,9 @@ func TestRunDeltaDeletesPages(t *testing.T) {
 		chunk(2, 0, "Lyon", "Lyon\n\nlead"),
 	)
 	api := &fakeAPI{changes: []Change{{Title: "Lyon", Timestamp: baseTS.Add(time.Hour), Deleted: true}}}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	stats, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
@@ -395,8 +440,8 @@ func TestRunDeltaDeletesPages(t *testing.T) {
 	if store.pageChunks(1) != 1 {
 		t.Errorf("untouched page 1 (Paris) lost chunks")
 	}
-	if emb.calls != 0 {
-		t.Errorf("a pure-deletion window made %d embed calls", emb.calls)
+	if pub.count() != 0 {
+		t.Errorf("a pure-deletion window published %d jobs", pub.count())
 	}
 }
 
@@ -409,7 +454,7 @@ func TestRunDeltaMissingExtractDeletes(t *testing.T) {
 		extracts: map[string]Extract{"Paris": {Title: "Paris", Missing: true}},
 	}
 
-	stats, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, &deltaPublisher{}, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
@@ -432,16 +477,16 @@ func TestRunDeltaRedirectTrimsAllChunks(t *testing.T) {
 		changes:  []Change{{PageID: 1, Title: "Paris", RevisionID: 200, Timestamp: baseTS.Add(time.Hour)}},
 		extracts: map[string]Extract{"Paris": {PageID: 1, Title: "Paris", RevisionID: 200, Text: ""}},
 	}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	if _, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS); err != nil {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS); err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
 	if store.pageChunks(1) != 0 {
 		t.Errorf("page turned redirect kept chunks")
 	}
-	if emb.calls != 0 {
-		t.Errorf("redirect made %d embed calls", emb.calls)
+	if pub.count() != 0 {
+		t.Errorf("redirect published %d jobs", pub.count())
 	}
 }
 
@@ -458,9 +503,9 @@ func TestRunDeltaRestoreRefetchesNotDeletes(t *testing.T) {
 		},
 		extracts: map[string]Extract{"Phoenix": {PageID: 1, Title: "Phoenix", RevisionID: 250, Text: "Phoenix is a mythical bird that rises from its ashes."}},
 	}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	stats, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
@@ -470,8 +515,11 @@ func TestRunDeltaRestoreRefetchesNotDeletes(t *testing.T) {
 	if store.pageChunks(1) == 0 {
 		t.Fatal("restored page has no chunks; it was lost")
 	}
-	if got := store.chunks[[2]int64{1, 0}]; chunkRevision(got.chunk) != 250 || !got.embedded {
-		t.Errorf("restored chunk = %+v, want revid 250 embedded", got)
+	if got := store.chunks[[2]int64{1, 0}]; chunkRevision(got.chunk) != 250 {
+		t.Errorf("restored chunk revid = %d, want 250", chunkRevision(got.chunk))
+	}
+	if !pub.has("1", 0) {
+		t.Errorf("restored chunk was not published to the fleet")
 	}
 }
 
@@ -486,7 +534,7 @@ func TestRunDeltaFallsBackToReportedRevision(t *testing.T) {
 		extracts: map[string]Extract{"Paris": {PageID: 1, Title: "Paris", RevisionID: 0, Text: "Paris is the capital of France."}},
 	}
 
-	if _, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, deltaCfg(), nowTS); err != nil {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, &deltaPublisher{}, deltaCfg(), nowTS); err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
 	if got := store.chunks[[2]int64{1, 0}]; chunkRevision(got.chunk) != 200 {
@@ -499,17 +547,17 @@ func TestRunDeltaNoChangesIsNoop(t *testing.T) {
 
 	store := baselineStore(chunk(1, 0, "Paris", "Paris\n\nlead"))
 	api := &fakeAPI{changes: nil}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	stats, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
 	if stats != (DeltaStats{}) {
 		t.Errorf("stats = %+v, want zero", stats)
 	}
-	if emb.calls != 0 || len(api.requested) != 0 {
-		t.Errorf("no-change run touched the API: embed=%d extracts=%v", emb.calls, api.requested)
+	if pub.count() != 0 || len(api.requested) != 0 {
+		t.Errorf("no-change run did work: published=%d extracts=%v", pub.count(), api.requested)
 	}
 	if len(store.syncStates) != 0 {
 		t.Errorf("no-change run advanced the checkpoint")
@@ -522,13 +570,13 @@ func TestRunDeltaRefusesWhileBulkEmbedInProgress(t *testing.T) {
 	store := baselineStore(chunk(1, 0, "Paris", "Paris\n\nlead"))
 	store.embedInProgress = true
 	api := &fakeAPI{changes: []Change{{PageID: 1, Title: "Paris", RevisionID: 200, Timestamp: baseTS.Add(time.Hour)}}}
-	emb := &deltaEmbedder{}
+	pub := &deltaPublisher{}
 
-	if _, err := RunDelta(t.Context(), store, api, emb, deltaCfg(), nowTS); !errors.Is(err, ErrBulkEmbedInProgress) {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, pub, deltaCfg(), nowTS); !errors.Is(err, ErrBulkEmbedInProgress) {
 		t.Fatalf("err = %v, want ErrBulkEmbedInProgress", err)
 	}
-	if emb.calls != 0 || len(store.syncStates) != 0 {
-		t.Errorf("refused run still did work: embed=%d checkpoints=%d", emb.calls, len(store.syncStates))
+	if pub.count() != 0 || len(store.syncStates) != 0 {
+		t.Errorf("refused run still did work: published=%d checkpoints=%d", pub.count(), len(store.syncStates))
 	}
 }
 
@@ -536,7 +584,7 @@ func TestRunDeltaNoBaseline(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeDeltaStore() // never synced
-	if _, err := RunDelta(t.Context(), store, &fakeAPI{}, &deltaEmbedder{}, deltaCfg(), nowTS); !errors.Is(err, ErrNoBaseline) {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, &fakeAPI{}, &deltaPublisher{}, deltaCfg(), nowTS); !errors.Is(err, ErrNoBaseline) {
 		t.Fatalf("err = %v, want ErrNoBaseline", err)
 	}
 }
@@ -548,7 +596,7 @@ func TestRunDeltaWindowExceedsRetention(t *testing.T) {
 	store.state.LastChangeTS = nowTS.Add(-40 * 24 * time.Hour)
 	api := &fakeAPI{changes: []Change{{PageID: 1, Title: "Paris", RevisionID: 1, Timestamp: nowTS}}}
 
-	if _, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, deltaCfg(), nowTS); !errors.Is(err, ErrWindowExceedsRetention) {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, &deltaPublisher{}, deltaCfg(), nowTS); !errors.Is(err, ErrWindowExceedsRetention) {
 		t.Fatalf("err = %v, want ErrWindowExceedsRetention", err)
 	}
 }
@@ -573,7 +621,7 @@ func TestRunDeltaRecommendsBulkOnLargeChangeSet(t *testing.T) {
 		},
 	}
 
-	stats, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, cfg, nowTS)
+	stats, err := RunDelta(t.Context(), discardLogger(), store, api, &deltaPublisher{}, cfg, nowTS)
 	if err != nil {
 		t.Fatalf("RunDelta: %v", err)
 	}
@@ -596,10 +644,68 @@ func TestRunDeltaCheckpointHeldOnFailure(t *testing.T) {
 		extracts: map[string]Extract{"Paris": {PageID: 1, Title: "Paris", RevisionID: 200, Text: "new lead"}},
 	}
 
-	if _, err := RunDelta(t.Context(), store, api, &deltaEmbedder{}, deltaCfg(), nowTS); !errors.Is(err, store.upsertErr) {
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, &deltaPublisher{}, deltaCfg(), nowTS); !errors.Is(err, store.upsertErr) {
 		t.Fatalf("err = %v, want wrapped upsert error", err)
 	}
 	if len(store.syncStates) != 0 {
 		t.Errorf("checkpoint advanced despite a failed run: %+v", store.syncStates)
+	}
+}
+
+// TestRunDeltaResumesWithoutReEmbeddingConfirmed proves the fleet-publish resume
+// guarantee: a run cut short mid-window holds its checkpoint, and the rerun
+// republishes only the chunks the fleet has not yet embedded - never a chunk a
+// confirmed batch already embedded.
+func TestRunDeltaResumesWithoutReEmbeddingConfirmed(t *testing.T) {
+	t.Parallel()
+
+	store := baselineStore(
+		chunk(1, 0, "Paris", "Paris\n\nold"),
+		chunk(2, 0, "Lyon", "Lyon\n\nold"),
+	)
+	api := &fakeAPI{
+		changes: []Change{
+			{PageID: 1, Title: "Paris", RevisionID: 200, Timestamp: baseTS.Add(time.Hour)},
+			{PageID: 2, Title: "Lyon", RevisionID: 200, Timestamp: baseTS.Add(2 * time.Hour)},
+		},
+		extracts: map[string]Extract{
+			"Paris": {PageID: 1, Title: "Paris", RevisionID: 200, Text: "Paris new lead text."},
+			"Lyon":  {PageID: 2, Title: "Lyon", RevisionID: 200, Text: "Lyon new lead text."},
+		},
+	}
+	cfg := deltaCfg()
+	cfg.EnqueueBatchSize = 1 // one chunk per confirmed page
+
+	// Run 1: the publisher confirms the first chunk (Paris, external id "1" sorts
+	// before "2"), then fails, cutting the window short.
+	pub1 := &deltaPublisher{failAfter: 1}
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, pub1, cfg, nowTS); err == nil {
+		t.Fatal("run 1 expected to fail mid-window")
+	}
+	if len(store.syncStates) != 0 {
+		t.Fatalf("checkpoint advanced despite a mid-window failure")
+	}
+	if pub1.count() != 1 {
+		t.Fatalf("run 1 published %d, want 1 before the failure", pub1.count())
+	}
+	confirmed := pub1.published[0]
+
+	// The fleet embeds the one confirmed chunk in place.
+	store.markEmbedded(confirmed.externalID, confirmed.chunkIndex)
+
+	// Run 2: the publisher is healthy. It must skip the already-embedded chunk and
+	// publish only the remaining one, then advance the checkpoint.
+	pub2 := &deltaPublisher{}
+	if _, err := RunDelta(t.Context(), discardLogger(), store, api, pub2, cfg, nowTS); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	if pub2.has(confirmed.externalID, confirmed.chunkIndex) {
+		t.Errorf("run 2 re-published already-embedded chunk %s#%d", confirmed.externalID, confirmed.chunkIndex)
+	}
+	if pub2.count() != 1 {
+		t.Errorf("run 2 published %d, want 1 (only the still-un-embedded chunk)", pub2.count())
+	}
+	if len(store.syncStates) != 1 {
+		t.Errorf("run 2 did not advance the checkpoint")
 	}
 }

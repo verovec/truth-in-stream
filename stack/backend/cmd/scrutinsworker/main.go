@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsjob"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
@@ -71,7 +72,17 @@ func run(logger *slog.Logger) error {
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
 		slog.Int("max_attempts", workerCfg.MaxAttempts))
-	if err := worker.Run(ctx); err != nil {
+
+	// Announce the drain to Slack symmetrically to the producers (silent no-op when
+	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.
+	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	_, err = crawlnotify.RunConsumerWithAlerts(ctx, notifier, "scrutins", queueCfg.VersionedName(),
+		func(ctx context.Context) (crawlnotify.ConsumerStats, error) {
+			runErr := worker.Run(ctx)
+			s := worker.Stats()
+			return crawlnotify.ConsumerStats{Processed: s.Processed, ParkedToDLQ: s.ParkedToDLQ}, runErr
+		})
+	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "scrutins worker stopped")

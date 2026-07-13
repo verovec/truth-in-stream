@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
 
 // testSource is the evidence source every job fixture is stamped with. A chunk is
@@ -666,8 +668,9 @@ func TestRunRoutesStagingFlagToCorpus(t *testing.T) {
 	}
 }
 
-// batchFailEmbedder fails any multi-input call (mimicking a hung batch endpoint)
-// but succeeds on single inputs, so a test can prove the per-chunk fallback.
+// batchFailEmbedder fails any multi-input call (mimicking a size-class provider
+// rejection) but succeeds on single inputs, so a test can prove the batch is
+// recovered by splitting down to inputs the provider accepts.
 type batchFailEmbedder struct {
 	vec        []float32
 	batchCalls atomic.Int32
@@ -676,7 +679,7 @@ type batchFailEmbedder struct {
 func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
 	if len(texts) > 1 {
 		e.batchCalls.Add(1)
-		return nil, errors.New("batch endpoint hung")
+		return nil, &embed.APIError{StatusCode: http.StatusBadRequest, Body: "batch too large"}
 	}
 	out := make([][]float32, len(texts))
 	for i := range texts {
@@ -685,9 +688,10 @@ func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([
 	return out, nil
 }
 
-// TestRunBatchEmbedErrorFallsBackToPerChunk proves a batch-level embed failure
-// degrades to embedding each delivery alone rather than failing the whole batch.
-func TestRunBatchEmbedErrorFallsBackToPerChunk(t *testing.T) {
+// TestRunBatchEmbedErrorSplitsAndRecovers proves a batch-level embed failure is
+// recovered by recursively halving the batch until each sub-batch embeds, rather
+// than failing the whole batch or dead-lettering any chunk.
+func TestRunBatchEmbedErrorSplitsAndRecovers(t *testing.T) {
 	t.Parallel()
 	const n = 4
 	deliveries := recDeliveries(t, n, false)
@@ -700,14 +704,16 @@ func TestRunBatchEmbedErrorFallsBackToPerChunk(t *testing.T) {
 	if err := w.Run(t.Context()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := emb.batchCalls.Load(); got != 1 {
-		t.Fatalf("batch calls = %d, want 1 (one failed whole-batch attempt)", got)
+	// The worker attempted at least one multi-input call (which failed) before
+	// splitting, proving it did not skip straight to one call per chunk.
+	if got := emb.batchCalls.Load(); got < 1 {
+		t.Fatalf("batch calls = %d, want at least one whole-batch attempt before splitting", got)
 	}
 	if got := len(st.recorded()); got != n {
-		t.Fatalf("writes = %d, want %d (each embedded per-chunk on fallback)", got, n)
+		t.Fatalf("writes = %d, want %d (every chunk embedded after the split)", got, n)
 	}
 	if enq.count() != 0 {
-		t.Fatalf("enqueue count = %d, want 0 (fallback succeeded, no retries)", enq.count())
+		t.Fatalf("enqueue count = %d, want 0 (the split recovered, no retries)", enq.count())
 	}
 	assertAllAcked(t, deliveries)
 }

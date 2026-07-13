@@ -1002,29 +1002,16 @@ func TestLoadWikiEmbed(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{},
-			want: WikiEmbed{BatchSize: 128, Concurrency: 4, MaxRetries: 6, RequestsPerMinute: 0, HTTPTimeout: 30 * time.Second, MaintenanceWorkMem: "512MB", MaxParallelWorkers: 7},
+			want: WikiEmbed{MaintenanceWorkMem: "512MB", MaxParallelWorkers: 7},
 		},
 		{
 			name: "overrides applied",
 			env: map[string]string{
-				"WIKI_EMBED_BATCH_SIZE":           "256",
-				"WIKI_EMBED_CONCURRENCY":          "8",
-				"WIKI_EMBED_MAX_RETRIES":          "3",
-				"WIKI_EMBED_RPM":                  "120",
-				"WIKI_EMBED_HTTP_TIMEOUT":         "90s",
 				"WIKI_EMBED_MAINTENANCE_WORK_MEM": "2GB",
 				"WIKI_EMBED_MAX_PARALLEL_WORKERS": "4",
 			},
-			want: WikiEmbed{BatchSize: 256, Concurrency: 8, MaxRetries: 3, RequestsPerMinute: 120, HTTPTimeout: 90 * time.Second, MaintenanceWorkMem: "2GB", MaxParallelWorkers: 4},
+			want: WikiEmbed{MaintenanceWorkMem: "2GB", MaxParallelWorkers: 4},
 		},
-		{name: "negative rpm rejected", env: map[string]string{"WIKI_EMBED_RPM": "-1"}, wantErr: true},
-		{name: "http timeout zero rejected", env: map[string]string{"WIKI_EMBED_HTTP_TIMEOUT": "0"}, wantErr: true},
-		{name: "http timeout malformed rejected", env: map[string]string{"WIKI_EMBED_HTTP_TIMEOUT": "soon"}, wantErr: true},
-		{name: "batch size zero rejected", env: map[string]string{"WIKI_EMBED_BATCH_SIZE": "0"}, wantErr: true},
-		{name: "batch size above voyage limit rejected", env: map[string]string{"WIKI_EMBED_BATCH_SIZE": "1001"}, wantErr: true},
-		{name: "batch size non-numeric rejected", env: map[string]string{"WIKI_EMBED_BATCH_SIZE": "lots"}, wantErr: true},
-		{name: "concurrency zero rejected", env: map[string]string{"WIKI_EMBED_CONCURRENCY": "0"}, wantErr: true},
-		{name: "max retries zero rejected", env: map[string]string{"WIKI_EMBED_MAX_RETRIES": "0"}, wantErr: true},
 		{name: "negative parallel workers rejected", env: map[string]string{"WIKI_EMBED_MAX_PARALLEL_WORKERS": "-1"}, wantErr: true},
 		{name: "malformed work mem rejected", env: map[string]string{"WIKI_EMBED_MAINTENANCE_WORK_MEM": "512 megabytes"}, wantErr: true},
 		{name: "work mem injection rejected", env: map[string]string{"WIKI_EMBED_MAINTENANCE_WORK_MEM": "512MB'; DROP TABLE wiki_chunks; --"}, wantErr: true},
@@ -1272,7 +1259,7 @@ func TestLoadWikiCluster(t *testing.T) {
 }
 
 func TestLoadEmbedWorker(t *testing.T) {
-	defaults := EmbedWorker{Concurrency: 4, BatchSize: 128, BatchWait: 200 * time.Millisecond, MaxAttempts: 5, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
+	defaults := EmbedWorker{Concurrency: 4, BatchSize: 128, BatchWait: 200 * time.Millisecond, MaxAttempts: 5, MaxBatchTokens: 96000, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1287,13 +1274,16 @@ func TestLoadEmbedWorker(t *testing.T) {
 				"EMBED_WORKER_BATCH_SIZE":        "256",
 				"EMBED_WORKER_BATCH_WAIT":        "500ms",
 				"EMBED_WORKER_MAX_ATTEMPTS":      "3",
+				"EMBED_WORKER_MAX_BATCH_TOKENS":  "50000",
 				"EMBED_WORKER_HTTP_TIMEOUT":      "45s",
 				"EMBED_WORKER_RPM":               "120",
 				"EMBED_WORKER_EMBED_MAX_RETRIES": "2",
 			},
-			want: EmbedWorker{Concurrency: 8, BatchSize: 256, BatchWait: 500 * time.Millisecond, MaxAttempts: 3, HTTPTimeout: 45 * time.Second, RequestsPerMinute: 120, EmbedMaxRetries: 2},
+			want: EmbedWorker{Concurrency: 8, BatchSize: 256, BatchWait: 500 * time.Millisecond, MaxAttempts: 3, MaxBatchTokens: 50000, HTTPTimeout: 45 * time.Second, RequestsPerMinute: 120, EmbedMaxRetries: 2},
 		},
 		{name: "batch size above provider cap rejected", env: map[string]string{"EMBED_WORKER_BATCH_SIZE": "1001"}, wantErr: true},
+		{name: "batch tokens above provider ceiling rejected", env: map[string]string{"EMBED_WORKER_MAX_BATCH_TOKENS": "120001"}, wantErr: true},
+		{name: "zero batch tokens rejected", env: map[string]string{"EMBED_WORKER_MAX_BATCH_TOKENS": "0"}, wantErr: true},
 		{name: "zero batch size rejected", env: map[string]string{"EMBED_WORKER_BATCH_SIZE": "0"}, wantErr: true},
 		{name: "non-positive batch wait rejected", env: map[string]string{"EMBED_WORKER_BATCH_WAIT": "0s"}, wantErr: true},
 		{name: "zero concurrency rejected", env: map[string]string{"EMBED_WORKER_CONCURRENCY": "0"}, wantErr: true},

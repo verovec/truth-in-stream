@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/embedjob"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
@@ -95,11 +96,12 @@ func run(logger *slog.Logger) error {
 		qEnqueuer{client: client},
 		logger,
 		embedjob.Config{
-			Concurrency:   workerCfg.Concurrency,
-			BatchSize:     workerCfg.BatchSize,
-			BatchWait:     workerCfg.BatchWait,
-			MaxAttempts:   workerCfg.MaxAttempts,
-			KnownVersions: queueCfg.KnownVersions,
+			Concurrency:    workerCfg.Concurrency,
+			BatchSize:      workerCfg.BatchSize,
+			BatchWait:      workerCfg.BatchWait,
+			MaxAttempts:    workerCfg.MaxAttempts,
+			MaxBatchTokens: workerCfg.MaxBatchTokens,
+			KnownVersions:  queueCfg.KnownVersions,
 		},
 	)
 
@@ -108,8 +110,19 @@ func run(logger *slog.Logger) error {
 		slog.Int("concurrency", workerCfg.Concurrency),
 		slog.Int("batch_size", workerCfg.BatchSize),
 		slog.Duration("batch_wait", workerCfg.BatchWait),
+		slog.Int("max_batch_tokens", workerCfg.MaxBatchTokens),
 		slog.Int("max_attempts", workerCfg.MaxAttempts))
-	if err := worker.Run(ctx); err != nil {
+
+	// Announce the drain to Slack symmetrically to the producers (silent no-op when
+	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.
+	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	_, err = crawlnotify.RunConsumerWithAlerts(ctx, notifier, "embedding", queueCfg.VersionedName(),
+		func(ctx context.Context) (crawlnotify.ConsumerStats, error) {
+			runErr := worker.Run(ctx)
+			s := worker.Stats()
+			return crawlnotify.ConsumerStats{Processed: s.Processed, ParkedToDLQ: s.ParkedToDLQ}, runErr
+		})
+	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "embedding worker stopped")
