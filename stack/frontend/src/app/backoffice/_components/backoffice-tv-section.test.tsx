@@ -1,0 +1,204 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { fr } from "@/lib/i18n/dictionaries/fr";
+import { formatTemplate } from "@/lib/i18n/text";
+import { ApiError } from "@/lib/http";
+import type { Channel } from "@/lib/tv/api";
+import { BackofficeTvSection } from "./backoffice-tv-section";
+
+const list = fr.app.backoffice.tv.list;
+
+function channel(over: Partial<Channel> = {}): Channel {
+  return {
+    id: "chan-1",
+    slug: "france-24",
+    name: "France 24",
+    sourceKind: "youtube",
+    sourceRef: "https://www.youtube.com/@FRANCE24/live",
+    enabled: true,
+    archiveEnabled: false,
+    live: true,
+    ...over,
+  };
+}
+
+// captureSwitch returns the first switch in the single channel row (capture);
+// the second is the archive switch.
+function captureSwitch() {
+  return screen.getAllByRole("switch")[0];
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("BackofficeTvSection", () => {
+  test("renders a row per channel with its source reference and live status", async () => {
+    const loadChannels = vi.fn().mockResolvedValue([
+      channel(),
+      channel({
+        id: "chan-2",
+        slug: "public-senat",
+        name: "Public Sénat",
+        sourceKind: "hls",
+        sourceRef: "https://stream.example/senat.m3u8",
+        enabled: false,
+        live: false,
+      }),
+    ]);
+    render(<BackofficeTvSection loadChannels={loadChannels} />);
+
+    expect(await screen.findByText("France 24")).toBeInTheDocument();
+    expect(screen.getByText("Public Sénat")).toBeInTheDocument();
+    expect(screen.getByText("https://stream.example/senat.m3u8")).toBeInTheDocument();
+    expect(screen.getByText(list.live)).toBeInTheDocument();
+    expect(screen.getByText(list.offline)).toBeInTheDocument();
+  });
+
+  test("shows the empty state when there are no channels", async () => {
+    const loadChannels = vi.fn().mockResolvedValue([]);
+    render(<BackofficeTvSection loadChannels={loadChannels} />);
+    expect(await screen.findByText(list.empty)).toBeInTheDocument();
+  });
+
+  test("surfaces a load failure with a retry control", async () => {
+    const loadChannels = vi.fn().mockRejectedValue(new ApiError("boom", 500));
+    render(<BackofficeTvSection loadChannels={loadChannels} />);
+    expect(
+      await screen.findByText(formatTemplate(list.loadError, { message: "boom" })),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: list.retry })).toBeInTheDocument();
+  });
+
+  test("optimistically flips capture and persists on success", async () => {
+    const loadChannels = vi.fn().mockResolvedValue([channel()]);
+    const update = vi.fn().mockResolvedValue(channel({ enabled: false }));
+    render(<BackofficeTvSection loadChannels={loadChannels} update={update} />);
+
+    await screen.findByText("France 24");
+    expect(captureSwitch()).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(captureSwitch());
+
+    // Optimistic: the switch flips before the PATCH resolves.
+    expect(captureSwitch()).toHaveAttribute("aria-checked", "false");
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith("chan-1", { enabled: false }),
+    );
+    expect(captureSwitch()).toHaveAttribute("aria-checked", "false");
+  });
+
+  test("rolls back the toggle and shows a reason when the PATCH fails", async () => {
+    const loadChannels = vi.fn().mockResolvedValue([channel()]);
+    const update = vi.fn().mockRejectedValue(new ApiError("nope", 500));
+    render(<BackofficeTvSection loadChannels={loadChannels} update={update} />);
+
+    await screen.findByText("France 24");
+    fireEvent.click(captureSwitch());
+
+    expect(
+      await screen.findByText(
+        formatTemplate(list.toggleError, { message: "nope" }),
+      ),
+    ).toBeInTheDocument();
+    // Rolled back to the original enabled=true.
+    expect(captureSwitch()).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("deletes a channel after a two-step confirm and re-lists", async () => {
+    const loadChannels = vi.fn().mockResolvedValue([channel()]);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    render(<BackofficeTvSection loadChannels={loadChannels} remove={remove} />);
+
+    await screen.findByText("France 24");
+    const row = screen.getByText("France 24").closest("tr") as HTMLElement;
+
+    fireEvent.click(within(row).getByRole("button", { name: list.delete }));
+    expect(remove).not.toHaveBeenCalled();
+
+    fireEvent.click(within(row).getByRole("button", { name: list.confirmYes }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("chan-1"));
+    // A successful delete re-lists (loadChannels called again beyond the mount).
+    await waitFor(() => expect(loadChannels).toHaveBeenCalledTimes(2));
+  });
+
+  test("a toggle merges only the toggled field, not the whole server row", async () => {
+    const loadChannels = vi
+      .fn()
+      .mockResolvedValue([channel({ enabled: true, archiveEnabled: true })]);
+    // The capture PATCH resolves with a record that (stale/out-of-order) reports
+    // archive OFF; only the toggled field must be applied.
+    const update = vi
+      .fn()
+      .mockResolvedValue(channel({ enabled: false, archiveEnabled: false }));
+    render(<BackofficeTvSection loadChannels={loadChannels} update={update} />);
+
+    await screen.findByText("France 24");
+    const archive = screen.getAllByRole("switch")[1];
+    expect(archive).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(captureSwitch());
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith("chan-1", { enabled: false }),
+    );
+    // Capture merged from the response; the untouched archive switch is preserved.
+    expect(captureSwitch()).toHaveAttribute("aria-checked", "false");
+    expect(archive).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("keeps the table (no error screen) when the post-delete re-list fails", async () => {
+    const loadChannels = vi
+      .fn()
+      .mockResolvedValueOnce([
+        channel(),
+        channel({ id: "chan-2", name: "Public Sénat" }),
+      ])
+      .mockRejectedValueOnce(new ApiError("blip", 500));
+    const remove = vi.fn().mockResolvedValue(undefined);
+    render(<BackofficeTvSection loadChannels={loadChannels} remove={remove} />);
+
+    const row = (await screen.findByText("Public Sénat")).closest(
+      "tr",
+    ) as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: list.delete }));
+    fireEvent.click(within(row).getByRole("button", { name: list.confirmYes }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("chan-2"));
+    await waitFor(() => expect(loadChannels).toHaveBeenCalledTimes(2));
+
+    // The re-list failed, but the registry is not blanked to the full error screen.
+    expect(screen.getByText("France 24")).toBeInTheDocument();
+    expect(screen.queryByText(list.retry)).not.toBeInTheDocument();
+  });
+
+  test("clears a stale toggle error after a successful re-list", async () => {
+    const loadChannels = vi
+      .fn()
+      .mockResolvedValueOnce([channel()])
+      .mockResolvedValueOnce([channel({ enabled: false })]);
+    const update = vi.fn().mockRejectedValue(new ApiError("nope", 500));
+    const remove = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BackofficeTvSection
+        loadChannels={loadChannels}
+        update={update}
+        remove={remove}
+      />,
+    );
+
+    await screen.findByText("France 24");
+    fireEvent.click(captureSwitch());
+    await screen.findByText(
+      formatTemplate(list.toggleError, { message: "nope" }),
+    );
+
+    const row = screen.getByText("France 24").closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: list.delete }));
+    fireEvent.click(within(row).getByRole("button", { name: list.confirmYes }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          formatTemplate(list.toggleError, { message: "nope" }),
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  });
+});
