@@ -56,6 +56,18 @@ var descriptors = []Descriptor{
 		Queue:       "scrutins.votes",
 		ForwardEnv:  []string{"SCRUTINS_LEGISLATURE"},
 	},
+	{
+		// sdmx is host-only (on-demand macro-stat ingest via the crawler host),
+		// never on the local scheduler, so it has no DefaultCron - exactly like
+		// stats. Its producer writes rows and publishes embedding jobs the existing
+		// embedworker drains, so it reuses the embedding.jobs queue and worker. The
+		// endpoints (ECB, OECD) are anonymous, so it declares no secrets.
+		Name:       "sdmx",
+		Producer:   "sdmxcrawl",
+		Worker:     "embedworker",
+		Queue:      "embedding.jobs",
+		ForwardEnv: []string{"SDMX_SOURCES", "SDMX_START_PERIOD", "SDMX_END_PERIOD", "WIKI_ENQUEUE_BATCH_SIZE"},
+	},
 }
 
 // All returns a copy of the registry in declaration order, so a caller cannot

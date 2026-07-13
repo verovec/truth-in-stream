@@ -82,6 +82,17 @@ const (
 	INSEEGDPCorpus          = "insee-pib"
 )
 
+// ECBStatCorpus and OECDStatCorpus are the evidence_chunks.source labels for the
+// two supranational macro-statistical sources ingested through the generic SDMX
+// connector (internal/source/sdmx): the European Central Bank and the OECD. Each
+// is a distinct corpus so a retrieved passage's publisher is identifiable, and
+// each is excluded from the wiki-only maintenance reads exactly like every other
+// statistical corpus.
+const (
+	ECBStatCorpus  = "ecb"
+	OECDStatCorpus = "oecd"
+)
+
 // statCorpora is every statistical corpus label sharing the evidence_chunks table.
 // The wiki-maintenance reads (CountWikiPages, EmbeddedWikiChunks) exclude all of
 // them so statistical evidence never skews the encyclopedic page-count guard or
@@ -96,6 +107,8 @@ var statCorpora = []string{
 	INSEEEmploymentCorpus,
 	INSEEPricesCorpus,
 	INSEEGDPCorpus,
+	ECBStatCorpus,
+	OECDStatCorpus,
 }
 
 // StatCorpora returns a fresh copy of the statistical corpus labels to exclude

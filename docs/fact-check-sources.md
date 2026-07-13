@@ -125,6 +125,54 @@ similarity guess.
 
 ---
 
+## 3b. SDMX connector — ECB, OECD, expanded Eurostat (macro backbone)
+
+**What it answers:** the macro-economic backbone of French/EU fiscal and monetary
+debate — inflation, public debt, unemployment, interest rates.
+
+- **Where the data comes from:** one generic SDMX 2.1 REST client
+  (`internal/source/sdmx`) fetches SDMX-CSV from several institutions and renders
+  each observation into a French evidence passage the embedding fleet stores in
+  `evidence_chunks`. Adding an institution is endpoint configuration plus a curated
+  series list, not a new pipeline. The producer is `cmd/sdmxcrawl`; it upserts the
+  passages un-embedded and publishes one embed job each to `embedding.jobs`, drained
+  by the existing `embedworker` (same bulk-into-live path as `statsingest`).
+- **Institutions and corpora (each a distinct `evidence_chunks.source` so the
+  publisher is identifiable):**
+  - **Eurostat** (`eurostat` corpus, expanded macro series: HICP inflation, general
+    government gross debt, unemployment) — anonymous SDMX-CSV.
+    Licence: **CC BY 4.0**, attribution "Source: Eurostat".
+  - **ECB / BCE** (`ecb` corpus: euro-area HICP, French 10-year sovereign yield) —
+    anonymous SDMX-CSV. Licence: **ESCB reuse policy** — free reuse quoting
+    "Source: ECB", data/metadata unmodified; no reuse right over third-party data
+    the ECB merely redistributes.
+  - **OECD / OCDE** (`oecd` corpus: harmonised unemployment) — anonymous SDMX-CSV,
+    **documented 60 requests/hour** (the client throttles). Licence: **CC BY 4.0**
+    (OECD content since 1 July 2024).
+- **Idempotency & robustness:** rows key on `(source, external_id, chunk_index)`
+  derived from `(dataset, series key, period)`, so a refreshed observation updates
+  its chunk (and re-embeds) instead of duplicating; upstream 429/5xx are backed off
+  and retried by the shared `httpx` retry helper, and each institution is isolated
+  in the producer (one provider's failure never blocks the others).
+- **Deferred — Banque de France Webstat:** listed in the source plan but **not yet
+  wired**. Its SDMX service sits behind the IBM API Connect developer portal and
+  needs a registered account + `X-IBM-Client-Id` API key, and the exact endpoint
+  template could not be confirmed without that account. The generic client already
+  supports a gateway auth header (`ClientIDHeader`/`ClientID`), so Banque de France
+  becomes a config-plus-secret addition once an operator registers and confirms the
+  live OpenAPI spec. Its licence is **Etalab Licence Ouverte v2.0**. IMF is likewise
+  excluded until its commercial-reuse terms are cleared.
+- **Series keys:** the SDMX-CSV wire format (parsed by resolving the invariant
+  `TIME_PERIOD`/`OBS_VALUE` columns by header name) is covered by fixtures; the exact
+  curated series keys were verified July 2026 against each portal's DSD and are
+  re-confirmed on the first live dev-account run (a stale key surfaces as an empty
+  series in the run log and is fixed by editing the key in
+  `internal/source/sdmx/catalog.go`). Note: the ECB `ICP` (HICP) dataflow was
+  slated for replacement in Feb 2026, and euro-area HICP is also ingested from
+  Eurostat directly, so inflation evidence is not solely dependent on it.
+
+---
+
 ## 4. LLM fact-check (the verifier — Claude or Gemini)
 
 This is not a *source*; it's the **judge** that reads the retrieved evidence and
@@ -219,6 +267,8 @@ encoded in the `evidence_id` prefix:
 voting:...      -> Assemblee nationale / Senat
 insee:...       -> INSEE
 eurostat:...    -> Eurostat
+ecb:...         -> Banque centrale européenne (BCE)
+oecd:...        -> OCDE
 wiki:...        -> Wikipedia (+ article URL)
 attribution:... -> press outlet
 websearch:...   -> web

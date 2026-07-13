@@ -38,6 +38,10 @@ linters:
         # design (documents.analysis_status = 'analysing'): API and DB
         # vocabulary, not prose to be re-spelled.
         - analysing
+        # Official French name of the OECD (OCDE = "Organisation de coopération
+        # et de développement économiques") stamped verbatim on OECD evidence
+        # citations; a proper noun, not an English misspelling.
+        - Organisation
   exclusions:
     # Exclude sqlc-generated code (internal/store/db) by the canonical
     # "// Code generated ... DO NOT EDIT." header only.

@@ -15,6 +15,7 @@
 # Source -> producer / queue / worker:
 #   wikipedia  wikicrawl      / crawl.chunks     / crawlworker
 #   stats      statsingest    / embedding.jobs   / embedworker
+#   sdmx       sdmxcrawl      / embedding.jobs   / embedworker
 #   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
 #   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
 #
@@ -102,6 +103,33 @@ services:
         <<: *awslogs-options
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/statsingest"
         awslogs-stream-prefix: "statsingest"
+
+  # sdmx: fetch the curated macro series from the anonymous SDMX institutions
+  # (ECB, OECD), render each observation into a French evidence passage, upsert it
+  # un-embedded and publish one embed job each to embedding.jobs. Writes to the DB,
+  # so it needs DATABASE_URL. Keyless. SDMX_SOURCES / SDMX_START_PERIOD /
+  # SDMX_END_PERIOD are optional non-secret knobs the operator command forwards.
+  sdmxcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/sdmxcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      SDMX_SOURCES: "${SDMX_SOURCES:-}"
+      SDMX_START_PERIOD: "${SDMX_START_PERIOD:-}"
+      SDMX_END_PERIOD: "${SDMX_END_PERIOD:-}"
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/sdmxcrawl"
+        awslogs-stream-prefix: "sdmxcrawl"
 
   # factcheck: read already-checked French claims from the Google Fact Check Tools
   # API for FACTCHECK_QUERIES and publish curated-claim jobs to factcheck.claims.
