@@ -110,7 +110,7 @@ SDMX, ODS, DataCommons, Legifrance, ...) are documented in
 |----------|---------|--------|
 | `RABBITMQ_URL` | (unset) | AMQP broker connection string; carries credentials, never logged. Compose wires the local `rabbitmq` service |
 | `RABBITMQ_QUEUE` | `embedding.jobs` | Base name of the embedding-job queue |
-| `RABBITMQ_QUEUE_VERSIONS` | `1` | Comma-separated, oldest-first version list; the queue is `<base>.v<version>` and the newest is active. Append a version to roll |
+| `RABBITMQ_QUEUE_VERSIONS` | `2` | Comma-separated, oldest-first version list; the queue is `<base>.v<version>` and the newest is active. Append a version to roll |
 | `RABBITMQ_MAX_PRIORITY` | `10` | `x-max-priority` ceiling (1-255); higher-priority units delivered first |
 | `RABBITMQ_PREFETCH` | `1` | Unacked messages the broker pushes to one consumer (0 = unbounded); the embed worker sizes it to in-flight batches |
 | `RABBITMQ_DLQ_ENABLED` | `true` | Route a rejected message to the companion `<base>.dlq.v<n>` dead-letter queue instead of discarding it. Must be identical on producers and consumers |

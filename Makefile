@@ -201,7 +201,7 @@ bench-datastore: ## Run the datastore scale benchmark (VER-173): spin a throwawa
 eval: ## Run the French political retrieval eval gate (VER-191): score the deterministic lexical retrieval oracle's recall@1/recall@3 per category over the committed golden set and print pass/fail against the reviewed baseline (stack/backend/internal/eval/testdata/baseline.json). Fully offline - no model API, no database, no Docker. Exits non-zero on a recall regression. Needs the Go toolchain (override with GO=). The two-axis verdict accuracy gate runs alongside as `go test ./internal/eval/...`; see stack/backend/internal/eval/README.md
 	cd stack/backend && $(GO) run ./cmd/eval
 
-crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
+crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live evidence_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
 	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
 	@echo "crawl fleet up: rabbitmq + $(CRAWLWORKER_REPLICAS) crawlworker(s) running; run 'make crawl CRAWL_CATEGORIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
@@ -226,7 +226,7 @@ scrutins-crawl: ## Run the scrutins-archive producer: conditionally download the
 # a single worker first so a bare `make crawl` still drains. CRAWL_SHARDS>1 fans
 # the one CRAWL_CATEGORIES list out across N parallel producers (each a disjoint
 # round-robin slice), running them to completion and removing each on exit.
-crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
+crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live evidence_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
 	@case "$(CRAWL_SHARDS)" in ''|*[!0-9]*) echo "CRAWL_SHARDS must be a positive integer, got '$(CRAWL_SHARDS)'" >&2; exit 1 ;; esac
 	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up rabbitmq crawlworker
 	@if [ "$(CRAWL_SHARDS)" -le 1 ]; then \

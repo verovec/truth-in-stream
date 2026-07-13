@@ -66,7 +66,7 @@ flowchart LR
 ```
 
 - **Versioned names.** Each queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a
-  comma-separated, oldest-first list (default `1`). The newest version is active - the producer
+  comma-separated, oldest-first list (default `2`). The newest version is active - the producer
   publishes to it and stamps `x-queue-version` on every message; a worker drops a message stamped
   with a version it does not know. To roll, append a version; workers on the old version drain it,
   then it leaves the list. These are versions of one logical queue, not per-worker queues.

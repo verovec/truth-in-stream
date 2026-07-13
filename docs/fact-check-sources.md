@@ -299,8 +299,8 @@ produces the verdict. Evidence comes from sources 1-3 and 5; the LLM decides.
 below). It does appear two other ways: as the **Gemini LLM provider**, and — via
 the **Google Fact Check Markup Tool** — as the origin of the ClaimReview markup
 the curated claim corpus ingests offline (see the fact-check archive sources:
-the Google Fact Check Tools API path and the **DataCommons ClaimReview feed** in
-section 7). Those feed `political_claims` ahead of time; they are not queried at
+the Google Fact Check Tools API path (section 9) and the **DataCommons ClaimReview
+feed** (section 8)). Those feed `political_claims` ahead of time; they are not queried at
 check time. The things named "Google" at *check* time:
 
 - **Gemini as LLM provider** (see section 4) — reads evidence, isn't a source.
@@ -311,8 +311,8 @@ check time. The things named "Google" at *check* time:
   (`internal/source/press/press.go`) — used to verify quotes ("X said Y").
 
 The Google **Fact Check Tools API** path (the curated-corpus ingestion, not a
-check-time source) is section 8; the other claim-level corpus paths are sections
-7, 9, and 10.
+check-time source) is section 9; the other claim-level corpus paths are sections
+8, 10, and 11.
 
 ---
 
@@ -417,7 +417,7 @@ re-reasoning it.
   aggregated, schema.org-standardized markup created through the Google Fact
   Check Markup Tool and refreshed daily. It is a **public, keyless** object, so
   the producer declares **no Secrets Manager entry and needs no per-source
-  Terraform** (unlike the Google Fact Check Tools API path in section 5). Producer:
+  Terraform** (unlike the Google Fact Check Tools API path in section 9). Producer:
   `internal/datacommons` via `cmd/datacommonscrawl`.
 - **The pipeline:** it is the **redundant, non-API path** onto the same corpus as
   the Google-API `factcheck` source. Both publish self-contained
@@ -458,7 +458,7 @@ re-reasoning it.
 
 ## 9. Google Fact Check Tools API — broadened French corpus (`factcheck`)
 
-**What it answers:** the same curated fast-path as section 7, from the API side.
+**What it answers:** the same curated fast-path as section 8, from the API side.
 The `claims:search` API is live (the 2025 retirement was the Search *display*, not
 the API). Producer: `internal/factcheckarchive` via `cmd/factcheckcrawl`; worker and
 queue are shared with the other claim paths (`factcheckworker` / `factcheck.claims`).
@@ -686,14 +686,15 @@ single debug toggle for fact-check results. To get what you described:
   (e.g. *"Assemblee nationale"*, *"INSEE"*, *"Wikipedia"*) computed from the
   `evidence_id` kind of the winning citation, and render it on the verdict chip.
   Mostly a frontend mapping + a small backend helper; the data is already there.
-- **Debug mode — where the info comes from, in detail.** Surface the full
-  evidence list per claim: each passage's text, `evidence_id`, source URL, and
-  similarity/contribution score. There's a precedent for the pattern: the
-  existing `DEBUG_WIKI_SEARCH` env flag exposes a `/api/debug/wiki-search` probe
-  (`handler/debug_search.go`) with a frontend hook. A
-  `DEBUG_FACT_CHECK` flag could do the equivalent for live results — either a
-  verbose frame variant or a UI panel that expands the already-present
-  `matches[]`.
+- **Debug mode — where the info comes from, in detail (shipped).** The
+  `DEBUG_FACT_CHECK` flag now surfaces the full per-passage evidence detail on the
+  live results, **admin-gated**: the detail frame is emitted only when
+  `DEBUG_FACT_CHECK` is on **and** the live socket carries a verified `admin` claim,
+  and enforcement is server-side (see
+  [Configuration -> Authentication](configuration.md#authentication-keycloak-identity-gate)).
+  It mirrors the older `DEBUG_WIKI_SEARCH` probe (`/api/debug/wiki-search`,
+  `handler/debug_search.go`). The remaining gap is the normal-mode source label
+  above, not the debug view.
 
 **Effort:** the plumbing exists end-to-end (`evidence_id` round-trips to the
 frontend). This is largely a labelling + UI-rendering feature, not new
