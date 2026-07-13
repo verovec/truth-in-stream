@@ -485,6 +485,108 @@ operator exports it as CSV/TSV. Producer: `internal/claimskg` via `cmd/claimskgs
 
 ---
 
+## 8. Institutional evidence sources (vie-publique, HATVP, Legifrance)
+
+**What it answers:** the deeper institutional layer - *"the minister said X on date
+Y"* (vie-publique public-speech metadata), *"official Z declared interest W"*
+(HATVP declarations of interests), and *"the law actually says ..."* (Legifrance
+consolidated code articles). All three render attributed French passages, publish
+the generic `connector.EvidenceJob` to `evidence.chunks`, and are drained by
+`cmd/evidenceworker` (`internal/evidencejob`) into `evidence_chunks` - no new
+worker. The shared producer scaffolding (conditional-GET marker, per-identifier
+manifest diff, chunk rendering, and a generic bulk-dump producer) lives in
+`internal/source/evidencesrc`.
+
+| Source id | Package / producer | Real feed | Auth | Provenance |
+|-----------|--------------------|-----------|------|------------|
+| `viepublique` | `internal/source/viepublique` + `cmd/viepubliquecrawl` | `echanges.dila.gouv.fr/OPENDATA/DISCOURS_PUBLICS/vp_discours.json` (JSON array, ~240 MB, ETag) | keyless | vie-publique.fr speech URL |
+| `hatvp` | `internal/source/hatvp` + `cmd/hatvpcrawl` | `hatvp.fr/livraison/opendata/liste.csv` (CSV index, ETag) + `hatvp.fr/livraison/dossiers/<file>.xml` (per-declaration XML) | keyless | HATVP nominative page (`url_dossier`) |
+| `legifrance` | `internal/source/legifrance` + `cmd/legifrancecrawl` | Legifrance API via PISTE `POST /consult/getArticle` (base `api.piste.gouv.fr/dila/legifrance/lf-engine-app`) | **PISTE OAuth2** | `legifrance.gouv.fr/codes/article_lc/<id>` |
+
+**vie-publique discours.** The DILA dump is speech *metadata* only (title,
+speaker(s), date, emitter, document type, themes, descriptors, URL - there is no
+full-text field), so each record renders into one compact attributed passage; the
+vie-publique URL opens the full speech. A conditional GET skips an unchanged dump;
+the manifest diff republishes only records whose fingerprint moved. Parser written
+against a real excerpt (`testdata/vp_discours.json`).
+
+**HATVP declarations.** The CSV index is diffed by row; each new or changed
+*delivered* row fetches its (small) per-declaration XML and renders a structured
+summary of the declared mandates, professional activities, corporate roles and
+financial holdings - with the HATVP-withheld sentinel `[Donnees non publiees]`
+dropped and each empty section rendered as an explicit `neant` (a checkable fact).
+A declaration whose XML fails to fetch is skipped without recording its
+fingerprint, so it retries next run. Parsers written against real captures
+(`testdata/liste.csv`, `testdata/lahmar-*.xml`).
+
+**Legifrance PISTE.** Starts narrow: a configured corpus of code articles
+(`LEGIFRANCE_ARTICLES`, comma-separated `LEGIARTI...=Label`) relevant to recurring
+political claims (immigration, labour, security). The producer authenticates with
+PISTE OAuth2 client-credentials, fetches each article via `getArticle`, diffs by
+consolidated-text fingerprint, and quota-paces its requests
+(`LEGIFRANCE_MIN_INTERVAL_MS`, default 500 ms). **Credentials
+(`LEGIFRANCE_CLIENT_ID` / `LEGIFRANCE_CLIENT_SECRET`) come from env/secrets only**
+(Secrets Manager on the host: `app/legifrance-client-id`,
+`app/legifrance-client-secret`); when they are absent the run **degrades to a clean
+skip** (a finished, error-free run publishing nothing), so the source can be wired
+and enabled before it is provisioned. Because the endpoint is OAuth2-gated, a live
+sample cannot be captured without operator credentials: `testdata/get_article.json`
+matches the documented PISTE Swagger / community-published response shape, and a
+real-capture validation against the live API is the operator's activation step. The
+recommended starter articles are configured at activation (the operator holds the
+credentials to verify each `LEGIARTI` id resolves).
+
+**Licences and terms.**
+- vie-publique discours: **Etalab Licence Ouverte / Open Licence v2.0**. Attribution:
+  *"Source : DILA - vie-publique.fr, Licence Ouverte v2.0"*.
+- HATVP: open data published under the HATVP reuse conditions
+  (`hatvp.fr/open-data/`); declarations are public by law (art. LO 135-2 / loi
+  2013-907). Attribution: *"Source : Haute Autorite pour la transparence de la vie
+  publique - hatvp.fr"*. Fields the HATVP withholds are served as
+  `[Donnees non publiees]` and never ingested.
+- Legifrance: **Licence Ouverte v2.0** for the legal data; access is via the free
+  PISTE portal (OAuth2 registration). Attribution: *"Source : DILA - Legifrance"*.
+
+**Cloud parity.** All three run through the framework registry (manifest-driven
+host script): `ENVIRONMENT=dev scripts/ingest-host.sh crawler <source> up|status|down`.
+`viepublique` (08:00) and `hatvp` (08:30) run on the always-on local scheduler;
+`legifrance` is **host-only / on-demand** (credential-gated, slow-moving law
+corpus). State lives on per-source volumes (`viepublique-state`, `hatvp-state`,
+`legifrance-state`). For `legifrance`, the operator activation step is: push the two
+secrets (`scripts/push-secrets.sh`) and grant their ARNs in the crawler host's
+`secret_arns` (`stack/terraform/dev/main.tf`) - the one per-source infra edit for a
+secret-bearing source; the keyless two need none.
+
+### Cour des comptes - verified, currently blocked (not shipped)
+
+The fourth family on the card (Cour des comptes / CRC audit findings) was
+**investigated and is deferred**, because its findings are only available in a form
+this project cannot cleanly ingest under the card's own "no parallel PDF stack"
+acceptance criterion:
+
+- The Cour des comptes `data.gouv.fr` organisation (`cour-des-comptes`, 237
+  datasets) publishes **CSV statistical annexes** to reports (effectifs, budgets,
+  finances locales), **not** the report prose/findings. There is no textual dataset
+  of the audit conclusions.
+- The report findings ("l'audit a trouve ...") live in **PDFs** on `ccomptes.fr`,
+  a Drupal site with **no JSON API, no RSS feed, and no synthesis dataset**
+  (checked: `ccomptes.fr/jsonapi` -> 404, `/rss.xml` and `/fr/rss.xml` -> 404,
+  `/sitemap.xml` -> URL list only; `data.ccomptes.fr` does not resolve).
+- The backend has **no PDF text-extraction path**: the existing document-extraction
+  path is browser-side (`react-pdf` in the frontend, POSTing extracted sentences),
+  which a headless crawler cannot drive. Adding a backend PDF library is exactly the
+  "parallel PDF stack" the card's AC forbids.
+
+**Ready-path.** Cour des comptes becomes ingestible the moment either (a) a
+backend/service text-extraction path exists (a Cour des comptes connector then
+downloads the report PDFs, extracts text through it, and chunks with report/page
+provenance into `evidence_chunks` - reusing `internal/source/evidencesrc`), or (b)
+the Cour des comptes publishes an HTML/text synthesis dataset or API (then rendered
+as compact passages exactly like vie-publique). The connector is a drop-in
+`internal/source/courdescomptes` + one registry entry when that path lands.
+
+---
+
 ## What the user sees today vs. "show the source" / debug mode
 
 ### What's already in the result payload

@@ -218,6 +218,49 @@
         "CLAIMSKG_SEED_VINTAGE",
         "CLAIMSKG_SEED_TSV"
       ]
+    },
+    {
+      "name": "viepublique",
+      "default_cron": "0 8 * * *",
+      "producer": "viepubliquecrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "VIEPUBLIQUE_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "hatvp",
+      "default_cron": "30 8 * * *",
+      "producer": "hatvpcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "HATVP_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "legifrance",
+      "producer": "legifrancecrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "LEGIFRANCE_ARTICLES",
+        "LEGIFRANCE_MAX_ITEMS",
+        "LEGIFRANCE_MIN_INTERVAL_MS",
+        "LEGIFRANCE_TOKEN_URL",
+        "LEGIFRANCE_API_BASE_URL"
+      ],
+      "secrets": [
+        {
+          "env_var": "LEGIFRANCE_CLIENT_ID",
+          "secret_suffix": "app/legifrance-client-id"
+        },
+        {
+          "env_var": "LEGIFRANCE_CLIENT_SECRET",
+          "secret_suffix": "app/legifrance-client-secret"
+        }
+      ]
     }
   ]
 }

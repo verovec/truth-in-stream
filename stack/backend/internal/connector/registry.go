@@ -189,6 +189,39 @@ var descriptors = []Descriptor{
 		Queue:      "factcheck.claims",
 		ForwardEnv: []string{"CLAIMSKG_SEED_ENABLED", "CLAIMSKG_SEED_FILE", "CLAIMSKG_SEED_VINTAGE", "CLAIMSKG_SEED_TSV"},
 	},
+	// The Phase-2 institutional evidence sources publish generic evidence jobs to the
+	// shared evidence queue the evidence worker already drains. vie-publique and
+	// hatvp are keyless open data run on the always-on scheduler; legifrance is a
+	// host-only (on-demand), credential-gated source: its PISTE OAuth2 credentials are
+	// declared as secrets read from Secrets Manager on the host, never forwarded, and
+	// it degrades to a clean skip when they are absent.
+	{
+		Name:        "viepublique",
+		DefaultCron: "0 8 * * *",
+		Producer:    "viepubliquecrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		ForwardEnv:  []string{"VIEPUBLIQUE_MAX_ITEMS"},
+	},
+	{
+		Name:        "hatvp",
+		DefaultCron: "30 8 * * *",
+		Producer:    "hatvpcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		ForwardEnv:  []string{"HATVP_MAX_ITEMS"},
+	},
+	{
+		Name:       "legifrance",
+		Producer:   "legifrancecrawl",
+		Worker:     "evidenceworker",
+		Queue:      "evidence.chunks",
+		ForwardEnv: []string{"LEGIFRANCE_ARTICLES", "LEGIFRANCE_MAX_ITEMS", "LEGIFRANCE_MIN_INTERVAL_MS", "LEGIFRANCE_TOKEN_URL", "LEGIFRANCE_API_BASE_URL"},
+		Secrets: []SecretRef{
+			{EnvVar: "LEGIFRANCE_CLIENT_ID", SecretSuffix: "app/legifrance-client-id"},
+			{EnvVar: "LEGIFRANCE_CLIENT_SECRET", SecretSuffix: "app/legifrance-client-secret"},
+		},
+	},
 }
 
 // All returns a copy of the registry in declaration order, so a caller cannot

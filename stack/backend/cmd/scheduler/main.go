@@ -38,7 +38,10 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/schedule"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsarchive"
+	"github.com/verovec/truth-in-stream/backend/internal/source/evidencesrc"
+	"github.com/verovec/truth-in-stream/backend/internal/source/hatvp"
 	"github.com/verovec/truth-in-stream/backend/internal/source/parliament"
+	"github.com/verovec/truth-in-stream/backend/internal/source/viepublique"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
 
@@ -79,6 +82,8 @@ func buildersTable() map[string]producerBuilder {
 		"scrutins":    buildScrutins,
 		"datacommons": buildDatacommons,
 		"claimreview": buildClaimreview,
+		"viepublique": buildViePublique,
+		"hatvp":       buildHATVP,
 	}
 	for _, dataset := range parliament.Datasets() {
 		b[dataset] = buildParliament(dataset)
@@ -406,6 +411,68 @@ func buildScrutins(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 		Legislature: archiveCfg.Legislature,
 		MarkerPath:  archiveCfg.MarkerPath,
 		MaxPriority: queueCfg.MaxPriority,
+	}, qPublisher{client: client}, logger)
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+	return producer, closer, nil
+}
+
+// buildViePublique builds the vie-publique discours metadata producer, a keyless
+// dump connector publishing generic evidence jobs to the evidence queue.
+func buildViePublique(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+	cfg, err := config.LoadViePublique()
+	if err != nil {
+		return nil, nil, err
+	}
+	queueCfg, err := config.LoadEvidenceQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := queue.New(queueCfg.ClientConfig(0))
+	if err != nil {
+		return nil, nil, err
+	}
+	closer := func() { _ = client.Close() }
+	producer, err := evidencesrc.NewDumpProducer(evidencesrc.DumpConfig{
+		Source:       viepublique.Source,
+		URL:          viepublique.DumpURL,
+		Scope:        "vie-publique discours (metadonnees)",
+		Extract:      viepublique.Extract,
+		MarkerPath:   cfg.MarkerPath,
+		ManifestPath: cfg.ManifestPath,
+		MaxPriority:  queueCfg.MaxPriority,
+		MaxItems:     cfg.MaxItems,
+	}, qPublisher{client: client}, logger)
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+	return producer, closer, nil
+}
+
+// buildHATVP builds the HATVP declarations producer, a keyless index+detail
+// connector publishing generic evidence jobs to the evidence queue.
+func buildHATVP(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+	cfg, err := config.LoadHATVP()
+	if err != nil {
+		return nil, nil, err
+	}
+	queueCfg, err := config.LoadEvidenceQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := queue.New(queueCfg.ClientConfig(0))
+	if err != nil {
+		return nil, nil, err
+	}
+	closer := func() { _ = client.Close() }
+	producer, err := hatvp.New(hatvp.Config{
+		MarkerPath:   cfg.MarkerPath,
+		ManifestPath: cfg.ManifestPath,
+		MaxPriority:  queueCfg.MaxPriority,
+		MaxItems:     cfg.MaxItems,
 	}, qPublisher{client: client}, logger)
 	if err != nil {
 		closer()

@@ -6,7 +6,10 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsarchive"
+	"github.com/verovec/truth-in-stream/backend/internal/source/evidencesrc"
+	"github.com/verovec/truth-in-stream/backend/internal/source/hatvp"
 	"github.com/verovec/truth-in-stream/backend/internal/source/parliament"
+	"github.com/verovec/truth-in-stream/backend/internal/source/viepublique"
 )
 
 // namePub is a no-op Publisher for constructing a producer purely to read its
@@ -51,12 +54,24 @@ func TestProducerNamesMatchDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build scrutins producer: %v", err)
 	}
+	viepub, err := evidencesrc.NewDumpProducer(evidencesrc.DumpConfig{
+		Source: viepublique.Source, URL: viepublique.DumpURL, Extract: viepublique.Extract, MaxPriority: 1,
+	}, namePub{}, nil)
+	if err != nil {
+		t.Fatalf("build vie-publique producer: %v", err)
+	}
+	hatvpProd, err := hatvp.New(hatvp.Config{MaxPriority: 1}, namePub{}, nil)
+	if err != nil {
+		t.Fatalf("build hatvp producer: %v", err)
+	}
 	producerNames := map[string]string{
 		"wikipedia":   wikiProducer{}.Name(),
 		"factcheck":   factcheckProducer{}.Name(),
 		"scrutins":    scrutins.Name(),
 		"datacommons": datacommonsProducer{}.Name(),
 		"claimreview": claimreviewProducer{}.Name(),
+		"viepublique": viepub.Name(),
+		"hatvp":       hatvpProd.Name(),
 	}
 	for _, dataset := range parliament.Datasets() {
 		p, err := parliament.New(parliament.Config{Dataset: dataset, Legislature: "17", MaxPriority: 1}, namePub{}, nil)
