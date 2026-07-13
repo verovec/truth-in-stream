@@ -13,19 +13,22 @@ import { LogoutButton } from "./logout-button";
 // AppSection identifies which product area is showing so the header marks the
 // current nav link. Add a section here and a NAV entry to grow the navigation
 // by data, not by copying markup.
-export type AppSection = "videos" | "documents" | "backoffice";
+export type AppSection = "videos" | "documents" | "tv" | "backoffice";
 
 // NAV is the data the header renders. adminOnly entries appear only for an admin
 // caller; the backoffice is operator-only, so a guest never sees it (the backend
 // independently enforces every backoffice call, so this is reveal-only chrome).
+// TV is a consumption surface open to every authenticated user, so it is not
+// adminOnly.
 const NAV: {
   section: AppSection;
   href: Route;
-  labelKey: "videos" | "documents" | "backoffice";
+  labelKey: "videos" | "documents" | "tv" | "backoffice";
   adminOnly?: boolean;
 }[] = [
   { section: "videos", href: "/app", labelKey: "videos" },
   { section: "documents", href: "/documents", labelKey: "documents" },
+  { section: "tv", href: "/tv", labelKey: "tv" },
   { section: "backoffice", href: "/backoffice", labelKey: "backoffice", adminOnly: true },
 ];
 

@@ -298,3 +298,56 @@ func TestTVRecordingPruneRejectsNonPositiveRetention(t *testing.T) {
 		t.Fatal("Prune accepted a zero retention window")
 	}
 }
+
+func TestTVRecordingListRecordings(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	videos := newFakeVideoStore()
+
+	base := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+	// Two ready recordings for the target channel, one pending (excluded), and
+	// one ready recording for another channel (excluded).
+	if _, err := videos.CreateVideo(ctx, domain.Video{Kind: domain.VideoKindTV, ChannelID: "chan-1", Status: domain.VideoStatusReady, RecordedAt: base}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := videos.CreateVideo(ctx, domain.Video{Kind: domain.VideoKindTV, ChannelID: "chan-1", Status: domain.VideoStatusReady, RecordedAt: base.Add(time.Hour)}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := videos.CreateVideo(ctx, domain.Video{Kind: domain.VideoKindTV, ChannelID: "chan-1", Status: domain.VideoStatusPending, RecordedAt: base.Add(2 * time.Hour)}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := videos.CreateVideo(ctx, domain.Video{Kind: domain.VideoKindTV, ChannelID: "chan-2", Status: domain.VideoStatusReady, RecordedAt: base}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	svc := newTestTVRecordingService(t, videos, newFakeTVChannelStore(), &fakeMediaStore{})
+	got, err := svc.ListRecordings(ctx, "chan-1")
+	if err != nil {
+		t.Fatalf("ListRecordings: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("recordings = %d, want 2 (only ready, only chan-1)", len(got))
+	}
+	// Newest first.
+	if !got[0].RecordedAt.After(got[1].RecordedAt) {
+		t.Fatalf("order = %v,%v, want newest first", got[0].RecordedAt, got[1].RecordedAt)
+	}
+
+	empty, err := svc.ListRecordings(ctx, "chan-unknown")
+	if err != nil {
+		t.Fatalf("ListRecordings unknown: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("unknown channel recordings = %d, want 0", len(empty))
+	}
+}
+
+func TestTVRecordingListRecordingsWrapsStoreError(t *testing.T) {
+	t.Parallel()
+	videos := newFakeVideoStore()
+	videos.listErr = errors.New("boom")
+	svc := newTestTVRecordingService(t, videos, newFakeTVChannelStore(), &fakeMediaStore{})
+	if _, err := svc.ListRecordings(context.Background(), "chan-1"); err == nil {
+		t.Fatal("ListRecordings swallowed a store error")
+	}
+}

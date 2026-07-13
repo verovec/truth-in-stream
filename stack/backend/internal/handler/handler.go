@@ -69,6 +69,10 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	api.Handle("POST /api/tv/recordings/uploads", middleware.RequireCaptureService(requestTVRecordingUploadHandler(tvRecordings)))
 	api.Handle("POST /api/tv/recordings/prune", middleware.RequireCaptureService(pruneTVRecordingsHandler(tvRecordings)))
 	api.Handle("POST /api/tv/recordings", middleware.RequireCaptureService(registerTVRecordingHandler(tvRecordings)))
+	// A channel's recordings listing is a consumption read (the /tv page's
+	// recordings strip), so it serves any authenticated user like the channel
+	// list, not the capture-service role the write-path routes above carry.
+	api.HandleFunc("GET /api/tv/channels/{id}/recordings", listTVRecordingsHandler(tvRecordings))
 	// Live fact-check stream (WebSocket). See live.go.
 	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, recorder, replayer, liveAllowedOrigins, debugFactCheck, logger))
 	// Admin-only exports of a completed video's cached analysis: an SRT transcript

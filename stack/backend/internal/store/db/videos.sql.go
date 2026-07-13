@@ -267,6 +267,53 @@ func (q *Queries) ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.
 	return items, nil
 }
 
+const listTVRecordingsByChannel = `-- name: ListTVRecordingsByChannel :many
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE kind = 'tv' AND channel_id = $1 AND status = 'ready' AND recorded_at IS NOT NULL
+ORDER BY recorded_at DESC
+`
+
+// Every ready archived recording for one channel, newest first, for the /tv
+// page's recordings strip. Scoped to kind 'tv' with a ready status so it never
+// returns uploads, imports, or a still-pending capture; an orphaned recording
+// (channel_id nulled by a channel delete) is excluded by the equality match.
+func (q *Queries) ListTVRecordingsByChannel(ctx context.Context, channelID uuid.NullUUID) ([]Video, error) {
+	rows, err := q.db.Query(ctx, listTVRecordingsByChannel, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Video{}
+	for rows.Next() {
+		var i Video
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.ObjectKey,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.Status,
+			&i.Kind,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SourceUrl,
+			&i.SourceID,
+			&i.DurationMs,
+			&i.Error,
+			&i.ChannelID,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideos = `-- name: ListVideos :many
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
 FROM videos

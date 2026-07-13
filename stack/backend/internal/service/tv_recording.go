@@ -55,6 +55,7 @@ type tvRecordingVideoStore interface {
 	SetVideoStatus(ctx context.Context, id string, status domain.VideoStatus) (domain.Video, error)
 	DeleteVideo(ctx context.Context, id string) error
 	ListTVRecordingsBefore(ctx context.Context, cutoff time.Time) ([]domain.Video, error)
+	ListTVRecordingsByChannel(ctx context.Context, channelID string) ([]domain.Video, error)
 }
 
 // TVRecordingRequest is the input to RequestUpload: the source channel, the
@@ -236,6 +237,18 @@ func (s *TVRecordingService) Prune(ctx context.Context, retention time.Duration)
 		deleted++
 	}
 	return deleted, nil
+}
+
+// ListRecordings returns a channel's ready archived recordings, newest first,
+// for the /tv page's recordings strip. It is a plain read-through to the store's
+// channel-scoped listing: an unknown or malformed channel id yields an empty
+// list, so the caller need not distinguish "no recordings" from "no channel".
+func (s *TVRecordingService) ListRecordings(ctx context.Context, channelID string) ([]domain.Video, error) {
+	recordings, err := s.videos.ListTVRecordingsByChannel(ctx, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("tv recording: list for channel %s: %w", channelID, err)
+	}
+	return recordings, nil
 }
 
 // tvRecordingObjectKey mints the storage key for a recording:

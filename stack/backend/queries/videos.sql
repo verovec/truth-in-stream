@@ -25,6 +25,16 @@ FROM videos
 WHERE kind = 'tv' AND recorded_at IS NOT NULL AND recorded_at < $1
 ORDER BY recorded_at;
 
+-- name: ListTVRecordingsByChannel :many
+-- Every ready archived recording for one channel, newest first, for the /tv
+-- page's recordings strip. Scoped to kind 'tv' with a ready status so it never
+-- returns uploads, imports, or a still-pending capture; an orphaned recording
+-- (channel_id nulled by a channel delete) is excluded by the equality match.
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE kind = 'tv' AND channel_id = $1 AND status = 'ready' AND recorded_at IS NOT NULL
+ORDER BY recorded_at DESC;
+
 -- name: DeleteVideo :execrows
 -- Remove one video record by id. The affected-row count lets the store map an
 -- unknown id (0 rows) to ErrVideoNotFound without a prior existence query.

@@ -13,6 +13,12 @@ package handler
 //	POST /api/tv/recordings/uploads mint a presigned PUT and a pending recording
 //	POST /api/tv/recordings         confirm the object landed, mark it ready
 //	POST /api/tv/recordings/prune   delete recordings older than a retention window
+//
+// One read path is a consumption endpoint, not a worker write, so it serves any
+// authenticated user (the /tv page's recordings strip) rather than the capture
+// service role:
+//
+//	GET  /api/tv/channels/{id}/recordings  list a channel's ready recordings
 
 import (
 	"context"
@@ -31,6 +37,50 @@ type TVRecordingService interface {
 	RequestUpload(ctx context.Context, req service.TVRecordingRequest) (service.UploadTicket, error)
 	Register(ctx context.Context, videoID string) (domain.Video, error)
 	Prune(ctx context.Context, retention time.Duration) (int, error)
+	ListRecordings(ctx context.Context, channelID string) ([]domain.Video, error)
+}
+
+// tvRecordingJSON is the wire form of one recording in the /tv strip. It is a
+// deliberately thin projection of a kind `tv` video: the fields the strip needs
+// to render a row and open the player by id, not the full video record (no
+// object key, presign, or channel linkage). RecordedAt is RFC3339; DurationMS is
+// omitted when unknown so a still-unprobed capture carries no misleading zero.
+type tvRecordingJSON struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	RecordedAt string `json:"recorded_at"`
+	DurationMS int64  `json:"duration_ms,omitzero"`
+	Status     string `json:"status"`
+}
+
+type listTVRecordingsResponse struct {
+	Recordings []tvRecordingJSON `json:"recordings"`
+}
+
+// listTVRecordingsHandler lists one channel's ready archived recordings, newest
+// first, for the /tv page. It is a consumption read served to any authenticated
+// user (registered without the capture-service gate), mirroring the channel
+// list. An unknown or malformed channel id yields an empty list, not a 404: the
+// strip renders "no recordings" identically either way.
+func listTVRecordingsHandler(svc TVRecordingService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recordings, err := svc.ListRecordings(r.Context(), r.PathValue("id"))
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		out := make([]tvRecordingJSON, 0, len(recordings))
+		for _, v := range recordings {
+			out = append(out, tvRecordingJSON{
+				ID:         v.ID,
+				Title:      v.Title,
+				RecordedAt: v.RecordedAt.UTC().Format(time.RFC3339),
+				DurationMS: v.DurationMS,
+				Status:     string(v.Status),
+			})
+		}
+		httpx.JSON(w, http.StatusOK, listTVRecordingsResponse{Recordings: out})
+	}
 }
 
 type tvRecordingUploadBody struct {

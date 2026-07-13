@@ -122,6 +122,7 @@ export const fr = {
       ariaLabel: "Navigation principale",
       videos: "Vidéos",
       documents: "Documents",
+      tv: "TV",
       backoffice: "Back-office",
     },
     backoffice: {
@@ -213,6 +214,44 @@ export const fr = {
           saveError: "L'enregistrement a échoué : {message}",
           saveErrorFallback: "L'enregistrement a échoué.",
         },
+      },
+    },
+    tv: {
+      heading: "TV en direct",
+      back: "Toutes les chaînes",
+      loadingAria: "Chargement des chaînes",
+      loadError: "Les chaînes n'ont pas pu se charger : {message}",
+      loadErrorFallback: "Les chaînes n'ont pas pu se charger.",
+      retry: "Réessayer",
+      grid: {
+        ariaLabel: "Chaînes TV",
+        onAir: "En direct",
+        disabled: "Désactivée",
+        empty: "Aucune chaîne disponible pour le moment.",
+      },
+      channel: {
+        analysisDelay:
+          "L'analyse s'affiche avec quelques secondes de décalage sur le direct.",
+        hlsNoPlayer:
+          "Ce flux n'a pas de lecteur intégré ; l'analyse en direct s'affiche ci-contre.",
+        offAir: "{name} n'est pas en direct pour le moment.",
+        offAirHint:
+          "Revenez pendant une diffusion, ou consultez les enregistrements ci-dessous.",
+      },
+      embed: {
+        unavailable: "Le direct ne peut pas être intégré ici.",
+        openOnYoutube: "Ouvrir sur YouTube",
+      },
+      recordings: {
+        heading: "Enregistrements",
+        empty: "Aucun enregistrement pour cette chaîne.",
+        loadingAria: "Chargement des enregistrements",
+        loadError: "Les enregistrements n'ont pas pu se charger : {message}",
+        loadErrorFallback: "Les enregistrements n'ont pas pu se charger.",
+        retry: "Réessayer",
+        close: "Fermer le lecteur",
+        loadingPlayer: "Chargement de l'enregistrement",
+        playError: "Cet enregistrement n'a pas pu être lu.",
       },
     },
     documents: {

@@ -92,6 +92,26 @@ func (s *Store) ListTVRecordingsBefore(ctx context.Context, cutoff time.Time) ([
 	return videos, nil
 }
 
+// ListTVRecordingsByChannel returns every ready kind `tv` recording for the
+// given channel, newest first, for the /tv page's recordings strip. An
+// unparseable channel id names no channel, so it yields an empty list rather
+// than an error, mirroring GetVideo's treatment of a malformed id.
+func (s *Store) ListTVRecordingsByChannel(ctx context.Context, channelID string) ([]domain.Video, error) {
+	uid, err := uuid.Parse(channelID)
+	if err != nil {
+		return []domain.Video{}, nil
+	}
+	rows, err := s.queries.ListTVRecordingsByChannel(ctx, uuid.NullUUID{UUID: uid, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list tv recordings for channel %s: %w", channelID, err)
+	}
+	videos := make([]domain.Video, 0, len(rows))
+	for _, r := range rows {
+		videos = append(videos, videoFromRow(r))
+	}
+	return videos, nil
+}
+
 // DeleteVideo removes the record with the given id. An unparseable id, like a
 // missing row, maps to domain.ErrVideoNotFound: neither can name a real record.
 func (s *Store) DeleteVideo(ctx context.Context, id string) error {

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,19 +14,26 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
+// errTVRecordingList is a canned store failure the list handler test uses to
+// drive the 500 path.
+var errTVRecordingList = errors.New("list recordings failed")
+
 // fakeTVRecordingService is the handler's narrow TVRecordingService: it records
 // the last call and returns canned results or errors to drive status mapping.
 type fakeTVRecordingService struct {
 	ticket      service.UploadTicket
 	registered  domain.Video
 	pruned      int
+	recordings  []domain.Video
 	requestErr  error
 	registerErr error
 	pruneErr    error
+	listErr     error
 
 	lastRequest   service.TVRecordingRequest
 	lastVideoID   string
 	lastRetention time.Duration
+	lastChannelID string
 }
 
 var _ TVRecordingService = (*fakeTVRecordingService)(nil)
@@ -52,6 +60,96 @@ func (f *fakeTVRecordingService) Prune(_ context.Context, retention time.Duratio
 		return 0, f.pruneErr
 	}
 	return f.pruned, nil
+}
+
+func (f *fakeTVRecordingService) ListRecordings(_ context.Context, channelID string) ([]domain.Video, error) {
+	f.lastChannelID = channelID
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.recordings, nil
+}
+
+func TestListTVRecordingsHandler(t *testing.T) {
+	t.Parallel()
+
+	newer := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
+	older := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+
+	t.Run("returns the channel's recordings newest-first", func(t *testing.T) {
+		t.Parallel()
+		svc := &fakeTVRecordingService{recordings: []domain.Video{
+			{ID: "v2", Title: "franceinfo - 2026-07-10 21:00", RecordedAt: newer, DurationMS: 3600000, Status: domain.VideoStatusReady, Kind: domain.VideoKindTV},
+			{ID: "v1", Title: "franceinfo - 2026-07-10 20:00", RecordedAt: older, Status: domain.VideoStatusReady, Kind: domain.VideoKindTV},
+		}}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/tv/channels/chan-1/recordings", nil)
+		req.SetPathValue("id", "chan-1")
+		listTVRecordingsHandler(svc).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+		}
+		if svc.lastChannelID != "chan-1" {
+			t.Fatalf("list called with %q, want chan-1", svc.lastChannelID)
+		}
+		var got listTVRecordingsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got.Recordings) != 2 {
+			t.Fatalf("recordings = %d, want 2", len(got.Recordings))
+		}
+		if got.Recordings[0].ID != "v2" || got.Recordings[1].ID != "v1" {
+			t.Fatalf("order = %q,%q, want v2,v1 (newest first)", got.Recordings[0].ID, got.Recordings[1].ID)
+		}
+		if got.Recordings[0].RecordedAt != "2026-07-10T21:00:00Z" {
+			t.Fatalf("recorded_at = %q, want RFC3339 UTC", got.Recordings[0].RecordedAt)
+		}
+		if got.Recordings[0].DurationMS != 3600000 {
+			t.Fatalf("duration_ms = %d, want 3600000", got.Recordings[0].DurationMS)
+		}
+		// An unprobed capture carries no duration, so the field is omitted.
+		if got.Recordings[1].DurationMS != 0 {
+			t.Fatalf("duration_ms = %d, want 0 (omitted)", got.Recordings[1].DurationMS)
+		}
+	})
+
+	t.Run("empty when the channel has no recordings", func(t *testing.T) {
+		t.Parallel()
+		svc := &fakeTVRecordingService{recordings: nil}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/tv/channels/chan-1/recordings", nil)
+		req.SetPathValue("id", "chan-1")
+		listTVRecordingsHandler(svc).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var got listTVRecordingsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Recordings == nil {
+			t.Fatal("recordings is null, want an empty array")
+		}
+		if len(got.Recordings) != 0 {
+			t.Fatalf("recordings = %d, want 0", len(got.Recordings))
+		}
+	})
+
+	t.Run("store failure is 500", func(t *testing.T) {
+		t.Parallel()
+		svc := &fakeTVRecordingService{listErr: errTVRecordingList}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/tv/channels/chan-1/recordings", nil)
+		req.SetPathValue("id", "chan-1")
+		listTVRecordingsHandler(svc).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
+		}
+	})
 }
 
 func TestRequestTVRecordingUploadHandler(t *testing.T) {

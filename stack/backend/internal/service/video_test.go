@@ -126,6 +126,21 @@ func (f *fakeVideoStore) ListTVRecordingsBefore(_ context.Context, cutoff time.T
 	return out, nil
 }
 
+func (f *fakeVideoStore) ListTVRecordingsByChannel(_ context.Context, channelID string) ([]domain.Video, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]domain.Video, 0)
+	for _, v := range f.videos {
+		if v.Kind != domain.VideoKindTV || v.ChannelID != channelID || v.Status != domain.VideoStatusReady {
+			continue
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RecordedAt.After(out[j].RecordedAt) })
+	return out, nil
+}
+
 func (f *fakeVideoStore) UpsertSampleVideo(_ context.Context, v domain.Video) (domain.Video, error) {
 	if f.upsertErr != nil {
 		return domain.Video{}, f.upsertErr

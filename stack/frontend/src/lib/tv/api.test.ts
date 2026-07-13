@@ -4,6 +4,7 @@ import {
   createChannel,
   deleteChannel,
   listChannels,
+  listChannelRecordings,
   updateChannel,
 } from "./api";
 
@@ -225,5 +226,66 @@ describe("deleteChannel", () => {
       method: "DELETE",
       signal: undefined,
     });
+  });
+});
+
+describe("listChannelRecordings", () => {
+  test("maps recordings to camelCase, preserving served (newest-first) order", async () => {
+    const fetchSpy = mockFetch(200, {
+      recordings: [
+        {
+          id: "v2",
+          title: "France 24 - 2026-07-10 21:00",
+          recorded_at: "2026-07-10T21:00:00Z",
+          duration_ms: 3600000,
+          status: "ready",
+        },
+        {
+          id: "v1",
+          title: "France 24 - 2026-07-10 20:00",
+          recorded_at: "2026-07-10T20:00:00Z",
+          status: "ready",
+        },
+      ],
+    });
+
+    const recordings = await listChannelRecordings("chan-1");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/tv/channels/chan-1/recordings",
+      { signal: undefined },
+    );
+    expect(recordings).toEqual([
+      {
+        id: "v2",
+        title: "France 24 - 2026-07-10 21:00",
+        recordedAt: "2026-07-10T21:00:00Z",
+        durationMs: 3600000,
+        status: "ready",
+      },
+      {
+        id: "v1",
+        title: "France 24 - 2026-07-10 20:00",
+        recordedAt: "2026-07-10T20:00:00Z",
+        status: "ready",
+      },
+    ]);
+  });
+
+  test("treats a missing recordings array as empty", async () => {
+    mockFetch(200, {});
+    await expect(listChannelRecordings("chan-1")).resolves.toEqual([]);
+  });
+
+  test("encodes the id and throws an ApiError carrying the backend message", async () => {
+    const fetchSpy = mockFetch(500, { error: "internal error" });
+
+    await expect(listChannelRecordings("a/b")).rejects.toThrow(
+      new ApiError("internal error", 500),
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/tv/channels/a%2Fb/recordings",
+      { signal: undefined },
+    );
   });
 });
