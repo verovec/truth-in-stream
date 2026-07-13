@@ -83,7 +83,7 @@ mirror the commands (`SOURCE=`, `ACTION=`, `ENV=`).
 
 Start on demand, run one source, stop. Stopping the host is safe at any instant: the workers
 nack in-flight batches with requeue on SIGTERM within a 120s grace window (matching the ECS
-`stop_timeout`), so no work is lost - see [Stop/restart safety (VER-164)](ingestion-pipeline.md#9b-stoprestart-safety-assurance-ver-164).
+`stop_timeout`), so no work is lost - see [Resilience semantics](ingestion-pipeline.md#5-resilience-semantics).
 Between runs the host bills only its EBS volume.
 
 ## Prerequisites (human-gated, deferred to the operator)

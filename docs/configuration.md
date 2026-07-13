@@ -95,6 +95,155 @@ legal posture, and provisioning, see the [Live TV capture runbook](tv-live.md). 
 | `TV_CAPTURE_WORK_DIR` | `/work` | Where in-progress segments are written before upload; a persistent volume mounts here so a crash leaves partial segments for the startup salvage pass |
 | `KEYCLOAK_ADDITIONAL_CLIENT_IDS` | (none) | Comma-separated extra authorized parties (`azp`) the backend verifier accepts beyond the web client. Must include `tv-capture` wherever the backend validates the worker's client-credentials token |
 
+## Ingestion fleet configuration
+
+These knobs govern the ingestion pipeline (broker, workers, category crawl, scheduler). Most are
+optional and read only by the ingestion producers/workers, not the live API. Defaults below are the
+ones the config loaders in `stack/backend/internal/config` apply; the full mechanics are in
+[the ingestion pipeline](ingestion-pipeline.md). Every source's per-connector knobs (parliament,
+SDMX, ODS, DataCommons, Legifrance, ...) are documented in
+[the source inventory](fact-check-sources.md).
+
+### Broker and queue resilience
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `RABBITMQ_URL` | (unset) | AMQP broker connection string; carries credentials, never logged. Compose wires the local `rabbitmq` service |
+| `RABBITMQ_QUEUE` | `embedding.jobs` | Base name of the embedding-job queue |
+| `RABBITMQ_QUEUE_VERSIONS` | `2` | Comma-separated, oldest-first version list; the queue is `<base>.v<version>` and the newest is active. Append a version to roll |
+| `RABBITMQ_MAX_PRIORITY` | `10` | `x-max-priority` ceiling (1-255); higher-priority units delivered first |
+| `RABBITMQ_PREFETCH` | `1` | Unacked messages the broker pushes to one consumer (0 = unbounded); the embed worker sizes it to in-flight batches |
+| `RABBITMQ_DLQ_ENABLED` | `true` | Route a rejected message to the companion `<base>.dlq.v<n>` dead-letter queue instead of discarding it. Must be identical on producers and consumers |
+| `RABBITMQ_RECONNECT_MIN_BACKOFF` | `250ms` | First redial wait after a broker drop |
+| `RABBITMQ_RECONNECT_MAX_BACKOFF` | `30s` | Redial-wait ceiling; must be >= the min. Each redial doubles up to this, jittered to half |
+
+### Embedding worker
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `EMBEDWORKER_REPLICAS` | `2` | Competing embed workers (a `make` argument, not Compose); linear throughput |
+| `EMBED_WORKER_CONCURRENCY` | `4` | In-flight batches per replica |
+| `EMBED_WORKER_BATCH_SIZE` | `128` | Chunks per Voyage call (<= 1000); the main throughput lever |
+| `EMBED_WORKER_MAX_BATCH_TOKENS` | `96000` | Token budget per Voyage call (80% of the 120000 ceiling); an over-budget batch is split before the call |
+| `EMBED_WORKER_BATCH_WAIT` | `200ms` | How long a partial batch waits before sending |
+| `EMBED_WORKER_MAX_ATTEMPTS` | `5` | Delivery budget before a job is dead-lettered |
+| `EMBED_WORKER_RPM` | `0` (unpaced) | Optional per-replica Voyage rate cap |
+| `WORKER_IDLE_TIMEOUT` | `0` (off) | Drain-to-idle window shared by every queue worker: a worker whose queue is empty this long exits cleanly (the consumer host's `--stop-when-idle` self-stop keys on it). Off locally; capped at 24h |
+
+### Category crawl (`wikicrawl`)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `CRAWL_CATEGORIES` | (required) | Comma-separated category titles, e.g. `Category:Physics` |
+| `CRAWL_PROJECT` | `WIKI_CORPUS` | Wiki project queried and used to build article URLs |
+| `CRAWL_CORPUS` | `<project>-crawl` | Provenance tag stored in `evidence_chunks.source` |
+| `CRAWL_MAX_DEPTH` | `1` | Subcategory recursion depth (0 = direct pages only) |
+| `CRAWL_MAX_PAGES` | `5000` | Hard cap on distinct pages collected |
+| `CRAWL_INCLUDE_BODY` | `true` | When false, ingest lead only |
+| `CRAWL_CHECKPOINT_PATH` | `/state/crawl-checkpoint.json` | Resume state file; a per-shard suffix isolates parallel shards |
+| `CRAWL_ERROR_BUDGET` | `50` | Pages a run may skip (extract or fail-closed gate error) before it aborts |
+| `CRAWL_CHECKWORTHY` | `true` | Producer-side fact-checkability gate; `false` publishes every chunk |
+| `CHECKWORTHY_API_KEY` | (required when gate on) | Anthropic key for the gate; never logged |
+| `CRAWL_CHECKWORTHY_MODEL` | `claude-haiku-4-5-20251001` | Gate model |
+| `CRAWL_CHECKWORTHY_CONCURRENCY` | `8` | In-flight gate judgments in the producer |
+| `CRAWL_CHECKWORTHY_RPM` | `0` (unpaced) | Per-producer gate call-rate cap |
+| `CRAWLWORKER_REPLICAS` | `2` | Competing crawl-worker replicas |
+
+### Scheduler
+
+The always-on `scheduler` service fires each enabled producer on its cron. Every source defaults
+disabled. The three originally-scheduled sources have dedicated knobs; every other registry source is
+enabled by `SCHEDULE_<SOURCE>_ENABLED=true` and takes its `DefaultCron` from the registry (overridable
+with `SCHEDULE_<SOURCE>_CRON`).
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SCHEDULE_WIKIPEDIA_ENABLED` / `_CRON` | `false` / `0 3 * * *` | Wikipedia category crawl |
+| `SCHEDULE_FACTCHECK_ENABLED` / `_CRON` | `false` / `0 4 * * *` | Fact-check-archive crawl |
+| `SCHEDULE_SCRUTINS_ENABLED` / `_CRON` | `false` / `30 4 * * *` | Scrutins crawl |
+| `SCHEDULE_JITTER` | `30s` | Random per-run delay spreading concurrent sources (capped at 1h) |
+
+## Retrieval and matching
+
+Query-time evidence retrieval and scoring. All are optional (empty keeps the default); change a
+default only with golden-eval (`make eval`) and latency evidence. Verified against
+`stack/backend/internal/config/config.go`.
+
+### Hybrid search and evidence index (VER-195, VER-176, VER-203)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `MATCH_HYBRID_SEARCH` | `true` | Fuse a French lexical full-text search with the vector search by RRF; `false` forces pure vector search |
+| `MATCH_LEXICAL_TOP_K` | `20` | Lexical candidate pool per corpus |
+| `MATCH_RRF_K` | `60` | RRF smoothing constant |
+| `EVIDENCE_BQ_MULTIPLIER` | `0` (off) | Positive value enables the two-stage binary-quantization evidence search (coarse bit index + halfvec rerank). No effect while hybrid search is on (single-stage vector branch) |
+| `EVIDENCE_BQ_THRESHOLD_VECTORS` | `50000000` | Embedded-evidence count beyond which `make pipeline-health` warns to enable BQ. Drives only the health warning, not BQ itself |
+| `EVIDENCE_NEAR_DUP_SIMILARITY` | `0` (off) | Cosine bar at embed-write time: a fresh chunk at/above its nearest same-source neighbour is stored for provenance but withheld from search. A sensible on value is ~0.97 |
+
+### Matcher tuning (VER-202)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `MATCH_TOP_K` | `5` | Curated-claim neighbours retrieved |
+| `MATCH_SCORE_THRESHOLD` | `0.5` | Curated-claim cosine floor |
+| `MATCH_EVIDENCE_TOP_K` | `5` | Evidence neighbours; 0 disables evidence |
+| `MATCH_EVIDENCE_SCORE_THRESHOLD` | `0.6` | Evidence cosine floor |
+| `MATCH_MAX_RESULTS` | `5` | Merged results kept across both corpora |
+| `MATCH_EMBED_CONCURRENCY` | `4` | In-flight query-embed calls |
+| `MATCH_TIMEOUT` | `10s` | One segment's whole match budget |
+| `MATCH_CONFIDENCE_CLUSTER_SIZE` | `5` | Matches aggregated into the confidence score |
+| `MATCH_CONFIDENCE_LEAD_WEIGHT` / `_BODY_WEIGHT` | `1.0` / `0.6` | Lead / body chunk corroboration weight |
+| `MATCH_CLAIMS_EF_SEARCH` / `MATCH_EVIDENCE_EF_SEARCH` | `0` (session default) | Per-corpus HNSW `ef_search` |
+
+## LLM provider and the fact-check verify path
+
+The LLM stages (check-worthiness gate, claim decomposition, credibility/political verifier, ingest
+gate) share one provider; the terminal reasoning gate is decoupled. Keys are secrets, never logged.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `LLM_PROVIDER` | `deepseek` | `deepseek` (cheap chat model over the OpenAI-compatible API), `anthropic` (Claude Haiku), or `gemini`. An unknown value fails fast at startup |
+| `DEEPSEEK_API_KEY` | (required when provider is deepseek) | DeepSeek key |
+| `GEMINI_API_KEY` | (required when `LLM_PROVIDER=gemini`) | Google Gemini key |
+
+### Retrieve-then-verify path (off by default)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FACTCHECK_VERIFY_PATH` | `false` | Decompose each unit into atomic claims, retrieve evidence, and have an LLM verifier derive the verdict. Read at startup |
+| `FACTCHECK_VERIFY_API_KEY` | (Anthropic key when provider is anthropic) | Verifier key; with none it stays on the legacy path |
+| `FACTCHECK_VERIFY_MODEL` | `claude-haiku-4-5-20251001` | Decomposer + verifier model |
+| `FACTCHECK_VERIFY_MAX_CLAIMS_PER_UNIT` | `4` | Cap on atomic claims per unit |
+| `FACTCHECK_VERIFY_FAST_TAU` | `0.85` | Curated near-match borrow threshold |
+| `FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD` | `0.45` | Recall floor for evidence fed to the verifier (below the legacy 0.6 borrow floor on purpose) |
+| `FACTCHECK_VERIFY_CONCURRENCY` / `_QUEUE_DEPTH` | `2` / `4` | In-flight verify calls / queued claims |
+| `FACTCHECK_VERIFY_FAST_DEADLINE` / `_DEADLINE` | `800ms` / `4s` | Decompose+retrieve bound / one verify call bound |
+| `FACTCHECK_VERIFY_CACHE_TTL` | `30s` | Semantic-claim-cache window (0 disables); a paraphrase above the threshold replays the cached verdict |
+| `FACTCHECK_VERIFY_CACHE_THRESHOLD` | `0.95` | Cosine bar for a cache hit |
+| `FACTCHECK_VERIFY_CACHE_MAX_ENTRIES` | `1024` | In-process cache size, oldest evicted first |
+
+### Terminal reasoning gate (VER-192, off by default)
+
+When the verify path's best verdict is weak (unverifiable, or confidence below the trigger floor), a
+stronger reasoner re-judges the **same** retrieved evidence once, off the live hot path, and upgrades
+the verdict in place only when its re-judgment is grounded **and** reaches the min-confidence floor.
+Its provider is decoupled from `LLM_PROVIDER`. Every knob falls back to its `FACTCHECK_SECOND_PASS_*`
+equivalent.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FACTCHECK_SECOND_PASS` | `false` | Turn the reasoner on (`FACTCHECK_FINAL_GATE=true` also enables it) |
+| `FACTCHECK_FINAL_GATE_PROVIDER` | follows `LLM_PROVIDER` | Decoupled provider override for the reasoner |
+| `FACTCHECK_FINAL_GATE_API_KEY` | `FACTCHECK_SECOND_PASS_API_KEY` | Anthropic key override |
+| `FACTCHECK_FINAL_GATE_MODEL` | the second pass's model | Reasoning model |
+| `FACTCHECK_FINAL_GATE_TRIGGER_BELOW` | `0.8` | Escalate a verdict below this confidence |
+| `FACTCHECK_FINAL_GATE_MIN_CONFIDENCE` | `0.90` | Grounded confidence required to adopt the re-judgment |
+| `FACTCHECK_FINAL_GATE_DEADLINE` | `12s` | One reverify call bound |
+
+The French/EU political two-axis mode (`FACTCHECK_POLITICAL`) and its source packs
+(`WEBSEARCH_API_KEY`, `PRESS_API_KEY`, stats-pack tuning) are documented inline in `.env.example`;
+they are read only when political mode is on.
+
 ## Authentication (Keycloak identity gate)
 
 Signing in through Keycloak is sufficient end to end: the whole `/api` subtree (every data flow and
