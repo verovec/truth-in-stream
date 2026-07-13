@@ -84,13 +84,24 @@ const (
 
 // ECBStatCorpus and OECDStatCorpus are the evidence_chunks.source labels for the
 // two supranational macro-statistical sources ingested through the generic SDMX
-// connector (internal/source/sdmx): the European Central Bank and the OECD. Each
-// is a distinct corpus so a retrieved passage's publisher is identifiable, and
-// each is excluded from the wiki-only maintenance reads exactly like every other
-// statistical corpus.
+// connector (internal/source/sdmx): the European Central Bank and the OECD.
+//
+// The OpenDataSoft connector ingests three institutional portals sharing the
+// identical Explore API v2.1, plus the interior-ministry security-statistics
+// service (SSMSI) publishing CSV bases on data.gouv.fr: DREES (health/social
+// policy), DARES (labor market), URSSAF (private-sector employment by territory),
+// SSMSI (recorded delinquency).
+//
+// Each is a distinct corpus so a retrieved passage's publisher is identifiable,
+// and each is excluded from the wiki-only maintenance reads exactly like every
+// other statistical corpus.
 const (
-	ECBStatCorpus  = "ecb"
-	OECDStatCorpus = "oecd"
+	ECBStatCorpus    = "ecb"
+	OECDStatCorpus   = "oecd"
+	DREESStatCorpus  = "drees"
+	DARESStatCorpus  = "dares"
+	URSSAFStatCorpus = "urssaf"
+	SSMSIStatCorpus  = "ssmsi"
 )
 
 // statCorpora is every statistical corpus label sharing the evidence_chunks table.
@@ -109,6 +120,10 @@ var statCorpora = []string{
 	INSEEGDPCorpus,
 	ECBStatCorpus,
 	OECDStatCorpus,
+	DREESStatCorpus,
+	DARESStatCorpus,
+	URSSAFStatCorpus,
+	SSMSIStatCorpus,
 }
 
 // StatCorpora returns a fresh copy of the statistical corpus labels to exclude

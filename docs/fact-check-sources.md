@@ -170,6 +170,41 @@ debate — inflation, public debt, unemployment, interest rates.
   `internal/source/sdmx/catalog.go`). Note: the ECB `ICP` (HICP) dataflow was
   slated for replacement in Feb 2026, and euro-area HICP is also ingested from
   Eurostat directly, so inflation evidence is not solely dependent on it.
+## 3c. OpenDataSoft & SSMSI statistics (ingested corpus)
+
+**What it answers:** French social-policy battleground figures — health-system
+financing (DREES), labor market (DARES), private-sector employment (URSSAF), and
+recorded crime/delinquency (SSMSI).
+
+- **Where the data comes from:** four keyless official portals, each ingested on
+  demand into `evidence_chunks` (not live-queried) and rendered into self-contained
+  French passages by the shared stats foundation (`internal/stats`), exactly like
+  the interior-ministry immigration CSVs:
+  - **DREES** — `data.drees.solidarites-sante.gouv.fr`, OpenDataSoft **Explore API
+    v2.1**. Corpus `drees`.
+  - **DARES** — `data.dares.travail-emploi.gouv.fr`, same Explore API v2.1. Corpus
+    `dares`.
+  - **URSSAF** — `open.urssaf.fr`, same Explore API v2.1. Corpus `urssaf`.
+  - **SSMSI** — the délinquance départementale/régionale CSV bases on
+    `data.gouv.fr` (Service statistique ministériel de la sécurité intérieure),
+    resolved through the data.gouv.fr dataset API. Corpus `ssmsi`.
+- **Ingestion:** `cmd/odsingest` sweeps the curated datasets, upserts un-embedded
+  passages on the stable `(series, period)` provenance key, and publishes embedding
+  jobs to the shared `embedding.jobs` queue the `embedworker` fleet drains — the
+  same bulk-into-live path as `stats`, so re-runs are idempotent and updates
+  supersede rather than duplicate. Adapters: `internal/stats/ods` (one Explore API
+  client covering the three portals as configuration) and `internal/stats/ssmsi`
+  (the CSV fetcher).
+- **Operating it:** host-only, like `stats`. Run on the EC2 ingestion hosts with
+  `ENVIRONMENT=dev scripts/ingest-host.sh crawler ods up` (producer) and
+  `… consumer ods up` (the shared embedworker drains it) — the source is picked up
+  automatically from the connector registry manifest, no host-script edit.
+- **Licence & terms:** all four sources are French public data under the **Etalab
+  Licence Ouverte 2.0** (open reuse with attribution). Attribution — the publisher
+  (DREES/DARES/URSSAF/SSMSI), dataset code, and a resolvable source URL — is carried
+  on every passage. The OpenDataSoft public datasets are keyless (anonymous access
+  is per-portal rate-limited; the client backs off on HTTP 429), so no API key or
+  secret is required.
 
 ---
 

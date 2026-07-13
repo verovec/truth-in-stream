@@ -83,6 +83,15 @@
         "SDMX_END_PERIOD",
         "WIKI_ENQUEUE_BATCH_SIZE"
       ]
+    },
+    {
+      "name": "ods",
+      "producer": "odsingest",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
     }
   ]
 }

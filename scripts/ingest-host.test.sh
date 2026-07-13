@@ -150,7 +150,7 @@ echo "TEST: consumer up brings the worker up detached and resolves the consumer 
 )
 
 echo "TEST: the source map picks the right producer (crawler) and worker (consumer) per source"
-for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "sdmx sdmxcrawl embedworker" "factcheck factcheckcrawl factcheckworker" "scrutins scrutinscrawl scrutinsworker"; do
+for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "sdmx sdmxcrawl embedworker" "factcheck factcheckcrawl factcheckworker" "scrutins scrutinscrawl scrutinsworker" "ods odsingest embedworker"; do
   set -- $row; src="$1"; producer="$2"; worker="$3"
   (
     make_sandbox
