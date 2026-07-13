@@ -1,0 +1,76 @@
+{
+  "sources": [
+    {
+      "name": "wikipedia",
+      "default_cron": "0 3 * * *",
+      "producer": "wikicrawl",
+      "worker": "crawlworker",
+      "queue": "crawl.chunks",
+      "required_env": [
+        "CRAWL_CATEGORIES"
+      ],
+      "forward_env": [
+        "CRAWL_CATEGORIES",
+        "CRAWL_PROJECT",
+        "WIKI_CORPUS",
+        "CRAWL_CORPUS",
+        "CRAWL_MAX_DEPTH",
+        "CRAWL_MAX_PAGES",
+        "CRAWL_INCLUDE_BODY",
+        "CRAWL_SHARDS",
+        "CRAWL_SHARD_INDEX",
+        "CRAWL_CHECKWORTHY",
+        "CRAWL_CHECKWORTHY_MODEL",
+        "CRAWL_CHECKWORTHY_CONCURRENCY",
+        "CRAWL_CHECKWORTHY_RPM",
+        "LLM_PROVIDER"
+      ],
+      "secrets": [
+        {
+          "env_var": "CHECKWORTHY_API_KEY",
+          "secret_suffix": "app/checkworthy-api-key"
+        }
+      ]
+    },
+    {
+      "name": "stats",
+      "producer": "statsingest",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
+    },
+    {
+      "name": "factcheck",
+      "default_cron": "0 4 * * *",
+      "producer": "factcheckcrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "required_env": [
+        "FACTCHECK_QUERIES"
+      ],
+      "forward_env": [
+        "FACTCHECK_QUERIES",
+        "FACTCHECK_LANGUAGE",
+        "FACTCHECK_MAX_PAGES"
+      ],
+      "secrets": [
+        {
+          "env_var": "FACTCHECK_API_KEY",
+          "secret_suffix": "app/factcheck-api-key"
+        }
+      ]
+    },
+    {
+      "name": "scrutins",
+      "default_cron": "30 4 * * *",
+      "producer": "scrutinscrawl",
+      "worker": "scrutinsworker",
+      "queue": "scrutins.votes",
+      "forward_env": [
+        "SCRUTINS_LEGISLATURE"
+      ]
+    }
+  ]
+}

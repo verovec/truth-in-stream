@@ -167,6 +167,20 @@ for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "fa
   )
 done
 
+echo "TEST: the example template is NOT an operable source (cannot touch a real env)"
+(
+  make_sandbox
+  # The example template is deliberately kept out of the registry manifest, so no
+  # operator action can run it against a real environment. It must be rejected as
+  # an unknown source before any host start or send-command.
+  out="$(EXAMPLE_LABEL='demo' bash "$RUN" crawler example up 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "example is rejected as a source" || fail "example is rejected as a source (got $rc)"
+  assert_contains "$out" "unknown source 'example'" "names example as unknown"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_not_contains "$log" "ec2 start-instances" "example never starts a host"
+  assert_not_contains "$log" "ssm send-command" "example never sends a command"
+)
+
 echo "TEST: a crawler source's missing required env fails fast before any start or send"
 (
   make_sandbox

@@ -1347,70 +1347,78 @@ func LoadCrawlAlerts() CrawlAlerts {
 	}
 }
 
-// Scheduler defaults. Each source defaults DISABLED with a daily off-peak cron, so
-// the always-on scheduler service idles on a plain `docker compose up` and never
-// starts paid ingestion until an operator opts a source in with
-// SCHEDULE_<SOURCE>_ENABLED=true - the same cost-safety convention the paid wiki
-// profiles follow. The jitter spreads concurrently-due sources to avoid a
-// thundering herd on the shared broker and upstream APIs.
+// Scheduler defaults. Each source defaults DISABLED, so the always-on scheduler
+// service idles on a plain `docker compose up` and never starts paid ingestion
+// until an operator opts a source in with SCHEDULE_<SOURCE>_ENABLED=true - the
+// same cost-safety convention the paid wiki profiles follow. The jitter spreads
+// concurrently-due sources to avoid a thundering herd on the shared broker and
+// upstream APIs. Per-source cron defaults live in the connector registry, not
+// here, so config stays registry-agnostic and a new source adds no knob to this
+// file.
 const (
-	defaultWikipediaCron  = "0 3 * * *"  // 03:00 daily
-	defaultFactcheckCron  = "0 4 * * *"  // 04:00 daily
-	defaultScrutinsCron   = "30 4 * * *" // 04:30 daily
 	defaultScheduleJitter = 30 * time.Second
 	maxScheduleJitter     = time.Hour
 )
 
-// ScheduleSource is one source's scheduling configuration: whether it is enabled
-// and the cron spec it fires on. The cron spec is validated by the scheduler at
-// startup, so a malformed spec fails fast.
+// ScheduleSpec is one schedulable source's identity, supplied by the connector
+// registry: its name, the SCHEDULE_<PREFIX>_* env prefix derived from that name,
+// and the default cron the registry declares. Passing it in keeps config free of
+// any dependency on the registry while still reading a per-source env knob for
+// every registered source.
+type ScheduleSpec struct {
+	Name        string
+	EnvPrefix   string
+	DefaultCron string
+}
+
+// ScheduleSource is one source's resolved scheduling configuration: whether it is
+// enabled and the cron spec it fires on. The cron spec is validated by the
+// scheduler at startup, so a malformed spec fails fast.
 type ScheduleSource struct {
 	Enabled bool
 	Cron    string
 }
 
-// Schedule holds the ingestion fleet's per-source scheduling configuration plus the
-// shared jitter. It is read from the environment only; an invalid cron spec is
-// rejected when the scheduler parses it at startup, and an invalid jitter is
-// rejected here.
+// Schedule holds the ingestion fleet's per-source scheduling configuration keyed
+// by source name, plus the shared jitter. It is read from the environment only;
+// an invalid cron spec is rejected when the scheduler parses it at startup, and an
+// invalid jitter is rejected here.
 type Schedule struct {
-	Wikipedia ScheduleSource
-	Factcheck ScheduleSource
-	Scrutins  ScheduleSource
-	Jitter    time.Duration
+	Sources map[string]ScheduleSource
+	Jitter  time.Duration
 }
 
-// LoadSchedule reads the scheduler configuration from the environment. Each source
-// defaults disabled; SCHEDULE_<SOURCE>_ENABLED=true opts it in and
-// SCHEDULE_<SOURCE>_CRON overrides its daily-default cadence. SCHEDULE_JITTER bounds
-// the random per-run spread (default 30s, capped at 1h). A bad boolean or jitter
-// fails fast; a bad cron spec is caught by the scheduler when it parses the
-// registry.
-func LoadSchedule() (Schedule, error) {
-	wikiEnabled, err := boolEnv("SCHEDULE_WIKIPEDIA_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
-	factcheckEnabled, err := boolEnv("SCHEDULE_FACTCHECK_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
-	scrutinsEnabled, err := boolEnv("SCHEDULE_SCRUTINS_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
+// Source returns the resolved config for a source name and whether it was among
+// the specs LoadSchedule was given.
+func (s Schedule) Source(name string) (ScheduleSource, bool) {
+	src, ok := s.Sources[name]
+	return src, ok
+}
 
+// LoadSchedule reads the scheduler configuration for the given registry-supplied
+// specs. Each source defaults disabled; SCHEDULE_<PREFIX>_ENABLED=true opts it in
+// and SCHEDULE_<PREFIX>_CRON overrides its registry-default cadence. SCHEDULE_JITTER
+// bounds the random per-run spread (default 30s, capped at 1h). A bad boolean or
+// jitter fails fast; a bad cron spec is caught by the scheduler when it parses the
+// registry.
+func LoadSchedule(specs []ScheduleSpec) (Schedule, error) {
 	jitter, err := boundedDurationEnv("SCHEDULE_JITTER", defaultScheduleJitter, maxScheduleJitter)
 	if err != nil {
 		return Schedule{}, err
 	}
 
-	return Schedule{
-		Wikipedia: ScheduleSource{Enabled: wikiEnabled, Cron: getenv("SCHEDULE_WIKIPEDIA_CRON", defaultWikipediaCron)},
-		Factcheck: ScheduleSource{Enabled: factcheckEnabled, Cron: getenv("SCHEDULE_FACTCHECK_CRON", defaultFactcheckCron)},
-		Scrutins:  ScheduleSource{Enabled: scrutinsEnabled, Cron: getenv("SCHEDULE_SCRUTINS_CRON", defaultScrutinsCron)},
-		Jitter:    jitter,
-	}, nil
+	sources := make(map[string]ScheduleSource, len(specs))
+	for _, spec := range specs {
+		enabled, err := boolEnv("SCHEDULE_" + spec.EnvPrefix + "_ENABLED")
+		if err != nil {
+			return Schedule{}, err
+		}
+		sources[spec.Name] = ScheduleSource{
+			Enabled: enabled,
+			Cron:    getenv("SCHEDULE_"+spec.EnvPrefix+"_CRON", spec.DefaultCron),
+		}
+	}
+	return Schedule{Sources: sources, Jitter: jitter}, nil
 }
 
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
