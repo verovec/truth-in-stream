@@ -62,10 +62,12 @@ export function BackofficeTvChannelForm({
     editing?.sourceKind ?? "youtube",
   );
   const [sourceRef, setSourceRef] = useState(editing?.sourceRef ?? "");
-  const [enabled, setEnabled] = useState(editing?.enabled ?? true);
-  const [archiveEnabled, setArchiveEnabled] = useState(
-    editing?.archiveEnabled ?? false,
-  );
+  // enabled/archiveEnabled are only used when creating a channel; in edit mode the
+  // row toggles own them, so they are neither rendered nor sent here. A new
+  // channel starts with capture OFF (the operator flips it on deliberately, the
+  // seed-registry convention) and archiving ON (the backend's default).
+  const [enabled, setEnabled] = useState(false);
+  const [archiveEnabled, setArchiveEnabled] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState<ServerError | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -92,8 +94,8 @@ export function BackofficeTvChannelForm({
     setName("");
     setSourceKind("youtube");
     setSourceRef("");
-    setEnabled(true);
-    setArchiveEnabled(false);
+    setEnabled(false);
+    setArchiveEnabled(true);
   };
 
   const submit = async (event: FormEvent) => {
@@ -107,12 +109,14 @@ export function BackofficeTvChannelForm({
     setSubmitting(true);
     try {
       if (editing) {
+        // Edit patches only the descriptive fields the form owns. enabled and
+        // archiveEnabled are driven by the row toggles; sending them here would
+        // write back the values seeded at edit-start and silently clobber a toggle
+        // the operator flipped in the table while the form was open.
         await update(editing.id, {
           name: name.trim(),
           sourceKind,
           sourceRef: sourceRef.trim(),
-          enabled,
-          archiveEnabled,
         });
       } else {
         await create({
@@ -219,24 +223,28 @@ export function BackofficeTvChannelForm({
           ) : null}
         </label>
       </div>
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-sm text-ink/80 dark:text-paper/80">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          {copy.enabled}
-        </label>
-        <label className="flex items-center gap-2 text-sm text-ink/80 dark:text-paper/80">
-          <input
-            type="checkbox"
-            checked={archiveEnabled}
-            onChange={(e) => setArchiveEnabled(e.target.checked)}
-          />
-          {copy.archive}
-        </label>
-      </div>
+      {isEdit ? null : (
+        // Capture / archive are set only at creation here; for an existing channel
+        // the table's row toggles are the single control surface.
+        <div className="flex flex-wrap gap-4">
+          <label className="flex items-center gap-2 text-sm text-ink/80 dark:text-paper/80">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+            />
+            {copy.enabled}
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink/80 dark:text-paper/80">
+            <input
+              type="checkbox"
+              checked={archiveEnabled}
+              onChange={(e) => setArchiveEnabled(e.target.checked)}
+            />
+            {copy.archive}
+          </label>
+        </div>
+      )}
       {serverError ? (
         <p role="alert" className={ERROR_CLASS}>
           {serverError.message === null

@@ -105,8 +105,10 @@ describe("BackofficeTvChannelForm add mode", () => {
         name: "France 24",
         sourceKind: "youtube",
         sourceRef: "https://www.youtube.com/@FRANCE24/live",
-        enabled: true,
-        archiveEnabled: false,
+        // A new channel defaults to capture OFF (flipped on deliberately) and
+        // archiving ON (the backend default).
+        enabled: false,
+        archiveEnabled: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -207,12 +209,12 @@ describe("BackofficeTvChannelForm edit mode", () => {
     fireEvent.click(screen.getByRole("button", { name: copy.submitEdit }));
 
     await waitFor(() =>
+      // Edit patches only the descriptive fields; enabled/archiveEnabled are the
+      // row toggles' domain and must not be written back from the form.
       expect(update).toHaveBeenCalledWith("chan-1", {
         name: "France 24 HD",
         sourceKind: "youtube",
         sourceRef: "https://www.youtube.com/@FRANCE24/live",
-        enabled: true,
-        archiveEnabled: false,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);

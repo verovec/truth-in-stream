@@ -65,8 +65,20 @@ export function BackofficeTvSection({
     loadChannelsRef.current = loadChannels;
   });
 
-  const refresh = useCallback(() => {
-    setReloadToken((token) => token + 1);
+  // softReload re-lists after a successful create/edit/delete. Unlike the initial
+  // load (and Retry), a transient failure here must NOT replace the whole table
+  // with the error screen - the mutation succeeded and the other channels still
+  // exist - so it updates on success and silently keeps the current list on
+  // failure. A successful re-list also clears stale per-row toggle errors, so a
+  // fixed channel does not keep showing an old "update failed" alert.
+  const softReload = useCallback(async () => {
+    try {
+      const loaded = await loadChannelsRef.current();
+      setChannels(loaded);
+      setToggleErrors({});
+    } catch {
+      // Keep the current list; the mutation itself already succeeded.
+    }
   }, []);
 
   useEffect(() => {
@@ -119,8 +131,15 @@ export function BackofficeTvSection({
       );
       try {
         const updated = await update(channel.id, { [field]: nextValue });
+        // Merge back only the toggled field, not the whole server record: two
+        // rapid toggles of the two fields on one row can have their PATCH
+        // responses arrive out of order, and each response still carries the
+        // other field's pre-toggle value; replacing the whole row would snap the
+        // other switch back. The confirmed field is authoritative.
         setChannels((prev) =>
-          prev.map((c) => (c.id === channel.id ? updated : c)),
+          prev.map((c) =>
+            c.id === channel.id ? { ...c, [field]: updated[field] } : c,
+          ),
         );
       } catch (err) {
         setChannels((prev) =>
@@ -143,8 +162,8 @@ export function BackofficeTvSection({
 
   const onSaved = useCallback(() => {
     setEditing(null);
-    refresh();
-  }, [refresh]);
+    void softReload();
+  }, [softReload]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -167,7 +186,9 @@ export function BackofficeTvSection({
           onToggle={handleToggle}
           onEdit={startEdit}
           remove={remove}
-          onDeleted={refresh}
+          onDeleted={() => {
+            void softReload();
+          }}
           toggleErrors={toggleErrors}
         />
       </div>
