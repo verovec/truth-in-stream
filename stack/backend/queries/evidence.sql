@@ -224,3 +224,21 @@ SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind
 FROM reranked r
 JOIN evidence_chunks e USING (source, external_id, chunk_index)
 ORDER BY r.distance;
+
+-- name: LexicalSearchEvidenceChunks :many
+-- Lexical half of hybrid retrieval (VER-195) over the evidence corpus, mirroring
+-- LexicalSearchClaims. The GIN index on search_vector drives the @@ filter (a
+-- bounded index scan, no seq scan); ts_rank_cd ranks by cover density. Only
+-- embedded chunks are eligible so a fused hit always carries a real cosine
+-- distance (the same wire shape SearchEvidenceChunks returns) and an unembedded
+-- chunk - which has no vector similarity to fuse - is never a lexical-only match.
+-- The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
+-- natural key for a stable ranking.
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+       (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
+FROM evidence_chunks, websearch_to_tsquery('french', immutable_unaccent(sqlc.arg(query_text)::text)) AS q
+WHERE search_vector @@ q
+  AND embedding IS NOT NULL
+  AND (sqlc.narg(sources)::text[] IS NULL OR source = ANY(sqlc.narg(sources)::text[]))
+ORDER BY ts_rank_cd(search_vector, q) DESC, source, external_id, chunk_index
+LIMIT sqlc.arg(result_limit);

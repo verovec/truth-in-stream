@@ -179,6 +179,17 @@ func run(logger *slog.Logger) error {
 	}
 	defer pgStore.Close()
 
+	// Hybrid evidence search always runs its vector branch as the single-stage
+	// halfvec search, so with hybrid on the binary-quantization two-stage path is
+	// not used for evidence retrieval. Warn once at startup when both are enabled
+	// so the operator knows BQ's RAM-saving path is not in effect for the evidence
+	// hits the matcher and verify path retrieve while hybrid is on (curated-claims
+	// BQ is unaffected; combining the two is VER-202 tuning scope).
+	if bqMultiplier > 0 && matchCfg.HybridSearch && matchCfg.EvidenceTopK > 0 {
+		logger.Warn("hybrid evidence search does not use the binary-quantization two-stage path; EVIDENCE_BQ_MULTIPLIER is not in effect for evidence retrieval while MATCH_HYBRID_SEARCH is on",
+			slog.Int("evidence_bq_multiplier", bqMultiplier))
+	}
+
 	// The cache is wired and lifecycle-managed here. The snapshot persister tees a
 	// completed finite video's live analysis into it; the snapshot reader serves it
 	// back on a later open, so re-opening a finished video replays its full analysis
@@ -257,6 +268,9 @@ func run(logger *slog.Logger) error {
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
 	})
 	if err != nil {
 		return err
@@ -638,6 +652,9 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)

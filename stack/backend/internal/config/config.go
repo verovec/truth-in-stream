@@ -533,6 +533,16 @@ const (
 	defaultMatchConfidenceClusterSize = 5
 	defaultMatchConfidenceLeadWeight  = 1.0
 	defaultMatchConfidenceBodyWeight  = 0.6
+	// Hybrid retrieval (VER-195) is on by default: fusing a French lexical
+	// full-text branch with the vector branch catches exact figures, dates, and
+	// named entities dense embeddings blur. LexicalTopK over-fetches the lexical
+	// pool per corpus (~4x the vector TopK of 5) so a lexically exact but
+	// cosine-distant passage still earns a rank to fuse; RRFK is the conventional
+	// Reciprocal Rank Fusion constant. Both defaults are starting points to be
+	// re-tuned from the retrieval eval.
+	defaultMatchHybridSearch = true
+	defaultMatchLexicalTopK  = 20
+	defaultMatchRRFK         = 60
 )
 
 // Match holds the segment matching configuration across the curated claims and
@@ -549,6 +559,9 @@ type Match struct {
 	ConfidenceClusterSize int
 	ConfidenceLeadWeight  float64
 	ConfidenceBodyWeight  float64
+	HybridSearch          bool
+	LexicalTopK           int
+	RRFK                  int
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
@@ -568,6 +581,9 @@ func LoadMatch() (Match, error) {
 		ConfidenceClusterSize: defaultMatchConfidenceClusterSize,
 		ConfidenceLeadWeight:  defaultMatchConfidenceLeadWeight,
 		ConfidenceBodyWeight:  defaultMatchConfidenceBodyWeight,
+		HybridSearch:          defaultMatchHybridSearch,
+		LexicalTopK:           defaultMatchLexicalTopK,
+		RRFK:                  defaultMatchRRFK,
 	}
 	var err error
 	if m.TopK, err = intEnv("MATCH_TOP_K", m.TopK, 1, math.MaxInt32); err != nil {
@@ -608,6 +624,15 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	if m.ConfidenceBodyWeight, err = floatEnv("MATCH_CONFIDENCE_BODY_WEIGHT", m.ConfidenceBodyWeight); err != nil {
+		return Match{}, err
+	}
+	if m.HybridSearch, err = boolEnvDefault("MATCH_HYBRID_SEARCH", m.HybridSearch); err != nil {
+		return Match{}, err
+	}
+	if m.LexicalTopK, err = intEnv("MATCH_LEXICAL_TOP_K", m.LexicalTopK, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.RRFK, err = intEnv("MATCH_RRF_K", m.RRFK, 1, math.MaxInt32); err != nil {
 		return Match{}, err
 	}
 	return m, nil

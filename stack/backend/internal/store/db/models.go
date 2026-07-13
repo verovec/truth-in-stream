@@ -11,11 +11,12 @@ import (
 )
 
 type Claim struct {
-	ID        string
-	Content   string
-	Verdict   string
-	Sources   []byte
-	Embedding pgvector.HalfVector
+	ID           string
+	Content      string
+	Verdict      string
+	Sources      []byte
+	Embedding    pgvector.HalfVector
+	SearchVector interface{}
 }
 
 type Document struct {
@@ -65,16 +66,17 @@ type DocumentSentence struct {
 }
 
 type EvidenceChunk struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Embedding  *pgvector.HalfVector
-	Metadata   []byte
-	SyncedAt   pgtype.Timestamptz
+	Source       string
+	ExternalID   string
+	ChunkIndex   int32
+	Title        string
+	Url          string
+	Content      string
+	Kind         string
+	Embedding    *pgvector.HalfVector
+	Metadata     []byte
+	SyncedAt     pgtype.Timestamptz
+	SearchVector interface{}
 }
 
 type EvidenceSyncState struct {

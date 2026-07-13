@@ -374,6 +374,9 @@ func TestLoadMatch(t *testing.T) {
 		ConfidenceClusterSize: 5,
 		ConfidenceLeadWeight:  1,
 		ConfidenceBodyWeight:  0.6,
+		HybridSearch:          true,
+		LexicalTopK:           20,
+		RRFK:                  60,
 	}
 	tests := []struct {
 		name    string
@@ -399,23 +402,46 @@ func TestLoadMatch(t *testing.T) {
 				"MATCH_CONFIDENCE_CLUSTER_SIZE":  "3",
 				"MATCH_CONFIDENCE_LEAD_WEIGHT":   "0.9",
 				"MATCH_CONFIDENCE_BODY_WEIGHT":   "0.4",
+				"MATCH_HYBRID_SEARCH":            "false",
+				"MATCH_LEXICAL_TOP_K":            "30",
+				"MATCH_RRF_K":                    "40",
 			},
-			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second, ConfidenceClusterSize: 3, ConfidenceLeadWeight: 0.9, ConfidenceBodyWeight: 0.4},
+			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second, ConfidenceClusterSize: 3, ConfidenceLeadWeight: 0.9, ConfidenceBodyWeight: 0.4, HybridSearch: false, LexicalTopK: 30, RRFK: 40},
 		},
 		{
 			name: "negative threshold accepted",
 			env:  map[string]string{"MATCH_SCORE_THRESHOLD": "-1"},
-			want: Match{TopK: 5, ScoreThreshold: -1, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6},
+			want: Match{TopK: 5, ScoreThreshold: -1, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6, HybridSearch: true, LexicalTopK: 20, RRFK: 60},
 		},
 		{
 			name: "evidence retrieval can be disabled",
 			env:  map[string]string{"MATCH_EVIDENCE_TOP_K": "0"},
-			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 0, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6, HybridSearch: true, LexicalTopK: 20, RRFK: 60},
 		},
 		{
 			name: "zero body weight accepted disables body evidence",
 			env:  map[string]string{"MATCH_CONFIDENCE_BODY_WEIGHT": "0"},
-			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0, HybridSearch: true, LexicalTopK: 20, RRFK: 60},
+		},
+		{
+			name: "hybrid search off leaves the lexical knobs at their defaults",
+			env:  map[string]string{"MATCH_HYBRID_SEARCH": "false"},
+			want: Match{TopK: 5, ScoreThreshold: 0.5, EvidenceTopK: 5, EvidenceThreshold: 0.6, MaxResults: 5, EmbedConcurrency: 4, Timeout: 10 * time.Second, ConfidenceClusterSize: 5, ConfidenceLeadWeight: 1, ConfidenceBodyWeight: 0.6, HybridSearch: false, LexicalTopK: 20, RRFK: 60},
+		},
+		{
+			name:    "non-boolean hybrid search fails",
+			env:     map[string]string{"MATCH_HYBRID_SEARCH": "maybe"},
+			wantErr: true,
+		},
+		{
+			name:    "zero lexical top k fails",
+			env:     map[string]string{"MATCH_LEXICAL_TOP_K": "0"},
+			wantErr: true,
+		},
+		{
+			name:    "zero RRF constant fails",
+			env:     map[string]string{"MATCH_RRF_K": "0"},
+			wantErr: true,
 		},
 		{
 			name:    "evidence threshold above cosine range fails",

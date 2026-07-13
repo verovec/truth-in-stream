@@ -141,30 +141,40 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 
 	hits := make([]domain.EvidenceHit, 0, len(rows))
 	for _, r := range rows {
-		meta, err := unmarshalMetadata(r.Metadata)
+		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.Distance)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: search evidence: chunk %s/%s#%d: %w", r.Source, r.ExternalID, r.ChunkIndex, err)
+			return nil, fmt.Errorf("postgres: search evidence: %w", err)
 		}
-		// Only the section is surfaced on a hit, so extract it leniently rather
-		// than full-parsing wiki metadata: a source-extensible corpus can carry a
-		// source whose metadata is not wiki-shaped, and one such row must not fail
-		// the whole search. A missing or non-string section is simply empty.
-		section, _ := meta["section"].(string)
-		hits = append(hits, domain.EvidenceHit{
-			Source:     r.Source,
-			ExternalID: r.ExternalID,
-			ChunkIndex: int(r.ChunkIndex),
-			Title:      r.Title,
-			URL:        r.Url,
-			Content:    r.Content,
-			Kind:       domain.EvidenceChunkKind(r.Kind),
-			Section:    section,
-			// Cosine distance is in [0,2]; the float32 narrowing matches
-			// domain.EvidenceHit and is plenty precise for ranking.
-			Distance: float32(r.Distance),
-		})
+		hits = append(hits, h)
 	}
 	return hits, nil
+}
+
+// toEvidenceHit maps the shared evidence search columns (the identical
+// projection of SearchEvidenceChunks and LexicalSearchEvidenceChunks) to a
+// domain hit, so the vector and lexical hybrid branches decode a row exactly as
+// the pure vector search does. Only the section is surfaced, so it is extracted
+// leniently: a source-extensible corpus can carry a source whose metadata is not
+// wiki-shaped, and one such row must not fail the whole search - a missing or
+// non-string section is simply empty. Cosine distance is in [0,2]; the float32
+// narrowing matches domain.EvidenceHit and is plenty precise for ranking.
+func toEvidenceHit(source, externalID string, chunkIndex int32, title, url, content, kind string, metadata []byte, distance float64) (domain.EvidenceHit, error) {
+	meta, err := unmarshalMetadata(metadata)
+	if err != nil {
+		return domain.EvidenceHit{}, fmt.Errorf("chunk %s/%s#%d: %w", source, externalID, chunkIndex, err)
+	}
+	section, _ := meta["section"].(string)
+	return domain.EvidenceHit{
+		Source:     source,
+		ExternalID: externalID,
+		ChunkIndex: int(chunkIndex),
+		Title:      title,
+		URL:        url,
+		Content:    content,
+		Kind:       domain.EvidenceChunkKind(kind),
+		Section:    section,
+		Distance:   float32(distance),
+	}, nil
 }
 
 // hnswEfSearchMax is pgvector's upper bound for hnsw.ef_search (valid range
