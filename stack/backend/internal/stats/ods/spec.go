@@ -24,9 +24,16 @@ type Spec struct {
 	// (e.g. "poste_code"); it seeds the datapoint series key so each row occupies a
 	// distinct provenance row. Dimension fields are folded in after it.
 	KeyField string
-	// PeriodField is the field carrying the observation period (e.g. "annee"). When
-	// empty the dataset has no period column and Year is used for every row.
+	// PeriodField is the field carrying the observation period (e.g. "annee" or a
+	// bare-year "date"). When empty the dataset has no period column and Year is
+	// used for every row. It must resolve to a "YYYY" year; a quarter is composed
+	// from QuarterField, so a raw full ISO date is never passed through (the domain
+	// period parser rejects it).
 	PeriodField string
+	// QuarterField, when set, carries the quarter number (1..4) that is combined
+	// with PeriodField's year into a "YYYY-Qn" period, so a quarterly dataset does
+	// not collapse its four quarters onto one annual provenance row.
+	QuarterField string
 	// Year is the fixed period when the dataset has no PeriodField.
 	Year string
 	// GeographyField is the field carrying the geographic area. When empty the
@@ -83,6 +90,7 @@ func (s Spec) selectClause() string {
 	add(s.ValueField)
 	add(s.KeyField)
 	add(s.PeriodField)
+	add(s.QuarterField)
 	add(s.GeographyField)
 	for _, f := range s.DimensionFields {
 		add(f)
@@ -111,11 +119,13 @@ func (p Portal) baseURL() string {
 	return "https://" + p.Host
 }
 
-// Curated portals verified 2026-07 against the live Explore API v2.1. The dataset
-// allowlist is a minimal political-relevance starter set per the card; each portal
-// writes its own corpus so a retrieved passage's publisher is identifiable. Field
-// mappings are resolved by name and a mismatch fails loudly (schema drift), so an
-// operator's first live run surfaces any drift rather than corrupting the corpus.
+// Curated portals verified 2026-07 against the live Explore API v2.1 (every field
+// name and value shape below was captured from a real records response). The
+// dataset allowlist is a minimal political-relevance starter set per the card; each
+// portal writes its own corpus so a retrieved passage's publisher is identifiable.
+// Field mappings are resolved by name and a mismatch fails loudly (schema drift),
+// so an operator's first live run surfaces any drift rather than corrupting the
+// corpus.
 const (
 	dreesHost  = "data.drees.solidarites-sante.gouv.fr"
 	daresHost  = "data.dares.travail-emploi.gouv.fr"
@@ -123,60 +133,73 @@ const (
 )
 
 // DREES publishes health and social-policy statistics. cns_financement is the
-// comptes de la santé financing series (fields annee, poste_code, montants
-// confirmed live 2026-07).
+// comptes de la santé financing series. A row is keyed on (poste_code, financeur),
+// so fin_lib (the financeur label, e.g. "Tout financeur") is folded in as a
+// dimension or the four financiers of one poste+year would collide on one row.
+// Real record: {annee:"2010", poste_code:"p12100_niv3", fin_lib:"Tout financeur",
+// montants:738.87}.
 var DREES = Portal{
 	Host:       dreesHost,
 	SourceName: "DREES",
 	Corpus:     domain.DREESStatCorpus,
 	Specs: []Spec{
 		{
-			Dataset:     "cns_financement",
-			Title:       "Financement des dépenses de santé",
-			ValueField:  "montants",
-			KeyField:    "poste_code",
-			PeriodField: "annee",
-			Geography:   "France",
-			Unit:        "millions d'euros",
+			Dataset:         "cns_financement",
+			Title:           "Financement des dépenses de santé",
+			ValueField:      "montants",
+			KeyField:        "poste_code",
+			PeriodField:     "annee",
+			Geography:       "France",
+			DimensionFields: []string{"fin_lib"},
+			Unit:            "millions d'euros",
 		},
 	},
 }
 
 // DARES publishes labor-market statistics. dares_tempspartiel_detail_annuelles is
-// the annual part-time-work detail series.
+// the annual part-time-work detail series. The period field is a bare-year "date".
+// Real record: {date:"2014", champ:"France", indicateur:"Taux de temps partiel
+// (%)", indicateur_detaille:"Moins d'un mi-temps", sexe:"Total", valeur:23.6}.
 var DARES = Portal{
 	Host:       daresHost,
 	SourceName: "DARES",
 	Corpus:     domain.DARESStatCorpus,
 	Specs: []Spec{
 		{
-			Dataset:     "dares_tempspartiel_detail_annuelles",
-			Title:       "Travail à temps partiel",
-			ValueField:  "valeur",
-			KeyField:    "libelle",
-			PeriodField: "annee",
-			Geography:   "France",
-			Unit:        "%",
+			Dataset:         "dares_tempspartiel_detail_annuelles",
+			Title:           "Temps partiel",
+			ValueField:      "valeur",
+			KeyField:        "indicateur",
+			PeriodField:     "date",
+			GeographyField:  "champ",
+			DimensionFields: []string{"indicateur", "indicateur_detaille", "sexe"},
+			Unit:            "%",
 		},
 	},
 }
 
 // URSSAF publishes private-sector employment by territory. The zone-d'emploi
-// effectifs/masse-salariale series is the confirmed 2026-07 dataset id.
+// effectifs/masse-salariale series is quarterly: annee + trimestre compose a
+// "YYYY-Qn" period so the four quarters of a zone-year do not collide. The full
+// dataset is ~38k rows (over the records-window ceiling), so it is narrowed to
+// recent years with a Where filter, keeping it well inside the window. Real record:
+// {zone_d_emploi:"Caen", annee:"2022", trimestre:1, code_zone_d_emploi:"2804",
+// effectifs_salaries_cvs:132010}.
 var URSSAF = Portal{
 	Host:       urssafHost,
 	SourceName: "URSSAF",
 	Corpus:     domain.URSSAFStatCorpus,
 	Specs: []Spec{
 		{
-			Dataset:         "effectifs-salaries-et-masse-salariale-du-secteur-prive-par-zone-demploi",
-			Title:           "Effectifs salariés du secteur privé",
-			ValueField:      "effectifs_salaries",
-			KeyField:        "zone_demploi",
-			PeriodField:     "date",
-			GeographyField:  "zone_demploi",
-			DimensionFields: []string{"grand_secteur_d_activite"},
-			Unit:            "salariés",
+			Dataset:        "effectifs-salaries-et-masse-salariale-du-secteur-prive-par-zone-demploi",
+			Title:          "Effectifs salariés du secteur privé (CVS)",
+			ValueField:     "effectifs_salaries_cvs",
+			KeyField:       "code_zone_d_emploi",
+			PeriodField:    "annee",
+			QuarterField:   "trimestre",
+			GeographyField: "zone_d_emploi",
+			Where:          `annee >= "2022"`,
+			Unit:           "salariés",
 		},
 	},
 }

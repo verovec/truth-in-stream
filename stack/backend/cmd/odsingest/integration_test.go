@@ -299,8 +299,8 @@ func TestODSRoutesThroughFleetEndToEnd(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"total_count":2,"results":[
-		  {"annee":"2020","poste_niveau":1,"poste_code":"p10000","montants":1234.5},
-		  {"annee":"2021","poste_niveau":1,"poste_code":"p10000","montants":1300.0}
+		  {"annee":"2020","poste_niveau":1,"poste_code":"p10000","fin_lib":"Tout financeur","montants":1234.5},
+		  {"annee":"2021","poste_niveau":1,"poste_code":"p10000","fin_lib":"Tout financeur","montants":1300.0}
 		]}`))
 	}))
 	t.Cleanup(srv.Close)

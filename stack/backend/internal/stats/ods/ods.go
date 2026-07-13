@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -117,6 +118,14 @@ func (c *Client) Fetch(ctx context.Context, portal Portal, spec Spec) ([]domain.
 		page, total, reqURL, err := c.fetchPage(ctx, base, spec, offset, limit)
 		if err != nil {
 			return nil, err
+		}
+		// A dataset larger than the records-window ceiling cannot be fully paged
+		// through this endpoint, so returning the first window would silently drop
+		// the tail. Fail loudly instead - the total is known from the first page, so
+		// this bails before any wasted paging. Narrow the spec with a Where filter
+		// (or split it) to bring it inside the window.
+		if total > windowCeiling {
+			return nil, fmt.Errorf("ods: dataset %q reports %d rows, exceeding the records-window ceiling of %d; narrow it with a Where filter so it is not silently truncated", spec.Dataset, total, windowCeiling)
 		}
 		dps, err := mapRecords(portal, spec, page, reqURL)
 		if err != nil {
@@ -212,6 +221,18 @@ func mapRecords(portal Portal, spec Spec, records []map[string]any, citeURL stri
 			if err != nil {
 				return nil, err
 			}
+			// A quarterly dataset composes "YYYY-Qn" from the year and quarter
+			// fields, so the four quarters of a year occupy distinct provenance rows
+			// rather than colliding on the annual period.
+			if spec.QuarterField != "" {
+				quarter, err := requireString(rec, spec.QuarterField, spec.Dataset, citeURL)
+				if err != nil {
+					return nil, err
+				}
+				if quarter != "" {
+					period = period + "-Q" + quarter
+				}
+			}
 		}
 
 		geography := spec.Geography
@@ -265,18 +286,16 @@ func requireString(rec map[string]any, field, dataset, citeURL string) (string, 
 	return toString(v), nil
 }
 
-// toFloat coerces a JSON value to a float. It returns ok=false for a null or blank
-// value (a suppressed observation the caller skips) and an error for a value that
-// is neither a number nor a numeric string.
+// toFloat coerces a decoded JSON value to a float. It returns ok=false for a null
+// or blank value (a suppressed observation the caller skips) and an error for a
+// value that is neither a number nor a numeric string. The decoder does not use
+// json.Number, so a JSON number always arrives as a float64.
 func toFloat(v any) (float64, bool, error) {
 	switch t := v.(type) {
 	case nil:
 		return 0, false, nil
 	case float64:
 		return t, true, nil
-	case json.Number:
-		f, err := t.Float64()
-		return f, err == nil, err
 	case string:
 		s := strings.TrimSpace(t)
 		if s == "" {
@@ -308,16 +327,14 @@ func toString(v any) string {
 			return strconv.FormatInt(int64(t), 10)
 		}
 		return strconv.FormatFloat(t, 'f', -1, 64)
-	case json.Number:
-		return t.String()
 	default:
 		return fmt.Sprintf("%v", v)
 	}
 }
 
-// readSnippet reads a bounded prefix of an error response body for context.
+// readSnippet reads a bounded prefix of an error response body for context,
+// truncating an over-long body rather than reading it whole.
 func readSnippet(resp *http.Response) string {
-	buf := make([]byte, 512)
-	n, _ := resp.Body.Read(buf)
-	return string(buf[:n])
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return string(body)
 }
