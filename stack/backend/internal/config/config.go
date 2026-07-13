@@ -2941,6 +2941,20 @@ func EvidenceBinaryQuantizationMultiplier() (int, error) {
 	return intEnv("EVIDENCE_BQ_MULTIPLIER", 0, 0, 1000)
 }
 
+// EvidenceNearDupSimilarity reads EVIDENCE_NEAR_DUP_SIMILARITY, the cosine
+// similarity bar the near-duplicate gate (VER-203, measure 2) applies at
+// embed-write time on the single-write ingest path. 0 (the default) disables the
+// gate: every embedded chunk is served. A positive value in (0, 1] turns it on -
+// a fresh chunk whose nearest same-source neighbor is at least this similar is
+// withheld from search (stored for provenance with no vector) as a redundant
+// re-rendering. The intended setting sits well above the evidence borrow
+// threshold so only true near-identities are gated, and it stays off by default
+// until the golden eval proves no recall loss. The [0, 1] bound matches cosine
+// similarity; floatEnv rejects anything outside it.
+func EvidenceNearDupSimilarity() (float64, error) {
+	return floatEnv("EVIDENCE_NEAR_DUP_SIMILARITY", 0)
+}
+
 // floatEnv reads a unit-interval float environment variable, applying fallback
 // when unset and enforcing an inclusive [0, 1] range.
 func floatEnv(key string, fallback float64) (float64, error) {

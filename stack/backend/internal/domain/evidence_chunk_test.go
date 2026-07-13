@@ -98,3 +98,35 @@ func TestParseWikiMetadataEmpty(t *testing.T) {
 		t.Errorf("empty metadata mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestWithDuplicateFlag(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]any{"revision_id": int64(42), "section": "Intro"}
+	got := WithDuplicateFlag(base, 0.985)
+
+	if got[MetaDuplicate] != true {
+		t.Errorf("%s = %v, want true", MetaDuplicate, got[MetaDuplicate])
+	}
+	if got[MetaDuplicateSimilarity] != 0.985 {
+		t.Errorf("%s = %v, want 0.985", MetaDuplicateSimilarity, got[MetaDuplicateSimilarity])
+	}
+	if got["revision_id"] != int64(42) || got["section"] != "Intro" {
+		t.Errorf("provenance keys lost: %+v", got)
+	}
+	// The input map must be untouched (copy, not mutate).
+	if _, ok := base[MetaDuplicate]; ok {
+		t.Errorf("input map was mutated: %+v", base)
+	}
+}
+
+func TestWithDuplicateFlagNilMetadata(t *testing.T) {
+	t.Parallel()
+	got := WithDuplicateFlag(nil, 1)
+	if got == nil {
+		t.Fatal("returned nil map; store jsonb marshaling must never see nil")
+	}
+	if got[MetaDuplicate] != true || got[MetaDuplicateSimilarity] != float64(1) {
+		t.Errorf("flag not set on nil input: %+v", got)
+	}
+}

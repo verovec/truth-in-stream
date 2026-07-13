@@ -200,6 +200,41 @@ func TestEvidenceBinaryQuantizationMultiplier(t *testing.T) {
 	}
 }
 
+func TestEvidenceNearDupSimilarity(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    float64
+		wantErr bool
+	}{
+		{"unset defaults to off", "", 0, false},
+		{"explicit zero is off", "0", 0, false},
+		{"positive enables the gate", "0.97", 0.97, false},
+		{"one is valid", "1", 1, false},
+		{"non-numeric fails", "high", 0, true},
+		{"negative out of range", "-0.1", 0, true},
+		{"above one out of range", "1.5", 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("EVIDENCE_NEAR_DUP_SIMILARITY", tc.raw)
+			got, err := EvidenceNearDupSimilarity()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("similarity = %g, want %g", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadEmbedding(t *testing.T) {
 	tests := []struct {
 		name    string

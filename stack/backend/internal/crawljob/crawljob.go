@@ -21,12 +21,16 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// Stats is the running outcome of a Worker drain: acknowledged deliveries and
-// deliveries parked in the dead-letter queue. It is read after Run returns to
-// report the drain to the operator, symmetrically to a producer run.
+// Stats is the running outcome of a Worker drain: acknowledged deliveries,
+// deliveries parked in the dead-letter queue, and jobs the content-hash
+// short-circuit skipped (unchanged content already embedded). It is read after
+// Run returns to report the drain to the operator, symmetrically to a producer
+// run. Skipped is the volume-control counter that verifies a re-crawl over
+// unchanged content produces zero new embeddings.
 type Stats struct {
 	Processed   int64
 	ParkedToDLQ int64
+	Skipped     int64
 }
 
 // CrawlJob is one unit of crawl-ingest work: a fully self-contained Wikipedia
@@ -101,9 +105,13 @@ type Embedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// Store upserts a fully embedded chunk into the live corpus. The write is
-// idempotent: a redelivered job rewrites the same row.
+// Store persists an embedded chunk and answers the exact-dedup check. The write
+// is idempotent: a redelivered job rewrites the same row. ContentAlreadyEmbedded
+// reports whether the exact content is already stored and embedded at the chunk's
+// key, so the worker skips a redundant provider call on an unchanged re-crawl
+// (VER-203, measure 1).
 type Store interface {
+	ContentAlreadyEmbedded(ctx context.Context, chunk domain.EvidenceChunk) (bool, error)
 	UpsertEmbeddedChunk(ctx context.Context, chunk domain.EvidenceChunk) error
 }
 
@@ -146,16 +154,20 @@ type Worker struct {
 	maxAttempts   int
 	knownVersions map[string]struct{}
 
-	// processed counts acknowledged deliveries and parked counts dead-lettered
-	// ones, touched from the parallel handlers, so a run reports its drain outcome.
+	// processed counts acknowledged deliveries, parked counts dead-lettered ones,
+	// and skipped counts jobs the content-hash short-circuit dropped without a
+	// provider call. All are touched from the parallel handlers, so a run reports
+	// its drain outcome.
 	processed atomic.Int64
 	parked    atomic.Int64
+	skipped   atomic.Int64
 }
 
-// Stats reports the drain outcome accumulated so far: acknowledged and
-// dead-lettered delivery counts. It is safe to call after Run returns.
+// Stats reports the drain outcome accumulated so far: acknowledged,
+// dead-lettered, and short-circuited delivery counts. It is safe to call after
+// Run returns.
 func (w *Worker) Stats() Stats {
-	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load(), Skipped: w.skipped.Load()}
 }
 
 // NewWorker builds a Worker, clamping concurrency and attempts to at least one
@@ -294,6 +306,32 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
+	chunk := domain.EvidenceChunk{
+		Source:     job.Corpus,
+		ExternalID: strconv.FormatInt(job.PageID, 10),
+		ChunkIndex: job.ChunkIndex,
+		Title:      job.Title,
+		URL:        job.URL,
+		Content:    job.Content,
+		Kind:       domain.EvidenceChunkKind(job.Kind),
+		Metadata:   domain.WikiMetadata{RevisionID: job.RevisionID, Section: job.Section}.Map(),
+	}
+
+	// Volume control (VER-203, measure 1): a re-crawled page whose content is
+	// unchanged and already embedded needs no provider call. Skip it and count the
+	// skip. A lookup error is treated as transient (embed anyway) so a store blip
+	// never drops a job; the idempotent upsert makes a re-embed safe. The
+	// check-then-embed is not atomic: two concurrent redeliveries can both embed
+	// before either upserts - a rare wasted paid embed, not a correctness issue, so
+	// this is a best-effort cost saver, not mutual exclusion.
+	if already, err := w.store.ContentAlreadyEmbedded(ctx, chunk); err == nil && already {
+		w.skipped.Add(1)
+		return Result{Action: ActionAck}
+	} else if err != nil {
+		w.logger.WarnContext(ctx, "content-hash short-circuit check failed, embedding anyway",
+			slog.Int64("page_id", job.PageID), slog.Int("chunk_index", job.ChunkIndex), slog.Any("err", err))
+	}
+
 	embeddings, err := w.embedder.EmbedDocuments(ctx, []string{job.Content})
 	if err != nil {
 		return w.afterFailure(ctx, job, priority, "embed", err)
@@ -309,17 +347,7 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
-	chunk := domain.EvidenceChunk{
-		Source:     job.Corpus,
-		ExternalID: strconv.FormatInt(job.PageID, 10),
-		ChunkIndex: job.ChunkIndex,
-		Title:      job.Title,
-		URL:        job.URL,
-		Content:    job.Content,
-		Kind:       domain.EvidenceChunkKind(job.Kind),
-		Metadata:   domain.WikiMetadata{RevisionID: job.RevisionID, Section: job.Section}.Map(),
-		Embedding:  embeddings[0],
-	}
+	chunk.Embedding = embeddings[0]
 	if err := w.store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
 		return w.afterFailure(ctx, job, priority, "upsert", err)
 	}

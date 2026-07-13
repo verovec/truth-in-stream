@@ -80,7 +80,8 @@ DOCKER
     TARGETS_FILE="$TARGETS" \
     CLUSTER="${CLUSTER:-truth-in-stream-dev-cluster}" \
     PROJECT="${PROJECT:-truth-in-stream}" \
-    ENVIRONMENT="${ENVIRONMENT:-dev}"
+    ENVIRONMENT="${ENVIRONMENT:-dev}" \
+    EVIDENCE_BQ_THRESHOLD_VECTORS="${EVIDENCE_BQ_THRESHOLD_VECTORS:-50000000}"
 }
 
 echo "TEST: a full run renders local corpus counts, fleet containers, and the cloud sections"
@@ -176,6 +177,22 @@ AWS
   chmod +x "$BIN/aws"
   out="$(bash "$RUN" 2>&1)"
   assert_contains "$out" "absent" "an absent host is reported as absent"
+)
+
+echo "TEST: the BQ warning fires when embedded evidence crosses the threshold"
+(
+  # The stub psql reports 20 embedded evidence vectors; a threshold of 10 crosses.
+  EVIDENCE_BQ_THRESHOLD_VECTORS=10 make_sandbox
+  out="$(bash "$RUN" 2>&1)"
+  assert_contains "$out" "crossed the BQ threshold" "warns when the corpus crosses the BQ threshold"
+  assert_contains "$out" "EVIDENCE_BQ_MULTIPLIER" "points the operator at the BQ knob"
+)
+
+echo "TEST: no BQ warning below the threshold (default)"
+(
+  make_sandbox
+  out="$(bash "$RUN" 2>&1)"
+  assert_not_contains "$out" "crossed the BQ threshold" "stays silent below the threshold"
 )
 
 passes=$(grep -c PASS "$TALLY"); fails=$(grep -c FAIL "$TALLY")

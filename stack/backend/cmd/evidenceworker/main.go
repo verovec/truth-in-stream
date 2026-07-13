@@ -61,6 +61,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	nearDupSimilarity, err := config.EvidenceNearDupSimilarity()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -83,13 +87,14 @@ func run(logger *slog.Logger) error {
 		qStream{client: client},
 		qEnqueuer{client: client},
 		logger,
-		evidencejob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
+		evidencejob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, NearDupSimilarity: nearDupSimilarity, KnownVersions: queueCfg.KnownVersions},
 	)
 
 	logger.InfoContext(ctx, "evidence worker started",
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
-		slog.Int("max_attempts", workerCfg.MaxAttempts))
+		slog.Int("max_attempts", workerCfg.MaxAttempts),
+		slog.Float64("near_dup_similarity", nearDupSimilarity))
 
 	// Announce the drain to Slack symmetrically to the producers (silent no-op when
 	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.

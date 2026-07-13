@@ -27,16 +27,32 @@ import (
 // as the raw statements below; the live-corpus DML still goes through generated
 // queries. The names are constants, never interpolated user input.
 const (
-	evidenceStagingTable           = "evidence_chunks_staging"
-	evidenceStagingPK              = "evidence_chunks_staging_pkey"
-	evidenceStagingHNSWIndex       = "evidence_chunks_staging_embedding_hnsw"
-	evidenceChunksHNSWIndex        = "evidence_chunks_embedding_hnsw"
-	evidenceChunksPK               = "evidence_chunks_pkey"
-	evidenceChunksOldTable         = "evidence_chunks_old"
-	evidenceChunksOldPK            = "evidence_chunks_old_pkey"
-	evidenceChunksOldHNSWIndex     = "evidence_chunks_old_embedding_hnsw"
-	hnswM                      int = 16
-	hnswEfConstruction         int = 200
+	evidenceStagingTable       = "evidence_chunks_staging"
+	evidenceStagingPK          = "evidence_chunks_staging_pkey"
+	evidenceStagingHNSWIndex   = "evidence_chunks_staging_embedding_hnsw"
+	evidenceChunksHNSWIndex    = "evidence_chunks_embedding_hnsw"
+	evidenceChunksPK           = "evidence_chunks_pkey"
+	evidenceChunksOldTable     = "evidence_chunks_old"
+	evidenceChunksOldPK        = "evidence_chunks_old_pkey"
+	evidenceChunksOldHNSWIndex = "evidence_chunks_old_embedding_hnsw"
+
+	// The secondary indexes a rebuilt corpus must also carry so a staging swap
+	// leaves the live table with the SAME index set the migrations define, never a
+	// degraded one. Each is built on staging under its own name, then swapped to
+	// the canonical name the migration schema expects (the live one is renamed
+	// aside first and dropped with the old table). Without this a rebuild
+	// (make reingest) would permanently drop the 0017 hybrid-FTS GIN index -
+	// silently degrading lexical search to a sequential scan - and the VER-203
+	// content-hash index.
+	evidenceStagingGINIndex         = "evidence_chunks_staging_search_vector_gin"
+	evidenceChunksGINIndex          = "evidence_chunks_search_vector_gin"
+	evidenceChunksOldGINIndex       = "evidence_chunks_old_search_vector_gin"
+	evidenceStagingContentHashIndex = "evidence_chunks_staging_source_content_hash"
+	evidenceChunksContentHashIndex  = "evidence_chunks_source_content_hash"
+	evidenceChunksOldContentHashIdx = "evidence_chunks_old_source_content_hash"
+
+	hnswM              int = 16
+	hnswEfConstruction int = 200
 )
 
 // Staging is stamped with its lifecycle phase and the dump version it is being
@@ -49,6 +65,14 @@ const (
 )
 
 func stagingStamp(phase, version string) string { return phase + ":" + version }
+
+// notDuplicate excludes the near-duplicate chunks the volume-control gate
+// withheld (VER-203, measure 2): they are stored with a NULL embedding and a
+// duplicate metadata flag for provenance, so the live un-embedded scans must skip
+// them - otherwise a bulk-into-live producer would enqueue them, the fleet would
+// embed them, and the gate would be defeated. Staging never holds them (a rebuild
+// loads fresh from the dump), so only the live scans carry this predicate.
+const notDuplicate = ` AND NOT (metadata @> '{"duplicate": true}')`
 
 // readStaging reports whether the staging table exists and its (phase, version)
 // stamp. An absent or unstamped table reads as building with an empty version,
@@ -118,9 +142,13 @@ func (s *Store) liveCurrentAt(ctx context.Context, version string) (bool, error)
 }
 
 // ResetStaging drops any surviving staging table and creates a fresh unindexed
-// one stamped building:version. LIKE copies the columns, NOT NULLs, and
-// defaults but no primary key or HNSW index, keeping the bulk load fast; the
-// index and key are built once at finalize. The drop, create, and stamp run in
+// one stamped building:version. LIKE copies the columns, NOT NULLs, defaults,
+// and - INCLUDING GENERATED - the content_hash generation expression, but no
+// primary key or HNSW index, keeping the bulk load fast; the index and key are
+// built once at finalize. Copying the generated column matters because staging
+// is renamed over the live table at swap: without it the swapped-in corpus would
+// lose the generated content_hash the volume-control short-circuit reads. The
+// drop, create, and stamp run in
 // one transaction so a concurrent stagingExists/EmbedInProgress check never sees
 // the table briefly absent mid-rebuild: it observes the old table until commit,
 // then the new one, never a window where a delta sync could slip past the guard.
@@ -130,7 +158,7 @@ func (s *Store) ResetStaging(ctx context.Context, version string) error {
 		if _, err := tx.Exec(ctx, "DROP TABLE IF EXISTS "+evidenceStagingTable); err != nil {
 			return fmt.Errorf("drop staging: %w", err)
 		}
-		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE evidence_chunks INCLUDING DEFAULTS)", evidenceStagingTable)); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE evidence_chunks INCLUDING DEFAULTS INCLUDING GENERATED)", evidenceStagingTable)); err != nil {
 			return fmt.Errorf("create staging: %w", err)
 		}
 		return stampStagingTx(ctx, tx, stamp)
@@ -275,7 +303,7 @@ func (s *Store) UnembeddedStaging(ctx context.Context, cur domain.EvidenceCursor
 func (s *Store) CountUnembeddedLive(ctx context.Context) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(
-		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL",
+		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL"+notDuplicate,
 	).Scan(&n); err != nil {
 		return 0, fmt.Errorf("postgres: count un-embedded live: %w", err)
 	}
@@ -289,7 +317,7 @@ func (s *Store) CountUnembeddedLive(ctx context.Context) (int64, error) {
 func (s *Store) CountUnembeddedLiveSource(ctx context.Context, source string) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(
-		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL AND source = $1", source,
+		ctx, "SELECT count(*)::bigint FROM evidence_chunks WHERE embedding IS NULL AND source = $1"+notDuplicate, source,
 	).Scan(&n); err != nil {
 		return 0, fmt.Errorf("postgres: count un-embedded live for source %q: %w", source, err)
 	}
@@ -310,7 +338,7 @@ func (s *Store) UnembeddedLiveSource(ctx context.Context, source string, cur dom
 		SELECT source, external_id, chunk_index, content, kind, NULL::float8
 		FROM evidence_chunks
 		WHERE embedding IS NULL
-		  AND source = $1
+		  AND source = $1`+notDuplicate+`
 		  AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
 		ORDER BY source, external_id, chunk_index
 		LIMIT $4`, source, cur.ExternalID, cur.ChunkIndex, limit)
@@ -334,7 +362,7 @@ func (s *Store) LiveRemaining(ctx context.Context) (domain.EvidenceRemaining, er
 		ctx, `
 		SELECT count(*)::bigint, count(DISTINCT (source, external_id))::bigint,
 		       COALESCE(sum(length(content)), 0)::bigint
-		FROM evidence_chunks WHERE embedding IS NULL`,
+		FROM evidence_chunks WHERE embedding IS NULL`+notDuplicate,
 	).Scan(&r.Chunks, &r.Documents, &r.Chars); err != nil {
 		return domain.EvidenceRemaining{}, fmt.Errorf("postgres: live remaining: %w", err)
 	}
@@ -356,7 +384,7 @@ func (s *Store) UnembeddedLive(ctx context.Context, cur domain.EvidenceCursor, l
 	rows, err := s.pool.Query(ctx, `
 		SELECT source, external_id, chunk_index, content, kind, (metadata->>'importance')::float8
 		FROM evidence_chunks
-		WHERE embedding IS NULL
+		WHERE embedding IS NULL`+notDuplicate+`
 		  AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
 		ORDER BY source, external_id, chunk_index
 		LIMIT $4`, cur.Source, cur.ExternalID, cur.ChunkIndex, limit)
@@ -619,9 +647,14 @@ func (s *Store) validateStagingTx(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// buildStagingIndex adds the primary key and builds the HNSW index on the loaded
-// staging table, with the index-build memory and parallelism raised for the
-// transaction only. Both steps are idempotent so a resumed finalize is safe.
+// buildStagingIndex adds the primary key and builds every secondary index the
+// live table carries onto the loaded staging table - the HNSW halfvec index, the
+// 0017 hybrid-FTS GIN index, and the VER-203 (source, content_hash) btree - with
+// the index-build memory and parallelism raised for the transaction only. It
+// builds the full index set (not just the HNSW) so the swap leaves the live table
+// with the same indexes the migrations define; omitting the GIN would silently
+// degrade lexical search to a sequential scan after every rebuild. Every step is
+// idempotent so a resumed finalize is safe.
 func (s *Store) buildStagingIndex(ctx context.Context, maintenanceWorkMem string, maxParallelWorkers int) error {
 	addPK := fmt.Sprintf(`DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '%s') THEN
@@ -629,9 +662,17 @@ func (s *Store) buildStagingIndex(ctx context.Context, maintenanceWorkMem string
     END IF;
 END $$;`, evidenceStagingPK, evidenceStagingTable, evidenceStagingPK)
 
-	createIndex := fmt.Sprintf(
+	createHNSW := fmt.Sprintf(
 		"CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding halfvec_cosine_ops) WITH (m = %d, ef_construction = %d)",
 		evidenceStagingHNSWIndex, evidenceStagingTable, hnswM, hnswEfConstruction,
+	)
+	createGIN := fmt.Sprintf(
+		"CREATE INDEX IF NOT EXISTS %s ON %s USING gin (search_vector)",
+		evidenceStagingGINIndex, evidenceStagingTable,
+	)
+	createContentHash := fmt.Sprintf(
+		"CREATE INDEX IF NOT EXISTS %s ON %s (source, content_hash)",
+		evidenceStagingContentHashIndex, evidenceStagingTable,
 	)
 
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -646,8 +687,14 @@ END $$;`, evidenceStagingPK, evidenceStagingTable, evidenceStagingPK)
 		if _, err := tx.Exec(ctx, addPK); err != nil {
 			return fmt.Errorf("add staging primary key: %w", err)
 		}
-		if _, err := tx.Exec(ctx, createIndex); err != nil {
+		if _, err := tx.Exec(ctx, createHNSW); err != nil {
 			return fmt.Errorf("build staging hnsw index: %w", err)
+		}
+		if _, err := tx.Exec(ctx, createGIN); err != nil {
+			return fmt.Errorf("build staging fts gin index: %w", err)
+		}
+		if _, err := tx.Exec(ctx, createContentHash); err != nil {
+			return fmt.Errorf("build staging content-hash index: %w", err)
 		}
 		return nil
 	})
@@ -667,12 +714,19 @@ END $$;`, evidenceStagingPK, evidenceStagingTable, evidenceStagingPK)
 func (s *Store) swapStaging(ctx context.Context, source, version string, lastChangeTS time.Time) error {
 	stmts := []string{
 		"DROP TABLE IF EXISTS " + evidenceChunksOldTable,
-		// IF EXISTS so a corpus whose HNSW index was dropped (e.g. for an ops
-		// rebuild) still swaps; the staging index takes the canonical name next.
+		// IF EXISTS on every live-index rename so a corpus whose index was dropped
+		// (an ops rebuild) still swaps; the staging indexes take the canonical names
+		// next. Each secondary index (GIN, content_hash) is renamed aside just like
+		// the HNSW so its canonical name is free before staging's takes it, and it
+		// is dropped with the old table at the end.
 		fmt.Sprintf("ALTER INDEX IF EXISTS %s RENAME TO %s", evidenceChunksHNSWIndex, evidenceChunksOldHNSWIndex),
+		fmt.Sprintf("ALTER INDEX IF EXISTS %s RENAME TO %s", evidenceChunksGINIndex, evidenceChunksOldGINIndex),
+		fmt.Sprintf("ALTER INDEX IF EXISTS %s RENAME TO %s", evidenceChunksContentHashIndex, evidenceChunksOldContentHashIdx),
 		fmt.Sprintf("ALTER TABLE evidence_chunks RENAME CONSTRAINT %s TO %s", evidenceChunksPK, evidenceChunksOldPK),
 		"ALTER TABLE evidence_chunks RENAME TO " + evidenceChunksOldTable,
 		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", evidenceStagingHNSWIndex, evidenceChunksHNSWIndex),
+		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", evidenceStagingGINIndex, evidenceChunksGINIndex),
+		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", evidenceStagingContentHashIndex, evidenceChunksContentHashIndex),
 		fmt.Sprintf("ALTER TABLE %s RENAME CONSTRAINT %s TO %s", evidenceStagingTable, evidenceStagingPK, evidenceChunksPK),
 		fmt.Sprintf("ALTER TABLE %s RENAME TO evidence_chunks", evidenceStagingTable),
 		"DROP TABLE " + evidenceChunksOldTable,

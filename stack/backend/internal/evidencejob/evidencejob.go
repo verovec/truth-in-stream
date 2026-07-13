@@ -31,12 +31,17 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// Stats is the running outcome of a Worker drain: acknowledged deliveries and
-// deliveries parked in the dead-letter queue. It is read after Run returns to
-// report the drain to the operator, symmetrically to a producer run.
+// Stats is the running outcome of a Worker drain: acknowledged deliveries,
+// deliveries parked in the dead-letter queue, and jobs the content-hash
+// short-circuit skipped (unchanged content already embedded, so no provider call
+// and no re-upsert). It is read after Run returns to report the drain to the
+// operator, symmetrically to a producer run. Skipped is the volume-control
+// counter that verifies a re-run over unchanged content produces zero new
+// embeddings.
 type Stats struct {
 	Processed   int64
 	ParkedToDLQ int64
+	Skipped     int64
 }
 
 // Action is what the consume loop must do with a delivery after Process decides
@@ -68,11 +73,19 @@ type Embedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// Store upserts a fully embedded chunk into the live corpus. The write is
-// idempotent: a redelivered job rewrites the same row, keyed by the chunk's
-// natural key (source, external_id, chunk_index).
+// Store persists an embedded chunk and answers the volume-control checks. The
+// writes are idempotent: a redelivered job rewrites the same row, keyed by the
+// chunk's natural key (source, external_id, chunk_index).
+//
+// ContentAlreadyEmbedded reports whether the exact content is already stored and
+// embedded at that key, so the worker skips a redundant provider call (VER-203,
+// measure 1). UpsertEmbeddedChunkDeduped writes the embedded chunk, applying the
+// near-duplicate gate when the configured similarity bar is positive and behaving
+// exactly like a plain embedded upsert when it is zero (VER-203, measure 2); it
+// reports whether the chunk was gated (stored without its vector).
 type Store interface {
-	UpsertEmbeddedChunk(ctx context.Context, chunk domain.EvidenceChunk) error
+	ContentAlreadyEmbedded(ctx context.Context, chunk domain.EvidenceChunk) (bool, error)
+	UpsertEmbeddedChunkDeduped(ctx context.Context, chunk domain.EvidenceChunk, nearDupSimilarity float64) (flagged bool, err error)
 }
 
 // Delivery is one job message awaiting acknowledgement, abstracting the broker.
@@ -97,34 +110,42 @@ type Enqueuer interface {
 // Config tunes a Worker. Concurrency caps parallel embeds per replica;
 // MaxAttempts is the per-job delivery budget; KnownVersions is the set of queue
 // schema versions this worker understands (empty disables the check).
+// NearDupSimilarity is the near-duplicate gate's cosine bar (VER-203, measure 2):
+// 0 (the default) disables the gate, a positive value in (0, 1] turns it on.
 type Config struct {
-	Concurrency   int
-	MaxAttempts   int
-	KnownVersions []string
+	Concurrency       int
+	MaxAttempts       int
+	NearDupSimilarity float64
+	KnownVersions     []string
 }
 
 // Worker drains evidence jobs and upserts their embedded chunks into the live
 // corpus.
 type Worker struct {
-	embedder      Embedder
-	store         Store
-	stream        Stream
-	enqueuer      Enqueuer
-	logger        *slog.Logger
-	concurrency   int
-	maxAttempts   int
-	knownVersions map[string]struct{}
+	embedder          Embedder
+	store             Store
+	stream            Stream
+	enqueuer          Enqueuer
+	logger            *slog.Logger
+	concurrency       int
+	maxAttempts       int
+	nearDupSimilarity float64
+	knownVersions     map[string]struct{}
 
-	// processed counts acknowledged deliveries and parked counts dead-lettered
-	// ones, touched from the parallel handlers, so a run reports its drain outcome.
+	// processed counts acknowledged deliveries, parked counts dead-lettered ones,
+	// and skipped counts jobs the content-hash short-circuit dropped without a
+	// provider call. All are touched from the parallel handlers, so a run reports
+	// its drain outcome.
 	processed atomic.Int64
 	parked    atomic.Int64
+	skipped   atomic.Int64
 }
 
-// Stats reports the drain outcome accumulated so far: acknowledged and
-// dead-lettered delivery counts. It is safe to call after Run returns.
+// Stats reports the drain outcome accumulated so far: acknowledged,
+// dead-lettered, and short-circuited delivery counts. It is safe to call after
+// Run returns.
 func (w *Worker) Stats() Stats {
-	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load(), Skipped: w.skipped.Load()}
 }
 
 // NewWorker builds a Worker, clamping concurrency and attempts to at least one
@@ -147,14 +168,15 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 		}
 	}
 	return &Worker{
-		embedder:      embedder,
-		store:         store,
-		stream:        stream,
-		enqueuer:      enqueuer,
-		logger:        logger,
-		concurrency:   cfg.Concurrency,
-		maxAttempts:   cfg.MaxAttempts,
-		knownVersions: known,
+		embedder:          embedder,
+		store:             store,
+		stream:            stream,
+		enqueuer:          enqueuer,
+		logger:            logger,
+		concurrency:       cfg.Concurrency,
+		maxAttempts:       cfg.MaxAttempts,
+		nearDupSimilarity: cfg.NearDupSimilarity,
+		knownVersions:     known,
 	}
 }
 
@@ -263,6 +285,26 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
+	chunk := job.Chunk()
+
+	// Volume control (VER-203, measure 1): an unchanged re-crawl whose content is
+	// already embedded needs no provider call and no re-upsert. Skip it and count
+	// the skip. A store error here is treated as transient (fall through to the
+	// normal embed path rather than dead-letter), so a lookup blip never loses a
+	// job; the idempotent write makes a re-embed safe. The check-then-embed is not
+	// atomic: two concurrent redeliveries of the same job can both see "not yet
+	// embedded" and both embed before either upserts. That is a rare wasted paid
+	// embed, not a correctness problem - the idempotent upsert converges - so the
+	// short-circuit is a best-effort cost saver, not a mutual-exclusion guarantee.
+	if already, err := w.store.ContentAlreadyEmbedded(ctx, chunk); err == nil && already {
+		w.skipped.Add(1)
+		return Result{Action: ActionAck}
+	} else if err != nil {
+		w.logger.WarnContext(ctx, "content-hash short-circuit check failed, embedding anyway",
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
+			slog.Int("chunk_index", job.ChunkIndex), slog.Any("err", err))
+	}
+
 	embeddings, err := w.embedder.EmbedDocuments(ctx, []string{job.Content})
 	if err != nil {
 		return w.afterFailure(ctx, job, priority, "embed", err)
@@ -278,10 +320,15 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
-	chunk := job.Chunk()
 	chunk.Embedding = embeddings[0]
-	if err := w.store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
+	flagged, err := w.store.UpsertEmbeddedChunkDeduped(ctx, chunk, w.nearDupSimilarity)
+	if err != nil {
 		return w.afterFailure(ctx, job, priority, "upsert", err)
+	}
+	if flagged {
+		w.logger.InfoContext(ctx, "near-duplicate chunk withheld from search",
+			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
+			slog.Int("chunk_index", job.ChunkIndex))
 	}
 	return Result{Action: ActionAck}
 }
