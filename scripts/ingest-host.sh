@@ -87,6 +87,16 @@ INGEST_SSM_ONLINE_TIMEOUT="${INGEST_SSM_ONLINE_TIMEOUT:-180}"
 INGEST_METRICS_NAMESPACE="${INGEST_METRICS_NAMESPACE:-TruthInStream/RabbitMQ}"
 INGEST_BROKER_NAME="${INGEST_BROKER_NAME:-${PROJECT}-${ENVIRONMENT}}"
 
+# --stop-when-idle drain-to-idle self-stop knobs. WORKER_IDLE_TIMEOUT is the
+# window a worker's queue must be empty before it exits, handed to the consumer
+# containers so they drain and stop themselves; INGEST_DRAIN_TIMEOUT bounds how
+# long the host waits for every worker to idle out before it gives up (and leaves
+# the host running for inspection), and INGEST_DRAIN_POLL_INTERVAL is that wait's
+# poll cadence.
+WORKER_IDLE_TIMEOUT="${WORKER_IDLE_TIMEOUT:-300s}"
+INGEST_DRAIN_TIMEOUT="${INGEST_DRAIN_TIMEOUT:-3600}"
+INGEST_DRAIN_POLL_INTERVAL="${INGEST_DRAIN_POLL_INTERVAL:-15}"
+
 usage() {
   local sources="(see ${INGEST_SOURCES_MANIFEST})"
   if [[ -r "$INGEST_SOURCES_MANIFEST" ]]; then
@@ -94,11 +104,14 @@ usage() {
   fi
   cat >&2 <<USAGE
 usage:
-  ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after]
+  ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after] [--stop-when-idle]
   <source>: ${sources}
-  up      (default) start the host if needed and run the service over SSM
-  down    stop the role's host for cost control
-  status  read-only: instance state + queue depth
+  up               (default) start the host if needed and run the service over SSM
+  down             stop the role's host for cost control
+  status           read-only: instance state + queue depth
+  --stop-after     stop the host after the run (crawler one-shots)
+  --stop-when-idle consumer only: hand the workers a drain-to-idle window, wait for
+                   every worker to idle-exit, then stop the host (hands-off drain)
 USAGE
   exit "${1:-2}"
 }
@@ -274,21 +287,54 @@ forward_flags() {
 # worker with `up -d` (detached, keeps draining) for the consumer role. Every
 # interpolated value here is a non-secret identifier (account, region, image tag,
 # repo, forwarded producer config); the secrets are fetched on the host.
+# drain_wait_snippet: echo the host-side loop that waits for every consumer worker
+# container to idle-exit (drain-to-idle), so the caller can stop the host once the
+# queues are drained. It reads `docker compose ps` for running worker services and
+# breaks when none remain, bounded by INGEST_DRAIN_TIMEOUT. Every host-evaluated
+# `$` is escaped so it defers to the host, not this script.
+drain_wait_snippet() {
+  cat <<SNIP
+echo "waiting up to ${INGEST_DRAIN_TIMEOUT}s for consumer workers to drain to idle" >&2
+__deadline=\$(( \$(date +%s) + ${INGEST_DRAIN_TIMEOUT} ))
+while :; do
+  __running="\$(docker compose -f ${INGEST_COMPOSE_FILE} ps --status running --services 2>/dev/null | grep -E 'worker\$' || true)"
+  if [ -z "\$__running" ]; then
+    echo "all consumer workers have idle-exited; host can stop" >&2
+    break
+  fi
+  if [ "\$(date +%s)" -ge "\$__deadline" ]; then
+    echo "timed out after ${INGEST_DRAIN_TIMEOUT}s; workers still running: \$__running" >&2
+    exit 1
+  fi
+  sleep ${INGEST_DRAIN_POLL_INTERVAL}
+done
+SNIP
+}
+
 build_remote_script() {
   local role="$1"
   local registry="${GUARD_ACCOUNT}.dkr.ecr.${GUARD_REGION}.amazonaws.com"
   local image="${registry}/${PROJECT}-${ENVIRONMENT}-backend:${IMAGE_TAG}"
+  # Under --stop-when-idle the workers get a drain-to-idle window so they exit once
+  # their queue is empty; otherwise it is empty (workers run until SIGTERM). It is
+  # non-secret producer/worker config, safe in the SSM payload.
+  local idle_window=""
+  [[ -n "$STOP_WHEN_IDLE" ]] && idle_window="$WORKER_IDLE_TIMEOUT"
   local run_line
   if [[ "$role" == "crawler" ]]; then
     run_line="docker compose -f ${INGEST_COMPOSE_FILE} run --rm$(forward_flags) ${SRC_SERVICE}"
   else
     run_line="docker compose -f ${INGEST_COMPOSE_FILE} up -d ${SRC_SERVICE}"
+    if [[ -n "$STOP_WHEN_IDLE" ]]; then
+      run_line+=$'\n'"$(drain_wait_snippet)"
+    fi
   fi
   cat <<REMOTE
 set -euo pipefail
 export INGEST_IMAGE=$(shquote "$image")
 export INGEST_ENV=$(shquote "$ENVIRONMENT")
 export AWS_REGION=$(shquote "$GUARD_REGION")
+export WORKER_IDLE_TIMEOUT=$(shquote "$idle_window")
 WORKDIR=$(shquote "$INGEST_HOST_WORKDIR")
 REPO=$(shquote "$INGEST_REPO_URL")
 REF=$(shquote "$INGEST_REPO_REF")
@@ -425,10 +471,16 @@ do_up() {
   local rc=0
   send_and_wait "$role" || rc=$?
 
-  if [[ -n "$STOP_AFTER" ]]; then
-    echo "stopping host ${HOST_ID} (--stop-after)" >&2
+  # --stop-after always stops (the crawler one-shot finished); --stop-when-idle
+  # stops only on a clean drain (rc 0 means every worker idle-exited), leaving a
+  # timed-out host running so the operator can inspect the undrained backlog.
+  if [[ -n "$STOP_AFTER" ]] || { [[ -n "$STOP_WHEN_IDLE" && "$rc" -eq 0 ]]; }; then
+    local why="--stop-after"; [[ -n "$STOP_WHEN_IDLE" ]] && why="workers idled out"
+    echo "stopping host ${HOST_ID} (${why})" >&2
     ig_aws ec2 stop-instances --instance-ids "$HOST_ID" >/dev/null
     echo "host ${HOST_ID} stopping; idle cost drops to its EBS volume" >&2
+  elif [[ -n "$STOP_WHEN_IDLE" ]]; then
+    echo "workers did not drain to idle (rc=${rc}); host ${HOST_ID} left running for inspection" >&2
   else
     echo "host left running; run '/${SUBROLE} ${SOURCE} down' to stop it and cap cost" >&2
   fi
@@ -485,15 +537,24 @@ main() {
 
   ACTION="up"
   STOP_AFTER=""
+  STOP_WHEN_IDLE=""
   shift 2 || true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       up|down|status) ACTION="$1" ;;
       --stop-after) STOP_AFTER=1 ;;
-      *) ig_fatal "unknown argument '$1'; usage: ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after]" ;;
+      --stop-when-idle) STOP_WHEN_IDLE=1 ;;
+      *) ig_fatal "unknown argument '$1'; usage: ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after] [--stop-when-idle]" ;;
     esac
     shift
   done
+
+  # --stop-when-idle is a consumer-only, up-only drain: the crawler runs one-shot
+  # producers (use --stop-after), and down/status never run a worker to idle out.
+  if [[ -n "$STOP_WHEN_IDLE" ]]; then
+    [[ "$SUBROLE" == "consumer" ]] || ig_fatal "--stop-when-idle applies to the consumer role only (crawler producers are one-shot; use --stop-after)"
+    [[ "$ACTION" == "up" ]] || ig_fatal "--stop-when-idle applies to the 'up' action only"
+  fi
 
   # INGEST_REPO_URL defaults to the local origin so the host clones the same repo;
   # only needed for the `up` action, which runs a host command.

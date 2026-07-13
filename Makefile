@@ -72,8 +72,12 @@ ENV ?= prod
 # from the environment and forwarded; secrets come from Secrets Manager.
 SOURCE ?= wikipedia
 ACTION ?= up
+# Extra flags forwarded to scripts/ingest-host.sh: --stop-after (stop a crawler
+# host after its one-shot run) or --stop-when-idle (consumer: drain to idle, then
+# self-stop the host). Empty by default.
+INGEST_FLAGS ?=
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer pipeline-health insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -241,11 +245,14 @@ prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the bro
 push-secrets: ## Push the allowlisted app secrets from the local .env into AWS Secrets Manager under <project>/<ENV>/app/ (ENV=prod default; ENV=dev for dev). Idempotent (describe-then-create-or-put), reads .env at runtime only, and never echoes a value: each is handed to the CLI as a chmod-600 file:// reference and shredded. Pushes only the runtime app keys (EMBEDDING_API_KEY, TRANSCRIPTION_API_KEY, AUTH_EMAIL, AUTH_PASSWORD_HASH, SESSION_SECRET, DEEPSEEK_API_KEY, GEMINI_API_KEY, SLACK_WEBHOOK_URL); the terraform-owned DATABASE_URL and RABBITMQ_URL are never touched. Run after `terraform apply` creates the empty secret containers; prod asks you to type the env name to confirm.
 	./scripts/push-secrets.sh $(ENV)
 
-crawler: ## Run a source's producer on the crawler EC2 host over SSM (SOURCE=wikipedia default; ACTION=up|down|status). Starts the host if stopped, fills the queue, streams output, surfaces the exit code; add --stop-after to stop the host after the run. Non-secret producer config (CRAWL_CATEGORIES, FACTCHECK_QUERIES) comes from the environment. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
-	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh crawler $(SOURCE) $(ACTION)
+crawler: ## Run a source's producer on the crawler EC2 host over SSM (SOURCE=wikipedia default; ACTION=up|down|status). Starts the host if stopped, fills the queue, streams output, surfaces the exit code; pass INGEST_FLAGS=--stop-after to stop the host after the run. Non-secret producer config (CRAWL_CATEGORIES, FACTCHECK_QUERIES) comes from the environment. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
+	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh crawler $(SOURCE) $(ACTION) $(INGEST_FLAGS)
 
-consumer: ## Bring a source's worker up on the consumer EC2 host over SSM to drain its queue into the DB (SOURCE=wikipedia default; ACTION=up|down|status). `down` stops the host for cost control; `status` reports state + queue depth. Secrets come from Secrets Manager on the host. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
-	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh consumer $(SOURCE) $(ACTION)
+consumer: ## Bring a source's worker up on the consumer EC2 host over SSM to drain its queue into the DB (SOURCE=wikipedia default; ACTION=up|down|status). `down` stops the host for cost control; `status` reports state + queue depth; INGEST_FLAGS=--stop-when-idle drains to idle then self-stops the host. Secrets come from Secrets Manager on the host. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
+	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh consumer $(SOURCE) $(ACTION) $(INGEST_FLAGS)
+
+pipeline-health: ## Read-only end-to-end pipeline health snapshot: local corpus counts + fleet containers, and (per ENV, hosts live in dev so pass ENV=dev) the crawler/consumer instance states, per-queue and per-DLQ backlog, and each source's last-successful-run recency. Degrades section-by-section when the stack, database, or account guard is unavailable; never mutates anything.
+	ENVIRONMENT=$(ENV) ./scripts/pipeline-health.sh
 
 insee-idempotency-check: ## INSEE re-run idempotency checkpoint against the real RDS: count INSEE passages, re-run statsingest, assert the count did not grow (no duplicate passages). Proves the VER-123/124 provenance key is idempotent on real RDS. Run over an open `make db-tunnel` tunnel (psql to localhost). SKIP_INGEST=1 counts back-to-back without re-ingesting; DRY_RUN=1 dry-runs the re-ingest. ENV=prod default
 	ENVIRONMENT=$(ENV) ./scripts/insee-idempotency-check.sh

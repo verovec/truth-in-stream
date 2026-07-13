@@ -128,6 +128,40 @@ func TestLoadTranscription(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerIdle(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"unset disables idle exit", "", 0, false},
+		{"explicit zero disables", "0", 0, false},
+		{"positive enables drain-to-idle", "5m", 5 * time.Minute, false},
+		{"negative is rejected", "-1s", 0, true},
+		{"non-duration is rejected", "soon", 0, true},
+		{"above the cap is rejected", "48h", 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WORKER_IDLE_TIMEOUT", tc.raw)
+			got, err := LoadWorkerIdle()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("idle = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEvidenceBinaryQuantizationMultiplier(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -59,6 +59,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	idle, err := config.LoadWorkerIdle()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -92,7 +96,7 @@ func run(logger *slog.Logger) error {
 	worker := embedjob.NewWorker(
 		newEmbedder(logger, embedding, workerCfg),
 		store,
-		qStream{client: client},
+		qStream{client: client, idle: idle},
 		qEnqueuer{client: client},
 		logger,
 		embedjob.Config{
@@ -111,7 +115,8 @@ func run(logger *slog.Logger) error {
 		slog.Int("batch_size", workerCfg.BatchSize),
 		slog.Duration("batch_wait", workerCfg.BatchWait),
 		slog.Int("max_batch_tokens", workerCfg.MaxBatchTokens),
-		slog.Int("max_attempts", workerCfg.MaxAttempts))
+		slog.Int("max_attempts", workerCfg.MaxAttempts),
+		slog.Duration("idle_timeout", idle))
 
 	// Announce the drain to Slack symmetrically to the producers (silent no-op when
 	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.
