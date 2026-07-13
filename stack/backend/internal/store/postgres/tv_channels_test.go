@@ -193,6 +193,66 @@ func TestStoreTVRecordingVideoRoundTrips(t *testing.T) {
 	}
 }
 
+func TestStoreListTVRecordingsByChannel(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	channel, err := store.CreateTVChannel(ctx, sampleTVChannel("senat"))
+	if err != nil {
+		t.Fatalf("CreateTVChannel: %v", err)
+	}
+	other, err := store.CreateTVChannel(ctx, sampleTVChannel("assemblee"))
+	if err != nil {
+		t.Fatalf("CreateTVChannel(other): %v", err)
+	}
+
+	base := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+	mk := func(slug string, channelID string, at time.Time, status domain.VideoStatus) domain.Video {
+		v, err := store.CreateVideo(ctx, domain.Video{
+			Title:       "rec",
+			ObjectKey:   "recordings/" + slug + "/" + at.Format("150405") + ".mp4",
+			ContentType: "video/mp4",
+			SizeBytes:   1,
+			Status:      status,
+			Kind:        domain.VideoKindTV,
+			ChannelID:   channelID,
+			RecordedAt:  at,
+		})
+		if err != nil {
+			t.Fatalf("CreateVideo: %v", err)
+		}
+		return v
+	}
+	older := mk("senat", channel.ID, base, domain.VideoStatusReady)
+	newer := mk("senat", channel.ID, base.Add(time.Hour), domain.VideoStatusReady)
+	mk("senat", channel.ID, base.Add(2*time.Hour), domain.VideoStatusPending) // excluded: not ready
+	mk("assemblee", other.ID, base, domain.VideoStatusReady)                  // excluded: other channel
+	// An ordinary upload must never surface here.
+	if _, err := store.CreateVideo(ctx, domain.Video{Title: "u", ObjectKey: "uploads/u.mp4", ContentType: "video/mp4", SizeBytes: 1, Status: domain.VideoStatusReady, Kind: domain.VideoKindUpload}); err != nil {
+		t.Fatalf("CreateVideo(upload): %v", err)
+	}
+
+	got, err := store.ListTVRecordingsByChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatalf("ListTVRecordingsByChannel: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("recordings = %d, want 2 (only ready, only this channel)", len(got))
+	}
+	if got[0].ID != newer.ID || got[1].ID != older.ID {
+		t.Fatalf("order = %q,%q, want newest first (%q,%q)", got[0].ID, got[1].ID, newer.ID, older.ID)
+	}
+
+	// A malformed channel id names no channel: empty list, no error.
+	empty, err := store.ListTVRecordingsByChannel(ctx, "not-a-uuid")
+	if err != nil {
+		t.Fatalf("ListTVRecordingsByChannel(bad id): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("bad id recordings = %d, want 0", len(empty))
+	}
+}
+
 // TestStoreCreateVideoWithoutChannelIsNull guards the non-tv path: an ordinary
 // video has a NULL channel_id and zero recorded_at, so the new columns never
 // leak onto uploads.

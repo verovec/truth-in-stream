@@ -39,6 +39,22 @@ export function liveSocketUrl(
 }
 
 /**
+ * Returns the ws(s) URL for a TV channel's read-only viewer stream. The channel
+ * id is path-encoded. Like the video live socket, the browser rides the
+ * same-origin proxy so the SameSite session cookie authenticates the upgrade -
+ * the token is never placed in the URL.
+ */
+export function channelLiveSocketUrl(
+  channelId: string,
+  options: SocketUrlOptions = {},
+): string {
+  return apiWsUrl(
+    `/api/tv/channels/${encodeURIComponent(channelId)}/live`,
+    options,
+  );
+}
+
+/**
  * Returns the ws(s) URL for the developer wiki-search probe (dev only). The
  * route exists on the backend only when the debug flag is on.
  */

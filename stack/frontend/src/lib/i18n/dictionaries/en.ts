@@ -119,6 +119,7 @@ export const en: Dictionary = {
       ariaLabel: "Primary navigation",
       videos: "Videos",
       documents: "Documents",
+      tv: "TV",
       backoffice: "Backoffice",
     },
     backoffice: {
@@ -208,6 +209,43 @@ export const en: Dictionary = {
           saveError: "Save failed: {message}",
           saveErrorFallback: "Save failed.",
         },
+      },
+    },
+    tv: {
+      heading: "Live TV",
+      back: "All channels",
+      loadingAria: "Loading channels",
+      loadError: "Channels could not load: {message}",
+      loadErrorFallback: "Channels could not load.",
+      retry: "Retry",
+      grid: {
+        ariaLabel: "TV channels",
+        onAir: "On air",
+        disabled: "Disabled",
+        empty: "No channels available yet.",
+      },
+      channel: {
+        analysisDelay: "Analysis runs a few seconds behind the live embed.",
+        hlsNoPlayer:
+          "This stream has no in-page player; the live analysis shows alongside.",
+        offAir: "{name} is not on air right now.",
+        offAirHint:
+          "Come back during a broadcast, or browse the recordings below.",
+      },
+      embed: {
+        unavailable: "This live stream can't be embedded here.",
+        openOnYoutube: "Open on YouTube",
+      },
+      recordings: {
+        heading: "Recordings",
+        empty: "No recordings for this channel yet.",
+        loadingAria: "Loading recordings",
+        loadError: "Recordings could not load: {message}",
+        loadErrorFallback: "Recordings could not load.",
+        retry: "Retry",
+        close: "Close player",
+        loadingPlayer: "Loading recording",
+        playError: "This recording could not be played.",
       },
     },
     documents: {

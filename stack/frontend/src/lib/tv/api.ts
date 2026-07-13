@@ -103,6 +103,60 @@ function toUpdateBody(patch: ChannelUpdateInput): Record<string, unknown> {
   return body;
 }
 
+// Recording is one archived hour of a channel, surfaced in the /tv recordings
+// strip. status is a video lifecycle state; the backend only lists ready
+// recordings, so it is "ready" in practice, but it is carried verbatim rather
+// than assumed. durationMs is absent for a capture whose length was never
+// probed. The strip opens a recording in the player by id via getVideo.
+export type Recording = {
+  id: string;
+  title: string;
+  recordedAt: string;
+  durationMs?: number;
+  status: string;
+};
+
+type RecordingWire = {
+  id: string;
+  title: string;
+  recorded_at: string;
+  duration_ms?: number;
+  status: string;
+};
+
+type ListRecordingsWire = { recordings?: RecordingWire[] };
+
+function normalizeRecording(wire: RecordingWire): Recording {
+  const recording: Recording = {
+    id: wire.id,
+    title: wire.title,
+    recordedAt: wire.recorded_at,
+    status: wire.status,
+  };
+  if (typeof wire.duration_ms === "number" && wire.duration_ms > 0) {
+    recording.durationMs = wire.duration_ms;
+  }
+  return recording;
+}
+
+// listChannelRecordings lists one channel's archived recordings, newest first.
+// It is readable by any authenticated user. An unknown channel yields an empty
+// list rather than an error, matching the backend.
+export async function listChannelRecordings(
+  channelId: string,
+  signal?: AbortSignal,
+): Promise<Recording[]> {
+  const response = await fetch(
+    `${API_BASE}/api/tv/channels/${encodeURIComponent(channelId)}/recordings`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const wire = (await response.json()) as ListRecordingsWire;
+  return (wire.recordings ?? []).map(normalizeRecording);
+}
+
 export async function listChannels(signal?: AbortSignal): Promise<Channel[]> {
   const response = await fetch(`${API_BASE}/api/tv/channels`, { signal });
   if (!response.ok) {

@@ -15,7 +15,11 @@ import {
   type LiveAnalysisStore,
 } from "@/lib/live/live-analysis-store";
 
-const LiveAnalysisContext = createContext<LiveAnalysisStore | null>(null);
+// Exported so an alternate driver (the TV channel viewer, ChannelLiveProvider)
+// can publish into the same context the four live components read through
+// useLiveAnalysisSelector, letting them render a channel stream unchanged. The
+// video path continues to provide it through LiveAnalysisProvider below.
+export const LiveAnalysisContext = createContext<LiveAnalysisStore | null>(null);
 
 // LiveAnalysisProvider hosts a single live-analysis session and shares it with
 // the whole watch screen. The summary strip at the top of the page and the

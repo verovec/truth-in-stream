@@ -79,6 +79,24 @@ describe("AppHeader", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("shows the TV entry to every authenticated user, linking to /tv", () => {
+    render(<AppHeader dict={fr} locale="fr" currentSection="videos" role="guest" />);
+    const nav = screen.getByRole("navigation", { name: fr.app.nav.ariaLabel });
+    const tv = within(nav).getByRole("link", { name: fr.app.nav.tv });
+    expect(tv).toHaveAttribute("href", "/tv");
+    expect(tv).not.toHaveAttribute("aria-current");
+  });
+
+  test("marks TV inert when it is the current section", () => {
+    render(<AppHeader dict={fr} locale="fr" currentSection="tv" role="guest" />);
+    const nav = screen.getByRole("navigation", { name: fr.app.nav.ariaLabel });
+    const current = within(nav).getByText(fr.app.nav.tv);
+    expect(current).toHaveAttribute("aria-current", "page");
+    expect(
+      within(nav).queryByRole("link", { name: fr.app.nav.tv }),
+    ).not.toBeInTheDocument();
+  });
+
   test("pins to the top as a sticky, translucent bar", () => {
     render(<AppHeader dict={fr} locale="fr" currentSection="videos" role="guest" />);
     // The header stays visible while the operator scrolls the analysis view, so
