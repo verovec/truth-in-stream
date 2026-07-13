@@ -27,7 +27,6 @@ type Channel struct {
 	SourceRef      string
 	Enabled        bool
 	ArchiveEnabled bool
-	Live           bool
 }
 
 // tokenProvider yields a bearer token for backend calls.
@@ -98,7 +97,6 @@ func (c *backendClient) ListChannels(ctx context.Context) ([]Channel, error) {
 			SourceRef      string `json:"source_ref"`
 			Enabled        bool   `json:"enabled"`
 			ArchiveEnabled bool   `json:"archive_enabled"`
-			Live           bool   `json:"live"`
 		} `json:"channels"`
 	}
 	if err := decodeJSON(resp.Body, &body); err != nil {

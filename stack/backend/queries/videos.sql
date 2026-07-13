@@ -8,6 +8,23 @@ SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at
 FROM videos
 WHERE id = $1;
 
+-- name: GetVideoByObjectKey :one
+-- Resolve a video by its storage object key. The key is UNIQUE, so this is the
+-- idempotency probe for a deterministic-key writer: a repeated request for the
+-- same recording finds the existing row instead of colliding on the constraint.
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE object_key = $1;
+
+-- name: ListTVRecordingsBefore :many
+-- Every archived TV recording captured before the cutoff, oldest first, for
+-- retention pruning. Scoped to kind 'tv' with a real recorded_at so the scan
+-- touches only recordings and the caller need not filter in Go.
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE kind = 'tv' AND recorded_at IS NOT NULL AND recorded_at < $1
+ORDER BY recorded_at;
+
 -- name: DeleteVideo :execrows
 -- Remove one video record by id. The affected-row count lets the store map an
 -- unknown id (0 rows) to ErrVideoNotFound without a prior existence query.

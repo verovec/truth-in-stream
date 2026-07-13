@@ -41,11 +41,17 @@ func NewManager(client channelLister, factory supervisorFactory, poll time.Durat
 	}
 }
 
-// Run reconciles immediately, then on every poll tick, until ctx is canceled;
-// on shutdown it stops every running supervisor. A failed poll keeps the current
-// set rather than tearing everything down on a transient error.
+// Run reconciles immediately, prunes once at startup, then reconciles on every
+// poll tick and prunes on every retention tick, until ctx is canceled; on
+// shutdown it stops every running supervisor. A failed poll keeps the current
+// set rather than tearing everything down on a transient error. Pruning at
+// startup (not only on the 24h tick) means a worker that restarts more often
+// than the retention interval still enforces retention.
 func (m *Manager) Run(ctx context.Context) {
 	running := make(map[string]channelSupervisor)
+	// snapshots records the Channel each running supervisor was started with, so
+	// a later reconcile can detect a config change and restart it.
+	snapshots := make(map[string]Channel)
 	defer func() {
 		for _, sup := range running {
 			sup.stop()
@@ -57,37 +63,35 @@ func (m *Manager) Run(ctx context.Context) {
 	retentionTicker := time.NewTicker(retentionInterval)
 	defer retentionTicker.Stop()
 
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
+	m.prune(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-pollTicker.C:
-			m.reconcile(ctx, running)
+			m.reconcile(ctx, running, snapshots)
 		case <-retentionTicker.C:
 			m.prune(ctx)
 		}
 	}
 }
 
-func (m *Manager) reconcile(ctx context.Context, running map[string]channelSupervisor) {
+func (m *Manager) reconcile(ctx context.Context, running map[string]channelSupervisor, snapshots map[string]Channel) {
 	channels, err := m.client.ListChannels(ctx)
 	if err != nil {
 		m.logger.Warn("tvcapture: list channels failed, keeping current set", slog.Any("err", err))
 		return
 	}
 
-	runningIDs := make(map[string]bool, len(running))
-	for id := range running {
-		runningIDs[id] = true
-	}
-	toStart, toStop := diffChannels(runningIDs, channels)
+	toStart, toStop := diffChannels(snapshots, channels)
 
 	for _, id := range toStop {
 		m.logger.Info("tvcapture: stopping supervisor", slog.String("channel_id", id))
 		running[id].stop()
 		delete(running, id)
+		delete(snapshots, id)
 	}
 	for _, ch := range toStart {
 		m.logger.Info("tvcapture: starting supervisor",
@@ -95,6 +99,7 @@ func (m *Manager) reconcile(ctx context.Context, running map[string]channelSuper
 		sup := m.newSupervisor(ch)
 		sup.start(ctx)
 		running[ch.ID] = sup
+		snapshots[ch.ID] = ch
 	}
 }
 
@@ -107,18 +112,27 @@ func (m *Manager) prune(ctx context.Context) {
 	m.logger.Info("tvcapture: pruned recordings", slog.Int("deleted", deleted))
 }
 
-// diffChannels compares the currently-running channel ids against the desired
-// enabled channels and returns which to start and which to stop. A channel is
-// desired only when it is enabled; anything running but not desired (disabled or
-// gone) is stopped. It is pure so the reconcile decision is unit-testable.
-func diffChannels(running map[string]bool, enabled []Channel) (toStart []Channel, toStop []string) {
+// diffChannels compares the currently-running channels (by the snapshot each was
+// started with) against the desired enabled channels and returns which to start
+// and which to stop. A channel is desired only when it is enabled; anything
+// running but not desired (disabled or gone) is stopped. A still-enabled channel
+// whose capture-relevant config changed is put in BOTH results (stop the old
+// supervisor, start a new one with the new config). It is pure so the reconcile
+// decision is unit-testable.
+func diffChannels(running map[string]Channel, enabled []Channel) (toStart []Channel, toStop []string) {
 	desired := make(map[string]bool, len(enabled))
 	for _, ch := range enabled {
 		if !ch.Enabled {
 			continue
 		}
 		desired[ch.ID] = true
-		if !running[ch.ID] {
+		cur, ok := running[ch.ID]
+		if !ok {
+			toStart = append(toStart, ch)
+			continue
+		}
+		if captureConfigChanged(cur, ch) {
+			toStop = append(toStop, ch.ID)
 			toStart = append(toStart, ch)
 		}
 	}
@@ -128,4 +142,14 @@ func diffChannels(running map[string]bool, enabled []Channel) (toStart []Channel
 		}
 	}
 	return toStart, toStop
+}
+
+// captureConfigChanged reports whether a running channel's capture-relevant
+// config differs from its desired form, so the supervisor must be restarted.
+// Only fields that change what or how the worker captures matter: the source
+// transport/reference and whether archiving is on. Name is display-only.
+func captureConfigChanged(a, b Channel) bool {
+	return a.SourceKind != b.SourceKind ||
+		a.SourceRef != b.SourceRef ||
+		a.ArchiveEnabled != b.ArchiveEnabled
 }

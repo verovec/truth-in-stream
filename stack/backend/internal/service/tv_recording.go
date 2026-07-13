@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -42,6 +43,20 @@ type TVRecordingChannelStore interface {
 	GetTVChannel(ctx context.Context, id string) (domain.TVChannel, error)
 }
 
+// tvRecordingVideoStore is the slice of the video store the recording service
+// needs. It is deliberately narrower than domain.VideoStore, and additionally
+// requires an object-key lookup (for idempotent upload requests) and a
+// retention-scoped list (so pruning does not scan every video). *postgres.Store
+// satisfies it. Keeping it here, unexported, avoids widening domain.VideoStore.
+type tvRecordingVideoStore interface {
+	CreateVideo(ctx context.Context, v domain.Video) (domain.Video, error)
+	GetVideo(ctx context.Context, id string) (domain.Video, error)
+	GetVideoByObjectKey(ctx context.Context, key string) (domain.Video, error)
+	SetVideoStatus(ctx context.Context, id string, status domain.VideoStatus) (domain.Video, error)
+	DeleteVideo(ctx context.Context, id string) error
+	ListTVRecordingsBefore(ctx context.Context, cutoff time.Time) ([]domain.Video, error)
+}
+
 // TVRecordingRequest is the input to RequestUpload: the source channel, the
 // captured segment's start time, and the declared object content type and size.
 type TVRecordingRequest struct {
@@ -59,16 +74,19 @@ type TVRecordingRequest struct {
 // ordinary video that replays through the existing watch flow. It holds no HTTP
 // types. now is a field so retention tests pin the clock.
 type TVRecordingService struct {
-	videos   domain.VideoStore
+	videos   tvRecordingVideoStore
 	channels TVRecordingChannelStore
 	media    domain.MediaStore
 	maxBytes int64
 	now      func() time.Time
+	logger   *slog.Logger
 }
 
 // NewTVRecordingService builds a TVRecordingService. It fails fast on a nil
-// dependency; a non-positive maxBytes falls back to the default bound.
-func NewTVRecordingService(videos domain.VideoStore, channels TVRecordingChannelStore, media domain.MediaStore, maxBytes int64) (*TVRecordingService, error) {
+// dependency; a non-positive maxBytes falls back to the default bound. The
+// logger defaults to slog.Default so pruning can log and skip an un-deletable
+// recording without the caller threading a logger through.
+func NewTVRecordingService(videos tvRecordingVideoStore, channels TVRecordingChannelStore, media domain.MediaStore, maxBytes int64) (*TVRecordingService, error) {
 	if videos == nil {
 		return nil, errors.New("tv recording: video store is required")
 	}
@@ -87,6 +105,7 @@ func NewTVRecordingService(videos domain.VideoStore, channels TVRecordingChannel
 		media:    media,
 		maxBytes: maxBytes,
 		now:      time.Now,
+		logger:   slog.Default(),
 	}, nil
 }
 
@@ -111,6 +130,26 @@ func (s *TVRecordingService) RequestUpload(ctx context.Context, req TVRecordingR
 	}
 	recordedAt := req.RecordedAt.UTC()
 	key := tvRecordingObjectKey(channel.Slug, recordedAt)
+
+	// Idempotent by object key. The worker re-archives the same segment on any
+	// transient upload/register failure (segment re-glob + salvage), producing the
+	// same deterministic key; creating a second row would collide on
+	// UNIQUE(object_key) and strand the recording forever. Reuse the existing row
+	// and re-presign instead.
+	existing, err := s.videos.GetVideoByObjectKey(ctx, key)
+	switch {
+	case err == nil:
+		presigned, perr := s.media.PresignUploadOnce(ctx, key, req.ContentType, req.SizeBytes)
+		if perr != nil {
+			return UploadTicket{}, fmt.Errorf("tv recording: presign upload: %w", perr)
+		}
+		return UploadTicket{Video: existing, Upload: presigned}, nil
+	case errors.Is(err, domain.ErrVideoNotFound):
+		// No prior row: fall through and create it.
+	default:
+		return UploadTicket{}, fmt.Errorf("tv recording: lookup existing recording: %w", err)
+	}
+
 	video, err := s.videos.CreateVideo(ctx, domain.Video{
 		Title:       tvRecordingTitle(channel.Name, recordedAt),
 		ObjectKey:   key,
@@ -164,31 +203,35 @@ func (s *TVRecordingService) Register(ctx context.Context, videoID string) (doma
 
 // Prune deletes every kind `tv` recording whose RecordedAt is older than the
 // retention window, storage object first then row, so a failed row delete leaves
-// the record visible for a retry rather than stranding an object. It returns the
-// number of recordings removed. A non-positive retention is rejected so an
-// accidental zero window cannot wipe the archive.
+// the record visible for a retry rather than stranding an object. It scans only
+// the recordings past the cutoff (not every video), and a single recording that
+// fails to delete is logged and skipped rather than wedging retention for every
+// later recording. It returns the number actually removed; only a failure of the
+// initial list query is returned as an error. A non-positive retention is
+// rejected so an accidental zero window cannot wipe the archive.
 func (s *TVRecordingService) Prune(ctx context.Context, retention time.Duration) (int, error) {
 	if retention <= 0 {
 		return 0, errors.New("tv recording: retention must be positive")
 	}
 	cutoff := s.now().Add(-retention)
-	videos, err := s.videos.ListVideos(ctx)
+	recordings, err := s.videos.ListTVRecordingsBefore(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("tv recording: list for prune: %w", err)
 	}
 	deleted := 0
-	for _, v := range videos {
-		if v.Kind != domain.VideoKindTV || v.RecordedAt.IsZero() {
-			continue
-		}
-		if !v.RecordedAt.Before(cutoff) {
-			continue
-		}
+	for _, v := range recordings {
 		if err := s.media.Delete(ctx, v.ObjectKey); err != nil {
-			return deleted, fmt.Errorf("tv recording: prune delete object %s: %w", v.ID, err)
+			s.logger.Warn("tv recording: prune skip, delete object failed",
+				slog.String("video_id", v.ID),
+				slog.String("object_key", v.ObjectKey),
+				slog.Any("err", err))
+			continue
 		}
 		if err := s.videos.DeleteVideo(ctx, v.ID); err != nil {
-			return deleted, fmt.Errorf("tv recording: prune delete record %s: %w", v.ID, err)
+			s.logger.Warn("tv recording: prune skip, delete record failed",
+				slog.String("video_id", v.ID),
+				slog.Any("err", err))
+			continue
 		}
 		deleted++
 	}

@@ -54,33 +54,52 @@ func TestDiffChannels(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		running     map[string]bool
+		running     map[string]Channel
 		enabled     []Channel
 		wantStartID []string
 		wantStop    []string
 	}{
 		{
 			name:        "start newly enabled",
-			running:     map[string]bool{},
+			running:     map[string]Channel{},
 			enabled:     []Channel{{ID: "a", Enabled: true}, {ID: "b", Enabled: true}},
 			wantStartID: []string{"a", "b"},
 		},
 		{
 			name:     "stop disabled channel still running",
-			running:  map[string]bool{"a": true},
+			running:  map[string]Channel{"a": {ID: "a", Enabled: true}},
 			enabled:  []Channel{{ID: "a", Enabled: false}},
 			wantStop: []string{"a"},
 		},
 		{
 			name:     "stop channel that disappeared",
-			running:  map[string]bool{"a": true},
+			running:  map[string]Channel{"a": {ID: "a", Enabled: true}},
 			enabled:  []Channel{},
 			wantStop: []string{"a"},
 		},
 		{
-			name:    "no change when already running and enabled",
-			running: map[string]bool{"a": true},
-			enabled: []Channel{{ID: "a", Enabled: true}},
+			name:    "no change when already running and enabled with same config",
+			running: map[string]Channel{"a": {ID: "a", Enabled: true, SourceRef: "u", SourceKind: "hls", ArchiveEnabled: true}},
+			enabled: []Channel{{ID: "a", Enabled: true, SourceRef: "u", SourceKind: "hls", ArchiveEnabled: true}},
+		},
+		{
+			name:        "restart when source ref changes",
+			running:     map[string]Channel{"a": {ID: "a", Enabled: true, SourceRef: "old"}},
+			enabled:     []Channel{{ID: "a", Enabled: true, SourceRef: "new"}},
+			wantStartID: []string{"a"},
+			wantStop:    []string{"a"},
+		},
+		{
+			name:        "restart when archive toggled",
+			running:     map[string]Channel{"a": {ID: "a", Enabled: true, ArchiveEnabled: false}},
+			enabled:     []Channel{{ID: "a", Enabled: true, ArchiveEnabled: true}},
+			wantStartID: []string{"a"},
+			wantStop:    []string{"a"},
+		},
+		{
+			name:    "name-only change does not restart",
+			running: map[string]Channel{"a": {ID: "a", Enabled: true, Name: "Old"}},
+			enabled: []Channel{{ID: "a", Enabled: true, Name: "New"}},
 		},
 	}
 	for _, tc := range tests {
@@ -134,11 +153,12 @@ func TestManagerReconcileStartStop(t *testing.T) {
 	client := &fakeClient{}
 	m, created, mu := newManagerHarness(client)
 	running := map[string]channelSupervisor{}
+	snapshots := map[string]Channel{}
 	ctx := context.Background()
 
 	// Enable c1 -> started.
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true}}, nil)
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 	mu.Lock()
 	c1 := created["c1"]
 	mu.Unlock()
@@ -148,7 +168,7 @@ func TestManagerReconcileStartStop(t *testing.T) {
 
 	// Disable c1 -> stopped and removed.
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: false}}, nil)
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 	if !c1.stopped.Load() {
 		t.Fatal("c1 not stopped after disable")
 	}
@@ -162,12 +182,13 @@ func TestManagerReconcileChannelDisappears(t *testing.T) {
 	client := &fakeClient{}
 	m, created, mu := newManagerHarness(client)
 	running := map[string]channelSupervisor{}
+	snapshots := map[string]Channel{}
 	ctx := context.Background()
 
 	client.setChannels([]Channel{{ID: "c1", Enabled: true}}, nil)
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 	client.setChannels([]Channel{}, nil)
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 
 	mu.Lock()
 	c1 := created["c1"]
@@ -182,13 +203,14 @@ func TestManagerReconcileKeepsSetOnListError(t *testing.T) {
 	client := &fakeClient{}
 	m, created, mu := newManagerHarness(client)
 	running := map[string]channelSupervisor{}
+	snapshots := map[string]Channel{}
 	ctx := context.Background()
 
 	client.setChannels([]Channel{{ID: "c1", Enabled: true}}, nil)
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 
 	client.setChannels(nil, errors.New("transient"))
-	m.reconcile(ctx, running)
+	m.reconcile(ctx, running, snapshots)
 
 	mu.Lock()
 	c1 := created["c1"]
@@ -199,6 +221,75 @@ func TestManagerReconcileKeepsSetOnListError(t *testing.T) {
 	if _, ok := running["c1"]; !ok {
 		t.Fatal("c1 dropped from running set on transient error")
 	}
+}
+
+func TestManagerReconcileRestartsOnConfigChange(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{}
+	m, created, mu := newManagerHarness(client)
+	running := map[string]channelSupervisor{}
+	snapshots := map[string]Channel{}
+	ctx := context.Background()
+
+	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true, SourceRef: "old"}}, nil)
+	m.reconcile(ctx, running, snapshots)
+	mu.Lock()
+	old := created["c1"]
+	mu.Unlock()
+	if old == nil || !old.started.Load() {
+		t.Fatal("c1 not started initially")
+	}
+
+	// Change the source ref -> the stale supervisor stops and a fresh one starts.
+	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true, SourceRef: "new"}}, nil)
+	m.reconcile(ctx, running, snapshots)
+	mu.Lock()
+	cur := created["c1"]
+	mu.Unlock()
+	if !old.stopped.Load() {
+		t.Fatal("stale supervisor not stopped on config change")
+	}
+	if cur == old {
+		t.Fatal("expected a fresh supervisor after config change")
+	}
+	if !cur.started.Load() {
+		t.Fatal("new supervisor not started")
+	}
+	if cur.ch.SourceRef != "new" {
+		t.Fatalf("new supervisor started with source ref %q, want new", cur.ch.SourceRef)
+	}
+
+	// A reconcile with identical config must not restart the supervisor.
+	m.reconcile(ctx, running, snapshots)
+	mu.Lock()
+	after := created["c1"]
+	mu.Unlock()
+	if after != cur || cur.stopped.Load() {
+		t.Fatal("unchanged channel must not restart the supervisor")
+	}
+}
+
+func TestManagerRunPrunesOnStartup(t *testing.T) {
+	t.Parallel()
+	client := &fakeClient{}
+	m, _, _ := newManagerHarness(client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx)
+		close(done)
+	}()
+
+	// The retention ticker is 24h; a prune seen here can only be the startup one.
+	waitFor(t, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return len(client.prunes) >= 1
+	}, "prune invoked on startup")
+
+	cancel()
+	<-done
 }
 
 func TestManagerPruneRecordsCall(t *testing.T) {

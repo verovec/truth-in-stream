@@ -358,6 +358,33 @@ func TestRequireAdmin(t *testing.T) {
 	}
 }
 
+func TestRequireCaptureService(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		id      Identity
+		wantErr error
+	}{
+		{name: "admin allowed", id: Identity{Roles: []string{"admin"}}},
+		{name: "tv-capture service allowed", id: Identity{Roles: []string{"tv-capture"}}},
+		{name: "guest forbidden", id: Identity{Roles: []string{"guest"}}, wantErr: ErrForbidden},
+		{name: "anonymous forbidden", id: Identity{}, wantErr: ErrForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := RequireCaptureService(tc.id); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("RequireCaptureService = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+	// The tv-capture role must NOT satisfy the blanket admin gate: a leaked worker
+	// credential cannot reach admin-only routes.
+	if err := RequireAdmin(Identity{Roles: []string{"tv-capture"}}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("tv-capture role passed RequireAdmin: %v", err)
+	}
+}
+
 func TestGuestIdentityIsNotAdmin(t *testing.T) {
 	t.Parallel()
 	if GuestIdentity().IsAdmin() {

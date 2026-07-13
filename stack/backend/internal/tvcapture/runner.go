@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -52,7 +53,15 @@ type execProcess struct {
 	slug       string
 	streamlink *exec.Cmd
 	ffmpeg     *exec.Cmd
-	pcm        io.Reader
+
+	// pcm is the read end of a manual os.Pipe wired to ffmpeg's stdout. Using a
+	// manual pipe (rather than ffmpeg.StdoutPipe) keeps ffmpeg.Wait from closing
+	// the reader out from under a concurrent pumpPCM read: os/exec's StdoutPipe
+	// contract forbids Wait before all reads complete, which would turn a clean
+	// trailing EOF into "file already closed" and drop the last frame. We close
+	// the reader ourselves, once, after ffmpeg is reaped.
+	pcm      *os.File
+	closePCM sync.Once
 
 	// exited is closed when ffmpeg (the primary output) has been reaped by Wait,
 	// letting Stop escalate to SIGKILL only when a graceful stop overruns.
@@ -68,12 +77,16 @@ func (r *execRunner) Start(ctx context.Context, spec captureSpec) (captureProces
 	ffmpeg := exec.CommandContext(ctx, spec.FFmpegPath, ffArgs...)
 	ffmpeg.Env = utcEnv()
 
-	pcm, err := ffmpeg.StdoutPipe()
+	pcmR, pcmW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("tvcapture: ffmpeg stdout pipe: %w", err)
 	}
+	ffmpeg.Stdout = pcmW
+
 	ffStderr, err := ffmpeg.StderrPipe()
 	if err != nil {
+		_ = pcmW.Close()
+		_ = pcmR.Close()
 		return nil, fmt.Errorf("tvcapture: ffmpeg stderr pipe: %w", err)
 	}
 
@@ -81,7 +94,7 @@ func (r *execRunner) Start(ctx context.Context, spec captureSpec) (captureProces
 		logger: r.logger,
 		slug:   spec.Channel.Slug,
 		ffmpeg: ffmpeg,
-		pcm:    pcm,
+		pcm:    pcmR,
 		exited: make(chan struct{}),
 	}
 
@@ -90,27 +103,41 @@ func (r *execRunner) Start(ctx context.Context, spec captureSpec) (captureProces
 		streamlink.Env = utcEnv()
 		slStdout, slErr := streamlink.StdoutPipe()
 		if slErr != nil {
+			_ = pcmW.Close()
+			_ = pcmR.Close()
 			return nil, fmt.Errorf("tvcapture: streamlink stdout pipe: %w", slErr)
 		}
 		slStderr, slErr := streamlink.StderrPipe()
 		if slErr != nil {
+			_ = pcmW.Close()
+			_ = pcmR.Close()
 			return nil, fmt.Errorf("tvcapture: streamlink stderr pipe: %w", slErr)
 		}
 		ffmpeg.Stdin = slStdout
 		p.streamlink = streamlink
 
 		if slErr := streamlink.Start(); slErr != nil {
+			_ = pcmW.Close()
+			_ = pcmR.Close()
 			return nil, fmt.Errorf("tvcapture: start streamlink: %w", slErr)
 		}
 		go p.drainStderr("streamlink", slStderr)
 	}
 
 	if err := ffmpeg.Start(); err != nil {
+		_ = pcmW.Close()
+		_ = pcmR.Close()
 		if p.streamlink != nil {
 			_ = p.streamlink.Process.Kill()
+			// Reap the streamlink child we already started, or it leaks as a
+			// zombie until process exit.
+			_ = p.streamlink.Wait()
 		}
 		return nil, fmt.Errorf("tvcapture: start ffmpeg: %w", err)
 	}
+	// ffmpeg now holds its own dup of the write end; drop the parent's copy so the
+	// reader sees EOF once ffmpeg (the last writer) exits.
+	_ = pcmW.Close()
 	go p.drainStderr("ffmpeg", ffStderr)
 
 	return p, nil
@@ -119,8 +146,11 @@ func (r *execRunner) Start(ctx context.Context, spec captureSpec) (captureProces
 func (p *execProcess) PCM() io.Reader { return p.pcm }
 
 // Wait blocks until ffmpeg exits and returns its exit error, then reaps the
-// streamlink child (if any). Each child's Wait runs exactly once, here. Closing
-// exited unblocks a concurrent Stop that is waiting out the grace period.
+// streamlink child (if any) and closes the PCM reader. Each child's Wait runs
+// exactly once, here. Closing exited unblocks a concurrent Stop that is waiting
+// out the grace period. The PCM reader is closed only after ffmpeg is reaped -
+// by then the last writer is gone, so a concurrent reader has already drained to
+// a clean EOF rather than being cut off.
 func (p *execProcess) Wait() error {
 	err := p.ffmpeg.Wait()
 	p.waitOnce.Do(func() { close(p.exited) })
@@ -129,6 +159,7 @@ func (p *execProcess) Wait() error {
 			p.logger.Debug("tvcapture: streamlink exited", slog.String("slug", p.slug), slog.Any("err", slErr))
 		}
 	}
+	p.closePCM.Do(func() { _ = p.pcm.Close() })
 	return err
 }
 

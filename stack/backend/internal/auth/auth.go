@@ -37,6 +37,12 @@ const (
 // is a one-line change here.
 const realmRoleAdmin = "admin"
 
+// realmRoleTVCapture is the Keycloak realm role carried by the tvcapture worker's
+// service account. It is deliberately narrower than admin: it authorizes only the
+// TV capture write-path (the feed socket and the recording archive endpoints), so
+// a leaked worker credential cannot reach unrelated admin routes.
+const realmRoleTVCapture = "tv-capture"
+
 // ErrInvalidToken is returned when a token fails signature, issuer, authorized
 // party, or expiry validation. The reason is wrapped for logs but the sentinel
 // is what callers match on; the HTTP layer renders every case as an
@@ -93,6 +99,19 @@ func RequireAdmin(id Identity) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+// RequireCaptureService gates the TV capture write-path (the publisher feed
+// socket and the recording archive endpoints). It admits an operator (the admin
+// role) or the dedicated tvcapture service account (the tv-capture role), and
+// rejects everyone else with ErrForbidden. Scoping these routes to their own
+// role - rather than reusing the blanket admin gate - keeps a compromised worker
+// credential confined to capture, unable to reach unrelated admin routes.
+func RequireCaptureService(id Identity) error {
+	if id.IsAdmin() || id.HasRole(realmRoleTVCapture) {
+		return nil
+	}
+	return ErrForbidden
 }
 
 // Config holds the Keycloak validation parameters. Issuer is the exact issuer

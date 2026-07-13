@@ -84,9 +84,12 @@ func ffmpegArgs(slug, source string, kind sourceKind, archive bool, segment time
 }
 
 // remuxArgs builds the ffmpeg argument vector that remuxes a TS segment to a
-// faststart MP4 without re-encoding.
+// faststart MP4 without re-encoding. -y makes the remux overwrite idempotently:
+// a retried archive (segment re-globbed and re-remuxed) must not stall on ffmpeg
+// refusing to overwrite an existing .mp4.
 func remuxArgs(tsPath, mp4Path string) []string {
 	return []string{
+		"-y",
 		"-hide_banner", "-loglevel", "warning",
 		"-i", tsPath,
 		"-c", "copy",

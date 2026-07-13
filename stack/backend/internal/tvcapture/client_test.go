@@ -46,11 +46,12 @@ func TestListChannelsParsesFields(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d channels", len(got))
 	}
-	want := Channel{ID: "c1", Slug: "tf1", Name: "TF1", SourceKind: "youtube", SourceRef: "https://yt/tf1", Enabled: true, ArchiveEnabled: true, Live: false}
+	want := Channel{ID: "c1", Slug: "tf1", Name: "TF1", SourceKind: "youtube", SourceRef: "https://yt/tf1", Enabled: true, ArchiveEnabled: true}
 	if got[0] != want {
 		t.Fatalf("channel[0] = %+v, want %+v", got[0], want)
 	}
-	if got[1].Enabled || !got[1].Live || got[1].SourceKind != "hls" {
+	// The backend still returns "live"; the worker decodes and ignores it.
+	if got[1].Enabled || got[1].SourceKind != "hls" {
 		t.Fatalf("channel[1] mis-parsed: %+v", got[1])
 	}
 }

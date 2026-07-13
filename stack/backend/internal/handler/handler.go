@@ -56,18 +56,19 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	api.Handle("POST /api/tv/channels", middleware.RequireAdmin(createTVChannelHandler(tvChannels)))
 	api.Handle("PATCH /api/tv/channels/{id}", middleware.RequireAdmin(updateTVChannelHandler(tvChannels)))
 	api.Handle("DELETE /api/tv/channels/{id}", middleware.RequireAdmin(deleteTVChannelHandler(tvChannels)))
-	// TV live hub (WebSocket). The publisher feed is admin/service-only (the
-	// capture worker); the viewer stream serves any authenticated user. See
-	// tv_live.go.
-	api.Handle("GET /api/tv/channels/{id}/feed", middleware.RequireAdmin(tvFeedHandler(tvHub, liveAllowedOrigins, logger)))
+	// TV live hub (WebSocket). The publisher feed is capture-service-only (the
+	// worker's tv-capture role or an admin); the viewer stream serves any
+	// authenticated user. See tv_live.go.
+	api.Handle("GET /api/tv/channels/{id}/feed", middleware.RequireCaptureService(tvFeedHandler(tvHub, liveAllowedOrigins, logger)))
 	api.HandleFunc("GET /api/tv/channels/{id}/live", tvViewerHandler(tvHub, liveAllowedOrigins))
 	// TV recording archive. The capture worker mints a presigned PUT, uploads the
 	// remuxed hour, and registers it as a kind `tv` video; prune enforces
-	// retention. All service-only (the worker's admin token), so the routes carry
-	// the RequireAdmin gate. See tv_recordings.go.
-	api.Handle("POST /api/tv/recordings/uploads", middleware.RequireAdmin(requestTVRecordingUploadHandler(tvRecordings)))
-	api.Handle("POST /api/tv/recordings/prune", middleware.RequireAdmin(pruneTVRecordingsHandler(tvRecordings)))
-	api.Handle("POST /api/tv/recordings", middleware.RequireAdmin(registerTVRecordingHandler(tvRecordings)))
+	// retention. All service-only, gated to the tv-capture service role (or admin)
+	// rather than blanket admin, so a leaked worker credential is confined to the
+	// capture write-path. See tv_recordings.go.
+	api.Handle("POST /api/tv/recordings/uploads", middleware.RequireCaptureService(requestTVRecordingUploadHandler(tvRecordings)))
+	api.Handle("POST /api/tv/recordings/prune", middleware.RequireCaptureService(pruneTVRecordingsHandler(tvRecordings)))
+	api.Handle("POST /api/tv/recordings", middleware.RequireCaptureService(registerTVRecordingHandler(tvRecordings)))
 	// Live fact-check stream (WebSocket). See live.go.
 	api.HandleFunc("GET /api/videos/{id}/live", liveHandler(live, recorder, replayer, liveAllowedOrigins, debugFactCheck, logger))
 	// Admin-only exports of a completed video's cached analysis: an SRT transcript

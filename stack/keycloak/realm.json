@@ -21,6 +21,12 @@
         "description": "Default read-only role granted to every new user.",
         "composite": false,
         "clientRole": false
+      },
+      {
+        "name": "tv-capture",
+        "description": "Scoped service role for the tvcapture worker: authorizes only the TV capture feed and recording archive endpoints, not blanket admin.",
+        "composite": false,
+        "clientRole": false
       }
     ]
   },
@@ -75,7 +81,7 @@
     {
       "clientId": "tv-capture",
       "name": "TV Capture Worker",
-      "description": "Service-account client the tvcapture worker authenticates as (client-credentials grant). Carries the admin realm role so it can drive the TV feed and recording endpoints. The secret below is a local-dev value only; production sets it out of band (SSM) and never uses this default.",
+      "description": "Service-account client the tvcapture worker authenticates as (client-credentials grant). Carries the scoped tv-capture realm role so it can drive only the TV feed and recording endpoints, not blanket admin. The secret below is a local-dev value only; production sets it out of band (SSM) and never uses this default.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -128,7 +134,7 @@
       "username": "service-account-tv-capture",
       "enabled": true,
       "serviceAccountClientId": "tv-capture",
-      "realmRoles": ["admin"]
+      "realmRoles": ["tv-capture"]
     }
   ]
 }

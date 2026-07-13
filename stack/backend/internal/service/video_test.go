@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -93,6 +95,35 @@ func (f *fakeVideoStore) SetVideoStatus(_ context.Context, id string, status dom
 	v.Status = status
 	f.videos[id] = v
 	return v, nil
+}
+
+func (f *fakeVideoStore) GetVideoByObjectKey(_ context.Context, key string) (domain.Video, error) {
+	if f.getErr != nil {
+		return domain.Video{}, f.getErr
+	}
+	for _, v := range f.videos {
+		if v.ObjectKey == key {
+			return v, nil
+		}
+	}
+	return domain.Video{}, domain.ErrVideoNotFound
+}
+
+func (f *fakeVideoStore) ListTVRecordingsBefore(_ context.Context, cutoff time.Time) ([]domain.Video, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]domain.Video, 0)
+	for _, v := range f.videos {
+		if v.Kind != domain.VideoKindTV || v.RecordedAt.IsZero() {
+			continue
+		}
+		if v.RecordedAt.Before(cutoff) {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RecordedAt.Before(out[j].RecordedAt) })
+	return out, nil
 }
 
 func (f *fakeVideoStore) UpsertSampleVideo(_ context.Context, v domain.Video) (domain.Video, error) {
