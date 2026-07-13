@@ -153,15 +153,20 @@ func (c *fileCheckpoint) Save() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("wiki: close crawl checkpoint temp: %w", err)
 	}
+
+	// Publish under the lock and only if nothing changed since the snapshot. This
+	// closes two races: a concurrent MarkDone (gen advanced) leaves dirty set so a
+	// later Save re-persists it, and a concurrent Clear (which also advances gen and
+	// removed the file) is not undone by renaming a now-stale snapshot over it.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != savedGen {
+		return nil
+	}
 	if err := os.Rename(tmpName, c.path); err != nil {
 		return fmt.Errorf("wiki: rename crawl checkpoint: %w", err)
 	}
-
-	c.mu.Lock()
-	if c.gen == savedGen {
-		c.dirty = false
-	}
-	c.mu.Unlock()
+	c.dirty = false
 	return nil
 }
 
