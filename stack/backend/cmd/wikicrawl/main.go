@@ -133,7 +133,8 @@ func run(logger *slog.Logger) error {
 		},
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 	stats, err := crawlnotify.RunWithAlerts(ctx, notifier, producer)
 	if err != nil {
 		return err

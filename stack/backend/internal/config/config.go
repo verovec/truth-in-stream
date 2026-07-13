@@ -1182,6 +1182,11 @@ func LoadPolitical() (Political, error) {
 // local runs without Slack are unaffected.
 type CrawlAlerts struct {
 	WebhookURL string
+	// RunMetricsNamespace, when set, is the CloudWatch namespace a producer emits a
+	// per-source RunSuccess metric to on a finished run, so a "no successful run in
+	// 24h" alarm can page. Empty disables the metric (local and dev runs stay
+	// AWS-free); RUN_METRICS_NAMESPACE sets it.
+	RunMetricsNamespace string
 }
 
 // Active reports whether crawl alerts should post to Slack: it has a webhook URL.
@@ -1195,7 +1200,10 @@ func (c CrawlAlerts) Active() bool {
 // environment. SLACK_WEBHOOK_URL is optional: when unset, alerting is a silent
 // no-op. It carries the webhook secret, so it is never logged.
 func LoadCrawlAlerts() CrawlAlerts {
-	return CrawlAlerts{WebhookURL: os.Getenv("SLACK_WEBHOOK_URL")}
+	return CrawlAlerts{
+		WebhookURL:          os.Getenv("SLACK_WEBHOOK_URL"),
+		RunMetricsNamespace: os.Getenv("RUN_METRICS_NAMESPACE"),
+	}
 }
 
 // Scheduler defaults. Each source defaults DISABLED with a daily off-peak cron, so

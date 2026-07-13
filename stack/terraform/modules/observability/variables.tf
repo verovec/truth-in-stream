@@ -180,3 +180,53 @@ variable "create_dashboard" {
   default     = true
   description = "Create a CloudWatch dashboard summarising the key health signals (ALB 5xx, unhealthy targets, ECS running tasks, RDS, MQ, WAF blocks)."
 }
+
+# --- Ingestion queue / run alarms (key on the metrics-lambda custom metrics) ---
+
+variable "queue_metrics_namespace" {
+  type        = string
+  default     = ""
+  description = "CloudWatch namespace the metrics lambda publishes queue metrics to (e.g. TruthInStream/RabbitMQ). Empty disables the queue backlog/DLQ alarms (an env without the metrics lambda)."
+}
+
+variable "queue_bases" {
+  type        = list(string)
+  default     = []
+  description = "Base queue names (e.g. embedding.jobs) the backlog-without-consumers and DLQ-depth alarms cover; each keys on the QueueBase rollup metric and its <base>.dlq companion. Empty disables the queue alarms."
+}
+
+variable "queue_period_seconds" {
+  type        = number
+  default     = 60
+  description = "Metric period for the queue alarms, matching the metrics lambda's poll interval (1 minute)."
+}
+
+variable "queue_stall_evaluation_periods" {
+  type        = number
+  default     = 5
+  description = "Consecutive periods a queue must show backlog-without-consumers before the alarm fires, so a brief consumer gap during a worker rollout does not page."
+}
+
+variable "dlq_evaluation_periods" {
+  type        = number
+  default     = 1
+  description = "Consecutive periods a DLQ must show a backlog before the alarm fires. Any parked message is worth a page, so this is low."
+}
+
+variable "run_metrics_namespace" {
+  type        = string
+  default     = ""
+  description = "CloudWatch namespace producers publish the per-source RunSuccess metric to (RUN_METRICS_NAMESPACE). Empty disables the no-successful-run alarms."
+}
+
+variable "run_sources" {
+  type        = list(string)
+  default     = []
+  description = "Producer source names (e.g. wikipedia, factcheck, scrutins) the no-successful-run-in-24h alarm covers; each keys on the RunSuccess metric dimensioned by Source. Empty disables the run alarms."
+}
+
+variable "no_run_period_seconds" {
+  type        = number
+  default     = 86400
+  description = "Look-back window for the no-successful-run alarm (default 24h). A source with no RunSuccess datapoint summing to >= 1 over this window pages."
+}

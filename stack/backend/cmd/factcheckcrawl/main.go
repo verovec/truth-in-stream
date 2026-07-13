@@ -74,7 +74,8 @@ func run(logger *slog.Logger) error {
 		maxPages: archiveCfg.MaxPages,
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 	total, err := crawlnotify.RunWithAlerts(ctx, notifier, p)
 	if err != nil {
 		return err

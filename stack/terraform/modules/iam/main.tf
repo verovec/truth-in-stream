@@ -238,6 +238,33 @@ resource "aws_iam_role_policy" "task_media" {
   policy = data.aws_iam_policy_document.task_media[0].json
 }
 
+# Run-outcome metric: a producer publishes a per-source RunSuccess metric so the
+# no-successful-run alarm can page. PutMetricData has no resource-level scoping, so
+# it is constrained by the cloudwatch:namespace condition to the one run-metrics
+# namespace. Only attached when that namespace is configured.
+data "aws_iam_policy_document" "task_run_metrics" {
+  count = var.run_metrics_namespace == "" ? 0 : 1
+
+  statement {
+    sid       = "PublishRunMetrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = [var.run_metrics_namespace]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "task_run_metrics" {
+  count  = var.run_metrics_namespace == "" ? 0 : 1
+  name   = "run-metrics"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_run_metrics[0].json
+}
+
 # Least-privilege backup access: write-only on the dump bucket. The scheduled
 # backup task assumes this same task role, so it may upload dumps but never read
 # or delete an existing one. Scoped to the one bucket and only attached when its

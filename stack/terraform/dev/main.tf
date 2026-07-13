@@ -551,6 +551,7 @@ module "metrics_lambda" {
   rabbitmq_url_secret_arn = module.rabbitmq.url_secret_arn
   broker_name             = local.broker_name
   metrics_namespace       = var.metrics_namespace
+  queue_names             = var.metrics_queue_bases
 
   schedule_expression = var.metrics_poll_schedule
 }

@@ -91,7 +91,8 @@ func run(logger *slog.Logger) error {
 		closers = append(closers, closer)
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 	s := schedule.New(reg, notifier, logger)
 
 	logger.InfoContext(ctx, "scheduler started",
