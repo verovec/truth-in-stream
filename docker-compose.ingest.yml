@@ -59,6 +59,9 @@ services:
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH:-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -67,6 +70,8 @@ services:
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    volumes:
+      - crawl-state:/state
     logging:
       driver: awslogs
       options:
@@ -296,3 +301,6 @@ volumes:
   # Holds in-progress TV capture segments before upload, so a host restart leaves
   # partial .ts for the worker's startup salvage pass.
   tv-capture-work:
+  # Persists the wikipedia crawl checkpoint across producer runs on the same host,
+  # so a killed crawl resumes from its last completed batch instead of restarting.
+  crawl-state:

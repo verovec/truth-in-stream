@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 const (
@@ -73,6 +74,8 @@ type Config struct {
 	// MinInterval is the minimum spacing between requests, enforcing the rate
 	// limit. Zero applies defaultMinInterval.
 	MinInterval time.Duration
+	// Retry tunes the retry/backoff wrapper; a zero value uses the httpx defaults.
+	Retry httpx.RetryConfig
 }
 
 // ConfigFromEnv builds a Config reading the optional API key from the
@@ -86,23 +89,26 @@ func ConfigFromEnv() Config {
 // Source fetches its specs sequentially precisely so successive requests are
 // spaced by the rate limit.
 type Client struct {
-	httpClient  *http.Client
+	httpClient  httpx.Doer
 	baseURL     string
 	apiKey      string
 	minInterval time.Duration
 	lastRequest time.Time
 }
 
-// New builds a Client from cfg, applying defaults for the unset fields.
+// New builds a Client from cfg, applying defaults for the unset fields. The HTTP
+// client is wrapped in a retrying doer so a 429/5xx from INSEE is backed off and
+// retried (honoring Retry-After) rather than failing the run.
 func New(cfg Config) *Client {
+	base := cfg.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: defaultTimeout}
+	}
 	c := &Client{
-		httpClient:  cfg.HTTPClient,
+		httpClient:  httpx.NewRetryClient(base, cfg.Retry),
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:      cfg.APIKey,
 		minInterval: cfg.MinInterval,
-	}
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 const (
@@ -56,16 +57,19 @@ type Config struct {
 
 // Client downloads and parses interior-ministry open-data CSV resources.
 type Client struct {
-	httpClient *http.Client
+	httpClient httpx.Doer
 }
 
-// New builds a Client from cfg, applying a default HTTP client when unset.
+// New builds a Client from cfg, applying a default HTTP client when unset. The HTTP
+// client is wrapped in a retrying doer so a 429/5xx from the open-data portal is
+// backed off and retried (honoring Retry-After) rather than failing the run; the
+// base client still follows the resource permalink's 302 redirect.
 func New(cfg Config) *Client {
-	c := &Client{httpClient: cfg.HTTPClient}
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: defaultTimeout}
+	base := cfg.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: defaultTimeout}
 	}
-	return c
+	return &Client{httpClient: httpx.NewRetryClient(base, httpx.RetryConfig{})}
 }
 
 // APIError is a non-2xx response from the open-data portal; callers match it

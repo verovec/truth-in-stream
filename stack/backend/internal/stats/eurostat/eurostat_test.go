@@ -8,7 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 // realMigrCSV is the exact SDMX-CSV wire format of a live MIGR_RESFIRST query
@@ -30,7 +34,40 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()})
+	// Retries disabled so an error-status test asserts the first outcome without
+	// backoff waits; the retry behavior is covered by TestFetchRetriesOnThrottle
+	// and the httpx helper's own tests.
+	return New(Config{BaseURL: srv.URL, HTTPClient: srv.Client(), Retry: httpx.RetryConfig{MaxRetries: -1}})
+}
+
+// TestFetchRetriesOnThrottle proves the fetcher backs off and retries a 429 from
+// Eurostat instead of failing the run: the first request is throttled, the retry
+// succeeds, and the datapoints parse. A tiny base delay keeps the test fast.
+func TestFetchRetriesOnThrottle(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.sdmx.data+csv;version=1.0.0")
+		_, _ = w.Write([]byte(realMigrCSV))
+	}))
+	t.Cleanup(srv.Close)
+	c := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client(), Retry: httpx.RetryConfig{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}})
+
+	dps, err := c.Fetch(context.Background(), ResidencePermitsFR)
+	if err != nil {
+		t.Fatalf("Fetch after a throttled first attempt: %v", err)
+	}
+	if len(dps) != 2 {
+		t.Fatalf("got %d datapoints, want 2", len(dps))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("server hit %d times, want 2 (one throttle + one retry)", calls.Load())
+	}
 }
 
 func TestFetchParsesResidencePermits(t *testing.T) {

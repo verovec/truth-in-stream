@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -101,6 +102,15 @@ func run(logger *slog.Logger) error {
 		slog.Int("shards", crawlCfg.Shards),
 		slog.Int("shard_index", crawlCfg.ShardIndex))
 
+	checkpoint, err := wiki.LoadCheckpoint(crawlCfg.CheckpointPath)
+	if err != nil {
+		return fmt.Errorf("wikicrawl: load crawl checkpoint: %w", err)
+	}
+	gateFailMode := wiki.GateFailOpen
+	if crawlCfg.GateFailClosed {
+		gateFailMode = wiki.GateFailClosed
+	}
+
 	producer := wikiProducer{
 		run:    wiki.RunCrawl,
 		logger: logger,
@@ -117,6 +127,9 @@ func run(logger *slog.Logger) error {
 			MaxPriority:     queueCfg.MaxPriority,
 			GateConcurrency: gateCfg.Concurrency,
 			GateRPM:         gateCfg.RPM,
+			GateFailMode:    gateFailMode,
+			ErrorBudget:     crawlCfg.ErrorBudget,
+			Checkpoint:      checkpoint,
 		},
 	}
 
