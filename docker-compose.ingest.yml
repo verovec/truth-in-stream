@@ -131,6 +131,30 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/sdmxcrawl"
         awslogs-stream-prefix: "sdmxcrawl"
 
+  # ods: fetch the OpenDataSoft portals (DREES/DARES/URSSAF) and the SSMSI
+  # delinquency CSV bases, upsert un-embedded passages, and publish embedding jobs
+  # to embedding.jobs (drained by embedworker, like stats). Keyless open data, so
+  # no secret; needs the broker and the database. WIKI_ENQUEUE_BATCH_SIZE tunes the
+  # publish page size (forwarded by the operator command).
+  odsingest:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/odsingest"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/odsingest"
+        awslogs-stream-prefix: "odsingest"
+
   # factcheck: read already-checked French claims from the Google Fact Check Tools
   # API for FACTCHECK_QUERIES and publish curated-claim jobs to factcheck.claims.
   # DB-free. FACTCHECK_QUERIES is required (forwarded by the operator command);

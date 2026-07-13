@@ -68,6 +68,18 @@ var descriptors = []Descriptor{
 		Queue:      "embedding.jobs",
 		ForwardEnv: []string{"SDMX_SOURCES", "SDMX_START_PERIOD", "SDMX_END_PERIOD", "WIKI_ENQUEUE_BATCH_SIZE"},
 	},
+	{
+		// ods is host-only (on-demand ingest), like stats: it fetches the
+		// OpenDataSoft portals (DREES/DARES/URSSAF) and the SSMSI delinquency CSV
+		// bases, upserts un-embedded passages, and publishes embedding jobs to the
+		// shared embedding.jobs queue the embedworker already drains - no new
+		// consumer, no cron, no secret (the sources are keyless open data).
+		Name:       "ods",
+		Producer:   "odsingest",
+		Worker:     "embedworker",
+		Queue:      "embedding.jobs",
+		ForwardEnv: []string{"WIKI_ENQUEUE_BATCH_SIZE"},
+	},
 }
 
 // All returns a copy of the registry in declaration order, so a caller cannot
