@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
 )
 
 // DefaultEmbeddingModel is the voyage model used for both ingest and query
@@ -1604,9 +1605,17 @@ const (
 	defaultQueueName        = "embedding.jobs"
 	defaultQueueMaxPriority = 10
 	defaultQueuePrefetch    = 1
-	// defaultQueueVersion is the single active version when none is configured,
-	// so a fresh local dev runs against embedding.jobs.v1.
-	defaultQueueVersion = "1"
+	// defaultQueueVersion is the single active version when none is configured. It
+	// is 2 because dead-letter routing (VER-188) added x-dead-letter-* arguments to
+	// every queue: those arguments are fixed at declaration and cannot be changed on
+	// a live queue, so declaring the pre-existing v1 queue with them would fail a 406
+	// PRECONDITION_FAILED and crash the fleet. Bumping the version declares fresh
+	// v2 queues (embedding.jobs.v2, ...) with the dead-letter topology and leaves the
+	// old v1 queues untouched. A worker consumes only the active (newest) version, so
+	// any messages still queued under v1 at cutover are not auto-drained; an operator
+	// with a v1 backlog drains it with a one-off consumer against the old queue name
+	// before removing it (fresh environments and empty queues need nothing).
+	defaultQueueVersion = "2"
 	// defaultCrawlQueueName is the base queue the category crawler publishes to,
 	// kept separate from the embedding-jobs queue so the crawl worker and the
 	// dump-pipeline fleet never consume each other's messages.
@@ -1619,6 +1628,15 @@ const (
 	// publishes per-scrutin jobs to, kept separate from every other queue so the
 	// scrutins worker never consumes a wiki chunk or curated claim.
 	defaultScrutinsQueueName = "scrutins.votes"
+	// defaultQueueDLQEnabled routes a rejected message to a dead-letter queue by
+	// default, so an unprocessable message is parked and inspectable rather than
+	// silently discarded.
+	defaultQueueDLQEnabled = true
+	// defaultQueueMinBackoff and defaultQueueMaxBackoff bound the transport redial
+	// wait after a broker drop; the transport applies these same defaults when a
+	// value is zero, and they are surfaced here so the knobs have a documented home.
+	defaultQueueMinBackoff = 250 * time.Millisecond
+	defaultQueueMaxBackoff = 30 * time.Second
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -1641,6 +1659,16 @@ type Queue struct {
 	Prefetch      int
 	Version       string
 	KnownVersions []string
+
+	// DLQEnabled routes a rejected message to a companion dead-letter queue
+	// instead of discarding it. It defaults on and must hold the same value for
+	// every process that declares the queue, or the declarations conflict; one
+	// environment value forwarded to producers and consumers keeps them in step.
+	// ReconnectMinBackoff and ReconnectMaxBackoff bound the transport's redial
+	// wait after a broker drop.
+	DLQEnabled          bool
+	ReconnectMinBackoff time.Duration
+	ReconnectMaxBackoff time.Duration
 }
 
 // VersionedName is the broker queue name for the active version: the base name
@@ -1650,10 +1678,28 @@ func (q Queue) VersionedName() string {
 	return q.Name + ".v" + q.Version
 }
 
+// ClientConfig builds the transport-layer queue.Config for this queue, binding to
+// the active versioned name and carrying the resilience knobs (DLQ routing,
+// reconnect backoff bounds) so every producer and consumer declares an identical
+// topology. Prefetch is passed per call because a consumer sizes it to its own
+// concurrency while a producer does not consume; zero leaves it unbounded.
+func (q Queue) ClientConfig(prefetch int) queue.Config {
+	return queue.Config{
+		URL:         q.URL,
+		QueueName:   q.VersionedName(),
+		Version:     q.Version,
+		MaxPriority: q.MaxPriority,
+		Prefetch:    prefetch,
+		DisableDLQ:  !q.DLQEnabled,
+		MinBackoff:  q.ReconnectMinBackoff,
+		MaxBackoff:  q.ReconnectMaxBackoff,
+	}
+}
+
 // LoadQueue reads the broker configuration from the environment. RABBITMQ_URL is
 // required; the queue name defaults to embedding.jobs, the max priority to 10
 // (validated to [1, 255]) and the prefetch to 1 (validated non-negative). The
-// versions default to a single "1"; RABBITMQ_QUEUE_VERSIONS overrides them as a
+// versions default to a single "2"; RABBITMQ_QUEUE_VERSIONS overrides them as a
 // comma-separated, oldest-first list, with the newest taken as the active
 // version. Bad values fail fast at startup rather than surfacing as a broker
 // error later.
@@ -1711,13 +1757,31 @@ func loadQueue(nameEnv, nameDefault string) (Queue, error) {
 	if err != nil {
 		return Queue{}, err
 	}
+	dlqEnabled, err := boolEnvDefault("RABBITMQ_DLQ_ENABLED", defaultQueueDLQEnabled)
+	if err != nil {
+		return Queue{}, err
+	}
+	minBackoff, err := positiveDurationEnv("RABBITMQ_RECONNECT_MIN_BACKOFF", defaultQueueMinBackoff)
+	if err != nil {
+		return Queue{}, err
+	}
+	maxBackoff, err := positiveDurationEnv("RABBITMQ_RECONNECT_MAX_BACKOFF", defaultQueueMaxBackoff)
+	if err != nil {
+		return Queue{}, err
+	}
+	if maxBackoff < minBackoff {
+		return Queue{}, fmt.Errorf("config: RABBITMQ_RECONNECT_MAX_BACKOFF (%s) must be at least RABBITMQ_RECONNECT_MIN_BACKOFF (%s)", maxBackoff, minBackoff)
+	}
 	return Queue{
-		URL:           url,
-		Name:          getenv(nameEnv, nameDefault),
-		MaxPriority:   uint8(maxPriority),
-		Prefetch:      prefetch,
-		Version:       versions[len(versions)-1],
-		KnownVersions: versions,
+		URL:                 url,
+		Name:                getenv(nameEnv, nameDefault),
+		MaxPriority:         uint8(maxPriority),
+		Prefetch:            prefetch,
+		Version:             versions[len(versions)-1],
+		KnownVersions:       versions,
+		DLQEnabled:          dlqEnabled,
+		ReconnectMinBackoff: minBackoff,
+		ReconnectMaxBackoff: maxBackoff,
 	}, nil
 }
 

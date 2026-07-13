@@ -254,13 +254,7 @@ func runBulkLive(ctx context.Context, logger *slog.Logger, store *postgres.Store
 		return err
 	}
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    queueCfg.Prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(queueCfg.Prefetch))
 	if err != nil {
 		return err
 	}
@@ -335,13 +329,7 @@ func runBulkAtomic(ctx context.Context, logger *slog.Logger, store *postgres.Sto
 	// The producer publishes to the active versioned queue resolved from the same
 	// configuration the worker consumes, so both bind to the same queue without
 	// touching the enqueue logic.
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    queueCfg.Prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(queueCfg.Prefetch))
 	if err != nil {
 		return err
 	}

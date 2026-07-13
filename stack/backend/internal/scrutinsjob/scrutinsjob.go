@@ -61,12 +61,15 @@ func (j ScrutinJob) validate() error {
 type Action int
 
 const (
-	// ActionAck drops the delivery: handled, obsolete, or unprocessable.
+	// ActionAck drops the delivery: it was handled or is obsolete.
 	ActionAck Action = iota
 	// ActionRepublish re-enqueues the job (attempt incremented) then drops the original.
 	ActionRepublish
 	// ActionRequeue returns the delivery unhandled because shutdown cut work short.
 	ActionRequeue
+	// ActionReject dead-letters the delivery: a poison message or a job that
+	// exhausted its retry budget is parked in the DLQ, never silently acked away.
+	ActionReject
 )
 
 // Result is the outcome of processing one message.
@@ -195,21 +198,30 @@ loop:
 // handle processes one delivery and applies the broker action Process chose.
 func (w *Worker) handle(ctx context.Context, d Delivery) {
 	if !w.knowsVersion(d.Version()) {
-		w.logger.ErrorContext(ctx, "dropping scrutin job with unknown queue version", slog.String("version", d.Version()))
-		w.ack(ctx, d)
+		w.logger.ErrorContext(ctx, "dead-lettering scrutin job with unknown queue version", slog.String("version", d.Version()))
+		w.nack(ctx, d, false)
 		return
 	}
 	res := w.Process(ctx, d.Body(), d.Priority())
 	switch res.Action {
 	case ActionRepublish:
 		if err := w.enqueuer.Enqueue(ctx, res.RepublishBody, res.RepublishPriority); err != nil {
-			w.logger.ErrorContext(ctx, "re-enqueue failed, requeuing original delivery", slog.Any("err", err))
-			w.nack(ctx, d, true)
+			if ctx.Err() != nil {
+				w.logger.InfoContext(ctx, "re-enqueue interrupted by shutdown, requeuing original delivery", slog.Any("err", err))
+				w.nack(ctx, d, true)
+				return
+			}
+			// Re-enqueue failed for a non-shutdown reason: park the original in the
+			// DLQ rather than requeue it forever with an unadvanced attempt.
+			w.logger.ErrorContext(ctx, "re-enqueue failed, dead-lettering original delivery", slog.Any("err", err))
+			w.nack(ctx, d, false)
 			return
 		}
 		w.ack(ctx, d)
 	case ActionRequeue:
 		w.nack(ctx, d, true)
+	case ActionReject:
+		w.nack(ctx, d, false)
 	default:
 		w.ack(ctx, d)
 	}
@@ -229,27 +241,27 @@ func (w *Worker) nack(ctx context.Context, d Delivery, requeue bool) {
 
 // Process parses the scrutin in body and upserts its voting records, returning
 // the action the caller must take. It never returns an error: a malformed or
-// invalid message and a persistent failure fold into ActionAck (after an ERROR
-// log), a transient store failure into ActionRepublish, and a shutdown into
-// ActionRequeue. The scrutin payload is re-wrapped into the {"scrutin": {...}}
-// envelope the parser expects, since ScrutinJob.Scrutin carries the inner object
-// alone.
+// invalid message and a persistent failure fold into ActionReject (after an ERROR
+// log, so the message is parked in the DLQ, not lost), a transient store failure
+// into ActionRepublish, and a shutdown into ActionRequeue. The scrutin payload is
+// re-wrapped into the {"scrutin": {...}} envelope the parser expects, since
+// ScrutinJob.Scrutin carries the inner object alone.
 func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Result {
 	var job ScrutinJob
 	if err := json.Unmarshal(body, &job); err != nil {
-		w.logger.ErrorContext(ctx, "dropping malformed scrutin job", slog.Any("err", err))
-		return Result{Action: ActionAck}
+		w.logger.ErrorContext(ctx, "dead-lettering malformed scrutin job", slog.Any("err", err))
+		return Result{Action: ActionReject}
 	}
 	if err := job.validate(); err != nil {
-		w.logger.ErrorContext(ctx, "dropping invalid scrutin job", slog.Any("err", err))
-		return Result{Action: ActionAck}
+		w.logger.ErrorContext(ctx, "dead-lettering invalid scrutin job", slog.Any("err", err))
+		return Result{Action: ActionReject}
 	}
 
 	records, err := votingrecord.ParseScrutin(wrapScrutin(job.Scrutin))
 	if err != nil {
-		w.logger.ErrorContext(ctx, "dropping unparseable scrutin job",
+		w.logger.ErrorContext(ctx, "dead-lettering unparseable scrutin job",
 			slog.String("id", job.ID), slog.Any("err", err))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	for _, r := range records {
@@ -276,7 +288,7 @@ func wrapScrutin(inner json.RawMessage) []byte {
 
 // afterFailure decides what to do with a job whose upsert failed. A canceled
 // context means shutdown: requeue without counting the attempt. Otherwise the
-// attempt counts: drop with an ERROR log when the budget is spent, else
+// attempt counts: dead-letter with an ERROR log when the budget is spent, else
 // re-enqueue with the attempt incremented at the same priority.
 func (w *Worker) afterFailure(ctx context.Context, job ScrutinJob, priority uint8, stage string, cause error) Result {
 	if ctx.Err() != nil {
@@ -285,20 +297,20 @@ func (w *Worker) afterFailure(ctx context.Context, job ScrutinJob, priority uint
 		return Result{Action: ActionRequeue}
 	}
 	// Attempt is zero-indexed, so the last allowed attempt is maxAttempts-1; at or
-	// past it the budget is spent and the job is dropped rather than re-enqueued.
+	// past it the budget is spent and the job is dead-lettered rather than re-enqueued.
 	if job.Attempt >= w.maxAttempts-1 {
-		w.logger.ErrorContext(ctx, "dropping scrutin job after exhausting retries",
+		w.logger.ErrorContext(ctx, "dead-lettering scrutin job after exhausting retries",
 			slog.String("stage", stage), slog.String("id", job.ID),
 			slog.Int("attempt", job.Attempt), slog.Int("max_attempts", w.maxAttempts), slog.Any("err", cause))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	retry := job
 	retry.Attempt = job.Attempt + 1
 	encoded, err := json.Marshal(retry)
 	if err != nil {
-		w.logger.ErrorContext(ctx, "dropping scrutin job that cannot be re-encoded for retry",
+		w.logger.ErrorContext(ctx, "dead-lettering scrutin job that cannot be re-encoded for retry",
 			slog.String("id", job.ID), slog.Any("err", err))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	w.logger.WarnContext(ctx, "scrutin job failed, re-enqueuing for retry",
 		slog.String("stage", stage), slog.String("id", job.ID),

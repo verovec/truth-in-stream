@@ -134,12 +134,7 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 		return nil, err
 	}
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return nil, err
 	}
@@ -207,12 +202,7 @@ func registerFactcheck(reg *schedule.Registry, src config.ScheduleSource, jitter
 		return nil, err
 	}
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return nil, err
 	}
@@ -258,12 +248,7 @@ func registerScrutins(reg *schedule.Registry, src config.ScheduleSource, jitter 
 		return nil, err
 	}
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return nil, err
 	}

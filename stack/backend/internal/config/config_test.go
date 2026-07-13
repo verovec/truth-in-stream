@@ -1008,7 +1008,7 @@ func TestLoadQueue(t *testing.T) {
 		{
 			name: "defaults applied",
 			env:  map[string]string{"RABBITMQ_URL": "amqp://guest:guest@localhost:5672/"},
-			want: Queue{URL: "amqp://guest:guest@localhost:5672/", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "1", KnownVersions: []string{"1"}},
+			want: Queue{URL: "amqp://guest:guest@localhost:5672/", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "2", KnownVersions: []string{"2"}, DLQEnabled: true, ReconnectMinBackoff: defaultQueueMinBackoff, ReconnectMaxBackoff: defaultQueueMaxBackoff},
 		},
 		{
 			name: "overrides applied",
@@ -1018,7 +1018,7 @@ func TestLoadQueue(t *testing.T) {
 				"RABBITMQ_MAX_PRIORITY": "255",
 				"RABBITMQ_PREFETCH":     "16",
 			},
-			want: Queue{URL: "amqps://user:pass@broker:5671/", Name: "embedding.priority", MaxPriority: 255, Prefetch: 16, Version: "1", KnownVersions: []string{"1"}},
+			want: Queue{URL: "amqps://user:pass@broker:5671/", Name: "embedding.priority", MaxPriority: 255, Prefetch: 16, Version: "2", KnownVersions: []string{"2"}, DLQEnabled: true, ReconnectMinBackoff: defaultQueueMinBackoff, ReconnectMaxBackoff: defaultQueueMaxBackoff},
 		},
 		{
 			name: "version list takes the newest as active",
@@ -1026,8 +1026,19 @@ func TestLoadQueue(t *testing.T) {
 				"RABBITMQ_URL":            "amqp://localhost",
 				"RABBITMQ_QUEUE_VERSIONS": "1, 2, 20260612",
 			},
-			want: Queue{URL: "amqp://localhost", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "20260612", KnownVersions: []string{"1", "2", "20260612"}},
+			want: Queue{URL: "amqp://localhost", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "20260612", KnownVersions: []string{"1", "2", "20260612"}, DLQEnabled: true, ReconnectMinBackoff: defaultQueueMinBackoff, ReconnectMaxBackoff: defaultQueueMaxBackoff},
 		},
+		{
+			name: "resilience knobs overridden",
+			env: map[string]string{
+				"RABBITMQ_URL":                   "amqp://localhost",
+				"RABBITMQ_DLQ_ENABLED":           "false",
+				"RABBITMQ_RECONNECT_MIN_BACKOFF": "1s",
+				"RABBITMQ_RECONNECT_MAX_BACKOFF": "1m",
+			},
+			want: Queue{URL: "amqp://localhost", Name: "embedding.jobs", MaxPriority: 10, Prefetch: 1, Version: "2", KnownVersions: []string{"2"}, DLQEnabled: false, ReconnectMinBackoff: time.Second, ReconnectMaxBackoff: time.Minute},
+		},
+		{name: "reconnect max below min rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_RECONNECT_MIN_BACKOFF": "10s", "RABBITMQ_RECONNECT_MAX_BACKOFF": "1s"}, wantErr: true},
 		{name: "missing url rejected", env: map[string]string{}, wantErr: true},
 		{name: "max priority zero rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "0"}, wantErr: true},
 		{name: "max priority above byte rejected", env: map[string]string{"RABBITMQ_URL": "amqp://localhost", "RABBITMQ_MAX_PRIORITY": "256"}, wantErr: true},
@@ -1661,7 +1672,7 @@ func TestLoadCrawlQueueDefaultName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCrawlQueue: %v", err)
 	}
-	if q.VersionedName() != "crawl.chunks.v1" {
+	if q.VersionedName() != "crawl.chunks.v2" {
 		t.Errorf("VersionedName = %q, want crawl.chunks.v1", q.VersionedName())
 	}
 }
@@ -1673,7 +1684,7 @@ func TestLoadCrawlQueueOverrideName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadCrawlQueue: %v", err)
 	}
-	if q.VersionedName() != "my.crawl.v1" {
+	if q.VersionedName() != "my.crawl.v2" {
 		t.Errorf("VersionedName = %q, want my.crawl.v1", q.VersionedName())
 	}
 }
@@ -2027,7 +2038,7 @@ func TestLoadFactCheckQueueDefaultName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFactCheckQueue: %v", err)
 	}
-	if q.VersionedName() != "factcheck.claims.v1" {
+	if q.VersionedName() != "factcheck.claims.v2" {
 		t.Errorf("VersionedName = %q, want factcheck.claims.v1", q.VersionedName())
 	}
 }

@@ -67,13 +67,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    workerCfg.Concurrency,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(workerCfg.Concurrency))
 	if err != nil {
 		return err
 	}
