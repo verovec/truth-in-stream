@@ -271,6 +271,8 @@ func run(logger *slog.Logger) error {
 		HybridSearch:          matchCfg.HybridSearch,
 		LexicalTopK:           matchCfg.LexicalTopK,
 		RRFK:                  matchCfg.RRFK,
+		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
+		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
 	})
 	if err != nil {
 		return err
@@ -565,6 +567,7 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale doma
 		ClaimsThreshold: cfg.CoverageThreshold,
 		WikiThreshold:   cfg.WikiCoverageThreshold,
 		WikiEnabled:     cfg.WikiCoverageEnabled,
+		EfSearch:        cfg.CoverageEfSearch,
 	})
 	if err != nil {
 		return nil, err
@@ -655,6 +658,8 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 		HybridSearch:          matchCfg.HybridSearch,
 		LexicalTopK:           matchCfg.LexicalTopK,
 		RRFK:                  matchCfg.RRFK,
+		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
+		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)
@@ -704,6 +709,8 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 		FastDeadline:      cfg.FastDeadline,
 		VerifyDeadline:    cfg.VerifyDeadline,
 		CacheTTL:          cfg.CacheTTL,
+		CacheThreshold:    cfg.CacheThreshold,
+		CacheMaxEntries:   cfg.CacheMaxEntries,
 		Logger:            logger,
 		Political:         pol,
 		SecondPass:        secondPassCfg,

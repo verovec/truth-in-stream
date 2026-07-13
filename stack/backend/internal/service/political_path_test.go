@@ -575,7 +575,13 @@ func TestPoliticalPathCacheReplayPreservesFramingTally(t *testing.T) {
 		domain.Segment{Start: 5 * time.Second, End: 6 * time.Second, Text: u2, Speaker: "A"},
 	)}
 	u1 := claim
-	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	// The two phrasings embed to the same vector, so the paraphrase hits the
+	// semantic cache keyed on the query embedding.
+	vec := []float32{0.6, 0.8}
+	matcher := liveMatcher{
+		matches:   map[string][]domain.SegmentMatch{},
+		embedding: map[string][]float32{u1: vec, u2: vec},
+	}
 	classifier := fakeClassifier{}
 	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{
 		u1: {srcEvidence(source.KindWebSearch, "h1", "passage")},
@@ -597,6 +603,8 @@ func TestPoliticalPathCacheReplayPreservesFramingTally(t *testing.T) {
 		FastDeadline:      time.Second,
 		VerifyDeadline:    time.Second,
 		CacheTTL:          time.Minute,
+		CacheThreshold:    0.95,
+		CacheMaxEntries:   16,
 		Political:         &PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier},
 	}
 	vp, err := NewVerifyPath(vpCfg)

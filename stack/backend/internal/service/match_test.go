@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,15 +39,17 @@ func (f *fakeEmbedder) EmbedQueries(_ context.Context, texts []string) ([][]floa
 }
 
 type fakeSearcher struct {
-	hits     []domain.ClaimMatch
-	err      error
-	gotQuery []float32
-	gotTopK  int
+	hits        []domain.ClaimMatch
+	err         error
+	gotQuery    []float32
+	gotTopK     int
+	gotEfSearch int
 }
 
-func (f *fakeSearcher) Search(_ context.Context, query []float32, topK, _ int) ([]domain.ClaimMatch, error) {
+func (f *fakeSearcher) Search(_ context.Context, query []float32, topK, efSearch int) ([]domain.ClaimMatch, error) {
 	f.gotQuery = query
 	f.gotTopK = topK
+	f.gotEfSearch = efSearch
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -368,6 +371,76 @@ func TestMatchSegmentEvidenceIDResolvesToSourceRow(t *testing.T) {
 	}
 	if source != "enwiki/7331" || chunk != 4 {
 		t.Errorf("round-trip = (source %q, chunk %d), want (source \"enwiki/7331\", chunk 4)", source, chunk)
+	}
+}
+
+func TestMatchSegmentRoutesPerCorpusEfSearch(t *testing.T) {
+	t.Parallel()
+	// The per-corpus ef_search config values are threaded into each corpus's
+	// search independently: the claims corpus gets ClaimsEfSearch and the evidence
+	// corpus gets EvidenceEfSearch, so an operator can raise one corpus's recall
+	// budget without touching the other. 0 (the default) keeps the session
+	// default; this test overrides both to distinct positive values.
+	embedder := &fakeEmbedder{vecs: [][]float32{queryVec()}}
+	claims := &fakeSearcher{}
+	evidence := &fakeEvidence{}
+	cfg := testMatcherConfig()
+	cfg.EvidenceTopK = 3
+	cfg.ClaimsEfSearch = 100
+	cfg.EvidenceEfSearch = 150
+	m, err := NewMatcher(embedder, claims, evidence, cfg)
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	if _, _, err := m.MatchSegment(t.Context(), "a factual statement"); err != nil {
+		t.Fatalf("MatchSegment: %v", err)
+	}
+	if claims.gotEfSearch != 100 {
+		t.Errorf("claims search ef_search = %d, want 100", claims.gotEfSearch)
+	}
+	if evidence.gotEfSearch != 150 {
+		t.Errorf("evidence search ef_search = %d, want 150", evidence.gotEfSearch)
+	}
+}
+
+func TestMatchSegmentVecReusesVectorAndSkipsEmbed(t *testing.T) {
+	t.Parallel()
+	// MatchSegmentVec searches against a caller-supplied vector without embedding
+	// again: the embedder is never called, and the search runs on the given
+	// vector, so the legacy path can share one embedding across coverage and match.
+	embedder := &fakeEmbedder{err: errors.New("embedder must not be called")}
+	claims := &fakeSearcher{hits: []domain.ClaimMatch{{ID: "c1", Text: "t", Verdict: domain.VerdictContradicts, Distance: 0.1}}}
+	m, err := NewMatcher(embedder, claims, &fakeEvidence{}, testMatcherConfig())
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	vec := queryVec()
+	matches, query, err := m.MatchSegmentVec(t.Context(), "a factual statement", vec)
+	if err != nil {
+		t.Fatalf("MatchSegmentVec: %v", err)
+	}
+	if embedder.calls != 0 {
+		t.Errorf("embedder called %d times, want 0 (vector supplied)", embedder.calls)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(matches))
+	}
+	if !slices.Equal(query, vec) || !slices.Equal(claims.gotQuery, vec) {
+		t.Errorf("search did not run on the supplied vector")
+	}
+}
+
+func TestMatchSegmentVecRejectsEmptyInputs(t *testing.T) {
+	t.Parallel()
+	m, err := NewMatcher(&fakeEmbedder{}, &fakeSearcher{}, &fakeEvidence{}, testMatcherConfig())
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	if _, _, err := m.MatchSegmentVec(t.Context(), "  ", queryVec()); !errors.Is(err, ErrEmptySegment) {
+		t.Errorf("empty segment err = %v, want ErrEmptySegment", err)
+	}
+	if _, _, err := m.MatchSegmentVec(t.Context(), "text", nil); !errors.Is(err, ErrEmptyEmbedding) {
+		t.Errorf("nil vector err = %v, want ErrEmptyEmbedding", err)
 	}
 }
 

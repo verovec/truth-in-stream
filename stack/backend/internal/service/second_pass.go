@@ -191,7 +191,7 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, m
 	// Overwrite the cache entry so a repeat of the same claim within the TTL replays
 	// the upgraded verdict, not the stale fast one; the retrieval embedding is carried
 	// through so a cache-hit replay still feeds consistency detection.
-	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
+	vp.cachePut(ret.embedding, SourceVerified, upgraded)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
 	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
 }

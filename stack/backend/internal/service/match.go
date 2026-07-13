@@ -53,6 +53,10 @@ type HybridEvidenceSearcher interface {
 // ErrEmptySegment is returned when a segment contains no text to match.
 var ErrEmptySegment = errors.New("service: segment text is empty")
 
+// ErrEmptyEmbedding is returned when a vector-based match is asked to search
+// against a nil or empty query embedding, which no store could compare against.
+var ErrEmptyEmbedding = errors.New("service: query embedding is empty")
+
 // Match is one fact-check hit for a transcript segment. Kind tells a curated
 // claim (with Verdict and Sources) from Wikipedia evidence (with Article and no
 // verdict). Text is the matched reference text - the claim statement or the
@@ -108,6 +112,14 @@ type MatcherConfig struct {
 	HybridSearch bool
 	LexicalTopK  int
 	RRFK         int
+
+	// ClaimsEfSearch and EvidenceEfSearch are the per-corpus HNSW ef_search values
+	// threaded into each corpus's search through the store's per-query searchTuned
+	// plumbing. 0 keeps the store's session default (the long-standing hot-path
+	// behavior); a positive value raises that corpus's candidate list, trading
+	// latency for recall independently per corpus. Both must be non-negative.
+	ClaimsEfSearch   int
+	EvidenceEfSearch int
 }
 
 func (c MatcherConfig) validate() error {
@@ -136,6 +148,10 @@ func (c MatcherConfig) validate() error {
 		return fmt.Errorf("service: matcher lexical topK must be in [1, %d] when hybrid search is on, got %d", math.MaxInt32, c.LexicalTopK)
 	case c.HybridSearch && c.RRFK < 1:
 		return fmt.Errorf("service: matcher RRF constant must be at least 1 when hybrid search is on, got %d", c.RRFK)
+	case c.ClaimsEfSearch < 0:
+		return fmt.Errorf("service: matcher claims ef_search must be non-negative, got %d", c.ClaimsEfSearch)
+	case c.EvidenceEfSearch < 0:
+		return fmt.Errorf("service: matcher evidence ef_search must be non-negative, got %d", c.EvidenceEfSearch)
 	}
 	return nil
 }
@@ -192,7 +208,35 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, []
 	if err != nil {
 		return nil, nil, err
 	}
+	return m.matchSegmentVec(ctx, segment, query)
+}
 
+// MatchSegmentVec is MatchSegment with the query embedding supplied by the
+// caller, so a stage that has already embedded the text (the legacy path's
+// coverage gate) can search both corpora without a second embedding round-trip.
+// It applies the matcher's own timeout, searches both corpora against the given
+// vector, and returns the merged ranked matches plus the same vector, so the
+// return shape is identical to MatchSegment. It rejects an empty segment or a
+// nil vector, the two states that would make a search meaningless.
+func (m *Matcher) MatchSegmentVec(ctx context.Context, segment string, query []float32) ([]Match, []float32, error) {
+	if strings.TrimSpace(segment) == "" {
+		return nil, nil, ErrEmptySegment
+	}
+	if len(query) == 0 {
+		return nil, nil, fmt.Errorf("service: match segment: %w", ErrEmptyEmbedding)
+	}
+	ctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
+	defer cancel()
+	return m.matchSegmentVec(ctx, segment, query)
+}
+
+// matchSegmentVec searches both corpora against an already-embedded query and
+// merges the hits, ranked by similarity and capped at MaxResults. It is the
+// shared core of MatchSegment (which embeds first) and MatchSegmentVec (which is
+// handed the vector), so both paths produce byte-for-byte identical results for
+// the same query. It assumes the caller has applied the timeout and validated
+// the inputs.
+func (m *Matcher) matchSegmentVec(ctx context.Context, segment string, query []float32) ([]Match, []float32, error) {
 	matches, err := m.claimMatches(ctx, segment, query)
 	if err != nil {
 		return nil, nil, err
@@ -312,20 +356,20 @@ func (m *Matcher) evidenceMatches(ctx context.Context, segment string, query []f
 func (m *Matcher) searchClaims(ctx context.Context, segment string, query []float32) ([]domain.ClaimMatch, error) {
 	if m.cfg.HybridSearch {
 		if hs, ok := m.claims.(HybridClaimSearcher); ok {
-			return hs.SearchHybrid(ctx, segment, query, m.cfg.TopK, m.cfg.LexicalTopK, m.cfg.RRFK, 0)
+			return hs.SearchHybrid(ctx, segment, query, m.cfg.TopK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.ClaimsEfSearch)
 		}
 	}
-	return m.claims.Search(ctx, query, m.cfg.TopK, 0)
+	return m.claims.Search(ctx, query, m.cfg.TopK, m.cfg.ClaimsEfSearch)
 }
 
 // searchEvidence is searchClaims over the evidence corpus.
 func (m *Matcher) searchEvidence(ctx context.Context, segment string, query []float32) ([]domain.EvidenceHit, error) {
 	if m.cfg.HybridSearch {
 		if hs, ok := m.evidence.(HybridEvidenceSearcher); ok {
-			return hs.SearchEvidenceHybrid(ctx, segment, query, m.cfg.EvidenceTopK, m.cfg.LexicalTopK, m.cfg.RRFK, 0, nil)
+			return hs.SearchEvidenceHybrid(ctx, segment, query, m.cfg.EvidenceTopK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.EvidenceEfSearch, nil)
 		}
 	}
-	return m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, 0, nil)
+	return m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, m.cfg.EvidenceEfSearch, nil)
 }
 
 // embedSegment embeds one segment as a retrieval query under the shared

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -169,7 +168,14 @@ type VerifyPathConfig struct {
 	FastDeadline      time.Duration
 	VerifyDeadline    time.Duration
 	CacheTTL          time.Duration
-	Logger            *slog.Logger
+	// CacheThreshold is the cosine-similarity bar the semantic claim cache
+	// requires before it replays a cached verdict for a new claim's embedding, and
+	// CacheMaxEntries bounds the cache's size (oldest evicted first). Both matter
+	// only when CacheTTL is positive; a zero CacheMaxEntries defaults to
+	// defaultCacheMaxEntries and an out-of-range CacheThreshold fails construction.
+	CacheThreshold  float64
+	CacheMaxEntries int
+	Logger          *slog.Logger
 	// Political, when non-nil, switches a checkable claim's verify stage onto the
 	// political path (FACTCHECK_POLITICAL on): classify -> route+retrieve -> two-axis
 	// verify, folding into the flag-aware aggregator. The curated fast-path borrow,
@@ -202,7 +208,7 @@ type VerifyPath struct {
 	fastDeadline   time.Duration
 	verifyDeadline time.Duration
 	logger         *slog.Logger
-	cache          *claimCache
+	cache          *semanticCache
 	pol            *PoliticalConfig
 	secondPass     *secondPass
 }
@@ -229,6 +235,10 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		return nil, fmt.Errorf("service: verify path verify deadline must be positive, got %s", cfg.VerifyDeadline)
 	case cfg.CacheTTL < 0:
 		return nil, fmt.Errorf("service: verify path cache ttl must be non-negative, got %s", cfg.CacheTTL)
+	case cfg.CacheTTL > 0 && !domain.ValidCosineThreshold(cfg.CacheThreshold):
+		return nil, fmt.Errorf("service: verify path cache threshold %v outside cosine similarity range [-1, 1]", cfg.CacheThreshold)
+	case cfg.CacheTTL > 0 && cfg.CacheMaxEntries < 0:
+		return nil, fmt.Errorf("service: verify path cache max entries must be non-negative, got %d", cfg.CacheMaxEntries)
 	}
 	if cfg.Political != nil {
 		switch {
@@ -251,9 +261,13 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	var cache *claimCache
+	var cache *semanticCache
 	if cfg.CacheTTL > 0 {
-		cache = newClaimCache(cfg.CacheTTL)
+		maxEntries := cfg.CacheMaxEntries
+		if maxEntries == 0 {
+			maxEntries = defaultCacheMaxEntries
+		}
+		cache = newSemanticCache(cfg.CacheTTL, cfg.CacheThreshold, maxEntries)
 	}
 	return &VerifyPath{
 		decomposer:     cfg.Decomposer,
@@ -338,10 +352,6 @@ func (vp *VerifyPath) AnalyzeText(ctx context.Context, gate SegmentPrechecker, t
 // rather than emitting it, blocks on the verify pool instead of shedding, and
 // has no unchecked outcome. A retrieval or verify failure is an error result.
 func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) BatchClaimResult {
-	if cached, ok := vp.cacheGet(claim.Text); ok {
-		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: cached.source, Verdict: cached.verdict}
-	}
-
 	ret, err := vp.retrieve(ctx, claim.Text)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -350,11 +360,18 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
 
+	// The semantic cache is keyed on the claim's query embedding, so the lookup
+	// happens after retrieval has produced it: a paraphrase of a recently verified
+	// claim embeds near the original and replays its verdict with no verifier call.
+	if cached, ok := vp.cacheGet(ret.embedding); ok {
+		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: cached.source, Verdict: cached.verdict}
+	}
+
 	// Political curated fast borrow (political path only, ahead of the legacy
 	// borrow because only it carries the manipulation axis).
 	if vp.political() {
 		if verdict, ok := vp.politicalFastMatch(ctx, ret.embedding); ok {
-			vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+			vp.cachePut(ret.embedding, SourceCurated, verdict)
 			return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceCurated, Verdict: verdict}
 		}
 	}
@@ -367,7 +384,7 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 		if vp.political() {
 			verdict.Literal = literalFromCredibility(verdict.Verdict)
 		}
-		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+		vp.cachePut(ret.embedding, SourceCurated, verdict)
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceCurated, Verdict: verdict}
 	}
 
@@ -386,7 +403,7 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 	// so a document verdict matches what live would show for the same sentence.
 	// It is a no-op when the feature is off or the verdict does not qualify.
 	verdict = vp.applyReverifyBatch(ctx, claim, verdict, ret)
-	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	vp.cachePut(ret.embedding, SourceVerified, verdict)
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 }
 
@@ -486,19 +503,24 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	unitID := pu.members[0].id
 	seg := pu.members[0].seg
 
-	if cached, ok := vp.cacheGet(claim.Text); ok {
-		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
-		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, cached.verdict)
-		vp.recordConsistency(ctx, a, out, mem, pu, claim, cached.embedding)
-		return
-	}
-
 	ret, err := vp.retrieve(ctx, claim.Text)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "verify-path retrieval failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
+		return
+	}
+
+	// The semantic cache keys on the claim's query embedding, so the lookup runs
+	// after retrieval has produced it: a paraphrased repeat of a recent claim
+	// embeds near the original and replays its cached verdict with no verifier
+	// call. Consistency reuses this claim's own fresh embedding, not the cached
+	// one, so the stance comparison is against the exact statement just spoken.
+	if cached, ok := vp.cacheGet(ret.embedding); ok {
+		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
+		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, cached.verdict)
+		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
 		return
 	}
 
@@ -511,7 +533,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	// flag-off path is byte-for-byte unchanged.
 	if vp.political() {
 		if verdict, ok := vp.politicalFastMatch(ctx, ret.embedding); ok {
-			vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+			vp.cachePut(ret.embedding, SourceCurated, verdict)
 			vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 			vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 			vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -533,7 +555,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 			// zero, keeping its wire shape unchanged.
 			verdict.Literal = literalFromCredibility(verdict.Verdict)
 		}
-		vp.cachePut(claim.Text, SourceCurated, verdict, ret.embedding)
+		vp.cachePut(ret.embedding, SourceCurated, verdict)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -567,7 +589,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
-	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	vp.cachePut(ret.embedding, SourceVerified, verdict)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -869,9 +891,15 @@ func (vp *VerifyPath) recordSpeakerReTally(ctx context.Context, out chan<- LiveE
 	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerTally, SpeakerTally: &tally})
 }
 
+// defaultCacheMaxEntries bounds the semantic cache when a caller enables the
+// cache (CacheTTL > 0) but leaves CacheMaxEntries zero. It mirrors the env
+// layer's default so a direct construction and the wired stack agree.
+const defaultCacheMaxEntries = 1024
+
 // cacheEntry is one cached claim verdict: its source tag, the verdict, and the
-// retrieval embedding, so a cache hit can still feed consistency detection
-// without re-embedding.
+// retrieval embedding that keys it, so a lookup can score a new claim's
+// embedding against it and a hit can still feed consistency detection without
+// re-embedding.
 type cacheEntry struct {
 	source    VerdictSource
 	verdict   *VerifiedVerdict
@@ -879,63 +907,99 @@ type cacheEntry struct {
 	expires   time.Time
 }
 
-// claimCache is the short-TTL cache that collapses repeated normalized claims
-// (recurring debate talking points) so they are not re-verified within the
-// window. It is safe for concurrent use across the per-claim goroutines.
-type claimCache struct {
-	ttl time.Duration
-	mu  sync.Mutex
-	m   map[string]cacheEntry
-	now func() time.Time
+// semanticCache collapses a repeated or paraphrased claim onto a recent verdict
+// without a fresh verifier call: it keys entries on the claim's query embedding
+// and, on lookup, returns the cached verdict whose embedding is nearest the new
+// claim's when that cosine similarity clears a configurable bar. A high bar
+// keeps a genuinely different claim from borrowing an unrelated verdict (the
+// false-share guard); the TTL bounds staleness and the size bound (oldest
+// evicted first) keeps a long session from growing it without limit. It is safe
+// for concurrent use across the per-claim goroutines.
+type semanticCache struct {
+	ttl        time.Duration
+	threshold  float64
+	maxEntries int
+	mu         sync.Mutex
+	// entries is ordered oldest-first (append on put), so eviction pops the front
+	// and the scan visits every live entry. The cache is small and bounded, so a
+	// linear scan is cheaper than a vector index.
+	entries []cacheEntry
+	now     func() time.Time
 }
 
-func newClaimCache(ttl time.Duration) *claimCache {
-	return &claimCache{ttl: ttl, m: make(map[string]cacheEntry), now: time.Now}
+func newSemanticCache(ttl time.Duration, threshold float64, maxEntries int) *semanticCache {
+	return &semanticCache{ttl: ttl, threshold: threshold, maxEntries: maxEntries, now: time.Now}
 }
 
-// get returns a live entry for the normalized claim, evicting an expired one.
-func (c *claimCache) get(claim string) (cacheEntry, bool) {
-	key := normalizeClaim(claim)
+// get returns the live cached entry whose embedding is most similar to vec when
+// that similarity clears the threshold, evicting expired entries it passes. A
+// nil or empty vec never matches (cosine is 0), so a claim with no reusable
+// embedding falls through to a fresh verify rather than false-sharing.
+func (c *semanticCache) get(vec []float32) (cacheEntry, bool) {
+	if len(vec) == 0 {
+		return cacheEntry{}, false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.m[key]
-	if !ok {
+	now := c.now()
+	best := -1
+	bestSim := c.threshold
+	live := c.entries[:0]
+	for _, e := range c.entries {
+		if now.After(e.expires) {
+			continue
+		}
+		live = append(live, e)
+	}
+	c.entries = live
+	for i, e := range c.entries {
+		sim := cosineSimilarity(vec, e.embedding)
+		if sim >= bestSim {
+			// >= keeps the last-seen (more recent) entry on an exact tie, and the
+			// running bar rises to the best so the nearest cached claim wins.
+			best = i
+			bestSim = sim
+		}
+	}
+	if best < 0 {
 		return cacheEntry{}, false
 	}
-	if c.now().After(e.expires) {
-		delete(c.m, key)
-		return cacheEntry{}, false
-	}
-	return e, true
+	return c.entries[best], true
 }
 
-func (c *claimCache) put(claim string, e cacheEntry) {
-	key := normalizeClaim(claim)
+// put stores an entry keyed on its embedding with a fresh expiry, evicting the
+// oldest entries once the size bound is reached. An entry with no embedding is
+// dropped: it could never be matched and, at a non-positive threshold, could
+// false-share against another empty-vector claim.
+func (c *semanticCache) put(e cacheEntry) {
+	if len(e.embedding) == 0 {
+		return
+	}
 	e.expires = c.now().Add(c.ttl)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.m[key] = e
+	c.entries = append(c.entries, e)
+	if c.maxEntries > 0 && len(c.entries) > c.maxEntries {
+		// Drop the oldest overflow in one shift so a burst that overshoots the bound
+		// does not leave the slice permanently over capacity.
+		drop := len(c.entries) - c.maxEntries
+		c.entries = append(c.entries[:0], c.entries[drop:]...)
+	}
 }
 
 // cacheGet/cachePut are nil-safe wrappers so a disabled cache (nil) is a no-op
-// without a guard at every call site.
-func (vp *VerifyPath) cacheGet(claim string) (cacheEntry, bool) {
+// without a guard at every call site. They key on the claim's retrieval
+// embedding, so a lookup happens after retrieval has produced the vector.
+func (vp *VerifyPath) cacheGet(vec []float32) (cacheEntry, bool) {
 	if vp.cache == nil {
 		return cacheEntry{}, false
 	}
-	return vp.cache.get(claim)
+	return vp.cache.get(vec)
 }
 
-func (vp *VerifyPath) cachePut(claim string, source VerdictSource, verdict *VerifiedVerdict, embedding []float32) {
+func (vp *VerifyPath) cachePut(embedding []float32, source VerdictSource, verdict *VerifiedVerdict) {
 	if vp.cache == nil {
 		return
 	}
-	vp.cache.put(claim, cacheEntry{source: source, verdict: verdict, embedding: embedding})
-}
-
-// normalizeClaim folds case and collapses internal whitespace so two phrasings
-// of the same talking point share a cache key. It is deterministic and
-// allocation-light.
-func normalizeClaim(claim string) string {
-	return strings.Join(strings.Fields(strings.ToLower(claim)), " ")
+	vp.cache.put(cacheEntry{source: source, verdict: verdict, embedding: embedding})
 }
