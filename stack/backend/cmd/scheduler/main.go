@@ -1,16 +1,20 @@
 // Command scheduler is the ingestion fleet's always-on local cron scheduler. It
-// registers the Wikipedia, fact-check-archive, and scrutins producers, each on its
-// own configurable cron cadence, and runs them until a signal arrives - replacing
-// the manual `make`/compose one-shot producer runs. Every run publishes into its
-// RabbitMQ queue for the worker fleet to drain, an overlapping tick of a source
-// whose previous run is still in flight is skipped, and each run posts the shared
-// start/finish/error Slack alerts through crawlnotify.
+// iterates the connector registry (internal/connector) - the one table of every
+// source - and, for each schedulable source an operator has enabled, builds its
+// producer and registers it on its own configurable cron cadence, running them all
+// until a signal arrives. Every run publishes into its RabbitMQ queue for the
+// worker fleet to drain, an overlapping tick of a source whose previous run is
+// still in flight is skipped, and each run posts the shared start/finish/error
+// Slack alerts through crawlnotify.
 //
 // It is a thin wiring layer over internal/schedule (the runtime-agnostic registry
-// and tick loop) so a future cloud runner can reuse the same registry. Per-source
-// enable flags and cron specs come from the environment (SCHEDULE_*), validated at
-// startup; an invalid cron spec fails fast. The broker comes from RABBITMQ_URL,
-// and each source reads the same producer config its standalone cmd does.
+// and tick loop) so a future cloud runner can reuse the same registry. Adding a
+// source needs no edit here beyond one builders-table entry: the source's name,
+// cron default, and enable knob come from its connector descriptor. Per-source
+// enable flags and cron specs come from the environment (SCHEDULE_<PREFIX>_*),
+// validated at startup; an invalid cron spec fails fast. The broker comes from
+// RABBITMQ_URL, and each source reads the same producer config its standalone cmd
+// does.
 package main
 
 import (
@@ -24,8 +28,10 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
+	"github.com/verovec/truth-in-stream/backend/internal/example"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckarchive"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
@@ -47,13 +53,44 @@ func main() {
 	}
 }
 
-// run builds the registry from config, wires the notifier, and runs the scheduler
-// until a signal. Every broker client it opens is closed on shutdown via the
-// returned closers. A registry with no enabled source is not an error: the
-// always-on service idles until a signal rather than crash-looping a
+// producerBuilder constructs a source's producer and a closer for the broker
+// client it opens. It is the one wiring step the connector registry cannot
+// declare, because only the cmd layer may import the broker and the producer
+// config. On its own error it closes whatever it already opened before returning.
+type producerBuilder func(logger *slog.Logger) (crawlnotify.Producer, func(), error)
+
+// builders maps each schedulable source name to its producer builder. Adding a
+// scheduled source is one entry here plus its connector descriptor - no other edit
+// to this file. TestBuildersCoverSchedulableSources guards that this table and the
+// registry's schedulable sources stay in lockstep.
+var builders = map[string]producerBuilder{
+	"wikipedia": buildWikipedia,
+	"factcheck": buildFactcheck,
+	"scrutins":  buildScrutins,
+	"example":   buildExample,
+}
+
+// scheduleSpecs derives the config specs from the registry's schedulable sources,
+// so config reads a SCHEDULE_<PREFIX>_* knob for every source without importing the
+// registry.
+func scheduleSpecs() []config.ScheduleSpec {
+	var specs []config.ScheduleSpec
+	for _, d := range connector.All() {
+		if !d.Schedulable() {
+			continue
+		}
+		specs = append(specs, config.ScheduleSpec{Name: d.Name, EnvPrefix: d.EnvPrefix(), DefaultCron: d.DefaultCron})
+	}
+	return specs
+}
+
+// run builds the registry by iterating the connector registry, wires the notifier,
+// and runs the scheduler until a signal. Every broker client it opens is closed on
+// shutdown via the collected closers. A registry with no enabled source is not an
+// error: the always-on service idles until a signal rather than crash-looping a
 // restart-on-exit container.
 func run(logger *slog.Logger) error {
-	scheduleCfg, err := config.LoadSchedule()
+	scheduleCfg, err := config.LoadSchedule(scheduleSpecs())
 	if err != nil {
 		return err
 	}
@@ -69,26 +106,32 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	if scheduleCfg.Wikipedia.Enabled {
-		closer, regErr := registerWikipedia(&reg, scheduleCfg.Wikipedia, scheduleCfg.Jitter, logger)
-		if regErr != nil {
-			return regErr
+	var enabled []string
+	for _, d := range connector.All() {
+		if !d.Schedulable() {
+			continue
+		}
+		src, ok := scheduleCfg.Source(d.Name)
+		if !ok || !src.Enabled {
+			continue
+		}
+		build, ok := builders[d.Name]
+		if !ok {
+			return fmt.Errorf("scheduler: no producer builder for schedulable source %q", d.Name)
+		}
+		sched, specErr := schedule.ParseSpec(src.Cron)
+		if specErr != nil {
+			return fmt.Errorf("%s: %w", d.Name, specErr)
+		}
+		producer, closer, buildErr := build(logger)
+		if buildErr != nil {
+			return buildErr
 		}
 		closers = append(closers, closer)
-	}
-	if scheduleCfg.Factcheck.Enabled {
-		closer, regErr := registerFactcheck(&reg, scheduleCfg.Factcheck, scheduleCfg.Jitter, logger)
-		if regErr != nil {
+		if regErr := reg.RegisterSchedule(producer.Name(), sched, scheduleCfg.Jitter, producer); regErr != nil {
 			return regErr
 		}
-		closers = append(closers, closer)
-	}
-	if scheduleCfg.Scrutins.Enabled {
-		closer, regErr := registerScrutins(&reg, scheduleCfg.Scrutins, scheduleCfg.Jitter, logger)
-		if regErr != nil {
-			return regErr
-		}
-		closers = append(closers, closer)
+		enabled = append(enabled, d.Name)
 	}
 
 	alerts := config.LoadCrawlAlerts()
@@ -97,14 +140,12 @@ func run(logger *slog.Logger) error {
 
 	logger.InfoContext(ctx, "scheduler started",
 		slog.Int("sources", reg.Len()),
-		slog.Bool("wikipedia", scheduleCfg.Wikipedia.Enabled),
-		slog.Bool("factcheck", scheduleCfg.Factcheck.Enabled),
-		slog.Bool("scrutins", scheduleCfg.Scrutins.Enabled),
+		slog.Any("enabled", enabled),
 		slog.Duration("jitter", scheduleCfg.Jitter))
 
 	if reg.Len() == 0 {
 		// The always-on service idles when every source is disabled rather than
-		// crash-looping; an operator enables a source with SCHEDULE_*_ENABLED.
+		// crash-looping; an operator enables a source with SCHEDULE_<PREFIX>_ENABLED.
 		logger.InfoContext(ctx, "scheduler idle: no source enabled, waiting for signal")
 	}
 
@@ -114,30 +155,25 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-// registerWikipedia builds the Wikipedia crawl producer from its config and
-// registers it on the given cron spec. It returns a closer for the broker client
-// it opens.
-func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter time.Duration, logger *slog.Logger) (func(), error) {
-	sched, err := schedule.ParseSpec(src.Cron)
-	if err != nil {
-		return nil, fmt.Errorf("wikipedia: %w", err)
-	}
+// buildWikipedia builds the Wikipedia crawl producer from its config, returning a
+// closer for the broker client it opens. On its own error it closes what it opened.
+func buildWikipedia(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 	crawlCfg, err := config.LoadCrawl()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	queueCfg, err := config.LoadCrawlQueue()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	gateCfg, err := config.LoadCrawlCheckworthy()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	closer := func() { _ = client.Close() }
 
@@ -151,7 +187,7 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 		})
 		if gateErr != nil {
 			closer()
-			return nil, gateErr
+			return nil, nil, gateErr
 		}
 		gate = gateClient
 	}
@@ -159,13 +195,13 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 	categories := wiki.ShardCategories(crawlCfg.Categories, crawlCfg.Shards, crawlCfg.ShardIndex)
 	if len(categories) == 0 {
 		closer()
-		return nil, fmt.Errorf("scheduler: wikipedia shard has no categories (shards=%d index=%d)", crawlCfg.Shards, crawlCfg.ShardIndex)
+		return nil, nil, fmt.Errorf("scheduler: wikipedia shard has no categories (shards=%d index=%d)", crawlCfg.Shards, crawlCfg.ShardIndex)
 	}
 
 	checkpoint, err := wiki.LoadCheckpoint(crawlCfg.CheckpointPath)
 	if err != nil {
 		closer()
-		return nil, fmt.Errorf("scheduler: load crawl checkpoint: %w", err)
+		return nil, nil, fmt.Errorf("scheduler: load crawl checkpoint: %w", err)
 	}
 	gateFailMode := wiki.GateFailOpen
 	if crawlCfg.GateFailClosed {
@@ -193,32 +229,23 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 			Checkpoint:      checkpoint,
 		},
 	}
-
-	if err := reg.RegisterSchedule(producer.Name(), sched, jitter, producer); err != nil {
-		closer()
-		return nil, err
-	}
-	return closer, nil
+	return producer, closer, nil
 }
 
-// registerFactcheck builds the fact-check-archive producer and registers it.
-func registerFactcheck(reg *schedule.Registry, src config.ScheduleSource, jitter time.Duration, logger *slog.Logger) (func(), error) {
-	sched, err := schedule.ParseSpec(src.Cron)
-	if err != nil {
-		return nil, fmt.Errorf("factcheck: %w", err)
-	}
+// buildFactcheck builds the fact-check-archive producer.
+func buildFactcheck(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 	archiveCfg, err := config.LoadFactCheckArchive()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	queueCfg, err := config.LoadFactCheckQueue()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	closer := func() { _ = client.Close() }
 
@@ -229,7 +256,7 @@ func registerFactcheck(reg *schedule.Registry, src config.ScheduleSource, jitter
 	})
 	if err != nil {
 		closer()
-		return nil, err
+		return nil, nil, err
 	}
 
 	producer := factcheckProducer{
@@ -239,32 +266,23 @@ func registerFactcheck(reg *schedule.Registry, src config.ScheduleSource, jitter
 		queries:  archiveCfg.Queries,
 		maxPages: archiveCfg.MaxPages,
 	}
-
-	if err := reg.RegisterSchedule(producer.Name(), sched, jitter, producer); err != nil {
-		closer()
-		return nil, err
-	}
-	return closer, nil
+	return producer, closer, nil
 }
 
-// registerScrutins builds the scrutins-archive producer and registers it.
-func registerScrutins(reg *schedule.Registry, src config.ScheduleSource, jitter time.Duration, logger *slog.Logger) (func(), error) {
-	sched, err := schedule.ParseSpec(src.Cron)
-	if err != nil {
-		return nil, fmt.Errorf("scrutins: %w", err)
-	}
+// buildScrutins builds the scrutins-archive producer.
+func buildScrutins(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 	archiveCfg, err := config.LoadScrutinsArchive()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	queueCfg, err := config.LoadScrutinsQueue()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	closer := func() { _ = client.Close() }
 
@@ -275,12 +293,38 @@ func registerScrutins(reg *schedule.Registry, src config.ScheduleSource, jitter 
 	}, qPublisher{client: client}, logger)
 	if err != nil {
 		closer()
-		return nil, err
+		return nil, nil, err
+	}
+	return producer, closer, nil
+}
+
+// buildExample builds the in-tree example template producer, showing the one
+// builder entry a new scheduled source adds. It publishes to the shared crawl
+// queue, so it reuses the wikipedia worker with no new consumer.
+func buildExample(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+	exampleCfg, err := config.LoadExample()
+	if err != nil {
+		return nil, nil, err
+	}
+	queueCfg, err := config.LoadCrawlQueue()
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if err := reg.RegisterSchedule(producer.Name(), sched, jitter, producer); err != nil {
-		closer()
-		return nil, err
+	client, err := queue.New(queueCfg.ClientConfig(0))
+	if err != nil {
+		return nil, nil, err
 	}
-	return closer, nil
+	closer := func() { _ = client.Close() }
+
+	producer, err := example.New(qPublisher{client: client}, logger, example.Config{
+		Label:       exampleCfg.Label,
+		MaxItems:    exampleCfg.MaxItems,
+		MaxPriority: queueCfg.MaxPriority,
+	})
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+	return producer, closer, nil
 }

@@ -13,11 +13,15 @@ set -euo pipefail
 #   consumer -> truth-in-stream-<env>-consumer-host: brings a source's WORKER up
 #               (detached) to drain the queue into the database.
 #
-# Source -> producer / queue / worker:
+# The source -> producer / queue / worker mapping is read from the connector
+# registry manifest (stack/backend/internal/connector/sources.json), the single
+# source of truth this script and the Go scheduler share, so a new source is a
+# registry entry, not an edit here. Today it covers:
 #   wikipedia  wikicrawl      / crawl.chunks     / crawlworker
 #   stats      statsingest    / embedding.jobs   / embedworker
 #   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
 #   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
+#   example    examplecrawl   / crawl.chunks     / crawlworker  (in-tree template)
 #
 # Lifecycle of `up` (the default action):
 #   1. Guard    - refuse on the wrong AWS account (deploy/targets.json vs live sts).
@@ -42,7 +46,8 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after]
-#   <source>: wikipedia | stats | factcheck | scrutins
+#   <source>: any name in the registry manifest (wikipedia, stats, factcheck,
+#             scrutins, example, ...)
 #
 # Configuration resolves through ingestion-common.sh (PROJECT, ENVIRONMENT,
 # CLUSTER for the guard summary) and the guard (expected account from
@@ -68,6 +73,10 @@ INGEST_REPO_REF="${INGEST_REPO_REF:-main}"
 INGEST_HOST_WORKDIR="${INGEST_HOST_WORKDIR:-/opt/truth-in-stream}"
 INGEST_COMPOSE_FILE="${INGEST_COMPOSE_FILE:-docker-compose.ingest.yml}"
 INGEST_FETCH_ENV_SCRIPT="${INGEST_FETCH_ENV_SCRIPT:-scripts/ingest-fetch-env.sh}"
+# The source registry manifest (internal/connector/sources.json) is the single
+# source of truth for a source's producer/worker/queue and forwarded env, so
+# adding a source is a registry entry, not an edit to this script's case table.
+INGEST_SOURCES_MANIFEST="${INGEST_SOURCES_MANIFEST:-$SCRIPT_DIR/../stack/backend/internal/connector/sources.json}"
 
 INGEST_CMD_TIMEOUT="${INGEST_CMD_TIMEOUT:-7200}"
 INGEST_CMD_DELIVERY_TIMEOUT="${INGEST_CMD_DELIVERY_TIMEOUT:-600}"
@@ -80,10 +89,14 @@ INGEST_METRICS_NAMESPACE="${INGEST_METRICS_NAMESPACE:-TruthInStream/RabbitMQ}"
 INGEST_BROKER_NAME="${INGEST_BROKER_NAME:-${PROJECT}-${ENVIRONMENT}}"
 
 usage() {
-  cat >&2 <<'USAGE'
+  local sources="(see ${INGEST_SOURCES_MANIFEST})"
+  if [[ -r "$INGEST_SOURCES_MANIFEST" ]]; then
+    sources="$(jq -r '.sources[].name' "$INGEST_SOURCES_MANIFEST" 2>/dev/null | paste -sd' ' - || true)"
+  fi
+  cat >&2 <<USAGE
 usage:
   ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after]
-  <source>: wikipedia | stats | factcheck | scrutins
+  <source>: ${sources}
   up      (default) start the host if needed and run the service over SSM
   down    stop the role's host for cost control
   status  read-only: instance state + queue depth
@@ -99,34 +112,32 @@ SRC_SERVICE=""      # the compose service this run drives (producer or worker)
 SRC_REQUIRED_ENV="" # required non-secret producer env (crawler role only)
 SRC_FORWARD_ENV=""  # non-secret producer env forwarded into the compose run
 
-# resolve_source ROLE SOURCE: map a source to its producer, worker, queue base,
-# and the non-secret producer env. SRC_SERVICE is the producer for the crawler
-# role and the worker for the consumer role. Required/forwarded env is producer
-# config only (workers need nothing from the operator); it deliberately excludes
-# every API key - those are read from Secrets Manager on the host, never passed
-# through the SSM command, so no secret is ever logged.
+# resolve_source ROLE SOURCE: read a source's producer, worker, queue base, and
+# non-secret producer env from the connector registry manifest (the single source
+# of truth both this script and the Go scheduler share), so adding a source needs
+# no edit here. SRC_SERVICE is the producer for the crawler role and the worker for
+# the consumer role. Forwarded env is producer config only (workers need nothing
+# from the operator) and, by the registry's contract, never contains an API key -
+# secrets are read from Secrets Manager on the host, never passed through the SSM
+# command, so no secret is ever logged.
 resolve_source() {
   local role="$1" source="$2"
-  case "$source" in
-    wikipedia)
-      SRC_PRODUCER="wikicrawl"; SRC_WORKER="crawlworker"; SRC_QUEUE_BASE="crawl.chunks"
-      SRC_REQUIRED_ENV="CRAWL_CATEGORIES"
-      SRC_FORWARD_ENV="CRAWL_CATEGORIES CRAWL_PROJECT WIKI_CORPUS CRAWL_CORPUS CRAWL_MAX_DEPTH CRAWL_MAX_PAGES CRAWL_INCLUDE_BODY CRAWL_SHARDS CRAWL_SHARD_INDEX CRAWL_CHECKWORTHY CRAWL_CHECKWORTHY_MODEL CRAWL_CHECKWORTHY_CONCURRENCY CRAWL_CHECKWORTHY_RPM LLM_PROVIDER" ;;
-    stats)
-      SRC_PRODUCER="statsingest"; SRC_WORKER="embedworker"; SRC_QUEUE_BASE="embedding.jobs"
-      SRC_REQUIRED_ENV=""
-      SRC_FORWARD_ENV="WIKI_ENQUEUE_BATCH_SIZE" ;;
-    factcheck)
-      SRC_PRODUCER="factcheckcrawl"; SRC_WORKER="factcheckworker"; SRC_QUEUE_BASE="factcheck.claims"
-      SRC_REQUIRED_ENV="FACTCHECK_QUERIES"
-      SRC_FORWARD_ENV="FACTCHECK_QUERIES FACTCHECK_LANGUAGE FACTCHECK_MAX_PAGES" ;;
-    scrutins)
-      SRC_PRODUCER="scrutinscrawl"; SRC_WORKER="scrutinsworker"; SRC_QUEUE_BASE="scrutins.votes"
-      SRC_REQUIRED_ENV=""
-      SRC_FORWARD_ENV="SCRUTINS_LEGISLATURE" ;;
-    *)
-      ig_fatal "unknown source '$source'; one of: wikipedia stats factcheck scrutins" ;;
-  esac
+  [[ -r "$INGEST_SOURCES_MANIFEST" ]] || ig_fatal "cannot read source manifest ${INGEST_SOURCES_MANIFEST}; set INGEST_SOURCES_MANIFEST"
+
+  local entry
+  entry="$(jq -c --arg n "$source" '.sources[] | select(.name==$n)' "$INGEST_SOURCES_MANIFEST" 2>/dev/null || true)"
+  if [[ -z "$entry" ]]; then
+    local known
+    known="$(jq -r '.sources[].name' "$INGEST_SOURCES_MANIFEST" 2>/dev/null | paste -sd' ' - || true)"
+    ig_fatal "unknown source '$source'; one of: ${known}"
+  fi
+
+  SRC_PRODUCER="$(jq -r '.producer' <<<"$entry")"
+  SRC_WORKER="$(jq -r '.worker' <<<"$entry")"
+  SRC_QUEUE_BASE="$(jq -r '.queue' <<<"$entry")"
+  SRC_REQUIRED_ENV="$(jq -r '(.required_env // []) | join(" ")' <<<"$entry")"
+  SRC_FORWARD_ENV="$(jq -r '(.forward_env // []) | join(" ")' <<<"$entry")"
+
   if [[ "$role" == "crawler" ]]; then
     SRC_SERVICE="$SRC_PRODUCER"
   else
