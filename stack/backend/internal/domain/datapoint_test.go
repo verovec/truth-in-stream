@@ -188,6 +188,31 @@ func TestStatCorporaIncludesINSEEThemes(t *testing.T) {
 	}
 }
 
+// TestStatCorporaIncludesSDMXInstitutions proves the supranational SDMX-connector
+// corpora (ECB, OECD) are registered statistical corpora, so the wiki-only
+// maintenance reads exclude them and each publisher stays identifiable and
+// distinct from the national and EU corpora.
+func TestStatCorporaIncludesSDMXInstitutions(t *testing.T) {
+	registered := map[string]bool{}
+	for _, c := range StatCorpora() {
+		registered[c] = true
+	}
+	for _, c := range []string{ECBStatCorpus, OECDStatCorpus} {
+		if c == "" {
+			t.Errorf("SDMX corpus label is empty")
+		}
+		if !registered[c] {
+			t.Errorf("corpus %q not in StatCorpora exclusion set", c)
+		}
+		if !IsStatCorpus(c) {
+			t.Errorf("IsStatCorpus(%q) = false, want true", c)
+		}
+	}
+	if ECBStatCorpus == OECDStatCorpus {
+		t.Errorf("ECB and OECD corpora must be distinct, both %q", ECBStatCorpus)
+	}
+}
+
 func TestDatapointValidate(t *testing.T) {
 	tests := []struct {
 		name    string

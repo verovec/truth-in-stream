@@ -71,6 +71,18 @@
       "forward_env": [
         "SCRUTINS_LEGISLATURE"
       ]
+    },
+    {
+      "name": "sdmx",
+      "producer": "sdmxcrawl",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "SDMX_SOURCES",
+        "SDMX_START_PERIOD",
+        "SDMX_END_PERIOD",
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
     }
   ]
 }
