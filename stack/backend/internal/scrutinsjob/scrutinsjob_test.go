@@ -112,7 +112,7 @@ func TestProcessIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestProcessDropsBadJobs(t *testing.T) {
+func TestProcessDeadLettersBadJobs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -134,8 +134,8 @@ func TestProcessDropsBadJobs(t *testing.T) {
 			t.Parallel()
 			store := &recordingStore{}
 			w := newTestWorker(store)
-			if res := w.Process(t.Context(), tc.body, 5); res.Action != ActionAck {
-				t.Fatalf("Action = %v, want ActionAck (drop)", res.Action)
+			if res := w.Process(t.Context(), tc.body, 5); res.Action != ActionReject {
+				t.Fatalf("Action = %v, want ActionReject (dead-letter a bad job)", res.Action)
 			}
 			if store.count() != 0 {
 				t.Fatalf("wrote %d records for a bad job, want 0", store.count())
@@ -166,7 +166,7 @@ func TestProcessRepublishesOnTransientFailure(t *testing.T) {
 	}
 }
 
-func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
+func TestProcessDeadLettersAfterExhaustingRetries(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{failN: 1, failWith: errors.New("db down")}
 	w := NewWorker(store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
@@ -174,8 +174,8 @@ func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
 	// Attempt 2 (zero-indexed) is the last allowed attempt for MaxAttempts 3.
 	res := w.Process(t.Context(), jobBody(t, scrutinPayload, 2), 7)
 
-	if res.Action != ActionAck {
-		t.Fatalf("Action = %v, want ActionAck (drop after retries)", res.Action)
+	if res.Action != ActionReject {
+		t.Fatalf("Action = %v, want ActionReject (dead-letter after retries)", res.Action)
 	}
 }
 

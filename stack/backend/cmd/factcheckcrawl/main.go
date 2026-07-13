@@ -45,12 +45,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return err
 	}

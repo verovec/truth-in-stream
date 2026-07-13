@@ -82,13 +82,7 @@ func run(logger *slog.Logger) error {
 		prefetch64 = maxPrefetch
 	}
 	prefetch := int(prefetch64)
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(prefetch))
 	if err != nil {
 		return err
 	}

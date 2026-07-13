@@ -72,8 +72,7 @@ func (j Job) validate() error {
 type Action int
 
 const (
-	// ActionAck drops the delivery: the job was handled, was obsolete, or can
-	// never succeed (a poison message or one past its retry budget).
+	// ActionAck drops the delivery: the job was handled or was obsolete.
 	ActionAck Action = iota
 	// ActionRepublish re-enqueues the job (with its attempt incremented) for a
 	// bounded retry, then drops the original.
@@ -81,6 +80,9 @@ const (
 	// ActionRequeue returns the delivery to the broker unhandled because a
 	// shutdown cut the work short, so it is redelivered without burning an attempt.
 	ActionRequeue
+	// ActionReject dead-letters the delivery: a poison message or one past its
+	// retry budget is parked in the DLQ, never silently acked away.
+	ActionReject
 )
 
 // Result is the outcome of processing one message: the broker action plus, for
@@ -366,14 +368,14 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 	items := make([]pending, 0, len(deliveries))
 	for _, d := range deliveries {
 		if !w.knowsVersion(d.Version()) {
-			w.logger.ErrorContext(ctx, "dropping embedding job with unknown queue version",
+			w.logger.ErrorContext(ctx, "dead-lettering embedding job with unknown queue version",
 				slog.String("version", d.Version()))
-			w.ack(ctx, d)
+			w.reject(ctx, d)
 			continue
 		}
 		job, ok := w.decode(ctx, d.Body())
 		if !ok {
-			w.ack(ctx, d)
+			w.reject(ctx, d)
 			continue
 		}
 		items = append(items, pending{d: d, job: job})
@@ -415,12 +417,12 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 			// A wrong shape is the provider breaking its contract, not a transient
 			// fault: re-embedding the same content would reproduce it, so drop rather
 			// than loop, and never write a malformed vector into the corpus.
-			w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
+			w.logger.ErrorContext(ctx, "dead-lettering embedding job with unexpected provider response",
 				slog.String("source", it.job.Source), slog.String("external_id", it.job.ExternalID),
 				slog.Int("chunk_index", it.job.ChunkIndex),
 				slog.Int("dims", len(vec)),
 				slog.Int("want_dims", domain.EmbeddingDim))
-			w.ack(ctx, it.d)
+			w.reject(ctx, it.d)
 			continue
 		}
 		good = append(good, it)
@@ -502,19 +504,27 @@ func (w *Worker) decode(ctx context.Context, body []byte) (Job, bool) {
 }
 
 // applyResult applies the broker action Process or afterFailure chose. A failed
-// republish requeues the original rather than acking it, so a transient failure
-// can never silently drop the job.
+// republish requeues the original on shutdown (redelivered later) or dead-letters
+// it otherwise, so a transient failure can never silently drop the job nor loop
+// forever with an unadvanced attempt.
 func (w *Worker) applyResult(ctx context.Context, d Delivery, res Result) {
 	switch res.Action {
 	case ActionRepublish:
 		if err := w.enqueuer.Enqueue(ctx, res.RepublishBody, res.RepublishPriority); err != nil {
-			w.logger.ErrorContext(ctx, "re-enqueue failed, requeuing original delivery", slog.Any("err", err))
-			w.nack(ctx, d)
+			if ctx.Err() != nil {
+				w.logger.InfoContext(ctx, "re-enqueue interrupted by shutdown, requeuing original delivery", slog.Any("err", err))
+				w.nack(ctx, d)
+				return
+			}
+			w.logger.ErrorContext(ctx, "re-enqueue failed, dead-lettering original delivery", slog.Any("err", err))
+			w.reject(ctx, d)
 			return
 		}
 		w.ack(ctx, d)
 	case ActionRequeue:
 		w.nack(ctx, d)
+	case ActionReject:
+		w.reject(ctx, d)
 	default:
 		w.ack(ctx, d)
 	}
@@ -526,12 +536,21 @@ func (w *Worker) ack(ctx context.Context, d Delivery) {
 	}
 }
 
-// nack returns a delivery to the broker for redelivery. The worker only ever
-// nacks to requeue (a shutdown or transient failure); it drops a dead message by
-// acking, never by nacking, so requeue is always true.
+// nack returns a delivery to the broker for redelivery. It is used only to
+// requeue (a shutdown or an interrupted re-enqueue), so requeue is always true; a
+// dead message is dead-lettered via reject, never acked away.
 func (w *Worker) nack(ctx context.Context, d Delivery) {
 	if err := d.Nack(true); err != nil {
 		w.logger.ErrorContext(ctx, "nack failed", slog.Any("err", err))
+	}
+}
+
+// reject dead-letters a delivery: a poison message or a job past its retry budget
+// is parked in the DLQ via a requeue=false nack, so the loss is inspectable and
+// replayable, never silent.
+func (w *Worker) reject(ctx context.Context, d Delivery) {
+	if err := d.Nack(false); err != nil {
+		w.logger.ErrorContext(ctx, "reject (dead-letter) failed", slog.Any("err", err))
 	}
 }
 
@@ -553,13 +572,13 @@ func (w *Worker) requeueItems(ctx context.Context, items []pending) {
 
 // Process embeds the job in body and writes its vector, returning the action the
 // caller must take on the delivery. It never returns an error: a malformed or
-// invalid message and a persistent failure are both folded into ActionAck (after
-// an ERROR log, so the drop is visible, not silent), a transient failure into
-// ActionRepublish, and a shutdown into ActionRequeue.
+// invalid message and a persistent failure are both folded into ActionReject
+// (after an ERROR log, so the message is parked in the DLQ, not lost), a transient
+// failure into ActionRepublish, and a shutdown into ActionRequeue.
 func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Result {
 	job, ok := w.decode(ctx, body)
 	if !ok {
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	return w.embedAndWrite(ctx, job, priority)
 }
@@ -577,13 +596,13 @@ func (w *Worker) embedAndWrite(ctx context.Context, job Job, priority uint8) Res
 		if len(embeddings) == 1 {
 			got = len(embeddings[0])
 		}
-		w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job with unexpected provider response",
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("vectors", len(embeddings)),
 			slog.Int("dims", got),
 			slog.Int("want_dims", domain.EmbeddingDim))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	chunk := domain.EvidenceChunk{Source: job.Source, ExternalID: job.ExternalID, ChunkIndex: job.ChunkIndex, Content: job.Content, Embedding: embeddings[0]}
@@ -613,9 +632,9 @@ func (w *Worker) writeChunk(ctx context.Context, staging bool, chunk domain.Evid
 // afterFailure decides what to do with a job whose embed or write failed. A
 // canceled context means a shutdown cut the work short: requeue it so it is
 // redelivered without counting the attempt. Otherwise the attempt counts: if the
-// budget is spent the job is dropped with an ERROR log so the loss is visible;
-// if attempts remain it is re-enqueued with the attempt incremented, at the same
-// priority so an important chunk keeps its place.
+// budget is spent the job is dead-lettered with an ERROR log so the loss is
+// inspectable; if attempts remain it is re-enqueued with the attempt incremented,
+// at the same priority so an important chunk keeps its place.
 func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stage string, cause error) Result {
 	if ctx.Err() != nil {
 		w.logger.InfoContext(ctx, "embedding job interrupted by shutdown, requeuing",
@@ -629,14 +648,14 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	// corrupt or crafted job with a near-max attempt cannot overflow past the cap
 	// and loop forever; validate already rejected a negative attempt.
 	if job.Attempt >= w.maxAttempts-1 {
-		w.logger.ErrorContext(ctx, "dropping embedding job after exhausting retries",
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job after exhausting retries",
 			slog.String("stage", stage),
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("attempt", job.Attempt),
 			slog.Int("max_attempts", w.maxAttempts),
 			slog.Any("err", cause))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	retry := job
@@ -644,12 +663,12 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	encoded, err := json.Marshal(retry)
 	if err != nil {
 		// Marshaling a value just unmarshaled cannot realistically fail; if it
-		// does, dropping is safer than spinning on a job that can never re-enqueue.
-		w.logger.ErrorContext(ctx, "dropping embedding job that cannot be re-encoded for retry",
+		// does, dead-lettering is safer than spinning on a job that can never re-enqueue.
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job that cannot be re-encoded for retry",
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Any("err", err))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	w.logger.WarnContext(ctx, "embedding job failed, re-enqueuing for retry",
 		slog.String("stage", stage),
