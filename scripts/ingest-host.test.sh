@@ -235,6 +235,56 @@ echo "TEST: --stop-after stops the host after the run"
   [[ -n "$snd" && -n "$stp" && "$snd" -lt "$stp" ]] && ok "stops after the run, not before" || fail "stop-after ordering (send=$snd stop=$stp)"
 )
 
+echo "TEST: consumer --stop-when-idle hands the workers a drain window and a host-side drain-wait"
+(
+  DRY_RUN=1 make_sandbox
+  out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "exit 0 under a dry-run stop-when-idle" || fail "exit 0 under a dry-run stop-when-idle (got $rc)"
+  assert_contains "$out" "up -d" "still brings the worker up detached"
+  assert_contains "$out" "WORKER_IDLE_TIMEOUT='300s'" "hands the worker a drain-to-idle window"
+  assert_contains "$out" "ps --status running --services" "injects the host-side drain-wait loop"
+  assert_contains "$out" "worker" "the drain-wait watches worker containers"
+  assert_contains "$out" "DRY-RUN aws ec2 stop-instances" "stops the host once the workers idle out"
+)
+
+echo "TEST: a plain consumer up neither sets an idle window nor waits to drain"
+(
+  DRY_RUN=1 make_sandbox
+  out="$(bash "$RUN" consumer wikipedia up 2>&1)"
+  assert_contains "$out" "WORKER_IDLE_TIMEOUT=''" "leaves the idle window empty (runs until SIGTERM)"
+  assert_not_contains "$out" "ps --status running --services" "no drain-wait without --stop-when-idle"
+  assert_not_contains "$out" "DRY-RUN aws ec2 stop-instances" "no auto-stop without --stop-when-idle"
+)
+
+echo "TEST: --stop-when-idle stops the host after the drain, and only after the run"
+(
+  make_sandbox
+  bash "$RUN" consumer wikipedia up --stop-when-idle >/dev/null 2>&1
+  log="$AWS_CALL_LOG"
+  assert_contains "$(cat "$log")" "ssm send-command" "the worker run was sent"
+  assert_contains "$(cat "$log")" "ec2 stop-instances" "the host is stopped after a clean drain"
+  snd="$(line_of "$log" "ssm send-command")"; stp="$(line_of "$log" "ec2 stop-instances")"
+  [[ -n "$snd" && -n "$stp" && "$snd" -lt "$stp" ]] && ok "stops after the drain, not before" || fail "stop-when-idle ordering (send=$snd stop=$stp)"
+)
+
+echo "TEST: --stop-when-idle leaves the host running when the drain does not complete"
+(
+  CMD_STATUS=Failed CMD_CODE=1 make_sandbox
+  out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "non-zero exit when the drain does not complete" || fail "non-zero exit when the drain does not complete (got $rc)"
+  assert_contains "$out" "left running for inspection" "leaves an undrained host up for inspection"
+  assert_not_contains "$(cat "$AWS_CALL_LOG")" "ec2 stop-instances" "an undrained host is not stopped"
+)
+
+echo "TEST: --stop-when-idle is rejected for the crawler role and before any aws call"
+(
+  make_sandbox
+  out="$(CRAWL_CATEGORIES='C' bash "$RUN" crawler wikipedia up --stop-when-idle 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "non-zero exit on crawler --stop-when-idle" || fail "non-zero exit on crawler --stop-when-idle (got $rc)"
+  assert_contains "$out" "consumer role only" "explains it is consumer-only"
+  [[ ! -s "$AWS_CALL_LOG" ]] && ok "crawler --stop-when-idle makes no aws call" || fail "crawler --stop-when-idle makes no aws call"
+)
+
 echo "TEST: without --stop-after the host is left running for the operator to down"
 (
   make_sandbox

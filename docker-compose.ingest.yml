@@ -192,7 +192,7 @@ services:
   crawlworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/crawlworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
@@ -206,6 +206,9 @@ services:
       CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
       CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
       CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -218,7 +221,7 @@ services:
   embedworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/embedworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
@@ -232,6 +235,9 @@ services:
       EMBED_WORKER_CONCURRENCY: "${EMBED_WORKER_CONCURRENCY:-}"
       EMBED_WORKER_MAX_ATTEMPTS: "${EMBED_WORKER_MAX_ATTEMPTS:-}"
       EMBED_WORKER_RPM: "${EMBED_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -244,7 +250,7 @@ services:
   factcheckworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/factcheckworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
@@ -258,6 +264,9 @@ services:
       CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
       CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
       CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -270,7 +279,7 @@ services:
   scrutinsworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/scrutinsworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
@@ -281,6 +290,9 @@ services:
       DATABASE_URL: "${DATABASE_URL:-}"
       SCRUTINS_WORKER_CONCURRENCY: "${SCRUTINS_WORKER_CONCURRENCY:-}"
       SCRUTINS_WORKER_MAX_ATTEMPTS: "${SCRUTINS_WORKER_MAX_ATTEMPTS:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:

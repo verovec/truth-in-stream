@@ -58,6 +58,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	idle, err := config.LoadWorkerIdle()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -77,7 +81,7 @@ func run(logger *slog.Logger) error {
 	worker := crawljob.NewWorker(
 		newEmbedder(logger, embedding, workerCfg),
 		store,
-		qStream{client: client},
+		qStream{client: client, idle: idle},
 		qEnqueuer{client: client},
 		logger,
 		crawljob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
@@ -86,7 +90,8 @@ func run(logger *slog.Logger) error {
 	logger.InfoContext(ctx, "crawl worker started",
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
-		slog.Int("max_attempts", workerCfg.MaxAttempts))
+		slog.Int("max_attempts", workerCfg.MaxAttempts),
+		slog.Duration("idle_timeout", idle))
 
 	// Announce the drain to Slack symmetrically to the producers (silent no-op when
 	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.

@@ -2143,6 +2143,29 @@ func LoadScrutinsWorker() (EmbedWorker, error) {
 	return loadWorkerCommon("SCRUTINS_WORKER", defaultWorker())
 }
 
+// maxWorkerIdleTimeout caps the drain-to-idle window so a typo cannot pin a
+// consumer host up for an absurd stretch, billing while it waits to idle out.
+const maxWorkerIdleTimeout = 24 * time.Hour
+
+// LoadWorkerIdle reads the shared consumer drain-to-idle window from
+// WORKER_IDLE_TIMEOUT. Zero - the default, and the local default - disables idle
+// exit: a worker runs until SIGTERM, exactly as before. A positive value turns on
+// drain-to-idle: a worker whose queue yields no delivery for the window exits
+// cleanly (reporting what it drained through the existing consumer stop alert),
+// which the cloud consumer host keys its self-stop on once every worker has idled
+// out. The window is capped so an over-long value cannot strand an idle host
+// running.
+func LoadWorkerIdle() (time.Duration, error) {
+	idle, err := durationEnvAllowZero("WORKER_IDLE_TIMEOUT", 0)
+	if err != nil {
+		return 0, err
+	}
+	if idle > maxWorkerIdleTimeout {
+		return 0, fmt.Errorf("config: WORKER_IDLE_TIMEOUT %s exceeds the maximum %s", idle, maxWorkerIdleTimeout)
+	}
+	return idle, nil
+}
+
 // defaultWorker is the worker configuration before any environment override.
 func defaultWorker() EmbedWorker {
 	return EmbedWorker{

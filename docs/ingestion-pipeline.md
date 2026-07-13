@@ -548,6 +548,7 @@ From the root `.env` (read by Compose). Defaults shown.
 | `RABBITMQ_PREFETCH` | concurrency x batch | Unacked jobs held per replica. |
 | `EMBED_WORKER_MAX_ATTEMPTS` | 5 | Delivery budget before a chunk is dropped. |
 | `EMBED_WORKER_RPM` | 0 (unpaced) | Per-replica Voyage rate cap. |
+| `WORKER_IDLE_TIMEOUT` | 0 (off) | Drain-to-idle window shared by every queue worker: with a positive value a worker whose queue is empty for this long exits cleanly (the consumer host's `--stop-when-idle` self-stop keys on it). Off locally so a fleet stays up. Capped at 24h. |
 | `WIKI_DRAIN_POLL_INTERVAL` / `_STALL_TIMEOUT` | 5s / 30m | Atomic drain poll / stall abort. |
 | `WIKI_CLUSTER_K` / `_MAX_ITERS` / `_SEED` | - | k-means parameters. |
 | `RABBITMQ_QUEUE` / `_QUEUE_VERSIONS` | `embedding.jobs` / `v1` | Dump queue base name and version roll. |
@@ -648,12 +649,30 @@ ENVIRONMENT=dev CRAWL_CATEGORIES="Category:Retraites en France" /crawler wikiped
 ENVIRONMENT=dev /consumer wikipedia            # up (default)
 ENVIRONMENT=dev /consumer wikipedia status     # watch state + backlog
 ENVIRONMENT=dev /consumer wikipedia down       # stop the host once the queue empties
+
+# Hands-off drain: run the worker, wait for it to idle out, then self-stop the host:
+ENVIRONMENT=dev /consumer wikipedia --stop-when-idle
 ```
 
 `DRY_RUN=1` drives the whole path (guard, resolve, start, send-command) without touching AWS,
 printing each mutating call - use it to rehearse. Stopping a host mid-run is safe: workers nack
 in-flight batches with requeue on SIGTERM within the 120s grace window (see
 [9b. Stop/restart safety](#9b-stoprestart-safety-assurance-ver-164)), so no work is lost.
+
+**Drain-to-idle and consumer self-stop (`--stop-when-idle`).** A worker normally runs until it
+is stopped, so an operator must remember to `down` the consumer host once the queue empties - and
+until then it bills for nothing. `--stop-when-idle` closes that loop. It hands the worker
+containers a drain-to-idle window (`WORKER_IDLE_TIMEOUT`, default `300s`): a worker whose queue
+yields no delivery for that long exits cleanly, reporting what it drained through the same Slack
+consumer-stop note the workers already post. The command then waits (over the existing SSM
+mechanics - no new infrastructure) until **every** worker container on the host has idle-exited
+and stops the host, so cost is capped automatically. The worker containers run `restart:
+on-failure`, so a clean idle-exit stays exited (a crash still restarts). If the drain does not
+complete within `INGEST_DRAIN_TIMEOUT` (default 1h) the host is left running for inspection and
+the command exits non-zero. A producer run that arrives after the host has stopped does not strand
+its messages - they sit durably in the queue, and the health command (below) plus the
+backlog-with-zero-consumers alarm make an off consumer host visible. `WORKER_IDLE_TIMEOUT` is off
+(empty) by default, including locally, so nothing changes for a worker fleet meant to stay up.
 
 ### Prerequisites (human-gated, deferred to the operator)
 
@@ -699,6 +718,85 @@ list. Delivery stays at-least-once with publisher confirms and durable, priority
 The same machinery serves every source's queue. Because the hosts run the containers directly,
 a version roll is just a new `RABBITMQ_QUEUE_VERSIONS` value in the run environment - it touches
 no task definition and no Terraform.
+
+### Pipeline health at a glance
+
+`make pipeline-health` (script: `scripts/pipeline-health.sh`) prints one **read-only** snapshot of
+the whole loop so an operator no longer needs several commands across two hosts and the database to
+know whether it is turning. It never starts, stops, or writes anything. Two clearly separated
+sections:
+
+- **Local** - corpus row counts from the compose Postgres (`claims`; `evidence_chunks` split into
+  embedded vs un-embedded; `political_claims`; `voting_records`) and which fleet containers are
+  running (scheduler, workers).
+- **Cloud** - the crawler and consumer host instance states, per-queue **and per-DLQ** backlog, and
+  each source's last-successful-run recency (the `RunSuccess` metric the producers emit).
+
+Each lookup degrades on its own: the local section says so when the stack (or just the database) is
+down; the cloud section says so when the account guard cannot resolve (no `deploy/targets.json`, or
+missing credentials) or a metric is unavailable (the metrics lambda is opt-in). Cloud corpus counts
+are read over a `make db-tunnel` by pointing `PIPELINE_DB_DSN` at the tunnel. The hosts live in
+`dev`, so pass `ENV=dev`:
+
+```bash
+make pipeline-health ENV=dev
+```
+
+### Local autonomy: a self-updating stack from `.env`
+
+The compose stack can run the whole loop with no operator action: the always-on `scheduler` service
+fires each enabled producer on its cron, and a running worker fleet drains the queues continuously.
+Every source defaults **disabled** (a plain `make up` schedules nothing and never spends), so
+turning the stack into a self-updating system is an explicit, cost-aware choice. Add to the root
+`.env`:
+
+```bash
+# Enable scheduled producers (each defaults DISABLED). *_CRON is a 5-field spec; defaults shown.
+SCHEDULE_WIKIPEDIA_ENABLED=true
+SCHEDULE_WIKIPEDIA_CRON=0 3 * * *
+SCHEDULE_FACTCHECK_ENABLED=true
+SCHEDULE_FACTCHECK_CRON=0 4 * * *
+SCHEDULE_SCRUTINS_ENABLED=true
+SCHEDULE_SCRUTINS_CRON=30 4 * * *
+
+# Producer config the enabled sources need:
+CRAWL_CATEGORIES=Category:Politique en France   # wikipedia (required when enabled)
+FACTCHECK_QUERIES=retraites,chômage             # factcheck (required when enabled)
+FACTCHECK_API_KEY=...                           # Google Fact Check Tools key (factcheck)
+CHECKWORTHY_API_KEY=...                          # optional crawl gate (or CRAWL_CHECKWORTHY=false)
+EMBEDDING_API_KEY=...                            # Voyage key - workers cannot embed without it
+```
+
+Then bring up the scheduler and a worker fleet that stays up to drain:
+
+```bash
+make up                     # includes the always-on scheduler
+make crawl-workers          # wikipedia -> crawl.chunks
+make fleet-up               # stats -> embedding.jobs
+make factcheck-workers      # factcheck -> factcheck.claims
+make scrutins-workers       # scrutins -> scrutins.votes
+```
+
+Locally `WORKER_IDLE_TIMEOUT` is unset, so the workers **do not** idle-exit - they stay up and
+drain each scheduled run as it lands. `make pipeline-health` confirms it is turning.
+
+**Cost.** Scheduled runs spend real money on every fire: the crawl fact-checkability gate
+(Anthropic, per `CHECKWORTHY_API_KEY`) and the embedding of every produced chunk/claim (Voyage, per
+`EMBEDDING_API_KEY`); the fact-check verify path's terminal DeepSeek gate spends per low-confidence
+claim at query time. Start with tight `CRAWL_CATEGORIES`/`FACTCHECK_QUERIES`, or set
+`CRAWL_CHECKWORTHY=false` to isolate the gate, before widening the crons.
+
+**Verify it end-to-end** with a short test cron (fires every two minutes) and watch a produce ->
+drain -> idle cycle happen with no operator action, then revert it:
+
+```bash
+SCHEDULE_WIKIPEDIA_CRON="*/2 * * * *"   # temporary; watch `make logs` and `make pipeline-health`
+```
+
+**Stop it.** Set the `SCHEDULE_*_ENABLED` flags back to `false` (or remove them) and
+`docker compose restart scheduler`; stop the worker fleets with `make fleet-down` (and the
+per-source `*-workers` containers). The producers are idempotent (workers upsert), so stopping and
+restarting never double-ingests.
 
 ---
 

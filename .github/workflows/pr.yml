@@ -100,6 +100,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/insee-idempotency-check.test.sh
+  # Unit-test the read-only pipeline health snapshot (local corpus counts + fleet
+  # containers, cloud host states + queue/DLQ backlog + run recency, and every
+  # section's graceful degradation) with stubbed aws/psql/docker (no database, no
+  # Docker daemon, no AWS account).
+  pipeline-health-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/pipeline-health.test.sh
   # Format-check the main-account DNS terraform root. That root is applied by
   # hand against the main account and is deliberately excluded from the
   # terraform workflow (no plan/apply, no AWS credentials). This job only runs
