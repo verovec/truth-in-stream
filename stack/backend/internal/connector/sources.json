@@ -71,20 +71,6 @@
       "forward_env": [
         "SCRUTINS_LEGISLATURE"
       ]
-    },
-    {
-      "name": "example",
-      "default_cron": "0 5 * * *",
-      "producer": "examplecrawl",
-      "worker": "crawlworker",
-      "queue": "crawl.chunks",
-      "required_env": [
-        "EXAMPLE_LABEL"
-      ],
-      "forward_env": [
-        "EXAMPLE_LABEL",
-        "EXAMPLE_MAX_ITEMS"
-      ]
     }
   ]
 }

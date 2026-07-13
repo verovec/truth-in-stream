@@ -7,8 +7,11 @@ import "fmt"
 // compose service, and - if DefaultCron is set - its builder in cmd/scheduler);
 // no other central file is edited. The four production sources migrated off the
 // hand-wired scheduler/host-script cases keep their exact crons, queues, and
-// forwarded env, so behavior is unchanged. The "example" entry is the in-tree
-// template a new connector copies.
+// forwarded env, so behavior is unchanged. The copyable recipe a new connector
+// follows lives in internal/example + cmd/examplecrawl (a compile-checked template
+// deliberately kept out of this live registry, so no operator action can run it
+// against a real environment); connector_test validates a test-only descriptor for
+// it to prove the entry a real source adds here is well-formed.
 var descriptors = []Descriptor{
 	{
 		Name:        "wikipedia",
@@ -53,20 +56,6 @@ var descriptors = []Descriptor{
 		Queue:       "scrutins.votes",
 		ForwardEnv:  []string{"SCRUTINS_LEGISLATURE"},
 	},
-	{
-		// example is the in-tree recipe template: a self-contained producer package
-		// (internal/example) plus this one entry. It reuses the wikipedia job shape,
-		// queue, and worker (crawl.chunks / crawlworker), so it needs no new
-		// consumer. It defaults DISABLED like every source and is safe to keep in
-		// the tree: it never runs until an operator opts it in.
-		Name:        "example",
-		DefaultCron: "0 5 * * *",
-		Producer:    "examplecrawl",
-		Worker:      "crawlworker",
-		Queue:       "crawl.chunks",
-		RequiredEnv: []string{"EXAMPLE_LABEL"},
-		ForwardEnv:  []string{"EXAMPLE_LABEL", "EXAMPLE_MAX_ITEMS"},
-	},
 }
 
 // All returns a copy of the registry in declaration order, so a caller cannot
@@ -97,20 +86,32 @@ func Lookup(name string) (Descriptor, bool) {
 	return Descriptor{}, false
 }
 
-// Validate checks the whole registry: every descriptor is individually valid and
-// no two share a name. It is the invariant a startup or a registry test asserts,
-// so a malformed or duplicated entry is caught before it reaches the scheduler or
-// the host scripts.
-func Validate() error {
-	seen := make(map[string]struct{}, len(descriptors))
-	for _, d := range descriptors {
+// Validate checks the whole registry: every descriptor is individually valid, no
+// two share a name, and no two share a normalized env prefix (which would collide
+// on one SCHEDULE_<PREFIX>_* knob and silently enable or cron-override both). It is
+// the invariant a startup or a registry test asserts, so a malformed, duplicated,
+// or colliding entry is caught before it reaches the scheduler or the host scripts.
+func Validate() error { return validateDescriptors(descriptors) }
+
+// validateDescriptors is the registry invariant, split out so a test can exercise
+// it on a constructed slice (e.g. a deliberate prefix collision) without mutating
+// the package registry.
+func validateDescriptors(ds []Descriptor) error {
+	seenName := make(map[string]struct{}, len(ds))
+	seenPrefix := make(map[string]string, len(ds))
+	for _, d := range ds {
 		if err := d.Validate(); err != nil {
 			return err
 		}
-		if _, dup := seen[d.Name]; dup {
+		if _, dup := seenName[d.Name]; dup {
 			return fmt.Errorf("connector: duplicate source name %q", d.Name)
 		}
-		seen[d.Name] = struct{}{}
+		seenName[d.Name] = struct{}{}
+		prefix := d.EnvPrefix()
+		if other, dup := seenPrefix[prefix]; dup {
+			return fmt.Errorf("connector: sources %q and %q both normalize to env prefix %q, colliding on SCHEDULE_%s_*", other, d.Name, prefix, prefix)
+		}
+		seenPrefix[prefix] = d.Name
 	}
 	return nil
 }

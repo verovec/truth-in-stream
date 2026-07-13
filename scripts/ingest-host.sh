@@ -21,7 +21,6 @@ set -euo pipefail
 #   stats      statsingest    / embedding.jobs   / embedworker
 #   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
 #   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
-#   example    examplecrawl   / crawl.chunks     / crawlworker  (in-tree template)
 #
 # Lifecycle of `up` (the default action):
 #   1. Guard    - refuse on the wrong AWS account (deploy/targets.json vs live sts).
@@ -47,7 +46,7 @@ set -euo pipefail
 # Usage:
 #   scripts/ingest-host.sh <crawler|consumer> <source> [up|down|status] [--stop-after]
 #   <source>: any name in the registry manifest (wikipedia, stats, factcheck,
-#             scrutins, example, ...)
+#             scrutins, ...)
 #
 # Configuration resolves through ingestion-common.sh (PROJECT, ENVIRONMENT,
 # CLUSTER for the guard summary) and the guard (expected account from

@@ -7,12 +7,15 @@ import (
 	cron "github.com/robfig/cron/v3"
 )
 
-// SecretRef declares one secret a source's producer or worker needs on the host.
-// EnvVar is the environment variable the process reads it from; SecretSuffix is
-// the Secrets Manager id under <project>/<env>/ the host materializes it from
-// (scripts/ingest-fetch-env.sh). A secret is NEVER listed in ForwardEnv: it is
-// read only from Secrets Manager on the host, so it never travels through the
-// operator's SSM command payload and is never logged.
+// SecretRef declares one producer secret a source needs on the crawler host.
+// EnvVar is the environment variable the producer reads it from; SecretSuffix is
+// the Secrets Manager id under <project>/<env>/ the host materializes it from.
+// scripts/ingest-fetch-env.sh reads these from the manifest and fetches them on
+// the crawler host, so declaring one actually wires the fetch (its ARN must also
+// be added to the crawler host's secret_arns in stack/terraform/dev/main.tf). A
+// secret is NEVER listed in ForwardEnv: it is read only from Secrets Manager on
+// the host, so it never travels through the operator's SSM command payload and is
+// never logged.
 type SecretRef struct {
 	EnvVar       string `json:"env_var"`
 	SecretSuffix string `json:"secret_suffix"`

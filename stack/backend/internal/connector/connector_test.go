@@ -19,6 +19,70 @@ func TestRegistryValidates(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsDuplicateName guards the name-uniqueness invariant.
+func TestValidateRejectsDuplicateName(t *testing.T) {
+	t.Parallel()
+	ds := []Descriptor{
+		{Name: "a", Producer: "pa", Worker: "wa", Queue: "qa"},
+		{Name: "a", Producer: "pb", Worker: "wb", Queue: "qb"},
+	}
+	if err := validateDescriptors(ds); err == nil {
+		t.Fatal("validateDescriptors accepted a duplicate name, want error")
+	}
+}
+
+// TestValidateRejectsPrefixCollision guards that two names normalizing to the same
+// SCHEDULE_<PREFIX> are rejected, so they cannot silently share one enable/cron
+// knob.
+func TestValidateRejectsPrefixCollision(t *testing.T) {
+	t.Parallel()
+	ds := []Descriptor{
+		{Name: "insee-series", DefaultCron: "0 3 * * *", Producer: "p1", Worker: "w1", Queue: "q1"},
+		{Name: "insee_series", DefaultCron: "0 4 * * *", Producer: "p2", Worker: "w2", Queue: "q2"},
+	}
+	if a, b := (Descriptor{Name: "insee-series"}).EnvPrefix(), (Descriptor{Name: "insee_series"}).EnvPrefix(); a != b {
+		t.Fatalf("test premise broken: prefixes differ (%q vs %q)", a, b)
+	}
+	if err := validateDescriptors(ds); err == nil {
+		t.Fatal("validateDescriptors accepted a prefix collision, want error")
+	}
+}
+
+// exampleDescriptor is the test-only descriptor for the internal/example template.
+// The template is deliberately kept out of the live registry so no operator action
+// can run it against a real environment; this proves the registry entry a real
+// source copies is well-formed and that it stays consistent with the live registry
+// (distinct name and env prefix).
+func exampleDescriptor() Descriptor {
+	return Descriptor{
+		Name:        "example",
+		DefaultCron: "0 5 * * *",
+		Producer:    "examplecrawl",
+		Worker:      "exampleworker",
+		Queue:       "example.evidence",
+		RequiredEnv: []string{"EXAMPLE_LABEL"},
+		ForwardEnv:  []string{"EXAMPLE_LABEL", "EXAMPLE_MAX_ITEMS"},
+		NewQueue:    true,
+	}
+}
+
+func TestExampleTemplateIsNotLiveButValid(t *testing.T) {
+	t.Parallel()
+	if _, ok := Lookup("example"); ok {
+		t.Fatal("example must not be in the live registry (an operator could run it against real infra)")
+	}
+	ex := exampleDescriptor()
+	if err := ex.Validate(); err != nil {
+		t.Fatalf("example template descriptor does not validate: %v", err)
+	}
+	// The template descriptor plus the live registry must still be a valid set:
+	// distinct name and env prefix, so the recipe a real source copies never
+	// collides with an existing source.
+	if err := validateDescriptors(append(All(), ex)); err != nil {
+		t.Fatalf("example template collides with the live registry: %v", err)
+	}
+}
+
 func TestRegistryHasTheFourProductionSources(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"wikipedia", "stats", "factcheck", "scrutins"} {

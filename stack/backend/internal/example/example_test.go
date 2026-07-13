@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
+	"github.com/verovec/truth-in-stream/backend/internal/connector"
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -55,15 +55,18 @@ func TestRunPublishesValidCrawlJobs(t *testing.T) {
 	if len(pub.bodies) != 3 {
 		t.Fatalf("published %d bodies, want 3", len(pub.bodies))
 	}
-	// Every body must be a crawljob.CrawlJob the existing crawl worker accepts,
-	// so the example reuses the worker with no new consumer.
+	// Every body must be a valid generic connector.EvidenceJob, demonstrating the
+	// shape a new evidence source publishes.
 	for i, body := range pub.bodies {
-		var job crawljob.CrawlJob
+		var job connector.EvidenceJob
 		if err := json.Unmarshal(body, &job); err != nil {
-			t.Fatalf("body %d not a CrawlJob: %v", i, err)
+			t.Fatalf("body %d not an EvidenceJob: %v", i, err)
 		}
-		if job.Corpus != sourceName || job.Content == "" || job.PageID <= 0 {
-			t.Errorf("body %d invalid: %+v", i, job)
+		if err := job.Validate(); err != nil {
+			t.Errorf("body %d does not validate: %v", i, err)
+		}
+		if job.Source != sourceName {
+			t.Errorf("body %d source = %q, want %q", i, job.Source, sourceName)
 		}
 	}
 }

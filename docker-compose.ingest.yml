@@ -153,31 +153,6 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinscrawl"
         awslogs-stream-prefix: "scrutinscrawl"
 
-  # example: the in-tree template producer (connector "example"). Publishes a
-  # bounded set of placeholder chunk jobs to crawl.chunks, so it reuses the
-  # wikipedia worker (crawlworker) with no new consumer - the pattern a source
-  # publishing an existing job shape follows. DB-free, keyless, and disabled in the
-  # fleet by default; it exists only as a copyable recipe. EXAMPLE_LABEL is
-  # required (the operator command forwards it).
-  examplecrawl:
-    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
-    entrypoint: ["/examplecrawl"]
-    restart: "no"
-    environment:
-      RABBITMQ_URL: "${RABBITMQ_URL:-}"
-      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
-      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
-      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
-      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
-      EXAMPLE_LABEL: "${EXAMPLE_LABEL:-}"
-      EXAMPLE_MAX_ITEMS: "${EXAMPLE_MAX_ITEMS:-}"
-    logging:
-      driver: awslogs
-      options:
-        <<: *awslogs-options
-        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/examplecrawl"
-        awslogs-stream-prefix: "examplecrawl"
-
   # --- Workers (run by /consumer; long-running, drain the queue into the DB) ---
   #
   # stop_grace_period is 120s so that on `docker compose down` / host stop the

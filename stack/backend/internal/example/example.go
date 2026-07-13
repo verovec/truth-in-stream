@@ -1,17 +1,18 @@
-// Package example is the in-tree template connector: the minimal, self-contained
-// producer a new source is copied from. It demonstrates the source-adapter recipe
-// end to end - a producer package that implements crawlnotify.Producer, publishes
-// a self-contained job through a transport-free Publisher port, and is declared
-// once in the connector registry (as "example") plus one builder in cmd/scheduler
-// and one compose service (examplecrawl).
+// Package example is the compile-checked template connector: the minimal,
+// self-contained producer a new source is copied from. It demonstrates the
+// source-adapter recipe - a producer package that implements crawlnotify.Producer
+// and publishes the generic connector.EvidenceJob through a transport-free
+// Publisher port.
 //
-// It deliberately reuses the Wikipedia job shape, queue, and worker (a
-// crawljob.CrawlJob on crawl.chunks drained by crawlworker), so it needs no new
-// consumer - the pattern a source that publishes an existing job shape follows.
-// A source that introduces genuinely new evidence emits a connector.EvidenceJob
-// instead and declares its own queue and worker. The producer synthesizes a
-// bounded number of placeholder chunks; it is disabled by default and exists only
-// as a copyable reference, never to ingest real data.
+// It is deliberately kept OUT of the live connector registry (connector.All) and
+// out of docker-compose.ingest.yml, so no operator action - not the scheduler, not
+// scripts/ingest-host.sh - can run it against a real environment. As defense in
+// depth it also publishes to a dedicated queue (config.LoadExampleQueue, base
+// "example.evidence") that no production worker drains, so even hand-running the
+// cmd/examplecrawl binary cannot reach the live crawl.chunks queue or the
+// production evidence_chunks corpus. It exists purely as a copyable, buildable
+// reference; connector_test validates a test-only descriptor for it to prove the
+// registry entry a real source adds is well-formed.
 package example
 
 import (
@@ -20,13 +21,13 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
+	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
-// sourceName is the connector name and the corpus Source the synthesized chunks
-// land under. It matches the registry descriptor's Name.
+// sourceName is the connector name and the evidence Source the synthesized chunks
+// land under. A real source uses its own stable name here and in its descriptor.
 const sourceName = "example"
 
 // Publisher is the transport-free port the producer publishes job bodies through,
@@ -37,18 +38,18 @@ type Publisher interface {
 }
 
 // Config tunes one run. Label is the human-readable scope shown in the run alerts
-// (the EXAMPLE_LABEL the operator forwards); MaxItems bounds how many placeholder
-// chunks the run publishes; MaxPriority is the queue's configured priority ceiling
-// the jobs are published at.
+// (the EXAMPLE_LABEL a real source would forward); MaxItems bounds how many
+// placeholder chunks the run publishes; MaxPriority is the queue's configured
+// priority ceiling the jobs are published at.
 type Config struct {
 	Label       string
 	MaxItems    int
 	MaxPriority uint8
 }
 
-// Producer publishes a bounded set of placeholder evidence chunks, implementing
-// crawlnotify.Producer so the scheduler and the shared alert wiring run it exactly
-// like a real source.
+// Producer publishes a bounded set of placeholder evidence chunks as the generic
+// connector.EvidenceJob, implementing crawlnotify.Producer so it runs through the
+// shared scheduler and alert wiring exactly like a real source would.
 type Producer struct {
 	pub    Publisher
 	logger *slog.Logger
@@ -70,7 +71,8 @@ func New(pub Publisher, logger *slog.Logger, cfg Config) (*Producer, error) {
 	return &Producer{pub: pub, logger: logger, cfg: cfg}, nil
 }
 
-// Name identifies the source in the registry and the run alerts.
+// Name identifies the source in the run alerts. It matches the template
+// descriptor's Name.
 func (p *Producer) Name() string { return sourceName }
 
 // Scope is the human-readable description of what this run ingests.
@@ -81,24 +83,28 @@ func (p *Producer) Scope() string {
 	return p.cfg.Label
 }
 
-// Run publishes MaxItems self-contained placeholder chunks to the crawl queue and
-// reports how many were published as New. It honors cancellation between items so
-// a shutdown stops the run promptly.
+// Run publishes MaxItems self-contained placeholder EvidenceJobs and reports how
+// many were published as New. It honors cancellation between items so a shutdown
+// stops the run promptly, and validates each job before publishing so the template
+// shows the same guard a real producer applies.
 func (p *Producer) Run(ctx context.Context) (crawlnotify.Stats, error) {
 	var stats crawlnotify.Stats
 	for i := range p.cfg.MaxItems {
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
-		job := crawljob.CrawlJob{
-			PageID:     int64(i + 1),
+		job := connector.EvidenceJob{
+			Source:     sourceName,
+			ExternalID: fmt.Sprintf("item-%d", i+1),
 			ChunkIndex: 0,
 			Title:      fmt.Sprintf("Example item %d", i+1),
 			URL:        fmt.Sprintf("https://example.test/item/%d", i+1),
-			RevisionID: 1,
-			Corpus:     sourceName,
 			Content:    fmt.Sprintf("Placeholder evidence chunk %d for %s.", i+1, p.Scope()),
 			Kind:       string(domain.EvidenceKindLead),
+			Metadata:   map[string]any{"template": true},
+		}
+		if err := job.Validate(); err != nil {
+			return stats, fmt.Errorf("example: invalid item %d: %w", i+1, err)
 		}
 		body, err := json.Marshal(job)
 		if err != nil {

@@ -1,11 +1,15 @@
-// Command examplecrawl is the in-tree template producer binary: the one-shot a
-// new source's cmd/<name>crawl is copied from. It builds the example connector
-// (internal/example), publishes a bounded set of placeholder chunk jobs to the
-// crawl queue through the shared broker client, and exits - mirroring
-// cmd/wikicrawl and cmd/factcheckcrawl so the recipe is uniform across sources.
-// The broker comes from RABBITMQ_URL; EXAMPLE_* selects the run's label and item
-// bound. It is disabled in the fleet by default and publishes only placeholder
-// data, so it is safe to keep in the tree as a reference.
+// Command examplecrawl is the compile-checked template producer binary: the
+// one-shot a new source's cmd/<name>crawl is copied from. It builds the example
+// connector (internal/example), publishes a bounded set of placeholder
+// connector.EvidenceJob bodies, and exits - mirroring cmd/wikicrawl and
+// cmd/factcheckcrawl so the recipe is uniform across sources. The broker comes from
+// RABBITMQ_URL; EXAMPLE_* selects the run's label and item bound.
+//
+// It is deliberately not wired into the connector registry or
+// docker-compose.ingest.yml, and it publishes to a dedicated queue
+// (config.LoadExampleQueue) that no production worker drains, so it can never write
+// into the live crawl.chunks queue or the production evidence_chunks corpus. It
+// exists as a buildable reference only.
 package main
 
 import (
@@ -35,7 +39,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	queueCfg, err := config.LoadCrawlQueue()
+	queueCfg, err := config.LoadExampleQueue()
 	if err != nil {
 		return err
 	}

@@ -28,6 +28,9 @@
 //
 // # Adding a source (the recipe)
 //
+// internal/example + cmd/examplecrawl are the copyable, compile-checked template
+// (kept out of the live registry on purpose). To add a real source:
+//
 //  1. Write the producer package under internal/<name> and its one-shot binary
 //     under cmd/<name>crawl, exactly like the existing sources. If it targets the
 //     evidence corpus, publish [EvidenceJob] bodies; if it reuses an existing job
@@ -39,7 +42,8 @@
 //     compose services, list the non-secret producer env in ForwardEnv (and the
 //     subset that must be set in RequiredEnv), and declare each API key in Secrets
 //     - never in ForwardEnv, so a secret is only ever read from Secrets Manager on
-//     the host and never travels through the operator's SSM command.
+//     the host (scripts/ingest-fetch-env.sh reads the declared secrets from the
+//     manifest) and never travels through the operator's SSM command.
 //  3. Regenerate the manifest (go test ./internal/connector -run Manifest -update,
 //     or copy [MarshalManifest]'s output to sources.json) so the host scripts pick
 //     the source up. Add the producer's compose service to
@@ -47,6 +51,10 @@
 //  4. If DefaultCron is set, add the builder that constructs the producer to the
 //     builders table in cmd/scheduler - the one tiny wiring entry the framework
 //     cannot derive, because only the cmd layer may import the broker and config.
-//  5. Push any declared secret with scripts/push-secrets.sh; no per-source
-//     Terraform is needed, the ingestion-host module stays generic.
+//  5. For a secret-bearing source, create the Secrets Manager secret and push its
+//     value with scripts/push-secrets.sh, AND add its ARN to the crawler (or
+//     consumer) host's secret_arns in stack/terraform/dev/main.tf - the
+//     ingestion-host module grants exactly the listed ARNs and rejects wildcards,
+//     so a new secret ARN is the one required per-source Terraform edit. A keyless
+//     source needs no Terraform change; the ingestion-host module stays generic.
 package connector

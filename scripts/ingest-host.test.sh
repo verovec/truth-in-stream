@@ -150,12 +150,12 @@ echo "TEST: consumer up brings the worker up detached and resolves the consumer 
 )
 
 echo "TEST: the source map picks the right producer (crawler) and worker (consumer) per source"
-for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "factcheck factcheckcrawl factcheckworker" "scrutins scrutinscrawl scrutinsworker" "example examplecrawl crawlworker"; do
+for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "factcheck factcheckcrawl factcheckworker" "scrutins scrutinscrawl scrutinsworker"; do
   set -- $row; src="$1"; producer="$2"; worker="$3"
   (
     make_sandbox
     # Supply the producer's required env so validation passes for every source.
-    CRAWL_CATEGORIES='C' FACTCHECK_QUERIES='q' EXAMPLE_LABEL='demo' bash "$RUN" crawler "$src" up >/dev/null 2>&1
+    CRAWL_CATEGORIES='C' FACTCHECK_QUERIES='q' bash "$RUN" crawler "$src" up >/dev/null 2>&1
     assert_contains "$(cat "$AWS_CALL_LOG")" "run --rm" "crawler $src uses run --rm"
     assert_contains "$(cat "$AWS_CALL_LOG")" "$producer" "crawler $src runs the $producer producer"
   )
@@ -167,24 +167,18 @@ for row in "wikipedia wikicrawl crawlworker" "stats statsingest embedworker" "fa
   )
 done
 
-echo "TEST: the in-tree example source is operable purely from the registry manifest"
+echo "TEST: the example template is NOT an operable source (cannot touch a real env)"
 (
   make_sandbox
-  # The toy source was never hand-wired into this script: it is resolved from the
-  # connector manifest, so a crawler run forwards its EXAMPLE_LABEL and drives the
-  # examplecrawl producer with no script edit - the add-a-source recipe.
-  EXAMPLE_LABEL='demo run' bash "$RUN" crawler example up >/dev/null 2>&1
+  # The example template is deliberately kept out of the registry manifest, so no
+  # operator action can run it against a real environment. It must be rejected as
+  # an unknown source before any host start or send-command.
+  out="$(EXAMPLE_LABEL='demo' bash "$RUN" crawler example up 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && ok "example is rejected as a source" || fail "example is rejected as a source (got $rc)"
+  assert_contains "$out" "unknown source 'example'" "names example as unknown"
   log="$(cat "$AWS_CALL_LOG")"
-  assert_contains "$log" "examplecrawl" "crawler example runs the examplecrawl producer"
-  assert_contains "$log" "run --rm" "example producer runs one-shot"
-  assert_contains "$log" "EXAMPLE_LABEL=" "forwards the example's non-secret EXAMPLE_LABEL"
-)
-(
-  make_sandbox
-  unset EXAMPLE_LABEL
-  out="$(bash "$RUN" crawler example up 2>&1)"; rc=$?
-  [[ $rc -ne 0 ]] && ok "example fails fast without its required env" || fail "example fails fast without its required env (got $rc)"
-  assert_contains "$out" "EXAMPLE_LABEL" "names the missing example variable"
+  assert_not_contains "$log" "ec2 start-instances" "example never starts a host"
+  assert_not_contains "$log" "ssm send-command" "example never sends a command"
 )
 
 echo "TEST: a crawler source's missing required env fails fast before any start or send"

@@ -31,7 +31,6 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
-	"github.com/verovec/truth-in-stream/backend/internal/example"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckarchive"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
@@ -67,7 +66,6 @@ var builders = map[string]producerBuilder{
 	"wikipedia": buildWikipedia,
 	"factcheck": buildFactcheck,
 	"scrutins":  buildScrutins,
-	"example":   buildExample,
 }
 
 // scheduleSpecs derives the config specs from the registry's schedulable sources,
@@ -128,7 +126,13 @@ func run(logger *slog.Logger) error {
 			return buildErr
 		}
 		closers = append(closers, closer)
-		if regErr := reg.RegisterSchedule(producer.Name(), sched, scheduleCfg.Jitter, producer); regErr != nil {
+		// The producer must self-identify as its descriptor name: the enable/cron
+		// config was resolved by d.Name, and the run alerts key off producer.Name(),
+		// so a divergence would alert under a name the operator never configured.
+		if producer.Name() != d.Name {
+			return fmt.Errorf("scheduler: source %q builds a producer that names itself %q", d.Name, producer.Name())
+		}
+		if regErr := reg.RegisterSchedule(d.Name, sched, scheduleCfg.Jitter, producer); regErr != nil {
 			return regErr
 		}
 		enabled = append(enabled, d.Name)
@@ -291,37 +295,6 @@ func buildScrutins(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 		MarkerPath:  archiveCfg.MarkerPath,
 		MaxPriority: queueCfg.MaxPriority,
 	}, qPublisher{client: client}, logger)
-	if err != nil {
-		closer()
-		return nil, nil, err
-	}
-	return producer, closer, nil
-}
-
-// buildExample builds the in-tree example template producer, showing the one
-// builder entry a new scheduled source adds. It publishes to the shared crawl
-// queue, so it reuses the wikipedia worker with no new consumer.
-func buildExample(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
-	exampleCfg, err := config.LoadExample()
-	if err != nil {
-		return nil, nil, err
-	}
-	queueCfg, err := config.LoadCrawlQueue()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	client, err := queue.New(queueCfg.ClientConfig(0))
-	if err != nil {
-		return nil, nil, err
-	}
-	closer := func() { _ = client.Close() }
-
-	producer, err := example.New(qPublisher{client: client}, logger, example.Config{
-		Label:       exampleCfg.Label,
-		MaxItems:    exampleCfg.MaxItems,
-		MaxPriority: queueCfg.MaxPriority,
-	})
 	if err != nil {
 		closer()
 		return nil, nil, err
