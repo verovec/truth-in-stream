@@ -28,5 +28,5 @@ variable "expiration_days" {
 variable "recordings_retention_days" {
   type        = number
   default     = 0
-  description = "Days after which objects under the recordings/ prefix (TV capture archives) expire. 0 disables the prefix rule (the default): the app-level daily prune is authoritative and this is only a backstop. Independent of expiration_days, which scopes the whole bucket."
+  description = "Days after which objects under the recordings/ prefix (TV capture archives) expire. 0 disables the prefix rule (the default): the app-level daily prune is authoritative and this is only a backstop. Intended for use with expiration_days=0. NOTE: expiration_days is whole-bucket and therefore also matches recordings/; when both are set, S3 applies the shorter of the two to recordings/, so keep recordings_retention_days <= expiration_days (or leave expiration_days at 0) to get the retention you configure here."
 }

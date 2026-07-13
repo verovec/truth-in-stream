@@ -97,8 +97,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
 
   # Backstop expiry for TV capture archives under recordings/. Off by default
   # (the tvcapture worker's daily prune is authoritative); a positive
-  # recordings_retention_days adds this prefix-scoped safety net without touching
-  # the whole-bucket rules above.
+  # recordings_retention_days adds this prefix-scoped safety net. Note the
+  # whole-bucket expire-objects rule above (expiration_days) also matches
+  # recordings/, and S3 applies the shorter of any overlapping rules - so this is
+  # meant for expiration_days=0, or set recordings_retention_days <= expiration_days.
   dynamic "rule" {
     for_each = var.recordings_retention_days > 0 ? [1] : []
 

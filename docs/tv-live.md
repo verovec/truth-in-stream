@@ -163,5 +163,3 @@ volume.
    in Terraform: point these at the internal ALB address or the public CloudFront URL the host can
    reach. The tvcapture host's security group is deliberately **not** admitted to the broker or RDS
    (it uses neither).
-</content>
-</invoke>
