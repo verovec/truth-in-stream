@@ -1490,6 +1490,10 @@ const (
 	defaultWikiEmbedMaxParallelWorkers = 7
 	// maxVoyageInputsPerRequest is Voyage's documented per-request input cap.
 	maxVoyageInputsPerRequest = 1000
+	// maxVoyageTokensPerRequest is Voyage's documented per-request token ceiling
+	// for voyage-4-large (docs.voyageai.com, verified 2026-07); a request over it
+	// returns HTTP 400, so a batch's token budget must stay under it.
+	maxVoyageTokensPerRequest = 120000
 )
 
 // workMemRe matches a Postgres memory size like "512MB" or "2GB". It guards
@@ -2106,6 +2110,10 @@ const (
 	defaultEmbedWorkerHTTPTimeout       = 30 * time.Second
 	defaultEmbedWorkerRequestsPerMinute = 0
 	defaultEmbedWorkerEmbedMaxRetries   = 6
+	// defaultEmbedWorkerMaxBatchTokens packs each Voyage call to 80% of the
+	// per-request token ceiling for voyage-4-large, leaving headroom for the
+	// worker's character-based token estimate to under-count.
+	defaultEmbedWorkerMaxBatchTokens = maxVoyageTokensPerRequest * 8 / 10
 )
 
 // EmbedWorker holds the embedding-worker configuration. Concurrency bounds the
@@ -2117,11 +2125,15 @@ const (
 // request; RequestsPerMinute optionally paces outbound requests onto a tier's
 // budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry count
 // for a transient Voyage 429 or network timeout.
+// MaxBatchTokens caps a batch's estimated token count so a provider call stays
+// under Voyage's per-request token ceiling; an over-budget batch is split before
+// the call rather than failing it.
 type EmbedWorker struct {
 	Concurrency       int
 	BatchSize         int
 	BatchWait         time.Duration
 	MaxAttempts       int
+	MaxBatchTokens    int
 	HTTPTimeout       time.Duration
 	RequestsPerMinute int
 	EmbedMaxRetries   int
@@ -2142,6 +2154,12 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 		return EmbedWorker{}, err
 	}
 	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
+		return EmbedWorker{}, err
+	}
+	// Capped at Voyage's per-request token ceiling so a packed batch never exceeds
+	// what the provider accepts in one call; the worker splits an over-budget batch
+	// before sending it.
+	if w.MaxBatchTokens, err = intEnv("EMBED_WORKER_MAX_BATCH_TOKENS", w.MaxBatchTokens, 1, maxVoyageTokensPerRequest); err != nil {
 		return EmbedWorker{}, err
 	}
 	return w, nil
@@ -2170,6 +2188,7 @@ func defaultWorker() EmbedWorker {
 	return EmbedWorker{
 		Concurrency:       defaultEmbedWorkerConcurrency,
 		BatchSize:         defaultEmbedWorkerBatchSize,
+		MaxBatchTokens:    defaultEmbedWorkerMaxBatchTokens,
 		BatchWait:         defaultEmbedWorkerBatchWait,
 		MaxAttempts:       defaultEmbedWorkerMaxAttempts,
 		HTTPTimeout:       defaultEmbedWorkerHTTPTimeout,

@@ -1272,7 +1272,7 @@ func TestLoadWikiCluster(t *testing.T) {
 }
 
 func TestLoadEmbedWorker(t *testing.T) {
-	defaults := EmbedWorker{Concurrency: 4, BatchSize: 128, BatchWait: 200 * time.Millisecond, MaxAttempts: 5, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
+	defaults := EmbedWorker{Concurrency: 4, BatchSize: 128, BatchWait: 200 * time.Millisecond, MaxAttempts: 5, MaxBatchTokens: 96000, HTTPTimeout: 30 * time.Second, RequestsPerMinute: 0, EmbedMaxRetries: 6}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1287,13 +1287,16 @@ func TestLoadEmbedWorker(t *testing.T) {
 				"EMBED_WORKER_BATCH_SIZE":        "256",
 				"EMBED_WORKER_BATCH_WAIT":        "500ms",
 				"EMBED_WORKER_MAX_ATTEMPTS":      "3",
+				"EMBED_WORKER_MAX_BATCH_TOKENS":  "50000",
 				"EMBED_WORKER_HTTP_TIMEOUT":      "45s",
 				"EMBED_WORKER_RPM":               "120",
 				"EMBED_WORKER_EMBED_MAX_RETRIES": "2",
 			},
-			want: EmbedWorker{Concurrency: 8, BatchSize: 256, BatchWait: 500 * time.Millisecond, MaxAttempts: 3, HTTPTimeout: 45 * time.Second, RequestsPerMinute: 120, EmbedMaxRetries: 2},
+			want: EmbedWorker{Concurrency: 8, BatchSize: 256, BatchWait: 500 * time.Millisecond, MaxAttempts: 3, MaxBatchTokens: 50000, HTTPTimeout: 45 * time.Second, RequestsPerMinute: 120, EmbedMaxRetries: 2},
 		},
 		{name: "batch size above provider cap rejected", env: map[string]string{"EMBED_WORKER_BATCH_SIZE": "1001"}, wantErr: true},
+		{name: "batch tokens above provider ceiling rejected", env: map[string]string{"EMBED_WORKER_MAX_BATCH_TOKENS": "120001"}, wantErr: true},
+		{name: "zero batch tokens rejected", env: map[string]string{"EMBED_WORKER_MAX_BATCH_TOKENS": "0"}, wantErr: true},
 		{name: "zero batch size rejected", env: map[string]string{"EMBED_WORKER_BATCH_SIZE": "0"}, wantErr: true},
 		{name: "non-positive batch wait rejected", env: map[string]string{"EMBED_WORKER_BATCH_WAIT": "0s"}, wantErr: true},
 		{name: "zero concurrency rejected", env: map[string]string{"EMBED_WORKER_CONCURRENCY": "0"}, wantErr: true},

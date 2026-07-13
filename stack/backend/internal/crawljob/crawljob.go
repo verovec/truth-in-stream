@@ -16,9 +16,18 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// Stats is the running outcome of a Worker drain: acknowledged deliveries and
+// deliveries parked in the dead-letter queue. It is read after Run returns to
+// report the drain to the operator, symmetrically to a producer run.
+type Stats struct {
+	Processed   int64
+	ParkedToDLQ int64
+}
 
 // CrawlJob is one unit of crawl-ingest work: a fully self-contained Wikipedia
 // chunk. Every field needed to write a live evidence_chunks row travels in the body,
@@ -136,6 +145,17 @@ type Worker struct {
 	concurrency   int
 	maxAttempts   int
 	knownVersions map[string]struct{}
+
+	// processed counts acknowledged deliveries and parked counts dead-lettered
+	// ones, touched from the parallel handlers, so a run reports its drain outcome.
+	processed atomic.Int64
+	parked    atomic.Int64
+}
+
+// Stats reports the drain outcome accumulated so far: acknowledged and
+// dead-lettered delivery counts. It is safe to call after Run returns.
+func (w *Worker) Stats() Stats {
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
 }
 
 // NewWorker builds a Worker, clamping concurrency and attempts to at least one
@@ -241,12 +261,18 @@ func (w *Worker) handle(ctx context.Context, d Delivery) {
 }
 
 func (w *Worker) ack(ctx context.Context, d Delivery) {
+	w.processed.Add(1)
 	if err := d.Ack(); err != nil {
 		w.logger.ErrorContext(ctx, "ack failed", slog.Any("err", err))
 	}
 }
 
 func (w *Worker) nack(ctx context.Context, d Delivery, requeue bool) {
+	// A requeue=false nack dead-letters the delivery to the DLQ; count those. A
+	// requeue nack (shutdown or transient) is not a parked message.
+	if !requeue {
+		w.parked.Add(1)
+	}
 	if err := d.Nack(requeue); err != nil {
 		w.logger.ErrorContext(ctx, "nack failed", slog.Any("err", err), slog.Bool("requeue", requeue))
 	}

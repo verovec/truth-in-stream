@@ -20,10 +20,51 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// Voyage's documented per-request ceilings for voyage-4-large
+// (docs.voyageai.com, verified 2026-07): at most maxInputsPerRequest inputs and
+// maxTokensPerRequest tokens across the whole request. A request over either
+// returns HTTP 400 and fails the entire call, so the worker keeps every provider
+// call under both ceilings and splits an over-budget batch rather than thrashing.
+const (
+	maxInputsPerRequest = 1000
+	maxTokensPerRequest = 120000
+)
+
+// defaultBatchTokens is the token budget the worker packs each provider call to.
+// It sits below the hard maxTokensPerRequest ceiling because the token count is
+// estimated from character counts (see estimateTokens), which under-counts a
+// token-dense input (many short words, or CJK where one character is often one
+// token); the 80% headroom absorbs that error so a batch that estimates under
+// budget almost never trips the provider's hard limit. When it does anyway, the
+// recursive split recovers.
+const defaultBatchTokens = maxTokensPerRequest * 8 / 10
+
+// charsPerToken is Voyage's documented average characters per token
+// (docs.voyageai.com), used to estimate a batch's token count cheaply without
+// calling the tokenizer. estimateTokens divides byte length by it, so a
+// multibyte input (whose bytes exceed its characters) is over-counted, keeping
+// the estimate conservative.
+const charsPerToken = 5
+
+// estimateTokens cheaply approximates a text's token count from its byte length,
+// rounding up so even a short non-empty text counts as at least one token.
+func estimateTokens(text string) int {
+	return len(text)/charsPerToken + 1
+}
+
+// Stats is the running outcome of a Worker drain: how many deliveries it
+// acknowledged and how many it parked in the dead-letter queue. It is read after
+// Run returns to report the drain to the operator.
+type Stats struct {
+	Processed   int64
+	ParkedToDLQ int64
+}
 
 // Job is one unit of embedding work: the chunk to embed, identified by its
 // corpus position, the text to embed, and the delivery attempt so far. The
@@ -146,12 +187,16 @@ const defaultBatchWait = 200 * time.Millisecond
 // delivery stamped with any other version is dropped rather than mis-processed.
 // An empty KnownVersions disables the check (every version is accepted), which
 // keeps a worker that does not configure versions working unchanged.
+// MaxBatchTokens caps the estimated token count of one provider call; a batch
+// whose chunks would exceed it is split before the call so the request stays
+// under Voyage's per-request token ceiling. Zero selects defaultBatchTokens.
 type Config struct {
-	Concurrency   int
-	BatchSize     int
-	BatchWait     time.Duration
-	MaxAttempts   int
-	KnownVersions []string
+	Concurrency    int
+	BatchSize      int
+	BatchWait      time.Duration
+	MaxAttempts    int
+	MaxBatchTokens int
+	KnownVersions  []string
 }
 
 // Worker drains embedding jobs and writes their vectors into the corpus.
@@ -165,7 +210,15 @@ type Worker struct {
 	batchSize     int
 	batchWait     time.Duration
 	maxAttempts   int
+	maxInputs     int
+	maxTokens     int
 	knownVersions map[string]struct{}
+
+	// processed counts acknowledged deliveries and parked counts dead-lettered
+	// ones, so a run reports its drain outcome. Both are touched from the parallel
+	// batch handlers, so they are atomic.
+	processed atomic.Int64
+	parked    atomic.Int64
 }
 
 // NewWorker builds a Worker. Concurrency, BatchSize, and MaxAttempts below one
@@ -184,6 +237,9 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 	}
 	if cfg.MaxAttempts < 1 {
 		cfg.MaxAttempts = 1
+	}
+	if cfg.MaxBatchTokens < 1 {
+		cfg.MaxBatchTokens = defaultBatchTokens
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -205,8 +261,16 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 		batchSize:     cfg.BatchSize,
 		batchWait:     cfg.BatchWait,
 		maxAttempts:   cfg.MaxAttempts,
+		maxInputs:     maxInputsPerRequest,
+		maxTokens:     cfg.MaxBatchTokens,
 		knownVersions: known,
 	}
+}
+
+// Stats reports the drain outcome accumulated so far: acknowledged and
+// dead-lettered delivery counts. It is safe to call after Run returns.
+func (w *Worker) Stats() Stats {
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
 }
 
 // knowsVersion reports whether the worker should process a delivery stamped with
@@ -389,30 +453,24 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 		texts[i] = it.job.Content
 	}
 
-	embeddings, err := w.embedder.EmbedDocuments(ctx, texts)
-	if err != nil {
-		if ctx.Err() != nil {
-			w.requeueItems(ctx, items)
-			return
-		}
-		// A batch-level failure may be one poison input failing the whole call, so
-		// fall back to embedding each delivery alone: the bad one fails by itself
-		// while the rest succeed.
-		w.logger.WarnContext(ctx, "batch embed failed, falling back to per-chunk embedding",
-			slog.Int("batch", len(items)), slog.Any("err", err))
-		for _, it := range items {
-			w.applyResult(ctx, it.d, w.embedAndWrite(ctx, it.job, it.d.Priority()))
-		}
+	vecs, errs := w.embedAligned(ctx, texts)
+	if ctx.Err() != nil {
+		w.requeueItems(ctx, items)
 		return
 	}
 
 	good := make([]pending, 0, len(items))
 	var live, staging []domain.EvidenceChunk
 	for i, it := range items {
-		var vec []float32
-		if i < len(embeddings) {
-			vec = embeddings[i]
+		if err := errs[i]; err != nil {
+			// A single input the provider rejected even on its own (a genuinely
+			// oversized or malformed chunk): retry it a bounded number of times, then
+			// dead-letter it. The whole-batch call was already split down to this one
+			// input, so the rest of the batch is unaffected - no per-chunk thrash.
+			w.applyResult(ctx, it.d, w.afterFailure(ctx, it.job, it.d.Priority(), "embed", err))
+			continue
 		}
+		vec := vecs[i]
 		if len(vec) != domain.EmbeddingDim {
 			// A wrong shape is the provider breaking its contract, not a transient
 			// fault: re-embedding the same content would reproduce it, so drop rather
@@ -462,6 +520,82 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 	for _, g := range good {
 		w.ack(ctx, g.d)
 	}
+}
+
+// embedAligned embeds texts and returns, for each index, its vector (nil on
+// failure) and the error that stopped it (nil on success). It keeps every
+// provider call under Voyage's input-count and token-budget ceilings by
+// splitting an over-budget group before the call, and recovers from a size-class
+// 400 the character-based estimate under-counted by halving the group and
+// retrying - so an oversized batch embeds via a handful of split calls, never a
+// per-chunk sweep (the 128x amplification the token-blind cap used to fall into).
+// Only a single input that the provider rejects on its own records an error,
+// which the caller retries or dead-letters alone.
+func (w *Worker) embedAligned(ctx context.Context, texts []string) ([][]float32, []error) {
+	vecs := make([][]float32, len(texts))
+	errs := make([]error, len(texts))
+	w.embedGroup(ctx, texts, 0, vecs, errs)
+	return vecs, errs
+}
+
+// embedGroup embeds texts[off:off+len(texts)] into vecs/errs, splitting an
+// over-budget or failing multi-input group in half and recursing.
+func (w *Worker) embedGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
+	if len(texts) == 0 {
+		return
+	}
+	// Proactively split an over-budget group so a request the provider would reject
+	// with a size-class 400 is never sent; repeated halving lands each group under
+	// both the input-count and token ceilings.
+	if len(texts) > 1 && w.overBudget(texts) {
+		w.splitGroup(ctx, texts, off, vecs, errs)
+		return
+	}
+	embeddings, err := w.embedder.EmbedDocuments(ctx, texts)
+	if err != nil {
+		if ctx.Err() != nil {
+			for i := range texts {
+				errs[off+i] = err
+			}
+			return
+		}
+		// The error surfaced after the embedder's own retry decorator gave up, so it
+		// is persistent: most likely one oversized or poison input failing the whole
+		// call (or a size estimate that under-counted). Halve and retry so the good
+		// inputs still embed and the bad one is isolated in O(log n) calls.
+		if len(texts) > 1 {
+			w.splitGroup(ctx, texts, off, vecs, errs)
+			return
+		}
+		errs[off] = err
+		return
+	}
+	for i := range texts {
+		if i < len(embeddings) {
+			vecs[off+i] = embeddings[i]
+		}
+	}
+}
+
+// splitGroup embeds the two halves of texts, so a recursive split isolates a bad
+// input while the rest of the group still embeds in whole batches.
+func (w *Worker) splitGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
+	mid := len(texts) / 2
+	w.embedGroup(ctx, texts[:mid], off, vecs, errs)
+	w.embedGroup(ctx, texts[mid:], off+mid, vecs, errs)
+}
+
+// overBudget reports whether a group would exceed Voyage's per-request input
+// count or estimated token budget, so it must be split before the call.
+func (w *Worker) overBudget(texts []string) bool {
+	if len(texts) > w.maxInputs {
+		return true
+	}
+	tokens := 0
+	for _, t := range texts {
+		tokens += estimateTokens(t)
+	}
+	return tokens > w.maxTokens
 }
 
 // writeChunks writes the live and staging halves of a batch, each in one
@@ -531,6 +665,7 @@ func (w *Worker) applyResult(ctx context.Context, d Delivery, res Result) {
 }
 
 func (w *Worker) ack(ctx context.Context, d Delivery) {
+	w.processed.Add(1)
 	if err := d.Ack(); err != nil {
 		w.logger.ErrorContext(ctx, "ack failed", slog.Any("err", err))
 	}
@@ -549,6 +684,7 @@ func (w *Worker) nack(ctx context.Context, d Delivery) {
 // is parked in the DLQ via a requeue=false nack, so the loss is inspectable and
 // replayable, never silent.
 func (w *Worker) reject(ctx context.Context, d Delivery) {
+	w.parked.Add(1)
 	if err := d.Nack(false); err != nil {
 		w.logger.ErrorContext(ctx, "reject (dead-letter) failed", slog.Any("err", err))
 	}

@@ -22,10 +22,19 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/votingrecord"
 )
+
+// Stats is the running outcome of a Worker drain: acknowledged deliveries and
+// deliveries parked in the dead-letter queue. It is read after Run returns to
+// report the drain to the operator, symmetrically to a producer run.
+type Stats struct {
+	Processed   int64
+	ParkedToDLQ int64
+}
 
 // ScrutinJob is one unit of scrutins-ingest work: the raw AN open-data JSON for a
 // single scrutin ({"scrutin": {...}}), exactly as it appears in the archive. The
@@ -79,11 +88,13 @@ type Result struct {
 	RepublishPriority uint8
 }
 
-// Store upserts each parsed voting record into the voting store. The write is
-// idempotent: a redelivered job (same scrutin) rewrites the same rows, keyed by
-// (person, scrutin), so re-running the pipeline is safe.
+// Store upserts a scrutin's parsed voting records into the voting store in one
+// atomic apply, so a concurrent reader never sees a partial vote set while a
+// scrutin is being written (or rewritten). The write is idempotent: a redelivered
+// job (same scrutin) rewrites the same rows, keyed by (person, scrutin), so
+// re-running the pipeline is safe.
 type Store interface {
-	UpsertVotingRecord(ctx context.Context, record domain.VotingRecord) error
+	UpsertVotingRecords(ctx context.Context, records []domain.VotingRecord) error
 }
 
 // Delivery is one job message awaiting acknowledgement, abstracting the broker.
@@ -124,6 +135,17 @@ type Worker struct {
 	concurrency   int
 	maxAttempts   int
 	knownVersions map[string]struct{}
+
+	// processed counts acknowledged deliveries and parked counts dead-lettered
+	// ones, touched from the parallel handlers, so a run reports its drain outcome.
+	processed atomic.Int64
+	parked    atomic.Int64
+}
+
+// Stats reports the drain outcome accumulated so far: acknowledged and
+// dead-lettered delivery counts. It is safe to call after Run returns.
+func (w *Worker) Stats() Stats {
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
 }
 
 // NewWorker builds a Worker, clamping concurrency and attempts to at least one
@@ -228,12 +250,19 @@ func (w *Worker) handle(ctx context.Context, d Delivery) {
 }
 
 func (w *Worker) ack(ctx context.Context, d Delivery) {
+	w.processed.Add(1)
 	if err := d.Ack(); err != nil {
 		w.logger.ErrorContext(ctx, "ack failed", slog.Any("err", err))
 	}
 }
 
 func (w *Worker) nack(ctx context.Context, d Delivery, requeue bool) {
+	// A requeue=false nack dead-letters the delivery to the DLQ; count those so the
+	// drain reports its parked total. A requeue nack (shutdown or transient) is not
+	// a parked message, so it is not counted.
+	if !requeue {
+		w.parked.Add(1)
+	}
 	if err := d.Nack(requeue); err != nil {
 		w.logger.ErrorContext(ctx, "nack failed", slog.Any("err", err), slog.Bool("requeue", requeue))
 	}
@@ -264,13 +293,13 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
-	for _, r := range records {
-		if ctx.Err() != nil {
-			return w.afterFailure(ctx, job, priority, "upsert", ctx.Err())
-		}
-		if err := w.store.UpsertVotingRecord(ctx, r); err != nil {
-			return w.afterFailure(ctx, job, priority, "upsert", err)
-		}
+	// A shutdown between the parse and the write is a clean requeue point; the write
+	// itself is atomic, so it either fully lands or fully rolls back.
+	if ctx.Err() != nil {
+		return w.afterFailure(ctx, job, priority, "upsert", ctx.Err())
+	}
+	if err := w.store.UpsertVotingRecords(ctx, records); err != nil {
+		return w.afterFailure(ctx, job, priority, "upsert", err)
 	}
 	return Result{Action: ActionAck}
 }
