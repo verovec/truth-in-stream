@@ -28,6 +28,9 @@
 #   datacommons       datacommonscrawl / factcheck.claims / factcheckworker
 #   claimreview       claimreviewcrawl / factcheck.claims / factcheckworker
 #   claimskg          claimskgseed     / factcheck.claims / factcheckworker  (one-shot seed)
+#   viepublique       viepubliquecrawl / evidence.chunks  / evidenceworker
+#   hatvp             hatvpcrawl       / evidence.chunks  / evidenceworker
+#   legifrance        legifrancecrawl  / evidence.chunks  / evidenceworker
 #
 # Container logs ship to CloudWatch Logs under /truth-in-stream/<env>/ingest/*,
 # the exact prefix the host instance profile is scoped to write; the operator
@@ -330,6 +333,90 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/parliamentcrawl"
         awslogs-stream-prefix: "parliamentcrawl"
 
+  # viepublique: download the DILA "Discours publics" metadata dump, diff it, and
+  # publish one generic evidence job per speech metadata record to evidence.chunks
+  # (drained by evidenceworker). DB-free. Keyless open data (Licence Ouverte v2.0).
+  # VIEPUBLIQUE_MAX_ITEMS bounds a backfill run; state under /state.
+  viepubliquecrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/viepubliquecrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      VIEPUBLIQUE_MAX_ITEMS: "${VIEPUBLIQUE_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - viepublique-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/viepubliquecrawl"
+        awslogs-stream-prefix: "viepubliquecrawl"
+
+  # hatvp: diff the HATVP declarations open-data index, fetch each new or changed
+  # declaration's XML, and publish one generic evidence job per structured summary
+  # to evidence.chunks (drained by evidenceworker). DB-free. Keyless open data.
+  # HATVP_MAX_ITEMS bounds a backfill run; state under /state.
+  hatvpcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/hatvpcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      HATVP_MAX_ITEMS: "${HATVP_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - hatvp-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/hatvpcrawl"
+        awslogs-stream-prefix: "hatvpcrawl"
+
+  # legifrance: fetch the configured narrow corpus of code articles from the DILA
+  # Legifrance API via the PISTE OAuth2 gateway, diff each, and publish one generic
+  # evidence job per article to evidence.chunks (drained by evidenceworker). DB-free.
+  # PISTE credentials (LEGIFRANCE_CLIENT_ID / LEGIFRANCE_CLIENT_SECRET) come from the
+  # materialized env (Secrets Manager on the host), never forwarded; absent
+  # credentials degrade to a clean skip. LEGIFRANCE_ARTICLES is the corpus; state
+  # under /state.
+  legifrancecrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/legifrancecrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      LEGIFRANCE_CLIENT_ID: "${LEGIFRANCE_CLIENT_ID:-}"
+      LEGIFRANCE_CLIENT_SECRET: "${LEGIFRANCE_CLIENT_SECRET:-}"
+      LEGIFRANCE_ARTICLES: "${LEGIFRANCE_ARTICLES:-}"
+      LEGIFRANCE_MAX_ITEMS: "${LEGIFRANCE_MAX_ITEMS:-}"
+      LEGIFRANCE_MIN_INTERVAL_MS: "${LEGIFRANCE_MIN_INTERVAL_MS:-}"
+      LEGIFRANCE_TOKEN_URL: "${LEGIFRANCE_TOKEN_URL:-}"
+      LEGIFRANCE_API_BASE_URL: "${LEGIFRANCE_API_BASE_URL:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - legifrance-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/legifrancecrawl"
+        awslogs-stream-prefix: "legifrancecrawl"
+
   # --- Workers (run by /consumer; long-running, drain the queue into the DB) ---
   #
   # stop_grace_period is 120s so that on `docker compose down` / host stop the
@@ -528,3 +615,12 @@ volumes:
   # export) across producer runs on the same host, so a killed broadened Google run
   # resumes at the next undrained query stream instead of re-paging finished ones.
   factcheck-state:
+  # Persists the vie-publique conditional-GET marker and per-identifier manifest, so
+  # an unchanged dump is a 304 and a changed dump reprocesses only what moved.
+  viepublique-state:
+  # Persists the HATVP index conditional-GET marker and per-declaration manifest, so
+  # an unchanged index is a 304 and only changed declarations are re-fetched.
+  hatvp-state:
+  # Persists the Legifrance per-article manifest, so an unchanged article is skipped
+  # and only a re-consolidated article is republished.
+  legifrance-state:
