@@ -45,8 +45,8 @@ variable "queue_names" {
   description = "Versioned-queue base names. For each, the lambda measures both the base's queues (<base>.v<version>) and its dead-letter queues (<base>.dlq.v<version>), rolling each up under a stable QueueBase name."
 
   validation {
-    condition     = length(var.queue_names) > 0
-    error_message = "queue_names must list at least one base queue."
+    condition     = length(var.queue_names) > 0 && alltrue([for q in var.queue_names : trimspace(q) != ""])
+    error_message = "queue_names must list at least one non-blank base queue; a blank entry would leave the lambda publishing no metrics and the notBreaching queue alarms silently blind."
   }
 }
 

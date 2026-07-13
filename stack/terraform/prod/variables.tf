@@ -513,6 +513,11 @@ variable "metrics_queue_bases" {
   type        = list(string)
   default     = ["embedding.jobs", "crawl.chunks", "factcheck.claims", "scrutins.votes"]
   description = "Base names of the ingestion queues the metrics lambda measures (each also measures its .dlq companion) and the queue alarms cover. Keep in sync with the producer/worker queue names."
+
+  validation {
+    condition     = length(var.metrics_queue_bases) > 0 && alltrue([for q in var.metrics_queue_bases : trimspace(q) != ""])
+    error_message = "metrics_queue_bases must list at least one non-blank base queue."
+  }
 }
 
 variable "run_metrics_namespace" {
@@ -522,9 +527,16 @@ variable "run_metrics_namespace" {
 }
 
 variable "run_sources" {
-  type        = list(string)
-  default     = ["wikipedia", "factcheck", "scrutins"]
-  description = "Producer source names the no-successful-run-in-24h alarm covers; each matches the Name a producer reports to crawlnotify (the Source dimension on RunSuccess)."
+  type    = list(string)
+  default = []
+  # Empty by default: the no-successful-run-in-24h alarm is a dead-man's switch
+  # that fits a producer running on a schedule, but prod producers are on-demand
+  # (schedule_expression = "", launched with `aws ecs run-task`) and off by default,
+  # so an always-on alarm would sit permanently in ALARM and false-page. Set this to
+  # the producer source names (wikipedia, factcheck, scrutins - the Name each
+  # reports to crawlnotify) once those producers run on a 24h cadence. The RunSuccess
+  # metric is still emitted regardless, so the history is there when you enable it.
+  description = "Producer source names the no-successful-run-in-24h alarm covers (the RunSuccess Source dimension). Empty (default) disables the run alarms; enable it only for producers that actually run at least daily, or they false-page."
 }
 
 variable "mq_maintenance_window_day" {

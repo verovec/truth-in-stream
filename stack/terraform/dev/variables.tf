@@ -132,6 +132,11 @@ variable "metrics_queue_bases" {
   type        = list(string)
   default     = ["embedding.jobs", "crawl.chunks", "factcheck.claims", "scrutins.votes"]
   description = "Base names of the ingestion queues the metrics lambda measures (each also measures its .dlq companion). Keep in sync with the producer/worker queue names."
+
+  validation {
+    condition     = length(var.metrics_queue_bases) > 0 && alltrue([for q in var.metrics_queue_bases : trimspace(q) != ""])
+    error_message = "metrics_queue_bases must list at least one non-blank base queue."
+  }
 }
 
 variable "metrics_namespace" {
