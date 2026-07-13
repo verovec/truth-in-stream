@@ -13,18 +13,21 @@
 #   /consumer <source> -> `docker compose -f docker-compose.ingest.yml up -d <worker>`
 #
 # Source -> producer / queue / worker:
-#   wikipedia         wikicrawl       / crawl.chunks     / crawlworker
-#   stats             statsingest     / embedding.jobs   / embedworker
-#   sdmx              sdmxcrawl       / embedding.jobs   / embedworker
-#   ods               odsingest       / embedding.jobs   / embedworker
-#   factcheck         factcheckcrawl  / factcheck.claims / factcheckworker
-#   scrutins          scrutinscrawl   / scrutins.votes   / scrutinsworker
-#   an-amendements    parliamentcrawl / evidence.chunks  / evidenceworker
-#   an-questions      parliamentcrawl / evidence.chunks  / evidenceworker
-#   an-comptesrendus  parliamentcrawl / evidence.chunks  / evidenceworker
-#   senat-questions   parliamentcrawl / evidence.chunks  / evidenceworker
-#   senat-dosleg      parliamentcrawl / evidence.chunks  / evidenceworker
-#   senat-scrutins    parliamentcrawl / scrutins.votes   / scrutinsworker
+#   wikipedia         wikicrawl        / crawl.chunks     / crawlworker
+#   stats             statsingest      / embedding.jobs   / embedworker
+#   sdmx              sdmxcrawl        / embedding.jobs   / embedworker
+#   ods               odsingest        / embedding.jobs   / embedworker
+#   factcheck         factcheckcrawl   / factcheck.claims / factcheckworker
+#   scrutins          scrutinscrawl    / scrutins.votes   / scrutinsworker
+#   an-amendements    parliamentcrawl  / evidence.chunks  / evidenceworker
+#   an-questions      parliamentcrawl  / evidence.chunks  / evidenceworker
+#   an-comptesrendus  parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-questions   parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-dosleg      parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-scrutins    parliamentcrawl  / scrutins.votes   / scrutinsworker
+#   datacommons       datacommonscrawl / factcheck.claims / factcheckworker
+#   claimreview       claimreviewcrawl / factcheck.claims / factcheckworker
+#   claimskg          claimskgseed     / factcheck.claims / factcheckworker  (one-shot seed)
 #
 # Container logs ship to CloudWatch Logs under /truth-in-stream/<env>/ingest/*,
 # the exact prefix the host instance profile is scoped to write; the operator
@@ -163,9 +166,10 @@ services:
         awslogs-stream-prefix: "odsingest"
 
   # factcheck: read already-checked French claims from the Google Fact Check Tools
-  # API for FACTCHECK_QUERIES and publish curated-claim jobs to factcheck.claims.
-  # DB-free. FACTCHECK_QUERIES is required (forwarded by the operator command);
-  # FACTCHECK_API_KEY comes from the materialized env.
+  # API and publish curated-claim jobs to factcheck.claims. DB-free.
+  # FACTCHECK_QUERIES is OPTIONAL (a broadened French topic rotation is the default
+  # when it is unset); publisher-scoped streams over the outlet allowlist run
+  # alongside it. FACTCHECK_API_KEY comes from the materialized env.
   factcheckcrawl:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/factcheckcrawl"]
@@ -178,14 +182,95 @@ services:
       RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
       FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      FACTCHECK_PUBLISHER_SITES: "${FACTCHECK_PUBLISHER_SITES:-}"
       FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
       FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+      FACTCHECK_MAX_AGE_DAYS: "${FACTCHECK_MAX_AGE_DAYS:-}"
+      FACTCHECK_CHECKPOINT_PATH: "${FACTCHECK_CHECKPOINT_PATH-/state/factcheck-checkpoint.json}"
+    volumes:
+      - factcheck-state:/state
     logging:
       driver: awslogs
       options:
         <<: *awslogs-options
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/factcheckcrawl"
         awslogs-stream-prefix: "factcheckcrawl"
+
+  # datacommons: read the DataCommons ClaimReview daily feed, keep the records
+  # from the DATACOMMONS_OUTLET_ALLOWLIST of vetted French outlets, and publish
+  # curated-claim jobs to the same factcheck.claims queue the factcheck source
+  # uses (drained by factcheckworker). DB-free and keyless: the feed is a public
+  # object, so no API key and no new worker. All DATACOMMONS_* have defaults.
+  datacommonscrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/datacommonscrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATACOMMONS_FEED_URL: "${DATACOMMONS_FEED_URL:-}"
+      DATACOMMONS_OUTLET_ALLOWLIST: "${DATACOMMONS_OUTLET_ALLOWLIST:-}"
+      DATACOMMONS_MAX_ITEMS: "${DATACOMMONS_MAX_ITEMS:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/datacommonscrawl"
+        awslogs-stream-prefix: "datacommonscrawl"
+
+  # claimreview: read schema.org ClaimReview JSON-LD directly from the allowlisted
+  # French outlets (sitemap-discovered, robots- and pacing-respecting), extract only
+  # claim/rating/URL/date, and publish to factcheck.claims (drained by
+  # factcheckworker). DB-free and keyless. All CLAIMREVIEW_* have defaults.
+  claimreviewcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/claimreviewcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      CLAIMREVIEW_USER_AGENT: "${CLAIMREVIEW_USER_AGENT:-}"
+      CLAIMREVIEW_MIN_DELAY_MS: "${CLAIMREVIEW_MIN_DELAY_MS:-}"
+      CLAIMREVIEW_MAX_URLS: "${CLAIMREVIEW_MAX_URLS:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/claimreviewcrawl"
+        awslogs-stream-prefix: "claimreviewcrawl"
+
+  # claimskg: one-shot historical seed. Imports a ClaimsKG CSV/TSV export (mounted at
+  # CLAIMSKG_SEED_FILE) into political_claims via factcheck.claims. Does nothing
+  # unless CLAIMSKG_SEED_ENABLED=true, so the large 2023 snapshot is only ingested on
+  # a deliberate operator run. DB-free and keyless.
+  claimskgseed:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/claimskgseed"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      CLAIMSKG_SEED_ENABLED: "${CLAIMSKG_SEED_ENABLED:-}"
+      CLAIMSKG_SEED_FILE: "${CLAIMSKG_SEED_FILE:-/state/claimskg-export.csv}"
+      CLAIMSKG_SEED_VINTAGE: "${CLAIMSKG_SEED_VINTAGE:-}"
+      CLAIMSKG_SEED_TSV: "${CLAIMSKG_SEED_TSV:-}"
+    volumes:
+      - factcheck-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/claimskgseed"
+        awslogs-stream-prefix: "claimskgseed"
 
   # scrutins: conditionally download the Assemblee Nationale Scrutins archive
   # (skipped when unchanged via the persisted ETag marker) and publish one job per
@@ -439,3 +524,7 @@ volumes:
   # Persists the wikipedia crawl checkpoint across producer runs on the same host,
   # so a killed crawl resumes from its last completed batch instead of restarting.
   crawl-state:
+  # Persists the fact-check per-stream checkpoint (and holds a mounted ClaimsKG seed
+  # export) across producer runs on the same host, so a killed broadened Google run
+  # resumes at the next undrained query stream instead of re-paging finished ones.
+  factcheck-state:
