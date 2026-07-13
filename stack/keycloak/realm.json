@@ -81,7 +81,7 @@
     {
       "clientId": "tv-capture",
       "name": "TV Capture Worker",
-      "description": "Service-account client the tvcapture worker authenticates as (client-credentials grant). Carries the scoped tv-capture realm role so it can drive only the TV feed and recording endpoints, not blanket admin. The secret below is a local-dev value only; production sets it out of band (SSM) and never uses this default.",
+      "description": "tvcapture worker service account (client-credentials). Scoped tv-capture realm role, not admin. Secret here is local-dev only; production sets it via SSM.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
