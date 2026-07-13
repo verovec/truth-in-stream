@@ -5,6 +5,15 @@ description: Use when implementing a Linear card or feature, when opening a PR f
 
 # Delivering Linear Cards
 
+> **Merge target: `dev`, not `main` (2026-07-13).** This workspace uses a two-branch flow. `main`
+> is the STABLE branch and is human-only: the agent never merges to `main` and never tags a
+> release. `dev` is the agent's integration branch. Everywhere below that says branch off / rebase
+> on / open the PR against / merge to **`main`**, read **`dev`** instead — the agent branches off
+> `dev`, its PR targets `dev`, and it merges the PR to `dev` on green CI. The human tests locally
+> from `dev`, promotes `dev` -> `main` by hand, and tags a `v*` release to deploy prod. (A stacked
+> dependent card still bases on its dependency's branch; when the dependency merges to `dev`, GitHub
+> retargets the dependent to `dev`.)
+
 ## Overview
 
 You own the work end to end: card -> implementation -> e2e verification -> PR -> auto-merge on green CI -> Done. The only thing the human still gates is a production deploy. When asked to "update Linear," just do it: flip status, check boxes, add a one-line comment. No option menus, no "want me to..?". Act.
