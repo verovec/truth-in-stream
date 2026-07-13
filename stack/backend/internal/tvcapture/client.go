@@ -29,9 +29,11 @@ type Channel struct {
 	ArchiveEnabled bool
 }
 
-// tokenProvider yields a bearer token for backend calls.
+// tokenProvider yields a bearer token for backend calls and can drop its cache
+// when a token is rejected, so the next call refetches.
 type tokenProvider interface {
 	Token(ctx context.Context) (string, error)
+	Invalidate()
 }
 
 // presignedRequest is the storage upload instruction returned by the backend:
@@ -50,16 +52,25 @@ type recordingTicket struct {
 	Upload    presignedRequest
 }
 
-// backendClient calls the backend's admin TV API. Every request carries the
-// client-credentials bearer token from tokens.
+// backendClient calls the backend's TV API. Every request carries the
+// client-credentials bearer token from tokens. Control-plane calls (list,
+// register, prune, token fetch) use http, a short-timeout client; the recording
+// PUT uses uploadHTTP, whose timeout is generous/unbounded because a full hour
+// can be multiple GB and must not be guillotined by a control-plane timeout.
 type backendClient struct {
-	baseURL string
-	http    *http.Client
-	tokens  tokenProvider
+	baseURL    string
+	http       *http.Client
+	uploadHTTP *http.Client
+	tokens     tokenProvider
 }
 
-func newBackendClient(baseURL string, httpClient *http.Client, tokens tokenProvider) *backendClient {
-	return &backendClient{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient, tokens: tokens}
+func newBackendClient(baseURL string, httpClient, uploadClient *http.Client, tokens tokenProvider) *backendClient {
+	return &backendClient{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		http:       httpClient,
+		uploadHTTP: uploadClient,
+		tokens:     tokens,
+	}
 }
 
 func (c *backendClient) authorize(ctx context.Context, req *http.Request) error {
@@ -86,7 +97,7 @@ func (c *backendClient) ListChannels(ctx context.Context) ([]Channel, error) {
 	}
 	defer drain(resp)
 	if resp.StatusCode != http.StatusOK {
-		return nil, statusError("list channels", resp)
+		return nil, c.authStatusError("list channels", resp)
 	}
 	var body struct {
 		Channels []struct {
@@ -124,7 +135,7 @@ func (c *backendClient) RequestUpload(ctx context.Context, channelID string, rec
 	}
 	defer drain(resp)
 	if resp.StatusCode != http.StatusCreated {
-		return recordingTicket{}, statusError("request upload", resp)
+		return recordingTicket{}, c.authStatusError("request upload", resp)
 	}
 	var body struct {
 		VideoID   string `json:"video_id"`
@@ -180,7 +191,7 @@ func (c *backendClient) UploadFile(ctx context.Context, tk recordingTicket, path
 		}
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.uploadHTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("tvcapture: upload recording: %w", err)
 	}
@@ -203,7 +214,7 @@ func (c *backendClient) Register(ctx context.Context, videoID string) error {
 	}
 	defer drain(resp)
 	if resp.StatusCode != http.StatusOK {
-		return statusError("register recording", resp)
+		return c.authStatusError("register recording", resp)
 	}
 	return nil
 }
@@ -217,7 +228,7 @@ func (c *backendClient) Prune(ctx context.Context, retentionDays int) (int, erro
 	}
 	defer drain(resp)
 	if resp.StatusCode != http.StatusOK {
-		return 0, statusError("prune recordings", resp)
+		return 0, c.authStatusError("prune recordings", resp)
 	}
 	var body struct {
 		Deleted int `json:"deleted"`
@@ -268,6 +279,18 @@ func (c *backendClient) postJSON(ctx context.Context, path string, payload any) 
 // status. The body is not included, keeping any presigned-URL echo out of logs.
 func statusError(op string, resp *http.Response) error {
 	return fmt.Errorf("tvcapture: %s: unexpected status %d", op, resp.StatusCode)
+}
+
+// authStatusError is statusError for a backend API call: a 401/403 means the
+// bearer token was rejected, so the cached token is dropped and the next call
+// refetches (recovering from key rotation or clock skew without waiting out the
+// cache window). Used only for calls to our backend, never the presigned storage
+// PUT, whose 401/403 is a signature concern unrelated to the Keycloak token.
+func (c *backendClient) authStatusError(op string, resp *http.Response) error {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		c.tokens.Invalidate()
+	}
+	return statusError(op, resp)
 }
 
 func drain(resp *http.Response) {

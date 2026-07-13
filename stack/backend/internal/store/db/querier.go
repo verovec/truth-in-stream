@@ -101,6 +101,9 @@ type Querier interface {
 	// retention pruning. Scoped to kind 'tv' with a real recorded_at so the scan
 	// touches only recordings and the caller need not filter in Go.
 	ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.Timestamptz) ([]Video, error)
+	// The consumption library (GET /api/videos, the /app grid) excludes kind 'tv':
+	// archived channel recordings are surfaced per-channel on /tv, not mixed into the
+	// general video library. Individual recordings remain fetchable by id for replay.
 	ListVideos(ctx context.Context) ([]Video, error)
 	// Claim a ready document for a fresh analysis run: flip it to analysing (the
 	// lock), zero the progress counter, and clear any prior error - all in one

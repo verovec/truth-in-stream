@@ -16,12 +16,13 @@ import (
 type stubTokens struct{ token string }
 
 func (s stubTokens) Token(context.Context) (string, error) { return s.token, nil }
+func (stubTokens) Invalidate()                             {}
 
 func newTestClient(t *testing.T, h http.HandlerFunc) *backendClient {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return newBackendClient(srv.URL, srv.Client(), stubTokens{token: "test-token"})
+	return newBackendClient(srv.URL, srv.Client(), srv.Client(), stubTokens{token: "test-token"})
 }
 
 func TestListChannelsParsesFields(t *testing.T) {
@@ -194,6 +195,33 @@ func TestRegisterAndPrune(t *testing.T) {
 	})
 }
 
+// recordingTokens records Invalidate calls so a test can assert a 401 drops the
+// cached token.
+type recordingTokens struct {
+	token       string
+	invalidated int
+}
+
+func (r *recordingTokens) Token(context.Context) (string, error) { return r.token, nil }
+func (r *recordingTokens) Invalidate()                           { r.invalidated++ }
+
+func TestBackendClientInvalidatesTokenOn401(t *testing.T) {
+	t.Parallel()
+	tokens := &recordingTokens{token: "stale"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c := newBackendClient(srv.URL, srv.Client(), srv.Client(), tokens)
+
+	if _, err := c.ListChannels(context.Background()); err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if tokens.invalidated != 1 {
+		t.Fatalf("expected token invalidation on 401, got %d", tokens.invalidated)
+	}
+}
+
 func TestFeedURL(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -204,7 +232,7 @@ func TestFeedURL(t *testing.T) {
 		{"https://api.example.com", "wss://api.example.com/api/tv/channels/c1/feed"},
 	}
 	for _, tc := range tests {
-		c := newBackendClient(tc.base, http.DefaultClient, stubTokens{})
+		c := newBackendClient(tc.base, http.DefaultClient, http.DefaultClient, stubTokens{})
 		got := c.FeedURL("c1")
 		if got != tc.want {
 			t.Fatalf("FeedURL = %q, want %q", got, tc.want)

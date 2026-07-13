@@ -47,14 +47,15 @@ type supervisorConfig struct {
 	StreamlinkPath string
 	FFmpegPath     string
 
-	SegmentPoll          time.Duration
-	WatchdogTick         time.Duration
-	BackoffBase          time.Duration
-	BackoffMax           time.Duration
-	HealthyReset         time.Duration
-	MaxAttempts          int
-	FinalArchiveTimeout  time.Duration
-	FeedReconnectBackoff time.Duration
+	SegmentPoll           time.Duration
+	WatchdogTick          time.Duration
+	BackoffBase           time.Duration
+	BackoffMax            time.Duration
+	HealthyReset          time.Duration
+	MaxAttempts           int
+	SegmentArchiveTimeout time.Duration
+	FinalArchiveTimeout   time.Duration
+	FeedReconnectBackoff  time.Duration
 }
 
 func (c supervisorConfig) withDefaults() supervisorConfig {
@@ -79,11 +80,18 @@ func (c supervisorConfig) withDefaults() supervisorConfig {
 	if c.MaxAttempts <= 0 {
 		c.MaxAttempts = 5
 	}
+	if c.SegmentArchiveTimeout <= 0 {
+		// Normal per-segment archiving: generous, because a full stream-copied hour
+		// can be multiple GB and legitimately takes minutes to upload on a modest
+		// uplink. This bounds the upload (the HTTP upload client itself is
+		// unbounded); a segment that overruns it stays on disk for a later retry.
+		c.SegmentArchiveTimeout = 30 * time.Minute
+	}
 	if c.FinalArchiveTimeout <= 0 {
-		// Bounded below the worker container's stop_grace_period (120s) so a final
-		// archive on shutdown finishes (or is abandoned, leaving the .ts for the
-		// next startup salvage) before the runtime SIGKILLs the process, rather
-		// than being cut off mid-upload.
+		// Shutdown salvage only: bounded below the worker container's
+		// stop_grace_period (120s) so a final archive on shutdown finishes (or is
+		// abandoned, leaving the .ts for the next startup salvage) before the
+		// runtime SIGKILLs the process, rather than being cut off mid-upload.
 		c.FinalArchiveTimeout = 90 * time.Second
 	}
 	if c.FeedReconnectBackoff <= 0 {
@@ -389,9 +397,9 @@ func (s *supervisor) archiveClosed(dir string, ch Channel) {
 		return
 	}
 	sort.Strings(files)
-	// Archive on a fresh short-lived context so a stuck upload cannot wedge the
-	// poll loop; the watcher keeps polling regardless.
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.FinalArchiveTimeout)
+	// Archive on a fresh, generously-bounded context so a large hour's upload has
+	// time to complete; a stuck upload still cannot wedge the loop forever.
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.SegmentArchiveTimeout)
 	defer cancel()
 	for _, ts := range files[:len(files)-1] {
 		if err := s.arch.archive(ctx, ch, ts); err != nil {

@@ -92,6 +92,30 @@ func TestTokenSourceCachesWhenExpiresInMissing(t *testing.T) {
 	}
 }
 
+func TestTokenSourceInvalidateForcesRefetch(t *testing.T) {
+	t.Parallel()
+	var fetches atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := fetches.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"tok-` + string(rune('0'+n)) + `","expires_in":300}`))
+	}))
+	defer srv.Close()
+
+	ts := newTokenSource(srv.Client(), srv.URL, "tv-capture", "s3cr3t")
+	if _, err := ts.Token(context.Background()); err != nil {
+		t.Fatalf("first token: %v", err)
+	}
+	// Without Invalidate the cached token would be reused; Invalidate must force a
+	// refetch even though the token has not reached its expiry.
+	ts.Invalidate()
+	if _, err := ts.Token(context.Background()); err != nil {
+		t.Fatalf("token after invalidate: %v", err)
+	}
+	if fetches.Load() != 2 {
+		t.Fatalf("expected a refetch after Invalidate, got %d fetches", fetches.Load())
+	}
+}
+
 func TestTokenSourceErrorsOnNon200(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

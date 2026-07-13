@@ -32,8 +32,12 @@ DELETE FROM videos
 WHERE id = $1;
 
 -- name: ListVideos :many
+-- The consumption library (GET /api/videos, the /app grid) excludes kind 'tv':
+-- archived channel recordings are surfaced per-channel on /tv, not mixed into the
+-- general video library. Individual recordings remain fetchable by id for replay.
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
 FROM videos
+WHERE kind <> 'tv'
 ORDER BY created_at DESC, id;
 
 -- name: SetVideoStatus :one

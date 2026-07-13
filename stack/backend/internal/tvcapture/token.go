@@ -78,6 +78,18 @@ func (s *tokenSource) Token(ctx context.Context) (string, error) {
 	return tok, nil
 }
 
+// Invalidate drops the cached token so the next Token call refetches. The
+// backend client calls it when a request is rejected as unauthorized, so a token
+// invalidated before its computed expiry (Keycloak key rotation, a restart, or
+// clock skew) recovers on the next request instead of failing for the whole
+// cache window.
+func (s *tokenSource) Invalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = ""
+	s.expiresAt = time.Time{}
+}
+
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	ExpiresIn   int    `json:"expires_in"`
@@ -114,7 +126,11 @@ func (s *tokenSource) fetch(ctx context.Context) (string, time.Duration, error) 
 		return "", 0, errors.New("tvcapture: token endpoint returned empty access_token")
 	}
 	ttl := time.Duration(tr.ExpiresIn) * time.Second
-	if ttl <= tokenRefreshSkew {
+	if ttl <= 0 {
+		// Only a missing or non-positive expires_in falls back to the default. A
+		// genuinely short (sub-skew) TTL is honored as-is: Token simply refetches
+		// each call, which is correct for a token that really does expire that
+		// fast, rather than caching it past its real expiry.
 		ttl = defaultTokenTTL
 	}
 	return tr.AccessToken, ttl, nil

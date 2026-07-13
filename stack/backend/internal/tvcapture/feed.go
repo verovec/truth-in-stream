@@ -12,12 +12,13 @@ import (
 // the client-credentials token in the Authorization header on the upgrade
 // request (never in the URL, so it cannot leak into logs or intermediaries).
 type wsFeedConnector struct {
-	client *backendClient
-	tokens tokenProvider
+	client     *backendClient
+	tokens     tokenProvider
+	httpClient *http.Client
 }
 
-func newWSFeedConnector(client *backendClient, tokens tokenProvider) *wsFeedConnector {
-	return &wsFeedConnector{client: client, tokens: tokens}
+func newWSFeedConnector(client *backendClient, tokens tokenProvider, httpClient *http.Client) *wsFeedConnector {
+	return &wsFeedConnector{client: client, tokens: tokens, httpClient: httpClient}
 }
 
 // Connect opens the publisher socket for channelID and returns a frameSink that
@@ -30,11 +31,19 @@ func (c *wsFeedConnector) Connect(ctx context.Context, channelID string) (frameS
 		return nil, err
 	}
 	opts := &websocket.DialOptions{
+		HTTPClient: c.httpClient,
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
 	}
 	conn, resp, err := websocket.Dial(ctx, c.client.FeedURL(channelID), opts)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
+	if resp != nil {
+		// A rejected token (401/403) on the upgrade means the cached token is
+		// stale; drop it so the next attempt refetches.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			c.tokens.Invalidate()
+		}
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tvcapture: dial feed for channel %s failed", channelID)

@@ -11,20 +11,14 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/tvcapture"
 )
-
-// backendHTTPTimeout bounds every backend API call (list/upload/register/prune);
-// the presigned PUT of a large recording is the slowest, so it is generous.
-const backendHTTPTimeout = 10 * time.Minute
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -54,9 +48,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	httpClient := &http.Client{Timeout: backendHTTPTimeout}
 	notifier := crawlnotify.NewNotifier(cfg.SlackWebhookURL)
-	manager := tvcapture.NewWorker(cfg, httpClient, notifier, logger)
+	manager := tvcapture.NewWorker(cfg, notifier, logger)
 
 	logger.InfoContext(ctx, "tvcapture started",
 		slog.String("backend", cfg.BackendBaseURL),
