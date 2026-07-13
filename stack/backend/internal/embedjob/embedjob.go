@@ -17,13 +17,16 @@ package embedjob
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
 
 // Voyage's documented per-request ceilings for voyage-4-large
@@ -527,10 +530,12 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 // provider call under Voyage's input-count and token-budget ceilings by
 // splitting an over-budget group before the call, and recovers from a size-class
 // 400 the character-based estimate under-counted by halving the group and
-// retrying - so an oversized batch embeds via a handful of split calls, never a
+// retrying - so an oversized batch embeds via O(log n) split calls, never a
 // per-chunk sweep (the 128x amplification the token-blind cap used to fall into).
-// Only a single input that the provider rejects on its own records an error,
-// which the caller retries or dead-letters alone.
+// A non-size failure (auth, an exhausted 429, a 5xx, a network fault) is not
+// split: it is recorded once for the whole group, which the caller retries or
+// dead-letters, so a persistent fault never fans out into a binary-split storm of
+// provider calls.
 func (w *Worker) embedAligned(ctx context.Context, texts []string) ([][]float32, []error) {
 	vecs := make([][]float32, len(texts))
 	errs := make([]error, len(texts))
@@ -538,8 +543,10 @@ func (w *Worker) embedAligned(ctx context.Context, texts []string) ([][]float32,
 	return vecs, errs
 }
 
-// embedGroup embeds texts[off:off+len(texts)] into vecs/errs, splitting an
-// over-budget or failing multi-input group in half and recursing.
+// embedGroup embeds texts[off:off+len(texts)] into vecs/errs. It splits an
+// over-budget group before the call, and on a call failure splits only a
+// size-class rejection (see isSizeError); any other error is recorded for the
+// whole group so the caller handles it without amplifying provider load.
 func (w *Worker) embedGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
 	if len(texts) == 0 {
 		return
@@ -560,14 +567,20 @@ func (w *Worker) embedGroup(ctx context.Context, texts []string, off int, vecs [
 			return
 		}
 		// The error surfaced after the embedder's own retry decorator gave up, so it
-		// is persistent: most likely one oversized or poison input failing the whole
-		// call (or a size estimate that under-counted). Halve and retry so the good
-		// inputs still embed and the bad one is isolated in O(log n) calls.
-		if len(texts) > 1 {
+		// is persistent. Split only a size-class 400 the token estimate under-counted:
+		// halving lands the group under the ceiling in O(log n) calls. Any other
+		// persistent error (auth, an exhausted 429, a 5xx, a network outage) is not a
+		// size problem, so splitting it would re-run the same failure across the whole
+		// ~2n-1 split tree (and re-drive the retry ladder against an already-failing
+		// provider); record it once for the group and let afterFailure and the DLQ
+		// handle it on redelivery instead.
+		if len(texts) > 1 && isSizeError(err) {
 			w.splitGroup(ctx, texts, off, vecs, errs)
 			return
 		}
-		errs[off] = err
+		for i := range texts {
+			errs[off+i] = err
+		}
 		return
 	}
 	for i := range texts {
@@ -577,8 +590,22 @@ func (w *Worker) embedGroup(ctx context.Context, texts []string, off int, vecs [
 	}
 }
 
+// isSizeError reports whether err is a Voyage size-class rejection - an
+// embed.APIError carrying HTTP 400 - the only failure the worker recovers from by
+// splitting the batch. The proactive token budget makes such a 400 rare; it fires
+// only when the character-based estimate under-counted a token-dense batch. Every
+// other error is left for the retry/DLQ machinery, so an auth failure or an
+// exhausted rate limit is never amplified into a split storm.
+func isSizeError(err error) bool {
+	var apiErr *embed.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest
+}
+
 // splitGroup embeds the two halves of texts, so a recursive split isolates a bad
-// input while the rest of the group still embeds in whole batches.
+// input while the rest of the group still embeds in whole batches. The two halves
+// run sequentially rather than concurrently: a collected batch caps at BatchSize
+// (default 128), so the split depth is tiny and the simplicity is worth more than
+// the parallelism the bulk pipeline's larger super-batches needed.
 func (w *Worker) splitGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
 	mid := len(texts) / 2
 	w.embedGroup(ctx, texts[:mid], off, vecs, errs)

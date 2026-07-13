@@ -166,7 +166,7 @@ pre-filtered corpus indefinitely before any worker is started - the core conveni
 | **bulk `-atomic`** | Build in `wiki_chunks_staging`, wait for the fleet to drain, build HNSW, atomically swap over live. | Yes | Fleet to staging |
 | **bulk `-dry-run`** | Report the token/cost estimate of the pending chunks and stop. | No | - |
 | **bulk `-atomic -publish-only`** | Atomic ingest + publish, then exit; the consumer owns the drain + swap (cloud producer path). | Yes (publish only) | Fleet to staging |
-| **delta** | Ask MediaWiki RecentChanges what changed since the checkpoint; refetch + re-embed only those pages inline, delete removed pages, advance checkpoint. | No | Inline to live |
+| **delta** | Ask MediaWiki RecentChanges what changed since the checkpoint; refetch + re-chunk only those pages, publish one embedding job per changed chunk to the fleet, delete removed pages, advance checkpoint. A mid-window failure resumes from the last confirmed batch (revision-skip + NULL-embedding filter), re-embedding nothing already confirmed. | Yes | Fleet to live, in place |
 | **reset** | Clear the live corpus + checkpoint so the next bulk run rebuilds from scratch. | No | - |
 
 Constraints: `-publish-only` and `-atomic` require `-mode=bulk`; `-publish-only` and `-dry-run` cannot
@@ -509,7 +509,7 @@ Valid names are Wikimedia dump names `{lang}wiki` (`enwiki`, `frwiki`, ...); non
 ### Keeping a dump corpus fresh
 
 ```bash
-make wiki-update     # delta sync: only articles changed since the checkpoint (inline embed, no swap)
+make wiki-update     # delta sync: only articles changed since the checkpoint (publishes to the fleet, no swap)
 ```
 
 ### Key make targets
@@ -543,11 +543,11 @@ From the root `.env` (read by Compose). Defaults shown.
 | `EMBEDWORKER_REPLICAS` | 2 | Number of competing dump workers. Linear throughput. |
 | `EMBED_WORKER_CONCURRENCY` | 4 | In-flight batches per replica. |
 | `EMBED_WORKER_BATCH_SIZE` | 128 | Chunks per Voyage call (<=1000). Main throughput lever. |
+| `EMBED_WORKER_MAX_BATCH_TOKENS` | 96000 | Token budget per Voyage call (<=120000). An over-budget batch is split before the call; a size-class 400 splits recursively rather than thrashing per-chunk. |
 | `EMBED_WORKER_BATCH_WAIT` | 200ms | How long a partial batch waits before sending. |
 | `RABBITMQ_PREFETCH` | concurrency x batch | Unacked jobs held per replica. |
 | `EMBED_WORKER_MAX_ATTEMPTS` | 5 | Delivery budget before a chunk is dropped. |
 | `EMBED_WORKER_RPM` | 0 (unpaced) | Per-replica Voyage rate cap. |
-| `WIKI_EMBED_BATCH_SIZE` | 128 | Inline (delta / atomic finalize) embed batch. |
 | `WIKI_DRAIN_POLL_INTERVAL` / `_STALL_TIMEOUT` | 5s / 30m | Atomic drain poll / stall abort. |
 | `WIKI_CLUSTER_K` / `_MAX_ITERS` / `_SEED` | - | k-means parameters. |
 | `RABBITMQ_QUEUE` / `_QUEUE_VERSIONS` | `embedding.jobs` / `v1` | Dump queue base name and version roll. |
@@ -584,7 +584,7 @@ From the root `.env` (read by Compose). Defaults shown.
 | `wiki-verify` fails on HNSW index | Index missing/invalid after a manual change. | `make reingest` rebuilds the index. |
 | Workers idle while jobs sit | Fleet not up, or wrong queue version. | `make fleet-up`; confirm `RABBITMQ_QUEUE_VERSIONS` matches producer and workers. |
 | Delta refuses to run | No baseline, checkpoint too old, or a bulk build in progress. | Run/finish a bulk build first, then delta. |
-| Provider latency / Voyage timeouts | Provider-side, not a bug. | Tune `WIKI_EMBED_*` / `EMBED_WORKER_RPM`; do not lower defaults blindly. |
+| Provider latency / Voyage timeouts | Provider-side, not a bug. | Tune `EMBED_WORKER_RPM` / `EMBED_WORKER_CONCURRENCY`; do not lower defaults blindly. |
 | **Crawl** publishes nothing *(VER-74)* | `CRAWL_CATEGORIES` empty/typo'd, or the gate dropped everything. | Check the category title; check the producer's published-vs-dropped counts; try `CRAWL_CHECKWORTHY=false` to isolate the gate. |
 | **Crawl** corpus has obvious non-evidence prose *(VER-74)* | Gate disabled or failing open under provider errors. | Confirm `CRAWL_CHECKWORTHY=true`; check producer logs for fail-open gate errors and Anthropic key/quota. |
 | **Crawl** gate is slow / expensive *(VER-74)* | Unpaced gate on a large crawl. | Lower `CRAWL_MAX_PAGES`, set `CRAWL_CHECKWORTHY_RPM`, or scope `CRAWL_CATEGORIES` tighter. |

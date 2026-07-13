@@ -2,12 +2,14 @@ package embedjob
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
 
 // budgetEmbedder simulates Voyage's per-request token ceiling: a call whose
@@ -30,7 +32,7 @@ func (e *budgetEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]
 	e.sizes = append(e.sizes, len(texts))
 	e.mu.Unlock()
 	if e.maxTokens > 0 && tokens > e.maxTokens {
-		return nil, errors.New("voyage: api status 400: Total number of tokens in the batch exceeds the limit")
+		return nil, &embed.APIError{StatusCode: http.StatusBadRequest, Body: "Total number of tokens in the batch exceeds the limit"}
 	}
 	out := make([][]float32, len(texts))
 	for i := range texts {
@@ -45,11 +47,15 @@ func (e *budgetEmbedder) callSizes() []int {
 	return append([]int(nil), e.sizes...)
 }
 
-// makeDeliveries builds n distinct valid deliveries whose content is contentLen
-// characters, so each carries a known estimated token count.
-func makeDeliveries(t *testing.T, n, contentLen int) []Delivery {
+// chunkChars is each test delivery's content length; at charsPerToken=5 it is a
+// known 5 estimated tokens per chunk, which the budget/split tests reason about.
+const chunkChars = 20
+
+// makeDeliveries builds n distinct valid deliveries, each carrying chunkChars of
+// content so its estimated token count is known.
+func makeDeliveries(t *testing.T, n int) []Delivery {
 	t.Helper()
-	content := strings.Repeat("a", contentLen)
+	content := strings.Repeat("a", chunkChars)
 	out := make([]Delivery, n)
 	for i := range n {
 		out[i] = &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: strconv.Itoa(i), ChunkIndex: 0, Content: content}), priority: 1}
@@ -68,7 +74,7 @@ func TestProcessBatchSplitsOnTokenBudget(t *testing.T) {
 	// Budget of 12 tokens fits two 5-token chunks (10) but not three (15).
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3, MaxBatchTokens: 12})
 
-	deliveries := makeDeliveries(t, 8, 20)
+	deliveries := makeDeliveries(t, 8)
 	w.processBatch(t.Context(), deliveries)
 
 	if got := len(st.recorded()); got != 8 {
@@ -105,7 +111,7 @@ func TestProcessBatchRecoversFromSizeError(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := newTestWorker(emb, st, Config{Concurrency: 1, MaxAttempts: 3, MaxBatchTokens: 1_000_000})
 
-	deliveries := makeDeliveries(t, 8, 20)
+	deliveries := makeDeliveries(t, 8)
 	w.processBatch(t.Context(), deliveries)
 
 	if got := len(st.recorded()); got != 8 {
@@ -143,7 +149,7 @@ func TestProcessBatchOversizedSingleChunkRetries(t *testing.T) {
 	st := &fakeStore{updated: true}
 	w := NewWorker(emb, st, nil, &recEnqueuer{}, slog.New(slog.DiscardHandler), Config{Concurrency: 1, MaxAttempts: 3, MaxBatchTokens: 1_000_000})
 
-	deliveries := makeDeliveries(t, 1, 20)
+	deliveries := makeDeliveries(t, 1)
 	w.processBatch(t.Context(), deliveries)
 
 	// The single chunk cannot embed, so it is re-enqueued for a bounded retry
@@ -154,6 +160,63 @@ func TestProcessBatchOversizedSingleChunkRetries(t *testing.T) {
 	}
 	if len(st.recorded()) != 0 {
 		t.Fatalf("store writes = %d, want 0 (nothing embedded)", len(st.recorded()))
+	}
+}
+
+// statusErrEmbedder fails every call with a fixed APIError status, counting its
+// calls, so a test can prove a non-size persistent error is not split-amplified.
+type statusErrEmbedder struct {
+	status int
+	calls  sync.Mutex
+	count  int
+}
+
+func (e *statusErrEmbedder) EmbedDocuments(_ context.Context, _ []string) ([][]float32, error) {
+	e.calls.Lock()
+	e.count++
+	e.calls.Unlock()
+	return nil, &embed.APIError{StatusCode: e.status, Body: "unauthorized"}
+}
+
+func (e *statusErrEmbedder) callCount() int {
+	e.calls.Lock()
+	defer e.calls.Unlock()
+	return e.count
+}
+
+// TestProcessBatchNonSizeErrorDoesNotSplit proves a persistent non-size failure
+// (here a 401) is recorded once for the whole batch and left to the retry/DLQ
+// machinery, rather than being recursively halved into a ~2n-1 storm of provider
+// calls (which would also re-drive the retry ladder against a failing provider).
+func TestProcessBatchNonSizeErrorDoesNotSplit(t *testing.T) {
+	t.Parallel()
+	emb := &statusErrEmbedder{status: http.StatusUnauthorized}
+	st := &fakeStore{updated: true}
+	enq := &recEnqueuer{}
+	// Budget large so nothing splits proactively; the only split trigger would be
+	// the (non-size) call error, which must NOT trigger one.
+	w := NewWorker(emb, st, nil, enq, slog.New(slog.DiscardHandler),
+		Config{Concurrency: 1, MaxAttempts: 3, MaxBatchTokens: 1_000_000})
+
+	const n = 8
+	deliveries := makeDeliveries(t, n)
+	w.processBatch(t.Context(), deliveries)
+
+	if got := emb.callCount(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1 (a non-size error must not split-amplify; ~2n-1 would be %d)", got, 2*n-1)
+	}
+	if got := len(st.recorded()); got != 0 {
+		t.Fatalf("store writes = %d, want 0 (nothing embedded)", got)
+	}
+	// Every delivery is re-enqueued for a bounded retry (attempt < max), so the
+	// failure rides the normal attempt-budget/DLQ path on redelivery.
+	if enq.count() != n {
+		t.Fatalf("enqueue count = %d, want %d (each job re-enqueued once for retry)", enq.count(), n)
+	}
+	for i, d := range deliveries {
+		if acked, nacked, _ := d.(*recDelivery).state(); !acked || nacked {
+			t.Fatalf("delivery %d acked=%v nacked=%v, want acked after re-enqueue", i, acked, nacked)
+		}
 	}
 }
 

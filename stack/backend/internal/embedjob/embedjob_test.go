@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
 
 // testSource is the evidence source every job fixture is stamped with. A chunk is
@@ -677,7 +679,7 @@ type batchFailEmbedder struct {
 func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
 	if len(texts) > 1 {
 		e.batchCalls.Add(1)
-		return nil, errors.New("batch endpoint hung")
+		return nil, &embed.APIError{StatusCode: http.StatusBadRequest, Body: "batch too large"}
 	}
 	out := make([][]float32, len(texts))
 	for i := range texts {
