@@ -374,7 +374,7 @@ func TestVerifyPathSecondPassRecachesUpgrade(t *testing.T) {
 	_ = runVerifyPath(t, a)
 
 	vp := a.verify
-	cached, ok := vp.cacheGet(vec)
+	cached, ok := vp.cacheGet(vec, unit)
 	if !ok {
 		t.Fatal("claim not cached after the terminal gate")
 	}

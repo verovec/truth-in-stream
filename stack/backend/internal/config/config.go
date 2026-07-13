@@ -763,8 +763,11 @@ type Precheck struct {
 	WikiCoverageEnabled   bool
 	WikiCoverageThreshold float64
 	// CoverageEfSearch is the HNSW ef_search the coverage probe runs at across
-	// both coverage corpora; 0 keeps the session default. It defaults to 200, the
-	// former hard-coded probe budget, now tunable from the environment.
+	// both coverage corpora. It defaults to 200, the former hard-coded probe
+	// budget, now tunable from the environment. Unlike the matcher's per-corpus
+	// ef_search knobs, 0 does NOT keep pgvector's session default here: the
+	// coverage stage applies its recall-critical 200 default when the value is
+	// non-positive (see service.defaultCoverageEfSearch).
 	CoverageEfSearch int
 }
 
