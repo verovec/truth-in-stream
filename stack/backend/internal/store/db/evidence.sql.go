@@ -524,6 +524,7 @@ const unembeddedEvidenceChunks = `-- name: UnembeddedEvidenceChunks :many
 SELECT source, external_id, chunk_index, title, url, content, kind, metadata
 FROM evidence_chunks
 WHERE embedding IS NULL
+  AND NOT (metadata @> '{"duplicate": true}')
   AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
 ORDER BY source, external_id, chunk_index
 LIMIT $4
@@ -551,7 +552,11 @@ type UnembeddedEvidenceChunksRow struct {
 // keyset order to embed them in place. The embedding IS NULL filter scopes the
 // scan to the unembedded chunks a delta run produced. The keyset spans the full
 // (source, external_id, chunk_index) because external_id is unique only within a
-// source.
+// source. The metadata not-duplicate guard excludes the near-duplicate rows the
+// volume-control gate withheld (VER-203): the delta sync scans the whole shared
+// table, so without it a duplicate-flagged row (embedding IS NULL) of any source
+// would be re-embedded and re-served, defeating the gate. It mirrors the raw
+// live un-embedded scans' `notDuplicate` predicate.
 func (q *Queries) UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEvidenceChunksParams) ([]UnembeddedEvidenceChunksRow, error) {
 	rows, err := q.db.Query(ctx, unembeddedEvidenceChunks,
 		arg.AfterSource,

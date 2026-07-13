@@ -77,7 +77,7 @@ ACTION ?= up
 # self-stop the host). Empty by default.
 INGEST_FLAGS ?=
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer pipeline-health insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify evidence-retention reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer pipeline-health insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -181,6 +181,9 @@ wiki-cluster: ## Cluster the embedded corpus into topics and score importance so
 
 wiki-verify: ## Report the live corpus's embedded coverage and verify consistency over the embedded rows (chunks present, no zero vectors, 1024-dim, metadata populated, HNSW index live); exits non-zero on a real defect. It no longer requires 100% embedded - a bulk-into-live corpus fills in over time, so coverage is reported, not gated.
 	$(COMPOSE) --profile tools run --rm wiki-verify
+
+evidence-retention: ## Per-source evidence retention sweep (VER-203): dry-run by default, pass -apply to delete. e.g. make evidence-retention ARGS="-source insee-emploi -max-age 720h" then re-run with -apply. Removes chunks of one source last synced before now-max-age; re-ingest restores them.
+	$(COMPOSE) --profile tools run --rm evidence-retention go run ./cmd/evidenceretention $(ARGS)
 
 reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC bulk rebuild (build in staging, the fleet drains it, swap live) so the corpus is complete before clustering, then cluster and verify. Brings up the broker and one worker; resumable, reuses the on-disk dump; needs EMBEDDING_API_KEY and WIKI_* tuning from .env. Long (paid embed) - run it unattended; a green verify means the corpus is built and consistent.
 	$(COMPOSE) --profile wiki up -d rabbitmq embedworker

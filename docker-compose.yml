@@ -713,6 +713,30 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Per-source evidence retention sweep (VER-203, measure 3). Opt-in ("tools"),
+  # one-shot, no API key: it removes the chunks of one source last synced before a
+  # cutoff so a superseded statistical generation ages out. Dry-run by default;
+  # pass -apply to delete. Args are supplied by overriding the command, so run it
+  # via `make evidence-retention ARGS="-source insee-emploi -max-age 720h"`
+  # (add -apply to delete). Re-ingesting the source restores the rows.
+  evidence-retention:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/evidenceretention"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # Clears the live corpus and its sync checkpoint so the next bulk run rebuilds
   # from scratch under the current code - the first step of `make reingest`. The
   # checkpoint keys on the dump version, not the code, so this is what forces a

@@ -45,6 +45,12 @@ PIPELINE_DB_DSN="${PIPELINE_DB_DSN:-postgres://postgres:dev@localhost:5432/truth
 INGEST_METRICS_NAMESPACE="${INGEST_METRICS_NAMESPACE:-TruthInStream/RabbitMQ}"
 INGEST_BROKER_NAME="${INGEST_BROKER_NAME:-${PROJECT}-${ENVIRONMENT}}"
 PIPELINE_RUN_METRICS_NAMESPACE="${PIPELINE_RUN_METRICS_NAMESPACE:-TruthInStream/Ingestion}"
+# Embedded-evidence-vector count beyond which the two-stage binary-quantization
+# search should be turned on (VER-203, measure 4). The local corpus section warns
+# once the embedded evidence_chunks count crosses it. Default ~50M, the VER-173
+# benchmark's RAM-ceiling point (docs/datastore-scale-benchmark.md); it only
+# drives the warning, never enables BQ (that is EVIDENCE_BQ_MULTIPLIER).
+EVIDENCE_BQ_THRESHOLD_VECTORS="${EVIDENCE_BQ_THRESHOLD_VECTORS:-50000000}"
 INGEST_SOURCES_MANIFEST="${INGEST_SOURCES_MANIFEST:-$SCRIPT_DIR/../stack/backend/internal/connector/sources.json}"
 INGEST_COMPOSE_FILE_LOCAL="${INGEST_COMPOSE_FILE_LOCAL:-docker-compose.yml}"
 
@@ -54,6 +60,22 @@ INGEST_COMPOSE_FILE_LOCAL="${INGEST_COMPOSE_FILE_LOCAL:-docker-compose.yml}"
 RUN_RECENCY_WINDOW_HOURS="${RUN_RECENCY_WINDOW_HOURS:-30}"
 
 hr() { printf '%s\n' "------------------------------------------------------------"; }
+
+# bq_threshold_note EMBEDDED: warn when the embedded evidence-vector count has
+# crossed the documented BQ default-on threshold, so the operator knows to weigh
+# turning on EVIDENCE_BQ_MULTIPLIER before the halfvec HNSW index outgrows the
+# instance RAM working set. Silent below the threshold, and a no-op on a
+# non-numeric count or a zero/blank threshold so it never breaks the read-only run.
+bq_threshold_note() {
+  local embedded="$1"
+  [[ "$embedded" =~ ^[0-9]+$ ]] || return 0
+  [[ "$EVIDENCE_BQ_THRESHOLD_VECTORS" =~ ^[0-9]+$ ]] || return 0
+  (( EVIDENCE_BQ_THRESHOLD_VECTORS > 0 )) || return 0
+  if (( embedded >= EVIDENCE_BQ_THRESHOLD_VECTORS )); then
+    printf '  %-22s embedded evidence vectors (%s) crossed the BQ threshold (%s); consider enabling EVIDENCE_BQ_MULTIPLIER (docs/datastore-scale-benchmark.md)\n' \
+      "WARNING:" "$embedded" "$EVIDENCE_BQ_THRESHOLD_VECTORS"
+  fi
+}
 
 # corpus_counts DSN: print the five corpus tallies as one tab-separated row
 # (claims, evidence embedded, evidence un-embedded, political_claims,
@@ -88,6 +110,7 @@ local_section() {
     printf '  %-22s %s embedded, %s un-embedded\n' "evidence_chunks" "$embedded" "$unembedded"
     printf '  %-22s %s\n' "political_claims" "$political"
     printf '  %-22s %s\n' "voting_records" "$voting"
+    bq_threshold_note "$embedded"
   else
     echo "corpus (local database): unavailable - is the stack up? try 'make up' (or set PIPELINE_DB_DSN)"
   fi

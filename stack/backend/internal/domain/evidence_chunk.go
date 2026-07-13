@@ -143,6 +143,31 @@ const (
 	metaImportance = "importance"
 )
 
+// Metadata keys the near-duplicate gate (VER-203) writes on a chunk it withholds
+// from search. MetaDuplicate flags the chunk; MetaDuplicateSimilarity records the
+// cosine similarity to the nearest same-source neighbor that tripped the gate,
+// so the flag and the evidence that produced it travel together. A flagged chunk
+// is stored for provenance but carries no embedding, so every search (all filter
+// embedding IS NOT NULL) skips it and the HNSW index never holds it.
+const (
+	MetaDuplicate           = "duplicate"
+	MetaDuplicateSimilarity = "duplicate_similarity"
+)
+
+// WithDuplicateFlag returns a copy of metadata marked as a near-duplicate at the
+// measured cosine similarity. It copies rather than mutates so the caller's map
+// is left untouched, and it always returns a non-nil map so the store's jsonb
+// marshaling never sees SQL NULL.
+func WithDuplicateFlag(metadata map[string]any, similarity float64) map[string]any {
+	out := make(map[string]any, len(metadata)+2)
+	for k, v := range metadata {
+		out[k] = v
+	}
+	out[MetaDuplicate] = true
+	out[MetaDuplicateSimilarity] = similarity
+	return out
+}
+
 // WikiMetadata is the typed view of a wiki/crawl chunk's EvidenceChunk.Metadata:
 // the source revision the text came from, the section heading it sits under (""
 // for a lead), and the offline clustering outputs (a topic cluster id and a

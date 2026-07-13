@@ -26,11 +26,25 @@ func (f fakeEmbedder) EmbedDocuments(_ context.Context, _ []string) ([][]float32
 type fakeStore struct {
 	got domain.EvidenceChunk
 	err error
+
+	alreadyEmbedded bool  // ContentAlreadyEmbedded returns this
+	checkErr        error // ContentAlreadyEmbedded error
+	flagged         bool  // UpsertEmbeddedChunkDeduped reports this
+	lastBar         float64
+	upserts         int
+	checks          int
 }
 
-func (f *fakeStore) UpsertEmbeddedChunk(_ context.Context, c domain.EvidenceChunk) error {
+func (f *fakeStore) ContentAlreadyEmbedded(_ context.Context, _ domain.EvidenceChunk) (bool, error) {
+	f.checks++
+	return f.alreadyEmbedded, f.checkErr
+}
+
+func (f *fakeStore) UpsertEmbeddedChunkDeduped(_ context.Context, c domain.EvidenceChunk, bar float64) (bool, error) {
+	f.upserts++
 	f.got = c
-	return f.err
+	f.lastBar = bar
+	return f.flagged, f.err
 }
 
 // chunkKey is the generic evidence natural key the worker upserts under.
@@ -320,5 +334,74 @@ func TestHandleRequeuesWhenRepublishInterruptedByShutdown(t *testing.T) {
 	acked, nacked, requeue := d.state()
 	if acked || !nacked || !requeue {
 		t.Fatalf("delivery acked=%v nacked=%v requeue=%v, want requeued (nacked, requeue=true)", acked, nacked, requeue)
+	}
+}
+
+// TestProcessSkipsAlreadyEmbedded verifies the content-hash short-circuit
+// (VER-203, measure 1): when the store reports the exact content already
+// embedded, the worker acks without a provider call or a re-upsert and counts
+// the skip. The embedder is armed to fail so any embed attempt would republish
+// instead of ack, proving the provider was never called.
+func TestProcessSkipsAlreadyEmbedded(t *testing.T) {
+	st := &fakeStore{alreadyEmbedded: true}
+	w := NewWorker(fakeEmbedder{err: errors.New("must not embed")}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	res := w.Process(t.Context(), mustBody(t, validJob()), 5)
+	if res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 0 {
+		t.Errorf("upserts = %d, want 0 (short-circuited before write)", st.upserts)
+	}
+	if got := w.Stats().Skipped; got != 1 {
+		t.Errorf("Stats().Skipped = %d, want 1", got)
+	}
+}
+
+// TestProcessEmbedsWhenContentChanged verifies a not-already-embedded job takes
+// the normal embed+upsert path, passes the configured near-duplicate bar to the
+// store, and does not count a skip.
+func TestProcessEmbedsWhenContentChanged(t *testing.T) {
+	st := &fakeStore{alreadyEmbedded: false}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3, NearDupSimilarity: 0.97})
+	res := w.Process(t.Context(), mustBody(t, validJob()), 5)
+	if res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 1 {
+		t.Errorf("upserts = %d, want 1", st.upserts)
+	}
+	if st.lastBar != 0.97 {
+		t.Errorf("near-dup bar passed to store = %g, want 0.97", st.lastBar)
+	}
+	if got := w.Stats().Skipped; got != 0 {
+		t.Errorf("Stats().Skipped = %d, want 0", got)
+	}
+}
+
+// TestProcessCheckErrorFallsThroughToEmbed verifies a short-circuit lookup error
+// is treated as transient: the worker embeds anyway rather than dropping the job,
+// so a store blip never loses work.
+func TestProcessCheckErrorFallsThroughToEmbed(t *testing.T) {
+	st := &fakeStore{checkErr: errors.New("lookup blip")}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	res := w.Process(t.Context(), mustBody(t, validJob()), 5)
+	if res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 1 {
+		t.Errorf("upserts = %d, want 1 (embedded despite check error)", st.upserts)
+	}
+	if got := w.Stats().Skipped; got != 0 {
+		t.Errorf("Stats().Skipped = %d, want 0", got)
+	}
+}
+
+// TestProcessFlaggedDuplicateStillAcks verifies a near-duplicate the store
+// withheld (flagged) is still acknowledged - the message is handled, not retried.
+func TestProcessFlaggedDuplicateStillAcks(t *testing.T) {
+	st := &fakeStore{flagged: true}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3, NearDupSimilarity: 0.97})
+	if res := w.Process(t.Context(), mustBody(t, validJob()), 5); res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
 	}
 }
