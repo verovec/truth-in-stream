@@ -93,10 +93,17 @@ pipeline analyses its sentences once and persists the verdicts, so any authentic
 the document with credible and disputed sentences highlighted in place (see
 [PDF fact-check](docs/pdf-fact-check.md)).
 
-Content ingestion - uploading videos and YouTube links, uploading documents, curating the library -
-is an operator task, gathered in an admin-only **[backoffice](docs/backoffice.md)** at `/backoffice`.
-Watching and reading stay open to every authenticated user: `/app` and `/documents` are
-consumption-only surfaces.
+Fact-checking also runs on live television. The platform captures free, non-DRM channels - official
+24/7 YouTube news simulcasts and parliamentary video portals - as a headless server-side viewer: an
+admin turns a channel on in the backoffice, and a capture worker feeds its audio through the same
+live pipeline and (opt-in, per channel) archives hour-chunked recordings for replay. Every
+authenticated user follows a channel on the **`/tv`** surface - the official embed beside live
+verdicts, plus the channel's recordings (see [live TV capture](docs/tv-live.md)).
+
+Content ingestion - uploading videos and YouTube links, uploading documents, curating the library,
+and turning TV channels on and off - is an operator task, gathered in an admin-only
+**[backoffice](docs/backoffice.md)** at `/backoffice`. Watching and reading stay open to every
+authenticated user: `/app`, `/documents`, and `/tv` are consumption-only surfaces.
 
 ## Tech stack
 
