@@ -3,6 +3,7 @@ package tvcapture
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -52,10 +53,16 @@ func (m *Manager) Run(ctx context.Context) {
 	// snapshots records the Channel each running supervisor was started with, so
 	// a later reconcile can detect a config change and restart it.
 	snapshots := make(map[string]Channel)
+	// stopping tracks supervisors whose stop() is in flight. Stops run in their
+	// own goroutine so one channel's up-to-90s final-archive salvage never blocks
+	// reconcile, the poll/retention ticks, or another channel starting; shutdown
+	// waits on this so an in-flight salvage still completes.
+	var stopping sync.WaitGroup
 	defer func() {
-		for _, sup := range running {
-			sup.stop()
+		for id, sup := range running {
+			m.stopAsync(&stopping, id, sup)
 		}
+		stopping.Wait()
 	}()
 
 	pollTicker := time.NewTicker(m.poll)
@@ -63,7 +70,7 @@ func (m *Manager) Run(ctx context.Context) {
 	retentionTicker := time.NewTicker(retentionInterval)
 	defer retentionTicker.Stop()
 
-	m.reconcile(ctx, running, snapshots)
+	m.reconcile(ctx, running, snapshots, &stopping)
 	m.prune(ctx)
 
 	for {
@@ -71,14 +78,26 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-pollTicker.C:
-			m.reconcile(ctx, running, snapshots)
+			m.reconcile(ctx, running, snapshots, &stopping)
 		case <-retentionTicker.C:
 			m.prune(ctx)
 		}
 	}
 }
 
-func (m *Manager) reconcile(ctx context.Context, running map[string]channelSupervisor, snapshots map[string]Channel) {
+// stopAsync stops a supervisor in its own goroutine, tracked by wg, and removes
+// it from the caller's bookkeeping immediately. reconcile has already deleted the
+// id from running/snapshots before calling this.
+func (m *Manager) stopAsync(wg *sync.WaitGroup, id string, sup channelSupervisor) {
+	m.logger.Info("tvcapture: stopping supervisor", slog.String("channel_id", id))
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sup.stop()
+	}()
+}
+
+func (m *Manager) reconcile(ctx context.Context, running map[string]channelSupervisor, snapshots map[string]Channel, stopping *sync.WaitGroup) {
 	channels, err := m.client.ListChannels(ctx)
 	if err != nil {
 		m.logger.Warn("tvcapture: list channels failed, keeping current set", slog.Any("err", err))
@@ -87,11 +106,28 @@ func (m *Manager) reconcile(ctx context.Context, running map[string]channelSuper
 
 	toStart, toStop := diffChannels(snapshots, channels)
 
+	// A channel present in both is a config-change restart. Its stop must finish
+	// before its start, because the new capture reuses the same segment dir and
+	// single-publisher feed slot as the draining old one; a concurrent old-salvage
+	// would race the new ffmpeg's segment writes. A pure disable (only in toStop)
+	// has no successor, so it stops in the background and never blocks.
+	restarting := make(map[string]bool, len(toStart))
+	for _, ch := range toStart {
+		if _, ok := running[ch.ID]; ok {
+			restarting[ch.ID] = true
+		}
+	}
+
 	for _, id := range toStop {
-		m.logger.Info("tvcapture: stopping supervisor", slog.String("channel_id", id))
-		running[id].stop()
+		sup := running[id]
 		delete(running, id)
 		delete(snapshots, id)
+		if restarting[id] {
+			m.logger.Info("tvcapture: restarting supervisor (config changed)", slog.String("channel_id", id))
+			sup.stop()
+			continue
+		}
+		m.stopAsync(stopping, id, sup)
 	}
 	for _, ch := range toStart {
 		m.logger.Info("tvcapture: starting supervisor",

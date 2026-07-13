@@ -104,9 +104,14 @@ func RequireAdmin(id Identity) error {
 // RequireCaptureService gates the TV capture write-path (the publisher feed
 // socket and the recording archive endpoints). It admits an operator (the admin
 // role) or the dedicated tvcapture service account (the tv-capture role), and
-// rejects everyone else with ErrForbidden. Scoping these routes to their own
-// role - rather than reusing the blanket admin gate - keeps a compromised worker
-// credential confined to capture, unable to reach unrelated admin routes.
+// rejects everyone else with ErrForbidden. Gating these routes on their own role
+// rather than the blanket admin gate keeps a compromised worker credential from
+// performing admin MUTATIONS (deleting videos/documents, backoffice writes): the
+// tv-capture role fails RequireAdmin. It is not a full sandbox - being a valid
+// identity, the token still passes the RequireIdentity gate on read routes (the
+// video/document listings, the live viewer streams), so a leak exposes read
+// access to that (non-credential, product) data. The secret is therefore held in
+// SSM and the access token is short-lived.
 func RequireCaptureService(id Identity) error {
 	if id.IsAdmin() || id.HasRole(realmRoleTVCapture) {
 		return nil

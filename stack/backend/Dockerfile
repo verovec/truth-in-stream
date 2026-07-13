@@ -66,10 +66,14 @@ RUN set -eux; \
     echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/yt-dlp; \
     pip install --no-cache-dir --break-system-packages "streamlink==${STREAMLINK_VERSION}"; \
-    apt-get purge -y curl python3-pip; \
+    apt-get purge -y curl; \
     apt-get autoremove -y --purge; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --uid 65532 --user-group --no-create-home nonroot
+# python3-pip is intentionally NOT purged: streamlink was pip-installed and
+# imports its dependencies (e.g. setuptools/pkg_resources) at runtime; autoremoving
+# pip would strip those and break `streamlink` at exec time, silently disabling
+# YouTube capture in prod.
 COPY --from=builder /out/server /server
 COPY --from=builder /out/embedworker /embedworker
 COPY --from=builder /out/crawlworker /crawlworker

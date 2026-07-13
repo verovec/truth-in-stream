@@ -148,6 +148,14 @@ func newManagerHarness(client channelLister) (*Manager, map[string]*fakeSupervis
 	return m, created, &mu
 }
 
+// reconcileSync runs one reconcile and waits for any background supervisor stops
+// it launched to finish, so the test can assert stop state synchronously.
+func reconcileSync(ctx context.Context, m *Manager, running map[string]channelSupervisor, snapshots map[string]Channel) {
+	var wg sync.WaitGroup
+	m.reconcile(ctx, running, snapshots, &wg)
+	wg.Wait()
+}
+
 func TestManagerReconcileStartStop(t *testing.T) {
 	t.Parallel()
 	client := &fakeClient{}
@@ -158,7 +166,7 @@ func TestManagerReconcileStartStop(t *testing.T) {
 
 	// Enable c1 -> started.
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	mu.Lock()
 	c1 := created["c1"]
 	mu.Unlock()
@@ -168,7 +176,7 @@ func TestManagerReconcileStartStop(t *testing.T) {
 
 	// Disable c1 -> stopped and removed.
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: false}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	if !c1.stopped.Load() {
 		t.Fatal("c1 not stopped after disable")
 	}
@@ -186,9 +194,9 @@ func TestManagerReconcileChannelDisappears(t *testing.T) {
 	ctx := context.Background()
 
 	client.setChannels([]Channel{{ID: "c1", Enabled: true}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	client.setChannels([]Channel{}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 
 	mu.Lock()
 	c1 := created["c1"]
@@ -207,10 +215,10 @@ func TestManagerReconcileKeepsSetOnListError(t *testing.T) {
 	ctx := context.Background()
 
 	client.setChannels([]Channel{{ID: "c1", Enabled: true}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 
 	client.setChannels(nil, errors.New("transient"))
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 
 	mu.Lock()
 	c1 := created["c1"]
@@ -232,7 +240,7 @@ func TestManagerReconcileRestartsOnConfigChange(t *testing.T) {
 	ctx := context.Background()
 
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true, SourceRef: "old"}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	mu.Lock()
 	old := created["c1"]
 	mu.Unlock()
@@ -242,7 +250,7 @@ func TestManagerReconcileRestartsOnConfigChange(t *testing.T) {
 
 	// Change the source ref -> the stale supervisor stops and a fresh one starts.
 	client.setChannels([]Channel{{ID: "c1", Slug: "tf1", Enabled: true, SourceRef: "new"}}, nil)
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	mu.Lock()
 	cur := created["c1"]
 	mu.Unlock()
@@ -260,7 +268,7 @@ func TestManagerReconcileRestartsOnConfigChange(t *testing.T) {
 	}
 
 	// A reconcile with identical config must not restart the supervisor.
-	m.reconcile(ctx, running, snapshots)
+	reconcileSync(ctx, m, running, snapshots)
 	mu.Lock()
 	after := created["c1"]
 	mu.Unlock()

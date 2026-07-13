@@ -6,9 +6,9 @@ package handler
 // mints a presigned PUT under the channel's recordings prefix, uploads the
 // remuxed MP4 directly to storage, then registers the object so it becomes a
 // kind `tv` video that replays through the ordinary watch flow. A daily prune
-// enforces retention. Every route is service-only (RequireAdmin at
-// registration): the worker carries the admin realm role, no browser calls
-// these.
+// enforces retention. Every route is service-only, gated by RequireCaptureService
+// at registration (the worker's scoped tv-capture role, or an admin) - not
+// blanket admin; no browser calls these.
 //
 //	POST /api/tv/recordings/uploads mint a presigned PUT and a pending recording
 //	POST /api/tv/recordings         confirm the object landed, mark it ready

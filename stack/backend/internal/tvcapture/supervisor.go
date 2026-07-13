@@ -219,7 +219,13 @@ func (s *supervisor) runOnce(ctx context.Context) error {
 		return fmt.Errorf("tvcapture: create workdir: %w", err)
 	}
 	if ch.ArchiveEnabled {
-		_ = s.arch.salvage(ctx, ch, dir)
+		// Bound the startup salvage so a single leftover segment whose upload hangs
+		// cannot wedge capture startup forever (matching the archiveClosed and final
+		// salvage bounds); a segment it does not reach is picked up by the watcher
+		// once capture produces a newer one, or by the next startup salvage.
+		salvageCtx, cancel := context.WithTimeout(ctx, s.cfg.SegmentArchiveTimeout)
+		_ = s.arch.salvage(salvageCtx, ch, dir)
+		cancel()
 	}
 
 	// The process runs on its own context so shutdown is a graceful Stop (SIGTERM)
@@ -397,15 +403,17 @@ func (s *supervisor) archiveClosed(dir string, ch Channel) {
 		return
 	}
 	sort.Strings(files)
-	// Archive on a fresh, generously-bounded context so a large hour's upload has
-	// time to complete; a stuck upload still cannot wedge the loop forever.
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.SegmentArchiveTimeout)
-	defer cancel()
+	// Each closed segment gets its OWN generously-bounded context, so when several
+	// segments have accumulated (worker was behind) a slow early upload does not
+	// eat the whole batch's budget and starve the tail; a stuck upload still cannot
+	// wedge the loop forever.
 	for _, ts := range files[:len(files)-1] {
+		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.SegmentArchiveTimeout)
 		if err := s.arch.archive(ctx, ch, ts); err != nil {
 			s.logger.Warn("tvcapture: archive segment failed",
 				slog.String("segment", filepath.Base(ts)), slog.Any("err", err))
 		}
+		cancel()
 	}
 }
 
