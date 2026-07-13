@@ -163,6 +163,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+	vp.maybePoliticalGate(ctx, out, pu, claim, verdict, evidence, ret)
 }
 
 // resolvePoliticalClaimBatch is the batch counterpart of scorePoliticalClaim:
@@ -195,8 +196,115 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		}
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
+	verdict = vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
 	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+}
+
+// maybePoliticalGate is the terminal gate on the political two-axis path, the
+// political twin of maybeReverify. It runs only when the just-emitted political
+// verdict is weak (literal unverifiable, or confidence below the trigger floor) and
+// there is routed evidence to re-read; it re-judges the claim with the deeper
+// reasoner over that same evidence and, when the re-judgment is grounded and reaches
+// the gate's confidence floor, maps it back onto the two-axis verdict and re-emits the
+// verified frame in place. Like the credibility gate it runs AFTER the first emit (so
+// it never delays the live result), does NOT re-fold into the speaker tally (already
+// counted), and is a no-op when the gate is off or the verdict is already strong. The
+// reasoner it reuses is the credibility Reverify: it judges the literal truth of the
+// claim against the evidence - exactly the axis a weak political verdict is unsure
+// about - while the manipulation flags (framing axis) carry through unchanged.
+func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEvent, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, evidence []source.Evidence, ret retrieved) {
+	sp := vp.secondPass
+	passages := EvidencePassagesFrom(evidence)
+	if sp == nil || !sp.weak(fast, len(passages)) {
+		return
+	}
+	reasoned, err := sp.reverify(ctx, claim.Text, passages)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "political terminal-gate reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return
+	}
+	upgraded := sp.upgradePolitical(fast, reasoned, evidence)
+	if upgraded == fast {
+		return
+	}
+	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
+	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
+}
+
+// applyPoliticalGateBatch is the batch counterpart of maybePoliticalGate: it
+// re-judges a weak political verdict with the deeper reasoner over the routed evidence
+// and returns the upgraded verdict, or the original when the gate is off, the verdict
+// is already strong, or the reasoning call fails. It emits nothing.
+func (vp *VerifyPath) applyPoliticalGateBatch(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, evidence []source.Evidence) *VerifiedVerdict {
+	sp := vp.secondPass
+	passages := EvidencePassagesFrom(evidence)
+	if sp == nil || !sp.weak(fast, len(passages)) {
+		return fast
+	}
+	reasoned, err := sp.reverify(ctx, claim.Text, passages)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "batch political terminal-gate reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return fast
+	}
+	return sp.upgradePolitical(fast, reasoned, evidence)
+}
+
+// upgradePolitical folds a credibility reasoning re-judgment into a weak political
+// two-axis verdict under the terminal-gate acceptance rule. When the re-judgment is
+// accepted (grounded AND at least MinConfidence) and settles a definite literal
+// verdict, it replaces the weak verdict: the reasoner's credibility maps back onto the
+// literal axis (credible -> accurate, disputed -> inaccurate) via
+// literalFromCredibility, the credibility axis is re-derived from that literal through
+// the unchanged credibilityFromLiteral, and the prior verdict's manipulation flags are
+// carried through (the credibility reasoner does not assess framing). Otherwise the
+// prior verdict stands - an unverifiable prior stays unverifiable. It is deterministic
+// and table-testable.
+func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerdict, evidence []source.Evidence) *VerifiedVerdict {
+	if !sp.accept(reasoned) {
+		return orig
+	}
+	literal := literalFromCredibility(reasoned.Verdict)
+	if literal == LiteralUnverifiable {
+		// The grounded re-judgment did not settle a definite literal verdict; keep the
+		// prior rather than emit an unverifiable "upgrade".
+		return orig
+	}
+	citations := citationsFromEvidence(reasoned.Citations, evidence)
+	if len(citations) == 0 {
+		return orig
+	}
+	return &VerifiedVerdict{
+		Verdict:    credibilityFromLiteral(literal),
+		Basis:      BasisEvidence,
+		Confidence: reasoned.Confidence,
+		Citations:  citations,
+		Rationale:  reasoned.Rationale,
+		Literal:    literal,
+		Flags:      orig.Flags,
+	}
+}
+
+// citationsFromEvidence resolves a reasoning re-judgment's validated citations back to
+// the routed political evidence they ground (by evidence id), projecting each into the
+// wire match shape carrying its source provenance. A citation whose id is not among the
+// routed evidence is dropped (the adapter's guard already rejected fabricated ids).
+func citationsFromEvidence(cits []EvidenceCitation, evidence []source.Evidence) []domain.SegmentMatch {
+	byID := make(map[string]source.Evidence, len(evidence))
+	for _, e := range evidence {
+		byID[e.ID.String()] = e
+	}
+	out := make([]domain.SegmentMatch, 0, len(cits))
+	for _, c := range cits {
+		if e, ok := byID[c.EvidenceID]; ok {
+			out = append(out, matchFromEvidence(e))
+		}
+	}
+	return out
 }
 
 // routeRetrieve classifies-then-routes one claim under the fast deadline (routing

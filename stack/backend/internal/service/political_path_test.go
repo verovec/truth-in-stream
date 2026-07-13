@@ -212,6 +212,73 @@ func TestPoliticalPathEventLifecycleCarriesLiteralFlagsSource(t *testing.T) {
 	}
 }
 
+// TestPoliticalPathTerminalGateUpgradesWeakVerdict proves the terminal gate now
+// applies to the political two-axis path (the old unconditional skip is gone): a weak
+// two-axis verdict (literal unverifiable) fires the deeper credibility reasoner over
+// the routed evidence, and a grounded high-confidence re-judgment maps back onto the
+// literal axis (disputed -> inaccurate) and re-emits in place, after the fast verdict
+// already emitted, for the same claim id.
+func TestPoliticalPathTerminalGateUpgradesWeakVerdict(t *testing.T) {
+	t.Parallel()
+	unit := "l'immigration a fait exploser la délinquance."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	classifier := fakeClassifier{byClaim: map[string]claimtype.Type{unit: claimtype.Statistic}}
+	evID := source.NewEvidenceID(source.KindStatsINSEE, "DELINQ", 0).String()
+	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{
+		unit: {srcEvidence(source.KindStatsINSEE, "DELINQ", "aucune corrélation établie entre immigration et délinquance")},
+	}}
+	// The fast two-axis verifier is unsure: literal unverifiable, low confidence.
+	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
+		unit: {Literal: LiteralUnverifiable, Basis: BasisKnowledge, Confidence: 0.3, Rationale: "insuffisant"},
+	}}
+	// The deeper reasoner grounds a disputed credibility verdict at high confidence.
+	reverifier := &fakeReverifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.95, Citations: []EvidenceCitation{{EvidenceID: evID, QuotedSpan: "aucune corrélation"}}, Rationale: "réfuté par la source"},
+	}}
+
+	a := politicalFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   &fakeVerifier{},
+		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+	}, PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil {
+		t.Fatal("no claims event")
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	if len(results) != 3 {
+		t.Fatalf("results = %d, want 3 (checking, weak verified, gated upgrade)", len(results))
+	}
+	if results[1].Verdict == nil || results[1].Verdict.Literal != LiteralUnverifiable {
+		t.Fatalf("fast verdict = %+v, want literal unverifiable emitted first", results[1].Verdict)
+	}
+	up := results[2]
+	if up.ClaimStatus != ClaimStatusVerified || up.Source != SourceVerified {
+		t.Fatalf("gated result = status %q source %q, want verified/verified", up.ClaimStatus, up.Source)
+	}
+	if up.Verdict == nil {
+		t.Fatal("gated result carries no verdict")
+	}
+	if up.Verdict.Literal != LiteralInaccurate {
+		t.Fatalf("gated literal = %q, want inaccurate (disputed -> inaccurate)", up.Verdict.Literal)
+	}
+	if up.Verdict.Verdict != VerdictDisputed {
+		t.Fatalf("gated credibility = %q, want disputed", up.Verdict.Verdict)
+	}
+	if up.Verdict.Basis != BasisEvidence || up.Verdict.Confidence != 0.95 {
+		t.Fatalf("gated verdict = %+v, want grounded at 0.95", up.Verdict)
+	}
+	if len(up.Verdict.Citations) != 1 || len(up.Verdict.Citations[0].Sources) != 1 || up.Verdict.Citations[0].Sources[0].Title != "INSEE" {
+		t.Fatalf("gated citations = %+v, want one INSEE citation", up.Verdict.Citations)
+	}
+	if seen := reverifier.seen(); len(seen) != 1 {
+		t.Fatalf("reverifier calls = %v, want exactly one (the weak verdict fired the gate)", seen)
+	}
+}
+
 func TestPoliticalPathTalliesMoveAndFramingTallyMoves(t *testing.T) {
 	t.Parallel()
 	// The flag-aware aggregator: an accurate claim bumps the credible count, an
