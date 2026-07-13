@@ -47,13 +47,13 @@
       "producer": "factcheckcrawl",
       "worker": "factcheckworker",
       "queue": "factcheck.claims",
-      "required_env": [
-        "FACTCHECK_QUERIES"
-      ],
       "forward_env": [
         "FACTCHECK_QUERIES",
+        "FACTCHECK_PUBLISHER_SITES",
         "FACTCHECK_LANGUAGE",
-        "FACTCHECK_MAX_PAGES"
+        "FACTCHECK_MAX_PAGES",
+        "FACTCHECK_MAX_AGE_DAYS",
+        "FACTCHECK_CHECKPOINT_PATH"
       ],
       "secrets": [
         {
@@ -180,6 +180,43 @@
         "PARLIAMENT_DATASET",
         "PARLIAMENT_SINCE_YEAR",
         "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "datacommons",
+      "default_cron": "0 5 * * *",
+      "producer": "datacommonscrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "DATACOMMONS_FEED_URL",
+        "DATACOMMONS_OUTLET_ALLOWLIST",
+        "DATACOMMONS_MAX_ITEMS",
+        "DATACOMMONS_FEED_FORMAT"
+      ]
+    },
+    {
+      "name": "claimreview",
+      "default_cron": "30 5 * * *",
+      "producer": "claimreviewcrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "CLAIMREVIEW_USER_AGENT",
+        "CLAIMREVIEW_MIN_DELAY_MS",
+        "CLAIMREVIEW_MAX_URLS"
+      ]
+    },
+    {
+      "name": "claimskg",
+      "producer": "claimskgseed",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "CLAIMSKG_SEED_ENABLED",
+        "CLAIMSKG_SEED_FILE",
+        "CLAIMSKG_SEED_VINTAGE",
+        "CLAIMSKG_SEED_TSV"
       ]
     }
   ]

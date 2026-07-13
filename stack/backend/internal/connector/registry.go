@@ -39,14 +39,19 @@ var descriptors = []Descriptor{
 		ForwardEnv: []string{"WIKI_ENQUEUE_BATCH_SIZE"},
 	},
 	{
+		// FACTCHECK_QUERIES is now OPTIONAL (a broadened default topic rotation is
+		// baked in), so it is NOT in RequiredEnv: the host validate_env must not abort
+		// the crawler when it is unset, and the shipped compose injects it empty.
 		Name:        "factcheck",
 		DefaultCron: "0 4 * * *",
 		Producer:    "factcheckcrawl",
 		Worker:      "factcheckworker",
 		Queue:       "factcheck.claims",
-		RequiredEnv: []string{"FACTCHECK_QUERIES"},
-		ForwardEnv:  []string{"FACTCHECK_QUERIES", "FACTCHECK_LANGUAGE", "FACTCHECK_MAX_PAGES"},
-		Secrets:     []SecretRef{{EnvVar: "FACTCHECK_API_KEY", SecretSuffix: "app/factcheck-api-key"}},
+		ForwardEnv: []string{
+			"FACTCHECK_QUERIES", "FACTCHECK_PUBLISHER_SITES", "FACTCHECK_LANGUAGE",
+			"FACTCHECK_MAX_PAGES", "FACTCHECK_MAX_AGE_DAYS", "FACTCHECK_CHECKPOINT_PATH",
+		},
+		Secrets: []SecretRef{{EnvVar: "FACTCHECK_API_KEY", SecretSuffix: "app/factcheck-api-key"}},
 	},
 	{
 		Name:        "scrutins",
@@ -142,6 +147,47 @@ var descriptors = []Descriptor{
 		Queue:       "scrutins.votes",
 		RequiredEnv: []string{"PARLIAMENT_DATASET"},
 		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_SINCE_YEAR", "PARLIAMENT_MAX_ITEMS"},
+	},
+	{
+		// datacommons is the keyless, redundant claim-corpus path: it reads the
+		// DataCommons ClaimReview feed and publishes claim jobs to the same
+		// factcheck.claims queue the Google-API factcheck source uses, so the
+		// existing factcheckworker drains it (NewQueue stays false, no new worker).
+		// The feed is a public object, so it declares no Secrets and needs no
+		// per-source Terraform. Cron 05:00 UTC runs it after factcheck (04:00) and
+		// scrutins (04:30) and off the Monday 04:00 broker-maintenance slot.
+		Name:        "datacommons",
+		DefaultCron: "0 5 * * *",
+		Producer:    "datacommonscrawl",
+		Worker:      "factcheckworker",
+		Queue:       "factcheck.claims",
+		ForwardEnv:  []string{"DATACOMMONS_FEED_URL", "DATACOMMONS_OUTLET_ALLOWLIST", "DATACOMMONS_MAX_ITEMS", "DATACOMMONS_FEED_FORMAT"},
+	},
+	{
+		// claimreview reads ClaimReview JSON-LD directly from the allowlisted French
+		// outlets (sitemap-discovered, robots- and pacing-respecting) and publishes to
+		// the same factcheck.claims queue the existing factcheckworker drains. Keyless
+		// (public outlet pages), so no Secrets and no per-source Terraform. Cron 05:30
+		// UTC runs it after the factcheck/datacommons streams and off the Monday 04:00
+		// broker-maintenance slot.
+		Name:        "claimreview",
+		DefaultCron: "30 5 * * *",
+		Producer:    "claimreviewcrawl",
+		Worker:      "factcheckworker",
+		Queue:       "factcheck.claims",
+		ForwardEnv:  []string{"CLAIMREVIEW_USER_AGENT", "CLAIMREVIEW_MIN_DELAY_MS", "CLAIMREVIEW_MAX_URLS"},
+	},
+	{
+		// claimskg is the one-shot historical seed: it imports a ClaimsKG CSV/TSV
+		// export into political_claims via the same factcheck.claims queue. It is
+		// host-only (no DefaultCron): it never runs on the scheduler and is armed only
+		// by CLAIMSKG_SEED_ENABLED + CLAIMSKG_SEED_FILE, so the large 2023 snapshot is
+		// ingested only on a deliberate operator run. Keyless (a local export file).
+		Name:       "claimskg",
+		Producer:   "claimskgseed",
+		Worker:     "factcheckworker",
+		Queue:      "factcheck.claims",
+		ForwardEnv: []string{"CLAIMSKG_SEED_ENABLED", "CLAIMSKG_SEED_FILE", "CLAIMSKG_SEED_VINTAGE", "CLAIMSKG_SEED_TSV"},
 	},
 }
 

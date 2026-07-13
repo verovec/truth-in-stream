@@ -231,10 +231,15 @@ produces the verdict. Evidence comes from sources 1-3 and 5; the LLM decides.
 
 ---
 
-## 5. Google fact-check — does not exist
+## 5. Google fact-check — as an LLM provider, not a search source
 
-There is **no Google Fact Check Tools API, no ClaimReview, no external
-fact-check archive** in the codebase. The closest things named "Google":
+"Google" is not a live web-search *source* in this codebase (that is Brave, see
+below). It does appear two other ways: as the **Gemini LLM provider**, and — via
+the **Google Fact Check Markup Tool** — as the origin of the ClaimReview markup
+the curated claim corpus ingests offline (see the fact-check archive sources:
+the Google Fact Check Tools API path and the **DataCommons ClaimReview feed** in
+section 7). Those feed `political_claims` ahead of time; they are not queried at
+check time. The things named "Google" at *check* time:
 
 - **Gemini as LLM provider** (see section 4) — reads evidence, isn't a source.
 - **Web search**, which is **Brave Search**, not Google
@@ -243,8 +248,9 @@ fact-check archive** in the codebase. The closest things named "Google":
 - **Press/Attribution search**, also Brave
   (`internal/source/press/press.go`) — used to verify quotes ("X said Y").
 
-If a Google Fact Check integration is wanted, it would be a new
-`internal/source/...` adapter — it is not built today.
+The Google **Fact Check Tools API** path (the curated-corpus ingestion, not a
+check-time source) is section 8; the other claim-level corpus paths are sections
+7, 9, and 10.
 
 ---
 
@@ -338,6 +344,144 @@ and the manifest resolution the host script reads
 delivery e2e verifies manifest/compose/host-script resolution per dataset; a real
 dev-account run additionally needs `deploy/targets.json` (gitignored on this public
 repo) present on the operator's machine.
+## 8. DataCommons ClaimReview feed (curated claim corpus)
+
+**What it answers:** a talking point already fact-checked by a vetted French
+outlet — the live fast-path borrows the outlet's verdict instantly instead of
+re-reasoning it.
+
+- **Where the data comes from:** the **DataCommons ClaimReview data feed**
+  (`storage.googleapis.com/datacommons-feeds/claimreview/latest/data.json`), the
+  aggregated, schema.org-standardized markup created through the Google Fact
+  Check Markup Tool and refreshed daily. It is a **public, keyless** object, so
+  the producer declares **no Secrets Manager entry and needs no per-source
+  Terraform** (unlike the Google Fact Check Tools API path in section 5). Producer:
+  `internal/datacommons` via `cmd/datacommonscrawl`.
+- **The pipeline:** it is the **redundant, non-API path** onto the same corpus as
+  the Google-API `factcheck` source. Both publish self-contained
+  `factcheckjob.ClaimJob` bodies to the versioned `factcheck.claims` queue, and
+  the existing `factcheckworker` embeds and upserts each into `political_claims`.
+  Scheduled daily at **05:00 UTC** (`SCHEDULE_DATACOMMONS_*`), on-demand on the
+  ingestion hosts via `scripts/ingest-host.sh crawler|consumer datacommons`.
+- **French selection by outlet allowlist:** the feed carries **no per-record
+  language tag**, so the French subset is selected by an author-URL allowlist
+  (`DATACOMMONS_OUTLET_ALLOWLIST`, default AFP Factuel, Les Décodeurs / Le Monde,
+  franceinfo Vrai ou Fake, 20 Minutes, Libération, France 24 Les Observateurs).
+  Setting it empty ingests every outlet; `DATACOMMONS_MAX_ITEMS` caps a run.
+- **Rating normalisation (table-driven, conservative):** the outlet's textual
+  rating (`reviewRating.alternateName`, e.g. "Faux"/"Plutôt vrai") is folded
+  through the shared French verdict table (`internal/factcheckarchive`); if it
+  does not map, the numeric scale (`ratingValue`/`bestRating`/`worstRating`, where
+  a lower value is more false) is tried; only the clearly-false and clearly-true
+  ends map, and anything else lands as **`unverifiable` rather than a guess**.
+- **Dedup:** the claim ID is the **review URL**, and the worker's upsert is keyed
+  on it — so a claim reviewed by an allowlisted outlet resolves to **one
+  `political_claims` row** whichever path (Google API or DataCommons) ingested it.
+- **Stored fields / legal posture:** only claim text + categorical verdict + review
+  URL + outlet + date — **never article body text**. Reading the aggregated feed
+  rather than crawling an outlet's own site keeps ingestion clear of the EU sui
+  generis database right.
+- **Licence:** the feed **compilation is CC BY**; each ClaimReview markup carries
+  its publisher's own licence in its `sdLicense` field where present. Storing only
+  claim/verdict/URL/outlet/date (categorical facts, not the reviews' prose) stays
+  within those terms.
+- **One-shot historical backfill:** the daily feed is the steady-state path; the
+  DataCommons **historical dump** is a documented one-shot. Set
+  `DATACOMMONS_FEED_FORMAT=ndjson` and point `DATACOMMONS_FEED_URL` at the dump
+  (one ClaimReview object per line); **gzip is auto-detected** from a `.gz` URL or
+  a gzip content header, so the compressed dump decodes transparently. The same
+  outlet allowlist, rating normalisation, and review-URL dedup apply.
+
+---
+
+## 9. Google Fact Check Tools API — broadened French corpus (`factcheck`)
+
+**What it answers:** the same curated fast-path as section 7, from the API side.
+The `claims:search` API is live (the 2025 retirement was the Search *display*, not
+the API). Producer: `internal/factcheckarchive` via `cmd/factcheckcrawl`; worker and
+queue are shared with the other claim paths (`factcheckworker` / `factcheck.claims`).
+
+- **Broadened French strategy (was a fixed ~19 topics):** the run now walks two
+  kinds of stream, all `languageCode=fr`:
+  1. a **systematic topic rotation** over the French political domains
+     (institutions, parties/figures, and the recurring policy areas — a curated
+     default set overridable with `FACTCHECK_QUERIES`), and
+  2. **publisher-scoped streams** (`reviewPublisherSiteFilter`, no query term) that
+     page each allowlisted outlet's **entire French catalogue**, not just the
+     topic-matched subset.
+- **Empirical coverage (probe, `internal/factcheckarchive/probe_test.go`, live API,
+  8 pages/stream sample):** the fixed 19-topic set yielded **998** unique French
+  claims; the broadened strategy yielded **2 120** (about 2.1x). The probe is
+  build-tagged `probe` so it never runs in CI.
+- **Checkpointed and resumable:** each stream is a checkpoint unit
+  (`FACTCHECK_CHECKPOINT_PATH`, a `/state` volume). A killed run resumes at the next
+  undrained stream; the checkpoint clears on a fully successful run so the next
+  scheduled run starts fresh.
+- **Key handling:** `FACTCHECK_API_KEY` stays a **Secrets Manager entry read on the
+  host** (declared in the `factcheck` connector descriptor's `Secrets`, ARN already
+  in `stack/terraform/dev/main.tf`); it is never operator-forwarded.
+- **Licence:** each record is schema.org ClaimReview markup surfaced by Google's
+  API from the publishers; we store only claim/verdict/URL/outlet/date.
+
+---
+
+## 10. ClaimReview JSON-LD outlet reader (`claimreview`)
+
+**What it answers:** the same curated fast-path for reviews the API and feed miss,
+read directly from the outlets' own pages. Producer: `internal/claimreviewsite` via
+`cmd/claimreviewcrawl`.
+
+- **Allowlist-driven (EFCSN/IFCN-derived, config-curated):** only vetted French
+  outlets are visited — AFP Factuel, Les Décodeurs (Le Monde), franceinfo Vrai ou
+  Fake, 20 Minutes Fake Off (`config.defaultClaimReviewOutlets`).
+- **Discovery is sitemap-based, never link-spidering:** each outlet's sitemap (or
+  sitemap index) is fetched and page URLs are collected up to a per-outlet cap
+  (`CLAIMREVIEW_MAX_URLS`).
+- **robots.txt honoured, per-outlet paced:** `robots.txt` `Disallow` rules are
+  enforced and its `Crawl-delay` raises the pacing floor (`CLAIMREVIEW_MIN_DELAY_MS`);
+  requests carry the bot `CLAIMREVIEW_USER_AGENT`.
+- **Extracts ONLY the ClaimReview fields — never the article body:** the page's
+  `application/ld+json` blocks are parsed (standalone, array, or `@graph`) and only
+  `claimReviewed` + rating + `url` + `datePublished` + outlet are kept.
+- **Licence:** a record's `sdLicense` is honoured — a record under a reuse-forbidding
+  licence (e.g. `by-nd`) is skipped. Storing only categorical facts (not the review
+  prose) and preferring the official feeds/API keeps per-outlet reads conservative,
+  as the EU sui generis database right requires.
+
+---
+
+## 11. ClaimsKG one-time seed (`claimskg`)
+
+**What it answers:** a large historical backfill of internationally fact-checked
+claims. ClaimsKG is a **2023-vintage** knowledge graph (many fact-checkers); the
+operator exports it as CSV/TSV. Producer: `internal/claimskg` via `cmd/claimskgseed`.
+
+- **Explicitly gated one-shot:** it is **host-only** (never on the scheduler) and a
+  no-op unless `CLAIMSKG_SEED_ENABLED=true` **and** `CLAIMSKG_SEED_FILE` points at an
+  export, so the large stale snapshot is only ingested on a deliberate operator run.
+- **Provenance + vintage marked:** each record's `source_name` carries "ClaimsKG",
+  the `CLAIMSKG_SEED_VINTAGE` (default 2023), and the originating fact-checker, so a
+  borrowed verdict is attributable and its age visible.
+- **Licence:** claim/verdict/URL/outlet/date only; the seed is a considered,
+  documented import of a third-party research corpus.
+
+---
+
+## Shared mechanics across the claim-corpus paths (8-11)
+
+- **One reviewable rating table:** all four paths fold an outlet's heterogeneous
+  rating through `internal/claimrating` (`ratings.json`, **data not code**): textual
+  phrase first (accent/case-folded, longest-match-first so "plutôt faux" beats
+  "faux"), then the numeric scale, and **unmappable becomes `unverifiable`, never
+  guessed**.
+- **Dedup is by review URL** across every path: the claim ID is the review URL and
+  the worker's upsert is keyed on it, so a claim the API, the feed, an outlet, and
+  ClaimsKG all carry collapses to **one `political_claims` row**.
+- **Same channel as the original `factcheck` source:** every path publishes
+  `factcheckjob.ClaimJob` bodies to `factcheck.claims`, drained by the existing
+  `factcheckworker`, and each is operable on the EC2 ingestion hosts via
+  `scripts/ingest-host.sh crawler|consumer <source>` through its connector registry
+  entry (no per-source Terraform; only `factcheck` carries a secret).
 
 ---
 

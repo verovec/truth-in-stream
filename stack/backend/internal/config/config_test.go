@@ -2400,83 +2400,250 @@ func TestLoadFactCheckQueueDefaultName(t *testing.T) {
 }
 
 func TestLoadFactCheckArchive(t *testing.T) {
-	cases := []struct {
-		name        string
-		env         map[string]string
-		wantErr     bool
-		wantQueries []string
-		wantLang    string
-		wantPages   int
-	}{
-		{
-			name:        "defaults",
-			env:         map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "Macron, retraites"},
-			wantQueries: []string{"Macron", "retraites"},
-			wantLang:    "fr",
-			wantPages:   0,
-		},
-		{
-			name: "overrides",
-			env: map[string]string{
-				"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "chômage",
-				"FACTCHECK_LANGUAGE": "en", "FACTCHECK_MAX_PAGES": "3",
-			},
-			wantQueries: []string{"chômage"},
-			wantLang:    "en",
-			wantPages:   3,
-		},
-		{
-			name:    "missing key",
-			env:     map[string]string{"FACTCHECK_QUERIES": "x"},
-			wantErr: true,
-		},
-		{
-			name:    "missing queries",
-			env:     map[string]string{"FACTCHECK_API_KEY": "k"},
-			wantErr: true,
-		},
-		{
-			name:    "blank queries",
-			env:     map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": " , , "},
-			wantErr: true,
-		},
-		{
-			name:    "bad max pages",
-			env:     map[string]string{"FACTCHECK_API_KEY": "k", "FACTCHECK_QUERIES": "x", "FACTCHECK_MAX_PAGES": "-1"},
-			wantErr: true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			for k, v := range tc.env {
-				t.Setenv(k, v)
+	t.Run("defaults to the broadened topic set and outlet allowlist", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("LoadFactCheckArchive: %v", err)
+		}
+		// Materially more than the fixed ~19-topic legacy set, plus publisher streams.
+		if len(got.Topics) <= 19 {
+			t.Errorf("default topics = %d, want materially more than 19", len(got.Topics))
+		}
+		if len(got.PublisherSites) == 0 {
+			t.Errorf("default publisher sites empty, want the outlet allowlist")
+		}
+		if got.Language != "fr" {
+			t.Errorf("language = %q, want fr", got.Language)
+		}
+		if got.CheckpointPath == "" {
+			t.Errorf("checkpoint path empty, want a default")
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_QUERIES", "chômage, retraites")
+		t.Setenv("FACTCHECK_PUBLISHER_SITES", "lemonde.fr")
+		t.Setenv("FACTCHECK_LANGUAGE", "en")
+		t.Setenv("FACTCHECK_MAX_PAGES", "3")
+		t.Setenv("FACTCHECK_MAX_AGE_DAYS", "30")
+		t.Setenv("FACTCHECK_CHECKPOINT_PATH", "/tmp/cp.json")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("LoadFactCheckArchive: %v", err)
+		}
+		if len(got.Topics) != 2 || got.Topics[0] != "chômage" || got.Topics[1] != "retraites" {
+			t.Errorf("topics = %v", got.Topics)
+		}
+		if len(got.PublisherSites) != 1 || got.PublisherSites[0] != "lemonde.fr" {
+			t.Errorf("publisher sites = %v", got.PublisherSites)
+		}
+		if got.Language != "en" || got.MaxPages != 3 || got.MaxAgeDays != 30 || got.CheckpointPath != "/tmp/cp.json" {
+			t.Errorf("overrides not applied: %+v", got)
+		}
+	})
+	t.Run("empty-but-present publisher sites falls back to default (compose ships them empty)", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_PUBLISHER_SITES", "")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("LoadFactCheckArchive: %v", err)
+		}
+		if len(got.PublisherSites) == 0 {
+			t.Errorf("empty-but-present must keep the default outlet allowlist, got %v", got.PublisherSites)
+		}
+	})
+	t.Run("sentinel none disables publisher streams", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_PUBLISHER_SITES", "none")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("LoadFactCheckArchive: %v", err)
+		}
+		if len(got.PublisherSites) != 0 {
+			t.Errorf("sentinel 'none' should disable publisher streams, got %v", got.PublisherSites)
+		}
+	})
+	t.Run("missing key", func(t *testing.T) {
+		if _, err := LoadFactCheckArchive(); err == nil {
+			t.Fatal("expected an error for missing FACTCHECK_API_KEY")
+		}
+	})
+	t.Run("empty-but-present queries falls back to default rotation (no crash-loop)", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_QUERIES", "")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("empty FACTCHECK_QUERIES must not error: %v", err)
+		}
+		if len(got.Topics) <= 19 {
+			t.Errorf("empty queries should fall back to the broadened default, got %d", len(got.Topics))
+		}
+	})
+	t.Run("all-blank queries override also falls back", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_QUERIES", " , , ")
+		got, err := LoadFactCheckArchive()
+		if err != nil {
+			t.Fatalf("LoadFactCheckArchive: %v", err)
+		}
+		if len(got.Topics) <= 19 {
+			t.Errorf("all-blank override should fall back to default, got %d", len(got.Topics))
+		}
+	})
+	t.Run("bad max pages", func(t *testing.T) {
+		t.Setenv("FACTCHECK_API_KEY", "k")
+		t.Setenv("FACTCHECK_MAX_PAGES", "-1")
+		if _, err := LoadFactCheckArchive(); err == nil {
+			t.Fatal("expected an error for negative FACTCHECK_MAX_PAGES")
+		}
+	})
+}
+
+func TestLoadDataCommonsArchive(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		got, err := LoadDataCommonsArchive()
+		if err != nil {
+			t.Fatalf("LoadDataCommonsArchive: %v", err)
+		}
+		if got.FeedURL != defaultDataCommonsFeedURL {
+			t.Errorf("feed url = %q, want default", got.FeedURL)
+		}
+		if len(got.OutletAllowlist) != len(defaultDataCommonsOutlets) {
+			t.Errorf("allowlist = %v, want the default French set", got.OutletAllowlist)
+		}
+		if got.MaxItems != 0 {
+			t.Errorf("max items = %d, want 0", got.MaxItems)
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_FEED_URL", "https://example.test/feed.json")
+		t.Setenv("DATACOMMONS_OUTLET_ALLOWLIST", "afp.com, lemonde.fr")
+		t.Setenv("DATACOMMONS_MAX_ITEMS", "5")
+		got, err := LoadDataCommonsArchive()
+		if err != nil {
+			t.Fatalf("LoadDataCommonsArchive: %v", err)
+		}
+		if got.FeedURL != "https://example.test/feed.json" {
+			t.Errorf("feed url = %q", got.FeedURL)
+		}
+		if len(got.OutletAllowlist) != 2 || got.OutletAllowlist[0] != "afp.com" || got.OutletAllowlist[1] != "lemonde.fr" {
+			t.Errorf("allowlist = %v, want [afp.com lemonde.fr]", got.OutletAllowlist)
+		}
+		if got.MaxItems != 5 {
+			t.Errorf("max items = %d, want 5", got.MaxItems)
+		}
+	})
+	t.Run("empty-but-present allowlist keeps the French default (never worldwide)", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_OUTLET_ALLOWLIST", "")
+		got, err := LoadDataCommonsArchive()
+		if err != nil {
+			t.Fatalf("LoadDataCommonsArchive: %v", err)
+		}
+		if len(got.OutletAllowlist) != len(defaultDataCommonsOutlets) {
+			t.Errorf("empty-but-present must keep the vetted French default, got %v", got.OutletAllowlist)
+		}
+	})
+	t.Run("sentinel * ingests every outlet", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_OUTLET_ALLOWLIST", "*")
+		got, err := LoadDataCommonsArchive()
+		if err != nil {
+			t.Fatalf("LoadDataCommonsArchive: %v", err)
+		}
+		if len(got.OutletAllowlist) != 0 {
+			t.Errorf("sentinel '*' should ingest all (empty allowlist), got %v", got.OutletAllowlist)
+		}
+	})
+	t.Run("bad max items", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_MAX_ITEMS", "-1")
+		if _, err := LoadDataCommonsArchive(); err == nil {
+			t.Fatal("expected an error for negative max items")
+		}
+	})
+}
+
+func TestLoadClaimReviewSites(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		got, err := LoadClaimReviewSites()
+		if err != nil {
+			t.Fatalf("LoadClaimReviewSites: %v", err)
+		}
+		if len(got.Outlets) < 3 {
+			t.Errorf("outlets = %d, want at least 3 allowlisted French outlets", len(got.Outlets))
+		}
+		for _, o := range got.Outlets {
+			if o.Host == "" || o.Sitemap == "" {
+				t.Errorf("outlet missing host/sitemap: %+v", o)
 			}
-			got, err := LoadFactCheckArchive()
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected an error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("LoadFactCheckArchive: %v", err)
-			}
-			if len(got.Queries) != len(tc.wantQueries) {
-				t.Fatalf("queries = %v, want %v", got.Queries, tc.wantQueries)
-			}
-			for i, q := range tc.wantQueries {
-				if got.Queries[i] != q {
-					t.Errorf("query[%d] = %q, want %q", i, got.Queries[i], q)
-				}
-			}
-			if got.Language != tc.wantLang {
-				t.Errorf("language = %q, want %q", got.Language, tc.wantLang)
-			}
-			if got.MaxPages != tc.wantPages {
-				t.Errorf("max pages = %d, want %d", got.MaxPages, tc.wantPages)
-			}
-		})
-	}
+		}
+		if got.UserAgent == "" || got.MinDelay <= 0 || got.MaxURLsPerOutlet <= 0 {
+			t.Errorf("defaults not set: %+v", got)
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("CLAIMREVIEW_USER_AGENT", "my-bot")
+		t.Setenv("CLAIMREVIEW_MIN_DELAY_MS", "500")
+		t.Setenv("CLAIMREVIEW_MAX_URLS", "10")
+		got, err := LoadClaimReviewSites()
+		if err != nil {
+			t.Fatalf("LoadClaimReviewSites: %v", err)
+		}
+		if got.UserAgent != "my-bot" || got.MinDelay != 500*time.Millisecond || got.MaxURLsPerOutlet != 10 {
+			t.Errorf("overrides not applied: %+v", got)
+		}
+	})
+}
+
+func TestLoadClaimsKGSeed(t *testing.T) {
+	t.Run("disabled by default", func(t *testing.T) {
+		got, err := LoadClaimsKGSeed()
+		if err != nil {
+			t.Fatalf("LoadClaimsKGSeed: %v", err)
+		}
+		if got.Enabled {
+			t.Error("seed enabled by default, want disabled")
+		}
+		if got.Vintage != "2023" {
+			t.Errorf("vintage = %q, want 2023", got.Vintage)
+		}
+	})
+	t.Run("armed", func(t *testing.T) {
+		t.Setenv("CLAIMSKG_SEED_ENABLED", "true")
+		t.Setenv("CLAIMSKG_SEED_FILE", "/data/claimskg.csv")
+		t.Setenv("CLAIMSKG_SEED_TSV", "true")
+		got, err := LoadClaimsKGSeed()
+		if err != nil {
+			t.Fatalf("LoadClaimsKGSeed: %v", err)
+		}
+		if !got.Enabled || got.SeedFile != "/data/claimskg.csv" || !got.TSV {
+			t.Errorf("armed seed config wrong: %+v", got)
+		}
+	})
+}
+
+func TestLoadDataCommonsArchiveFormat(t *testing.T) {
+	t.Run("default datafeed", func(t *testing.T) {
+		got, err := LoadDataCommonsArchive()
+		if err != nil {
+			t.Fatalf("LoadDataCommonsArchive: %v", err)
+		}
+		if got.Format != "datafeed" {
+			t.Errorf("format = %q, want datafeed", got.Format)
+		}
+	})
+	t.Run("ndjson override", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_FEED_FORMAT", "ndjson")
+		got, err := LoadDataCommonsArchive()
+		if err != nil || got.Format != "ndjson" {
+			t.Fatalf("format = %q err=%v, want ndjson", got.Format, err)
+		}
+	})
+	t.Run("bad format", func(t *testing.T) {
+		t.Setenv("DATACOMMONS_FEED_FORMAT", "xml")
+		if _, err := LoadDataCommonsArchive(); err == nil {
+			t.Fatal("expected an error for an unknown feed format")
+		}
+	})
 }
 
 func TestLoadCrawlAlerts(t *testing.T) {

@@ -52,9 +52,11 @@ func TestProducerNamesMatchDescriptors(t *testing.T) {
 		t.Fatalf("build scrutins producer: %v", err)
 	}
 	producerNames := map[string]string{
-		"wikipedia": wikiProducer{}.Name(),
-		"factcheck": factcheckProducer{}.Name(),
-		"scrutins":  scrutins.Name(),
+		"wikipedia":   wikiProducer{}.Name(),
+		"factcheck":   factcheckProducer{}.Name(),
+		"scrutins":    scrutins.Name(),
+		"datacommons": datacommonsProducer{}.Name(),
+		"claimreview": claimreviewProducer{}.Name(),
 	}
 	for _, dataset := range parliament.Datasets() {
 		p, err := parliament.New(parliament.Config{Dataset: dataset, Legislature: "17", MaxPriority: 1}, namePub{}, nil)

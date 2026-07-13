@@ -203,6 +203,16 @@ echo "TEST: no API key is ever forwarded into the SSM command (secrets stay in S
   assert_not_contains "$log" "super-secret" "never puts a secret value in the command"
 )
 
+echo "TEST: factcheck runs with FACTCHECK_QUERIES unset (it is optional, not required)"
+(
+  make_sandbox
+  out="$(bash "$RUN" crawler factcheck up 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "factcheck crawler starts without FACTCHECK_QUERIES" || fail "factcheck crawler aborted without FACTCHECK_QUERIES (rc=$rc): $out"
+  assert_not_contains "$out" "missing required" "no missing-required-env abort for the now-optional FACTCHECK_QUERIES"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" "ssm send-command" "the run actually sends the crawler command"
+)
+
 echo "TEST: a wrong account refuses before any start or send"
 (
   LIVE_ACCOUNT=222222222222 make_sandbox

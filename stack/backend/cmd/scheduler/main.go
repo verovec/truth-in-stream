@@ -27,9 +27,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/verovec/truth-in-stream/backend/internal/claimreviewsite"
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
+	"github.com/verovec/truth-in-stream/backend/internal/datacommons"
 	"github.com/verovec/truth-in-stream/backend/internal/evidencegate"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckarchive"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
@@ -72,9 +74,11 @@ var builders = buildersTable()
 // one entry here plus its connector descriptor.
 func buildersTable() map[string]producerBuilder {
 	b := map[string]producerBuilder{
-		"wikipedia": buildWikipedia,
-		"factcheck": buildFactcheck,
-		"scrutins":  buildScrutins,
+		"wikipedia":   buildWikipedia,
+		"factcheck":   buildFactcheck,
+		"scrutins":    buildScrutins,
+		"datacommons": buildDatacommons,
+		"claimreview": buildClaimreview,
 	}
 	for _, dataset := range parliament.Datasets() {
 		b[dataset] = buildParliament(dataset)
@@ -277,12 +281,106 @@ func buildFactcheck(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 		return nil, nil, err
 	}
 
+	checkpoint, err := factcheckarchive.LoadStreamCheckpoint(archiveCfg.CheckpointPath)
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+
 	producer := factcheckProducer{
-		client:   archive,
-		logger:   logger,
-		pub:      qPublisher{client: client},
-		queries:  archiveCfg.Queries,
-		maxPages: archiveCfg.MaxPages,
+		client: archive,
+		logger: logger,
+		pub:    qPublisher{client: client},
+		streams: factcheckarchive.BuildStreams(factcheckarchive.Strategy{
+			Topics:         archiveCfg.Topics,
+			PublisherSites: archiveCfg.PublisherSites,
+			MaxPages:       archiveCfg.MaxPages,
+			MaxAgeDays:     archiveCfg.MaxAgeDays,
+		}),
+		checkpoint: checkpoint,
+	}
+	return producer, closer, nil
+}
+
+// buildDatacommons builds the DataCommons ClaimReview feed producer. It publishes
+// to the same factcheck.claims queue the Google-API factcheck source uses, so it
+// reads the fact-check queue config; the feed itself is keyless.
+func buildDatacommons(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+	archiveCfg, err := config.LoadDataCommonsArchive()
+	if err != nil {
+		return nil, nil, err
+	}
+	queueCfg, err := config.LoadFactCheckQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	client, err := queue.New(queueCfg.ClientConfig(0))
+	if err != nil {
+		return nil, nil, err
+	}
+	closer := func() { _ = client.Close() }
+
+	feed, err := datacommons.New(datacommons.Config{
+		FeedURL:         archiveCfg.FeedURL,
+		OutletAllowlist: archiveCfg.OutletAllowlist,
+		MaxItems:        archiveCfg.MaxItems,
+		Format:          archiveCfg.Format,
+		MaxPriority:     queueCfg.MaxPriority,
+	})
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+
+	producer := datacommonsProducer{
+		client:  feed,
+		logger:  logger,
+		pub:     qPublisher{client: client},
+		outlets: archiveCfg.OutletAllowlist,
+	}
+	return producer, closer, nil
+}
+
+// buildClaimreview builds the ClaimReview JSON-LD outlet reader. It publishes to the
+// same factcheck.claims queue the factcheck source uses; the outlets are public.
+func buildClaimreview(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+	sitesCfg, err := config.LoadClaimReviewSites()
+	if err != nil {
+		return nil, nil, err
+	}
+	queueCfg, err := config.LoadFactCheckQueue()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	client, err := queue.New(queueCfg.ClientConfig(0))
+	if err != nil {
+		return nil, nil, err
+	}
+	closer := func() { _ = client.Close() }
+
+	outlets := make([]claimreviewsite.Outlet, 0, len(sitesCfg.Outlets))
+	for _, o := range sitesCfg.Outlets {
+		outlets = append(outlets, claimreviewsite.Outlet{Name: o.Name, Host: o.Host, Sitemap: o.Sitemap})
+	}
+	reader, err := claimreviewsite.New(claimreviewsite.Config{
+		Outlets:          outlets,
+		UserAgent:        sitesCfg.UserAgent,
+		MinDelay:         sitesCfg.MinDelay,
+		MaxURLsPerOutlet: sitesCfg.MaxURLsPerOutlet,
+		MaxPriority:      queueCfg.MaxPriority,
+	})
+	if err != nil {
+		closer()
+		return nil, nil, err
+	}
+
+	producer := claimreviewProducer{
+		client:  reader,
+		logger:  logger,
+		pub:     qPublisher{client: client},
+		outlets: len(outlets),
 	}
 	return producer, closer, nil
 }

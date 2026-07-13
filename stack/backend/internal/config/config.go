@@ -2508,50 +2508,288 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 // only jurisdiction this ingest targets.
 const defaultFactCheckLanguage = "fr"
 
-// FactCheckArchive configures the fact-check-archive producer that reads
-// already-checked claims from the Google Fact Check Tools API into the curated
-// claim DB. APIKey is the Google API key (sourced from the environment only,
-// never logged); Queries are the comma-separated claims:search query terms to
-// walk (a politician's name, a policy area); Language filters by claim language;
-// MaxPages caps result pages followed per query (0 = follow every page).
-type FactCheckArchive struct {
-	APIKey   string
-	Queries  []string
-	Language string
-	MaxPages int
+// defaultFactCheckTopics is the broadened French-language topic rotation the Google
+// Fact Check Tools path walks when FACTCHECK_QUERIES is unset: a systematic sweep of
+// the French political domains (institutions, parties and figures, and the recurring
+// policy areas), far wider than the fixed ~19-topic legacy set. Combined with the
+// full-catalog publisher-scoped streams over the outlet allowlist, it takes the
+// Google path to the broadest French yield the API exposes.
+var defaultFactCheckTopics = []string{
+	// Institutions and process
+	"élection présidentielle", "élections législatives", "élections européennes",
+	"Assemblée nationale", "Sénat", "gouvernement", "Conseil constitutionnel",
+	"référendum", "motion de censure", "Union européenne", "Commission européenne",
+	// Figures and parties
+	"Emmanuel Macron", "Marine Le Pen", "Jean-Luc Mélenchon", "Gabriel Attal",
+	"Rassemblement national", "La France insoumise", "Renaissance", "Les Républicains",
+	"Parti socialiste", "Europe Écologie Les Verts", "Jordan Bardella", "Édouard Philippe",
+	// Policy areas
+	"retraites", "réforme des retraites", "chômage", "emploi", "pouvoir d'achat",
+	"inflation", "immigration", "asile", "sécurité", "délinquance", "impôts", "fiscalité",
+	"dette publique", "déficit public", "santé", "hôpital", "école", "éducation",
+	"énergie", "nucléaire", "climat", "transition écologique", "logement", "agriculture",
+	"salaire minimum", "SMIC", "dépenses publiques", "sécurité sociale", "défense",
+	"Ukraine", "OTAN", "terrorisme", "laïcité", "police", "justice",
 }
 
-// LoadFactCheckArchive reads the fact-check-archive producer configuration.
-// FACTCHECK_API_KEY and FACTCHECK_QUERIES are required (the producer has nothing
-// to ingest without a query); the rest default. Bad values fail fast at startup.
-// The secret is read but never logged.
+// defaultFactCheckPublisherSites is the vetted French fact-check outlet allowlist the
+// publisher-scoped streams page in full (reviewPublisherSiteFilter). It is the same
+// EFCSN/IFCN-derived allowlist the DataCommons feed is filtered to.
+var defaultFactCheckPublisherSites = []string{
+	"factuel.afp.com",
+	"lemonde.fr",
+	"francetvinfo.fr",
+	"20minutes.fr",
+	"liberation.fr",
+	"observers.france24.com",
+}
+
+// defaultFactCheckCheckpointPath persists the per-stream drain checkpoint between
+// producer runs so a killed run resumes at the next undrained stream. Defaults under
+// a state dir the operator can mount as a volume to survive container restarts.
+const defaultFactCheckCheckpointPath = "/state/factcheck-checkpoint.json"
+
+// FactCheckArchive configures the fact-check-archive producer that reads
+// already-checked claims from the Google Fact Check Tools API into the curated
+// claim DB. APIKey is the Google API key (sourced from the environment only, never
+// logged); Topics are the claims:search query terms to walk (languageCode-filtered);
+// PublisherSites are the outlet sites paged in full via reviewPublisherSiteFilter;
+// Language filters by claim language; MaxPages caps result pages per stream (0 =
+// every page); MaxAgeDays bounds results to recently published claims (0 = no
+// bound); CheckpointPath persists per-stream resume state (empty disables it).
+type FactCheckArchive struct {
+	APIKey         string
+	Topics         []string
+	PublisherSites []string
+	Language       string
+	MaxPages       int
+	MaxAgeDays     int
+	CheckpointPath string
+}
+
+// LoadFactCheckArchive reads the fact-check-archive producer configuration. Only
+// FACTCHECK_API_KEY is required. FACTCHECK_QUERIES overrides the broadened default
+// topic rotation (comma-separated); FACTCHECK_PUBLISHER_SITES overrides the outlet
+// allowlist and may be set empty to disable publisher-scoped streams; the rest
+// default. Bad values fail fast at startup. The secret is read but never logged.
 func LoadFactCheckArchive() (FactCheckArchive, error) {
 	apiKey, err := requireEnv("FACTCHECK_API_KEY")
 	if err != nil {
 		return FactCheckArchive{}, err
 	}
-	raw, err := requireEnv("FACTCHECK_QUERIES")
-	if err != nil {
-		return FactCheckArchive{}, err
-	}
-	queries := make([]string, 0)
-	for _, q := range strings.Split(raw, ",") {
-		if trimmed := strings.TrimSpace(q); trimmed != "" {
-			queries = append(queries, trimmed)
-		}
-	}
-	if len(queries) == 0 {
-		return FactCheckArchive{}, fmt.Errorf("config: FACTCHECK_QUERIES %q has no query", raw)
-	}
+	// An empty-but-present value (a shipped compose injects FACTCHECK_QUERIES="") is
+	// treated the same as unset: fall back to the broadened default rotation rather
+	// than booting with no topics. Publisher streams stay on by default; the explicit
+	// sentinel "none" opts out of them.
+	topics := listEnvOr("FACTCHECK_QUERIES", defaultFactCheckTopics)
+	sites := listEnvOr("FACTCHECK_PUBLISHER_SITES", defaultFactCheckPublisherSites, "none")
 	maxPages, err := intEnv("FACTCHECK_MAX_PAGES", 0, 0, math.MaxInt32)
 	if err != nil {
 		return FactCheckArchive{}, err
 	}
+	maxAgeDays, err := intEnv("FACTCHECK_MAX_AGE_DAYS", 0, 0, math.MaxInt32)
+	if err != nil {
+		return FactCheckArchive{}, err
+	}
+	checkpointPath := defaultFactCheckCheckpointPath
+	if raw, ok := os.LookupEnv("FACTCHECK_CHECKPOINT_PATH"); ok {
+		checkpointPath = raw
+	}
 	return FactCheckArchive{
-		APIKey:   apiKey,
-		Queries:  queries,
-		Language: getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
-		MaxPages: maxPages,
+		APIKey:         apiKey,
+		Topics:         topics,
+		PublisherSites: sites,
+		Language:       getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
+		MaxPages:       maxPages,
+		MaxAgeDays:     maxAgeDays,
+		CheckpointPath: checkpointPath,
+	}, nil
+}
+
+// splitCommaList splits a comma-separated env value into trimmed, non-empty items.
+func splitCommaList(raw string) []string {
+	items := make([]string, 0)
+	for _, s := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
+}
+
+// listEnvOr resolves a comma-separated list env var, treating unset AND
+// empty-but-present (and a value that trims to no items) identically as "use the
+// default". This is deliberate: the ingest compose files inject every knob as
+// ${VAR:-} (empty when the host var is unset), so an empty value MUST NOT be read as
+// an explicit "" that discards a vetted default (which for an outlet allowlist would
+// silently widen ingestion worldwide, and for the topic set would boot with nothing).
+// An explicit opt-out/opt-in-all is a distinct sentinel (case-insensitive), which
+// returns the empty slice; only that sentinel does.
+func listEnvOr(key string, def []string, emptySentinels ...string) []string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return def
+	}
+	for _, s := range emptySentinels {
+		if strings.EqualFold(strings.TrimSpace(raw), s) {
+			return []string{}
+		}
+	}
+	items := splitCommaList(raw)
+	if len(items) == 0 {
+		return def
+	}
+	return items
+}
+
+// defaultDataCommonsFeedURL is the daily ClaimReview data feed DataCommons
+// publishes. It is a public, keyless object, so the DataCommons producer needs no
+// Secrets Manager entry.
+const defaultDataCommonsFeedURL = "https://storage.googleapis.com/datacommons-feeds/claimreview/latest/data.json"
+
+// defaultDataCommonsOutlets is the vetted French fact-check outlet allowlist the
+// DataCommons feed is filtered to. The feed carries no per-record language tag, so
+// an author-URL allowlist is how the French subset is selected; each entry is a
+// host substring matched case-insensitively against the record's author URL.
+var defaultDataCommonsOutlets = []string{
+	"factuel.afp.com",
+	"lemonde.fr",
+	"francetvinfo.fr",
+	"20minutes.fr",
+	"liberation.fr",
+	"observers.france24.com",
+}
+
+// DataCommonsArchive configures the DataCommons ClaimReview feed producer that
+// reads the aggregated ClaimReview markup feed into the curated claim DB. FeedURL
+// is the DataFeed JSON endpoint (the daily feed by default, or a historical dump
+// served in the same format for a one-shot backfill); OutletAllowlist is the set
+// of author-URL host substrings a record must match to be ingested (empty ingests
+// every outlet); MaxItems caps records examined (0 = the whole feed). It carries
+// no secret: the feed is public and the broker URL loads from LoadFactCheckQueue.
+type DataCommonsArchive struct {
+	FeedURL         string
+	OutletAllowlist []string
+	MaxItems        int
+	// Format selects the decoder: "datafeed" (the daily schema.org DataFeed JSON,
+	// the default) or "ndjson" (one ClaimReview object per line, the shape of the
+	// one-shot historical dump). Gzip is auto-detected from the URL/headers either way.
+	Format string
+}
+
+// LoadDataCommonsArchive reads the DataCommons feed producer configuration from
+// the environment. DATACOMMONS_FEED_URL defaults to the daily feed;
+// DATACOMMONS_OUTLET_ALLOWLIST defaults to the vetted French outlet set — an
+// empty-but-present value (which the ingest compose injects) keeps that default, so
+// ingestion is NEVER silently widened worldwide; the explicit sentinel "*" (or
+// "all") is the only way to ingest every outlet. DATACOMMONS_MAX_ITEMS caps examined
+// records. Bad values fail fast at startup.
+func LoadDataCommonsArchive() (DataCommonsArchive, error) {
+	allow := listEnvOr("DATACOMMONS_OUTLET_ALLOWLIST", defaultDataCommonsOutlets, "*", "all")
+	maxItems, err := intEnv("DATACOMMONS_MAX_ITEMS", 0, 0, math.MaxInt32)
+	if err != nil {
+		return DataCommonsArchive{}, err
+	}
+	format := getenv("DATACOMMONS_FEED_FORMAT", "datafeed")
+	if format != "datafeed" && format != "ndjson" {
+		return DataCommonsArchive{}, fmt.Errorf("config: DATACOMMONS_FEED_FORMAT %q must be datafeed or ndjson", format)
+	}
+	return DataCommonsArchive{
+		FeedURL:         getenv("DATACOMMONS_FEED_URL", defaultDataCommonsFeedURL),
+		OutletAllowlist: allow,
+		MaxItems:        maxItems,
+		Format:          format,
+	}, nil
+}
+
+// ClaimReviewOutlet is one allowlisted fact-check outlet the JSON-LD reader visits:
+// a display Name, the Host its reviews live on (the stored outlet tag and robots
+// authority), and the Sitemap URL its article pages are discovered from.
+type ClaimReviewOutlet struct {
+	Name    string
+	Host    string
+	Sitemap string
+}
+
+// defaultClaimReviewOutlets is the EFCSN/IFCN-derived, config-curated French outlet
+// allowlist the JSON-LD reader discovers ClaimReview markup from. Only official
+// sitemaps are listed; discovery never spiders links. Sitemap URLs are the outlets'
+// standard locations and are overridable per deploy if an outlet relocates one.
+var defaultClaimReviewOutlets = []ClaimReviewOutlet{
+	{Name: "AFP Factuel", Host: "factuel.afp.com", Sitemap: "https://factuel.afp.com/sitemap.xml"},
+	{Name: "Les Décodeurs", Host: "www.lemonde.fr", Sitemap: "https://www.lemonde.fr/sitemap_index.xml"},
+	{Name: "franceinfo Vrai ou Fake", Host: "www.francetvinfo.fr", Sitemap: "https://www.francetvinfo.fr/sitemap_index.xml"},
+	{Name: "20 Minutes Fake Off", Host: "www.20minutes.fr", Sitemap: "https://www.20minutes.fr/sitemap.xml"},
+}
+
+const (
+	defaultClaimReviewUserAgent = "truth-in-stream-factcheck-bot"
+	defaultClaimReviewMinDelay  = 2 * time.Second
+	defaultClaimReviewMaxURLs   = 200
+)
+
+// ClaimReviewSites configures the ClaimReview JSON-LD outlet reader. Outlets is the
+// curated allowlist; UserAgent identifies the bot to robots.txt; MinDelay is the
+// per-outlet pacing floor (raised by a robots Crawl-delay); MaxURLsPerOutlet caps
+// pages fetched per outlet per run. It carries no secret: every source is public
+// and the broker URL loads from LoadFactCheckQueue.
+type ClaimReviewSites struct {
+	Outlets          []ClaimReviewOutlet
+	UserAgent        string
+	MinDelay         time.Duration
+	MaxURLsPerOutlet int
+}
+
+// LoadClaimReviewSites reads the ClaimReview outlet-reader configuration.
+// CLAIMREVIEW_USER_AGENT, CLAIMREVIEW_MIN_DELAY_MS, and CLAIMREVIEW_MAX_URLS default;
+// the outlet allowlist is the curated default (a deploy edits it in code, keeping it
+// reviewable). Bad values fail fast at startup.
+func LoadClaimReviewSites() (ClaimReviewSites, error) {
+	minDelayMs, err := intEnv("CLAIMREVIEW_MIN_DELAY_MS", int(defaultClaimReviewMinDelay/time.Millisecond), 0, math.MaxInt32)
+	if err != nil {
+		return ClaimReviewSites{}, err
+	}
+	maxURLs, err := intEnv("CLAIMREVIEW_MAX_URLS", defaultClaimReviewMaxURLs, 1, math.MaxInt32)
+	if err != nil {
+		return ClaimReviewSites{}, err
+	}
+	return ClaimReviewSites{
+		Outlets:          defaultClaimReviewOutlets,
+		UserAgent:        getenv("CLAIMREVIEW_USER_AGENT", defaultClaimReviewUserAgent),
+		MinDelay:         time.Duration(minDelayMs) * time.Millisecond,
+		MaxURLsPerOutlet: maxURLs,
+	}, nil
+}
+
+// ClaimsKGSeed configures the one-time ClaimsKG seed importer. It is a no-op unless
+// Enabled is true and SeedFile points at a ClaimsKG CSV/TSV export; Vintage marks the
+// snapshot's age in each record's provenance; TSV selects a tab delimiter. It carries
+// no secret: the export is a local file and the broker URL loads from LoadFactCheckQueue.
+type ClaimsKGSeed struct {
+	Enabled  bool
+	SeedFile string
+	Vintage  string
+	TSV      bool
+}
+
+// LoadClaimsKGSeed reads the ClaimsKG seed configuration. CLAIMSKG_SEED_ENABLED
+// defaults false so the large stale snapshot is never ingested by accident;
+// CLAIMSKG_SEED_FILE is the export path; CLAIMSKG_SEED_VINTAGE defaults to 2023;
+// CLAIMSKG_SEED_TSV selects a tab-delimited export.
+func LoadClaimsKGSeed() (ClaimsKGSeed, error) {
+	enabled, err := boolEnvDefault("CLAIMSKG_SEED_ENABLED", false)
+	if err != nil {
+		return ClaimsKGSeed{}, err
+	}
+	tsv, err := boolEnvDefault("CLAIMSKG_SEED_TSV", false)
+	if err != nil {
+		return ClaimsKGSeed{}, err
+	}
+	return ClaimsKGSeed{
+		Enabled:  enabled,
+		SeedFile: getenv("CLAIMSKG_SEED_FILE", ""),
+		Vintage:  getenv("CLAIMSKG_SEED_VINTAGE", "2023"),
+		TSV:      tsv,
 	}, nil
 }
 

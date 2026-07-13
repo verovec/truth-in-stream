@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/verovec/truth-in-stream/backend/internal/claimnorm"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckjob"
 	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
@@ -111,12 +112,29 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// RunConfig tunes one ingest run. Query is the claims:search query string (a
-// broad topical term such as a politician's name or a policy area); MaxPages caps
-// how many result pages are followed (0 = follow every page to the end).
+// RunConfig tunes one ingest stream. Query is the claims:search query string (a
+// broad topical term such as a politician's name or a policy area); it may be
+// empty when PublisherSite is set, which pages every review from one publisher's
+// site (reviewPublisherSiteFilter) regardless of topic. MaxPages caps how many
+// result pages are followed (0 = follow every page to the end); MaxAgeDays bounds
+// results to recently published/reviewed claims (0 = no age bound). StreamKey is
+// the stable identifier a checkpoint records a completed stream under; empty
+// derives one from the query and publisher site.
 type RunConfig struct {
-	Query    string
-	MaxPages int
+	Query         string
+	PublisherSite string
+	MaxPages      int
+	MaxAgeDays    int
+	StreamKey     string
+}
+
+// key returns the stream's checkpoint identifier, deriving a stable one from the
+// query and publisher site when StreamKey is unset.
+func (c RunConfig) key() string {
+	if c.StreamKey != "" {
+		return c.StreamKey
+	}
+	return "q=" + c.Query + "&pub=" + c.PublisherSite
 }
 
 // Stats summarizes a completed ingest run. Published is how many reviewed claims
@@ -171,7 +189,7 @@ func (c *Client) Run(ctx context.Context, logger *slog.Logger, pub Publisher, cf
 	var stats Stats
 	pageToken := ""
 	for page := 0; cfg.MaxPages <= 0 || page < cfg.MaxPages; page++ {
-		resp, err := c.fetch(ctx, cfg.Query, pageToken)
+		resp, err := c.fetch(ctx, cfg, pageToken)
 		if err != nil {
 			return stats, err
 		}
@@ -198,8 +216,9 @@ func (c *Client) Run(ctx context.Context, logger *slog.Logger, pub Publisher, cf
 		}
 		pageToken = resp.NextPageToken
 	}
-	logger.InfoContext(ctx, "fact-check archive ingest finished",
+	logger.InfoContext(ctx, "fact-check archive stream finished",
 		slog.String("query", cfg.Query),
+		slog.String("publisher_site", cfg.PublisherSite),
 		slog.Int("published", stats.Published),
 		slog.Int("skipped", stats.Skipped))
 	return stats, nil
@@ -218,12 +237,14 @@ func (c *Client) toJob(cl claim) (factcheckjob.ClaimJob, bool) {
 		if !ok || r.URL == "" || outletOf(r.Publisher) == "" {
 			continue
 		}
+		// The canonical review URL is the cross-path dedup key.
+		reviewURL := claimnorm.CanonicalURL(r.URL)
 		return factcheckjob.ClaimJob{
-			ID:             r.URL,
+			ID:             reviewURL,
 			Text:           cl.Text,
 			LiteralVerdict: string(verdict),
 			SourceName:     sourceNameOf(r.Publisher),
-			SourceURL:      r.URL,
+			SourceURL:      reviewURL,
 			QuotedSpan:     cl.Text,
 			Outlet:         outletOf(r.Publisher),
 			CheckedAt:      normalizeReviewDate(r.ReviewDate),
@@ -273,15 +294,24 @@ func normalizeReviewDate(raw string) string {
 
 // fetch performs one claims:search request and decodes the response. A non-2xx
 // status is an error so the caller can fail the run rather than silently ingest
-// a partial archive.
-func (c *Client) fetch(ctx context.Context, query, pageToken string) (searchResponse, error) {
+// a partial archive. query is omitted when empty (valid when a publisher-site
+// filter is set), so a publisher-scoped stream pages the outlet's whole catalog.
+func (c *Client) fetch(ctx context.Context, cfg RunConfig, pageToken string) (searchResponse, error) {
 	endpoint, err := url.Parse(c.baseURL)
 	if err != nil {
 		return searchResponse{}, fmt.Errorf("factcheckarchive: parse base url: %w", err)
 	}
 	q := endpoint.Query()
 	q.Set("key", c.apiKey)
-	q.Set("query", query)
+	if cfg.Query != "" {
+		q.Set("query", cfg.Query)
+	}
+	if cfg.PublisherSite != "" {
+		q.Set("reviewPublisherSiteFilter", cfg.PublisherSite)
+	}
+	if cfg.MaxAgeDays > 0 {
+		q.Set("maxAgeDays", strconv.Itoa(cfg.MaxAgeDays))
+	}
 	q.Set("pageSize", strconv.Itoa(apiPageSize))
 	if c.language != "" {
 		q.Set("languageCode", c.language)
