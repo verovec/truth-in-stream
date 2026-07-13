@@ -7,6 +7,13 @@ locals {
   rds_enabled = var.rds_instance_id != ""
   mq_enabled  = var.mq_broker_name != ""
   waf_enabled = var.waf_web_acl_name != ""
+
+  # Queue alarms need the metrics-lambda namespace, the broker name (the Broker
+  # dimension value), and at least one base queue to key on. Run alarms need the
+  # run-outcome namespace and at least one source. Either set empty disables its
+  # alarms cleanly (an env without the metrics lambda stays quiet).
+  queue_alarms_enabled = var.queue_metrics_namespace != "" && var.mq_broker_name != "" && length(var.queue_bases) > 0
+  run_alarms_enabled   = var.run_metrics_namespace != "" && length(var.run_sources) > 0
 }
 
 # ---------------------------------------------------------------------------
@@ -374,4 +381,111 @@ resource "aws_cloudwatch_metric_alarm" "waf_blocked" {
 
   alarm_actions = [aws_sns_topic.alerts_us_east_1[0].arn]
   ok_actions    = [aws_sns_topic.alerts_us_east_1[0].arn]
+}
+
+# ---------------------------------------------------------------------------
+# Ingestion queue alarms. These key on the custom metrics the metrics lambda
+# publishes (namespace var.queue_metrics_namespace, dimensions Broker/QueueBase),
+# so they exist only where the lambda runs (queue_alarms_enabled).
+# ---------------------------------------------------------------------------
+
+# A queue holding a backlog while no consumer is attached: workers are down or
+# crashed and producers keep filling. Metric math: the backlog counted only while
+# consumers < 1. The metrics lambda polls the broker independently of the workers,
+# so a stalled queue still emits ConsumerCount=0 / Backlog>0 and fires; a data gap
+# means the poller/broker is down (covered by mq_cpu and lambda error metrics), not
+# a stalled queue, so missing data must not page here.
+resource "aws_cloudwatch_metric_alarm" "queue_backlog_no_consumers" {
+  for_each = local.queue_alarms_enabled ? toset(var.queue_bases) : toset([])
+
+  alarm_name          = "${local.name}-queue-${replace(each.value, ".", "-")}-backlog-no-consumers"
+  alarm_description   = "Queue ${each.value} holds a backlog while no consumer is attached."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = var.queue_stall_evaluation_periods
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  metric_query {
+    id          = "stalled"
+    expression  = "IF(consumers < 1, backlog, 0)"
+    label       = "BacklogWithoutConsumers"
+    return_data = true
+  }
+  metric_query {
+    id = "backlog"
+    metric {
+      metric_name = "Backlog"
+      namespace   = var.queue_metrics_namespace
+      period      = var.queue_period_seconds
+      stat        = "Maximum"
+      dimensions  = { Broker = var.mq_broker_name, QueueBase = each.value }
+    }
+  }
+  metric_query {
+    id = "consumers"
+    metric {
+      metric_name = "ConsumerCount"
+      namespace   = var.queue_metrics_namespace
+      period      = var.queue_period_seconds
+      stat        = "Minimum"
+      dimensions  = { Broker = var.mq_broker_name, QueueBase = each.value }
+    }
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# Messages parked in a dead-letter queue: something is being dropped and needs an
+# operator to inspect and replay it. An absent DLQ (never created, or nothing ever
+# dead-lettered) emits no datapoints - the healthy state - so missing data stays
+# green.
+resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
+  for_each = local.queue_alarms_enabled ? toset(var.queue_bases) : toset([])
+
+  alarm_name          = "${local.name}-dlq-${replace(each.value, ".", "-")}-depth"
+  alarm_description   = "Messages are parked in the ${each.value} dead-letter queue."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = var.dlq_evaluation_periods
+  metric_name         = "Backlog"
+  namespace           = var.queue_metrics_namespace
+  period              = var.queue_period_seconds
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    Broker    = var.mq_broker_name
+    QueueBase = "${each.value}.dlq"
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# A source with no successful producer run in the last 24h: a scheduled crawl has
+# silently stopped. Keys on the per-source RunSuccess metric each producer emits on
+# a finished run. A source that has not run emits no datapoints, so absence IS the
+# incident here (unlike the queue alarms) - breaching. A freshly-deployed
+# environment fires until the first run completes, which is the intended signal.
+resource "aws_cloudwatch_metric_alarm" "no_successful_run" {
+  for_each = local.run_alarms_enabled ? toset(var.run_sources) : toset([])
+
+  alarm_name          = "${local.name}-source-${each.value}-no-run-24h"
+  alarm_description   = "Source ${each.value} produced no successful ingestion run in the last 24 hours."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "RunSuccess"
+  namespace           = var.run_metrics_namespace
+  period              = var.no_run_period_seconds
+  statistic           = "Sum"
+  threshold           = 1
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    Source = each.value
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
 }

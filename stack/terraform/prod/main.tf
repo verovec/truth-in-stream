@@ -228,6 +228,75 @@ module "rabbitmq" {
   vpc_id                     = module.vpc.vpc_id
   subnet_ids                 = var.mq_deployment_mode == "CLUSTER_MULTI_AZ" ? slice(module.vpc.private_subnet_ids, 0, 2) : [module.vpc.private_subnet_ids[0]]
   allowed_security_group_ids = [module.vpc.ecs_tasks_security_group_id]
+
+  # The metrics-poller lambda reaches the broker's management API on 443 for
+  # per-queue depth; its SG joins the separate management allow-list only when the
+  # lambda is provisioned.
+  management_allowed_security_group_ids = var.enable_metrics_lambda ? [aws_security_group.metrics_lambda[0].id] : []
+
+  # Weekly maintenance reboot off the daily producer cron slots (defaults in the
+  # module: SUNDAY 07:00 UTC).
+  maintenance_window_day  = var.mq_maintenance_window_day
+  maintenance_window_time = var.mq_maintenance_window_time
+}
+
+# The metrics-poller lambda's security group lives here (not in the module) so it
+# can be granted on the broker's management allow-list without a module dependency
+# cycle. Egress-only: it reaches the in-VPC broker and the AWS control plane
+# (Secrets Manager, CloudWatch) via the NAT gateways.
+resource "aws_security_group" "metrics_lambda" {
+  count = var.enable_metrics_lambda ? 1 : 0
+
+  name        = "${local.project}-${var.environment}-mqmetrics"
+  description = "Metrics-poller lambda: egress only (RabbitMQ management API in-VPC, AWS APIs via NAT)."
+  vpc_id      = module.vpc.vpc_id
+
+  egress {
+    description = "All outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${local.project}-${var.environment}-mqmetrics" }
+}
+
+# Metrics-poller lambda + ingestion queue dashboard, on by default so prod queue
+# telemetry (and the alarms that key on it) exist in a fresh plan. The lambda
+# binary is built by `make lambda-mqmetrics` in stack/backend before apply.
+module "metrics_lambda" {
+  source = "../modules/metrics-lambda"
+  count  = var.enable_metrics_lambda ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  source_binary_path = "${path.module}/../../backend/build/mqmetrics/bootstrap"
+
+  subnet_ids         = module.vpc.private_subnet_ids
+  security_group_ids = [aws_security_group.metrics_lambda[0].id]
+
+  rabbitmq_url_secret_arn = module.rabbitmq.url_secret_arn
+  broker_name             = "${local.project}-${var.environment}"
+  metrics_namespace       = var.metrics_namespace
+  queue_names             = var.metrics_queue_bases
+
+  schedule_expression = var.metrics_poll_schedule
+}
+
+module "monitoring" {
+  source = "../modules/monitoring"
+  count  = var.enable_metrics_lambda ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+
+  metrics_namespace = var.metrics_namespace
+  broker_name       = "${local.project}-${var.environment}"
+  queue_base        = var.metrics_queue_bases[0]
+
+  cluster_name = module.ecs.cluster_name
 }
 
 # Managed Valkey cache for the 24h analysis-replay cache (VER-145). A single
@@ -447,6 +516,9 @@ module "iam" {
   cluster_arn          = module.ecs.cluster_id
   media_bucket_arn     = module.media_storage.bucket_arn
   db_backup_bucket_arn = module.db_backup_storage.bucket_arn
+  # Producers publish a per-source RunSuccess metric; the task role gets a
+  # namespace-scoped PutMetricData grant only while this is set.
+  run_metrics_namespace = var.run_metrics_namespace
   secret_arns = concat(
     local.rds_dsn_secret_arn != null ? [local.rds_dsn_secret_arn] : [],
     [
@@ -971,6 +1043,10 @@ module "crawl_producer" {
     # CRAWL_PROJECT drives both the MediaWiki API host the crawl hits and the
     # corpus tag (which defaults to <project>-crawl), so the two never diverge.
     CRAWL_PROJECT = var.wiki_corpus
+    # Publish a per-source RunSuccess metric so the no-successful-run alarm sees
+    # this producer; empty disables it (the task role's metric grant is likewise
+    # gated on the namespace).
+    RUN_METRICS_NAMESPACE = var.run_metrics_namespace
   }
   # wikicrawl publishes to the broker and runs the Anthropic-backed gate; it does
   # not embed (the crawlworker fleet does), so it needs only the broker URL and
@@ -1018,7 +1094,8 @@ module "factcheck_producer" {
   memory              = var.factcheck_producer_memory
 
   environment_variables = {
-    FACTCHECK_QUERIES = var.factcheck_queries
+    FACTCHECK_QUERIES     = var.factcheck_queries
+    RUN_METRICS_NAMESPACE = var.run_metrics_namespace
   }
   # factcheckcrawl publishes to the broker and reads the aggregator API; it does
   # not touch the database, so it needs only the broker URL and the API key.
@@ -1062,6 +1139,9 @@ module "scrutins_producer" {
   cpu                 = var.scrutins_producer_cpu
   memory              = var.scrutins_producer_memory
 
+  environment_variables = {
+    RUN_METRICS_NAMESPACE = var.run_metrics_namespace
+  }
   # scrutinscrawl publishes to the broker and reads a public open-data archive; it
   # carries no secret beyond the broker URL.
   secrets = {
@@ -1203,10 +1283,19 @@ module "observability" {
   rds_instance_id = coalesce(one(module.rds[*].instance_id), "")
 
   # The AWS/AmazonMQ Broker dimension value is the broker name, which the rabbitmq
-  # module sets to "${project}-${environment}".
+  # module sets to "${project}-${environment}". It is also the Broker dimension the
+  # metrics lambda stamps on every queue datum, so the queue alarms reuse it.
   mq_broker_name = "${local.project}-${var.environment}"
 
   waf_web_acl_name = module.waf.web_acl_name
+
+  # Ingestion queue + run alarms. The queue alarms key on the metrics lambda's
+  # custom metrics (enabled with it); the run alarms key on the producers'
+  # RunSuccess metric. Each set disables cleanly when its namespace is empty.
+  queue_metrics_namespace = var.enable_metrics_lambda ? var.metrics_namespace : ""
+  queue_bases             = var.metrics_queue_bases
+  run_metrics_namespace   = var.run_metrics_namespace
+  run_sources             = var.run_sources
 }
 
 # Network config the deploy workflow needs for `aws ecs run-task`.
@@ -1238,4 +1327,5 @@ module "apply_permissions" {
   include_bastion         = var.enable_bastion
   include_observability   = true
   include_elasticache     = var.enable_valkey
+  include_metrics_lambda  = var.enable_metrics_lambda
 }

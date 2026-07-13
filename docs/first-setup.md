@@ -37,6 +37,12 @@ needs none of this — see the [README quick start](../README.md#quick-start).
   (`scripts/aws-target-guard.sh`) refuses every ingestion run until the placeholder
   ids are replaced. The database scripts do not read it — they target whatever
   account the active profile resolves to, so check the profile before tunnelling.
+- Build the metrics-poller Lambda binary before the first `terraform apply` of
+  either environment: `make lambda-mqmetrics` (in `stack/backend`) compiles
+  `build/mqmetrics/bootstrap`, which the metrics lambda packages. Ingestion
+  observability (the queue dashboard and the backlog/DLQ/no-run alarms) is on by
+  default, so a missing binary fails the apply; set `enable_metrics_lambda = false`
+  in a cost-sensitive environment to skip it.
 
 ### 2. Bootstrap the Terraform state backend (once)
 

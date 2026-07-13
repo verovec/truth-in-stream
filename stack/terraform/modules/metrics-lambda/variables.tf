@@ -39,10 +39,15 @@ variable "broker_name" {
   description = "Value of the Broker metric dimension on every published datum. Must match the value the dashboard references."
 }
 
-variable "queue_name" {
-  type        = string
-  default     = "embedding.jobs"
-  description = "Versioned-queue base name. The lambda measures queues named <queue_name>.v<version> and rolls them up under this stable name."
+variable "queue_names" {
+  type        = list(string)
+  default     = ["embedding.jobs"]
+  description = "Versioned-queue base names. For each, the lambda measures both the base's queues (<base>.v<version>) and its dead-letter queues (<base>.dlq.v<version>), rolling each up under a stable QueueBase name."
+
+  validation {
+    condition     = length(var.queue_names) > 0
+    error_message = "queue_names must list at least one base queue."
+  }
 }
 
 variable "metrics_namespace" {

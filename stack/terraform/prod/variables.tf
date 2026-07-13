@@ -488,3 +488,53 @@ variable "enable_legacy_password_login" {
   default     = false
   description = "Re-enable the retired operator password login (/api/login + /api/logout). Off by default: the /api gate uses the verified Keycloak identity. When true, the AUTH_EMAIL/AUTH_PASSWORD_HASH/SESSION_SECRET secret containers are created (values pushed out of band) and injected into the backend along with LEGACY_PASSWORD_LOGIN=true."
 }
+
+# --- Ingestion observability (VER-190) ---
+
+variable "enable_metrics_lambda" {
+  type        = bool
+  default     = true
+  description = "Provision the scheduled metrics-poller lambda, the ingestion queue dashboard, and the queue alarms (backlog-without-consumers, DLQ depth). On by default so prod ingestion is observable; set false in a cost-sensitive environment. Requires `make lambda-mqmetrics` in stack/backend before apply."
+}
+
+variable "metrics_namespace" {
+  type        = string
+  default     = "TruthInStream/RabbitMQ"
+  description = "Custom CloudWatch namespace the metrics lambda publishes queue metrics to and the dashboard/queue alarms read from."
+}
+
+variable "metrics_poll_schedule" {
+  type        = string
+  default     = "rate(1 minute)"
+  description = "EventBridge Scheduler expression for how often the metrics lambda polls the broker."
+}
+
+variable "metrics_queue_bases" {
+  type        = list(string)
+  default     = ["embedding.jobs", "crawl.chunks", "factcheck.claims", "scrutins.votes"]
+  description = "Base names of the ingestion queues the metrics lambda measures (each also measures its .dlq companion) and the queue alarms cover. Keep in sync with the producer/worker queue names."
+}
+
+variable "run_metrics_namespace" {
+  type        = string
+  default     = "TruthInStream/Ingestion"
+  description = "CloudWatch namespace producers publish the per-source RunSuccess metric to (RUN_METRICS_NAMESPACE). Drives the no-successful-run alarm and the task role's PutMetricData grant. A fresh environment's run alarms breach until each source has run once; empty disables the run metric and alarms."
+}
+
+variable "run_sources" {
+  type        = list(string)
+  default     = ["wikipedia", "factcheck", "scrutins"]
+  description = "Producer source names the no-successful-run-in-24h alarm covers; each matches the Name a producer reports to crawlnotify (the Source dimension on RunSuccess)."
+}
+
+variable "mq_maintenance_window_day" {
+  type        = string
+  default     = "SUNDAY"
+  description = "Day of the weekly broker maintenance window. Defaults off the daily producer cron slots (03:00/04:00/04:30 UTC) and the RDS windows."
+}
+
+variable "mq_maintenance_window_time" {
+  type        = string
+  default     = "07:00"
+  description = "Start time (HH:MM UTC) of the weekly broker maintenance window, clear of the 03:00-05:30 UTC ingestion/RDS windows."
+}

@@ -124,8 +124,14 @@ variable "db_backup_memory" {
 
 variable "enable_metrics_lambda" {
   type        = bool
-  default     = false
-  description = "Provision the scheduled metrics-poller lambda and the ingestion CloudWatch dashboard. The lambda polls the broker's RabbitMQ management API for per-queue stats, which the `/consumer status` action reads. Default false; enable it alongside the broker and the ingestion hosts. Requires `make lambda-mqmetrics` in stack/backend to have built the bootstrap binary before apply."
+  default     = true
+  description = "Provision the scheduled metrics-poller lambda and the ingestion CloudWatch dashboard. The lambda polls the broker's RabbitMQ management API for per-queue stats (which the `/consumer status` action reads and the queue alarms key on), so ingestion is observable by default. Set false in a cost-sensitive environment. Requires `make lambda-mqmetrics` in stack/backend to have built the bootstrap binary before apply."
+}
+
+variable "metrics_queue_bases" {
+  type        = list(string)
+  default     = ["embedding.jobs", "crawl.chunks", "factcheck.claims", "scrutins.votes"]
+  description = "Base names of the ingestion queues the metrics lambda measures (each also measures its .dlq companion). Keep in sync with the producer/worker queue names."
 }
 
 variable "metrics_namespace" {
