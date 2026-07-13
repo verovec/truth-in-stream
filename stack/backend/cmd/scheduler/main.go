@@ -161,6 +161,16 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 		return nil, fmt.Errorf("scheduler: wikipedia shard has no categories (shards=%d index=%d)", crawlCfg.Shards, crawlCfg.ShardIndex)
 	}
 
+	checkpoint, err := wiki.LoadCheckpoint(crawlCfg.CheckpointPath)
+	if err != nil {
+		closer()
+		return nil, fmt.Errorf("scheduler: load crawl checkpoint: %w", err)
+	}
+	gateFailMode := wiki.GateFailOpen
+	if crawlCfg.GateFailClosed {
+		gateFailMode = wiki.GateFailClosed
+	}
+
 	producer := wikiProducer{
 		run:    wiki.RunCrawl,
 		logger: logger,
@@ -177,6 +187,9 @@ func registerWikipedia(reg *schedule.Registry, src config.ScheduleSource, jitter
 			MaxPriority:     queueCfg.MaxPriority,
 			GateConcurrency: gateCfg.Concurrency,
 			GateRPM:         gateCfg.RPM,
+			GateFailMode:    gateFailMode,
+			ErrorBudget:     crawlCfg.ErrorBudget,
+			Checkpoint:      checkpoint,
 		},
 	}
 

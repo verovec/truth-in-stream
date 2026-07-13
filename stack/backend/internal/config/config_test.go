@@ -1547,6 +1547,58 @@ func TestLoadCrawl(t *testing.T) {
 	if c.MaxDepth != 1 || c.MaxPages != 5000 || !c.IncludeBody {
 		t.Errorf("defaults wrong: depth=%d pages=%d body=%v", c.MaxDepth, c.MaxPages, c.IncludeBody)
 	}
+	if c.CheckpointPath != "/state/crawl-checkpoint.json" || c.ErrorBudget != 50 || c.GateFailClosed {
+		t.Errorf("resilience defaults wrong: checkpoint=%q budget=%d failClosed=%v", c.CheckpointPath, c.ErrorBudget, c.GateFailClosed)
+	}
+}
+
+func TestLoadCrawlResilienceKnobs(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_CHECKPOINT_PATH", "/data/cp.json")
+	t.Setenv("CRAWL_ERROR_BUDGET", "7")
+	t.Setenv("CRAWL_GATE_FAIL_MODE", "closed")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.CheckpointPath != "/data/cp.json" || c.ErrorBudget != 7 || !c.GateFailClosed {
+		t.Fatalf("overrides wrong: checkpoint=%q budget=%d failClosed=%v", c.CheckpointPath, c.ErrorBudget, c.GateFailClosed)
+	}
+}
+
+func TestLoadCrawlCheckpointDisabledWhenEmpty(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_CHECKPOINT_PATH", "")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	if c.CheckpointPath != "" {
+		t.Fatalf("checkpoint path = %q, want empty (resume disabled)", c.CheckpointPath)
+	}
+}
+
+func TestLoadCrawlShardsCheckpointPath(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_SHARDS", "4")
+	t.Setenv("CRAWL_SHARD_INDEX", "2")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	// Each shard gets its own checkpoint file so concurrent shards on one /state
+	// volume do not clobber each other.
+	if c.CheckpointPath != "/state/crawl-checkpoint.shard2.json" {
+		t.Fatalf("sharded checkpoint = %q, want /state/crawl-checkpoint.shard2.json", c.CheckpointPath)
+	}
+}
+
+func TestLoadCrawlRejectsBadGateFailMode(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_GATE_FAIL_MODE", "sometimes")
+	if _, err := LoadCrawl(); err == nil {
+		t.Fatal("LoadCrawl accepted an invalid CRAWL_GATE_FAIL_MODE")
+	}
 }
 
 func TestLoadCrawlShardingDefaults(t *testing.T) {

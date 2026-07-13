@@ -384,11 +384,19 @@ services:
       # each crawl a disjoint round-robin slice of CRAWL_CATEGORIES.
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      # Resumable crawl: a killed run resumes from the checkpoint on the crawl-state
+      # volume instead of restarting (empty CRAWL_CHECKPOINT_PATH disables resume).
+      # CRAWL_ERROR_BUDGET pages may be skipped before the run fails; a page's
+      # extract failure is skipped, not fatal. CRAWL_GATE_FAIL_MODE=closed holds a
+      # chunk whose gate call errored (retried next run) instead of publishing it.
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       # Fact-checkability gate: on by default, so a key is required unless you set
       # CRAWL_CHECKWORTHY=false to publish every chunk. The gate drops chunks that
       # are not citable evidence before they reach the broker; gate errors fail
-      # open (the chunk is published). CONCURRENCY caps in-flight judgments;
-      # RPM (empty/0 = unpaced) caps the Anthropic call rate.
+      # open (the chunk is published) unless CRAWL_GATE_FAIL_MODE=closed. CONCURRENCY
+      # caps in-flight judgments; RPM (empty/0 = unpaced) caps the Anthropic call rate.
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -403,6 +411,7 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+      - crawl-state:/state
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -591,6 +600,9 @@ services:
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -613,6 +625,8 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+      # One /state volume holds both the scrutins marker and the crawl checkpoint
+      # (distinct files), since the scheduler runs both producers.
       - scrutins-state:/state
     depends_on:
       rabbitmq:
@@ -1114,3 +1128,6 @@ volumes:
   # Scratch for in-progress TV capture segments before upload; a crash leaves
   # partial .ts here for the worker's startup salvage pass.
   tv-capture-work:
+  # Persists the wikipedia crawl checkpoint across runs, so a killed crawl resumes
+  # from its last completed batch instead of restarting.
+  crawl-state:

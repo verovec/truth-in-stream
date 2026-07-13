@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2131,6 +2132,14 @@ func LoadWikiDelta() (WikiDelta, error) {
 const (
 	defaultCrawlMaxDepth = 1
 	defaultCrawlMaxPages = 5000
+	// defaultCrawlCheckpointPath is the state file a crawl records resolved pages
+	// in so a rerun resumes; it sits on the same /state volume as the scrutins
+	// marker. It may be set empty to disable resume.
+	defaultCrawlCheckpointPath = "/state/crawl-checkpoint.json"
+	// defaultCrawlErrorBudget is how many pages a run may skip (an extract or
+	// publish failure) before it fails, so a single bad page or transient blip does
+	// not discard a whole crawl.
+	defaultCrawlErrorBudget = 50
 )
 
 // Crawl configures the category crawler. Categories are the seed category titles
@@ -2153,6 +2162,13 @@ type Crawl struct {
 	IncludeBody bool
 	Shards      int
 	ShardIndex  int
+	// CheckpointPath is the resume state file (empty disables resume); ErrorBudget
+	// is how many pages may be skipped before the run fails; GateFailClosed holds a
+	// chunk whose fact-checkability gate errored (rather than publishing it) so a
+	// rerun retries it.
+	CheckpointPath string
+	ErrorBudget    int
+	GateFailClosed bool
 }
 
 // LoadCrawl reads the category-crawl configuration. CRAWL_CATEGORIES is required
@@ -2206,16 +2222,58 @@ func LoadCrawl() (Crawl, error) {
 		return Crawl{}, fmt.Errorf("config: CRAWL_SHARD_INDEX %d out of range for CRAWL_SHARDS %d (must be 0..%d)", shardIndex, shards, shards-1)
 	}
 
+	checkpointPath := defaultCrawlCheckpointPath
+	if raw, ok := os.LookupEnv("CRAWL_CHECKPOINT_PATH"); ok {
+		checkpointPath = raw
+	}
+	// Sharded producers share one /state volume, so give each shard its own
+	// checkpoint file; a single file would be clobbered by concurrent atomic writes.
+	if shards > 1 && checkpointPath != "" {
+		checkpointPath = shardCheckpointPath(checkpointPath, shardIndex)
+	}
+	errorBudget, err := intEnv("CRAWL_ERROR_BUDGET", defaultCrawlErrorBudget, 0, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+	gateFailClosed, err := crawlGateFailClosed()
+	if err != nil {
+		return Crawl{}, err
+	}
+
 	return Crawl{
-		Categories:  categories,
-		Project:     project,
-		Corpus:      corpus,
-		MaxDepth:    maxDepth,
-		MaxPages:    maxPages,
-		IncludeBody: includeBody,
-		Shards:      shards,
-		ShardIndex:  shardIndex,
+		Categories:     categories,
+		Project:        project,
+		Corpus:         corpus,
+		MaxDepth:       maxDepth,
+		MaxPages:       maxPages,
+		IncludeBody:    includeBody,
+		Shards:         shards,
+		ShardIndex:     shardIndex,
+		CheckpointPath: checkpointPath,
+		ErrorBudget:    errorBudget,
+		GateFailClosed: gateFailClosed,
 	}, nil
+}
+
+// shardCheckpointPath inserts a per-shard suffix before the extension so each
+// sharded producer writes its own checkpoint file (crawl-checkpoint.shard2.json).
+func shardCheckpointPath(path string, index int) string {
+	ext := filepath.Ext(path)
+	return fmt.Sprintf("%s.shard%d%s", strings.TrimSuffix(path, ext), index, ext)
+}
+
+// crawlGateFailClosed parses CRAWL_GATE_FAIL_MODE: "open" (default) publishes a
+// chunk whose gate call errored, "closed" holds it for a rerun. Any other value is
+// an operator mistake worth failing on.
+func crawlGateFailClosed() (bool, error) {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("CRAWL_GATE_FAIL_MODE"))); v {
+	case "", "open":
+		return false, nil
+	case "closed":
+		return true, nil
+	default:
+		return false, fmt.Errorf("config: CRAWL_GATE_FAIL_MODE %q must be \"open\" or \"closed\"", v)
+	}
 }
 
 // Crawl fact-checkability gate defaults: the gate is on by default so the corpus

@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckjob"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 // defaultBaseURL is the Google Fact Check Tools claims:search endpoint.
@@ -61,7 +62,10 @@ type Config struct {
 	LanguageCode string
 	MaxPriority  uint8
 	BaseURL      string
-	HTTPClient   *http.Client
+	// HTTPClient overrides the base HTTP client; it is wrapped in a retrying doer.
+	HTTPClient *http.Client
+	// Retry tunes the retry/backoff wrapper; a zero value uses the httpx defaults.
+	Retry httpx.RetryConfig
 }
 
 // defaultHTTPTimeout bounds each claims:search request so a slow endpoint fails
@@ -75,10 +79,14 @@ type Client struct {
 	language    string
 	maxPriority uint8
 	baseURL     string
-	httpClient  *http.Client
+	httpClient  httpx.Doer
 }
 
-// New builds a Client, failing fast on missing configuration.
+// New builds a Client, failing fast on missing configuration. The HTTP client is
+// wrapped in a retrying doer so a 429/5xx from the Fact Check Tools API is backed
+// off and retried (honoring Retry-After) rather than failing the run; the URL
+// (which carries the API key in its query) is still redacted from any surfaced
+// error by the caller of Do.
 func New(cfg Config) (*Client, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("factcheckarchive: api key is required")
@@ -90,16 +98,16 @@ func New(cfg Config) (*Client, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+	base := cfg.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	return &Client{
 		apiKey:      cfg.APIKey,
 		language:    cfg.LanguageCode,
 		maxPriority: cfg.MaxPriority,
 		baseURL:     baseURL,
-		httpClient:  httpClient,
+		httpClient:  httpx.NewRetryClient(base, cfg.Retry),
 	}, nil
 }
 
