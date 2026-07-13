@@ -50,9 +50,12 @@ const (
 // Config configures a Client. Every field is optional; the zero Config targets
 // the public data.gouv.fr resources with sane defaults.
 type Config struct {
-	// HTTPClient overrides the HTTP client (timeout, transport). It must follow
-	// redirects, since the stable resource permalink 302-redirects to the file.
+	// HTTPClient overrides the base HTTP client (timeout, transport); it is wrapped
+	// in a retrying doer. It must follow redirects, since the stable resource
+	// permalink 302-redirects to the file.
 	HTTPClient *http.Client
+	// Retry tunes the retry/backoff wrapper; a zero value uses the httpx defaults.
+	Retry httpx.RetryConfig
 }
 
 // Client downloads and parses interior-ministry open-data CSV resources.
@@ -69,7 +72,7 @@ func New(cfg Config) *Client {
 	if base == nil {
 		base = &http.Client{Timeout: defaultTimeout}
 	}
-	return &Client{httpClient: httpx.NewRetryClient(base, httpx.RetryConfig{})}
+	return &Client{httpClient: httpx.NewRetryClient(base, cfg.Retry)}
 }
 
 // APIError is a non-2xx response from the open-data portal; callers match it

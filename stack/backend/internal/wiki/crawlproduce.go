@@ -187,6 +187,11 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 		stats.Published += out.published
 		stats.Dropped += out.dropped
 		if err != nil {
+			// A shutdown is not a skippable page failure: abort immediately so the
+			// caller records the run as interrupted rather than a partial success.
+			if ctx.Err() != nil {
+				return stats, fmt.Errorf("wiki: crawl canceled: %w", ctx.Err())
+			}
 			// One batch failed (extract or publish). Skip its pages and continue
 			// rather than discarding the whole run; fail only once the error budget
 			// is spent, so a single bad page or transient blip is not fatal.
@@ -202,6 +207,21 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 					len(skipped), summarizeSkipped(skipped), err)
 			}
 			continue
+		}
+
+		// Pages a fail-closed gate error held are not resolved: charge them to the
+		// budget so a persistently broken gate (which holds every page) fails the run
+		// loudly instead of silently re-gating the same pages forever.
+		if len(out.held) > 0 {
+			skipped = append(skipped, out.held...)
+			logger.WarnContext(ctx, "crawl held pages on fail-closed gate errors",
+				slog.String("corpus", cfg.Corpus), slog.Int("held", len(out.held)),
+				slog.Int("skipped_total", len(skipped)), slog.Int("error_budget", cfg.ErrorBudget))
+			if len(skipped) > cfg.ErrorBudget {
+				stats.Skipped = len(skipped)
+				return stats, fmt.Errorf("wiki: crawl error budget exhausted after %d unresolved pages (%s); gate may be failing",
+					len(skipped), summarizeSkipped(skipped))
+			}
 		}
 
 		if len(out.doneIDs) > 0 {
@@ -220,6 +240,13 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 			slog.Int("dropped", stats.Dropped))
 	}
 
+	// The run completed: clear the checkpoint so the next (scheduled) run starts
+	// fresh and re-crawls every category to pick up new and updated articles. The
+	// checkpoint only exists to resume a crashed run, not to dedup across runs.
+	if err := cp.Clear(); err != nil {
+		logger.WarnContext(ctx, "crawl checkpoint clear failed",
+			slog.String("corpus", cfg.Corpus), slog.Any("err", err))
+	}
 	if len(skipped) > 0 {
 		stats.Skipped = len(skipped)
 		logger.WarnContext(ctx, "crawl completed with skipped pages",
@@ -230,13 +257,15 @@ func RunCrawl(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 }
 
 // batchOutcome is one page batch's result: how many chunks were published and
-// gate-dropped, and the ids of pages fully resolved (published, cleanly dropped, or
-// missing upstream) so the checkpoint can skip them next run. A page held by a
-// fail-closed gate error is excluded from doneIDs so a rerun retries it.
+// gate-dropped, the ids of pages fully resolved (present in the extract response
+// and not held), and the pages a fail-closed gate error held for retry. A page the
+// extract response silently omitted is neither resolved nor held: it is left out of
+// both so a rerun re-fetches it rather than skipping it forever.
 type batchOutcome struct {
 	published int
 	dropped   int
 	doneIDs   []int64
+	held      []skippedPage
 }
 
 // runBatch fetches, gates, and publishes one batch of pages, returning its outcome.
@@ -263,8 +292,13 @@ func runBatch(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 		}
 	}
 
+	// A title is "present" if the extract response returned it (whether it has
+	// content or is flagged missing). A title requested but absent from the response
+	// is an extract-continuation gap: it must not be marked resolved.
+	present := make(map[string]bool, len(leads))
 	var jobs []crawlMessage
 	for _, lead := range leads {
+		present[lead.Title] = true
 		if lead.Missing {
 			continue
 		}
@@ -276,7 +310,7 @@ func runBatch(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 	}
 
 	var out batchOutcome
-	held := map[int64]bool{}
+	held := map[string]bool{}
 	if gate != nil {
 		kept, dropped, gateHeld, err := gateChunks(ctx, logger, gate, jobs, cfg.GateConcurrency, cfg.GateRPM, cfg.GateFailMode)
 		if err != nil {
@@ -293,10 +327,14 @@ func runBatch(ctx context.Context, logger *slog.Logger, src CrawlSource, pub Pub
 		return out, err
 	}
 
-	// Every page in the batch is resolved except those a fail-closed gate error
-	// held for retry; missing pages produce no jobs but are still resolved.
+	// Resolve pages by title: a present, non-held page is done; a held page retries
+	// (and is charged to the budget); an omitted page is left unresolved so a rerun
+	// re-fetches it.
 	for _, m := range batch {
-		if !held[m.PageID] {
+		switch {
+		case held[m.Title]:
+			out.held = append(out.held, skippedPage{pageID: m.PageID, title: m.Title})
+		case present[m.Title]:
 			out.doneIDs = append(out.doneIDs, m.PageID)
 		}
 	}
@@ -327,7 +365,7 @@ func summarizeSkipped(skipped []skippedPage) string {
 // rerun retries it rather than diluting the corpus). When rpm > 0 the gate-call
 // rate is capped to bound Anthropic spend. A canceled context aborts the run rather
 // than publishing a partially-gated batch.
-func gateChunks(ctx context.Context, logger *slog.Logger, gate Gate, msgs []crawlMessage, concurrency, rpm int, failMode GateFailMode) ([]crawlMessage, int, map[int64]bool, error) {
+func gateChunks(ctx context.Context, logger *slog.Logger, gate Gate, msgs []crawlMessage, concurrency, rpm int, failMode GateFailMode) ([]crawlMessage, int, map[string]bool, error) {
 	if len(msgs) == 0 {
 		return msgs, 0, nil, nil
 	}
@@ -361,12 +399,12 @@ func gateChunks(ctx context.Context, logger *slog.Logger, gate Gate, msgs []craw
 				}
 				if failMode == GateFailClosed {
 					logger.WarnContext(gctx, "fact-checkability gate errored, holding chunk (fail-closed)",
-						slog.Int64("page_id", m.pageID), slog.Any("err", err))
+						slog.String("title", m.title), slog.Int64("page_id", m.pageID), slog.Any("err", err))
 					heldFlags[i] = true
 					return nil
 				}
 				logger.WarnContext(gctx, "fact-checkability gate errored, publishing chunk (fail-open)",
-					slog.Int64("page_id", m.pageID), slog.Any("err", err))
+					slog.String("title", m.title), slog.Int64("page_id", m.pageID), slog.Any("err", err))
 				keep[i] = true
 				return nil
 			}
@@ -380,10 +418,10 @@ func gateChunks(ctx context.Context, logger *slog.Logger, gate Gate, msgs []craw
 
 	kept := make([]crawlMessage, 0, len(msgs))
 	dropped := 0
-	held := map[int64]bool{}
+	held := map[string]bool{}
 	for i, m := range msgs {
 		if heldFlags[i] {
-			held[m.pageID] = true
+			held[m.title] = true
 			continue
 		}
 		if keep[i] {
@@ -398,12 +436,14 @@ func gateChunks(ctx context.Context, logger *slog.Logger, gate Gate, msgs []craw
 // crawlMessage is one ready-to-publish chunk job: its marshaled body, the queue
 // priority for its kind, the raw passage text the fact-checkability gate judges
 // (carried alongside the body so the gate never re-decodes the job), and its source
-// page id (so a fail-closed gate error can hold the whole page for retry).
+// page id and title (so a fail-closed gate error can hold the whole page for retry,
+// keyed by title to survive an extract that omits or zeroes the page id).
 type crawlMessage struct {
 	body     []byte
 	priority uint8
 	passage  string
 	pageID   int64
+	title    string
 }
 
 // pageChunkJobs chunks one page's lead and body into ready-to-publish CrawlJobs,
@@ -437,7 +477,7 @@ func pageChunkJobs(cfg CrawlConfig, lead, full Extract) ([]crawlMessage, error) 
 		if err != nil {
 			return nil, fmt.Errorf("wiki: encode crawl job page %d chunk %d: %w", lead.PageID, idx, err)
 		}
-		jobs = append(jobs, crawlMessage{body: body, priority: priorityForKind(c.kind, cfg.MaxPriority), passage: c.text, pageID: lead.PageID})
+		jobs = append(jobs, crawlMessage{body: body, priority: priorityForKind(c.kind, cfg.MaxPriority), passage: c.text, pageID: lead.PageID, title: lead.Title})
 	}
 	return jobs, nil
 }

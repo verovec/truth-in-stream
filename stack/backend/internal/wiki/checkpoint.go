@@ -11,18 +11,25 @@ import (
 	"sync"
 )
 
-// Checkpoint records which pages a crawl has already resolved (published, dropped
-// by the gate, or missing upstream) so a rerun resumes instead of restarting: a
-// done page is skipped before its extract fetch and its fact-checkability gate
-// spend. Implementations are safe for concurrent use. NoCheckpoint disables resume
-// entirely, so a crawl with no configured checkpoint path behaves as it did before.
+// Checkpoint is a crash-resume record for one crawl run: it remembers which pages
+// a run has already resolved (published, dropped by the gate, or missing upstream)
+// so that if the run is killed and restarted, the rerun skips those pages before
+// their extract fetch and their fact-checkability gate spend. It is NOT a cross-run
+// dedup: a run Clears the checkpoint on successful completion, so the next
+// (scheduled) run starts fresh and re-crawls every category to pick up new and
+// updated articles. Implementations are safe for concurrent use. NoCheckpoint
+// disables resume entirely, so a crawl with no configured checkpoint path behaves
+// as it did before.
 type Checkpoint interface {
-	// Done reports whether pageID was resolved on a previous run.
+	// Done reports whether pageID was resolved earlier in the current (resumed) run.
 	Done(pageID int64) bool
 	// MarkDone records pages as resolved; it does not persist until Save.
 	MarkDone(pageIDs ...int64)
 	// Save atomically writes the checkpoint if it changed since the last Save.
 	Save() error
+	// Clear discards the resolved set (in memory and on disk), so a completed run
+	// leaves nothing for the next run to skip.
+	Clear() error
 }
 
 // NoCheckpoint is the disabled checkpoint: it remembers nothing and persists
@@ -37,6 +44,9 @@ func (NoCheckpoint) MarkDone(...int64) {}
 
 // Save is a no-op for the disabled checkpoint.
 func (NoCheckpoint) Save() error { return nil }
+
+// Clear is a no-op for the disabled checkpoint.
+func (NoCheckpoint) Clear() error { return nil }
 
 // checkpointFile is the on-disk shape: the sorted set of resolved page ids.
 type checkpointFile struct {
@@ -53,6 +63,10 @@ type fileCheckpoint struct {
 	mu    sync.Mutex
 	done  map[int64]struct{}
 	dirty bool
+	// gen increments on every mutation that adds a page, so Save can detect a
+	// MarkDone that raced its own disk write and avoid clearing dirty for a mark it
+	// did not persist.
+	gen uint64
 }
 
 // LoadCheckpoint reads the checkpoint at path, returning NoCheckpoint for an empty
@@ -94,13 +108,16 @@ func (c *fileCheckpoint) MarkDone(pageIDs ...int64) {
 		if _, ok := c.done[id]; !ok {
 			c.done[id] = struct{}{}
 			c.dirty = true
+			c.gen++
 		}
 	}
 }
 
 // Save atomically persists the resolved set when it changed. It writes a temp file
 // in the target directory and renames it over the checkpoint, so a reader never
-// sees a half-written file. A no-op when nothing changed since the last Save.
+// sees a half-written file. A no-op when nothing changed since the last Save. A
+// MarkDone that races the disk write is detected via gen and left dirty for the
+// next Save rather than silently dropped.
 func (c *fileCheckpoint) Save() error {
 	c.mu.Lock()
 	if !c.dirty {
@@ -111,6 +128,7 @@ func (c *fileCheckpoint) Save() error {
 	for id := range c.done {
 		ids = append(ids, id)
 	}
+	savedGen := c.gen
 	c.mu.Unlock()
 	slices.Sort(ids)
 
@@ -140,7 +158,25 @@ func (c *fileCheckpoint) Save() error {
 	}
 
 	c.mu.Lock()
-	c.dirty = false
+	if c.gen == savedGen {
+		c.dirty = false
+	}
 	c.mu.Unlock()
+	return nil
+}
+
+// Clear discards the resolved set in memory and removes the checkpoint file, so a
+// completed run leaves nothing for the next run to skip. A missing file is not an
+// error.
+func (c *fileCheckpoint) Clear() error {
+	c.mu.Lock()
+	c.done = make(map[int64]struct{})
+	c.dirty = false
+	c.gen++
+	c.mu.Unlock()
+
+	if err := os.Remove(c.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("wiki: remove crawl checkpoint %q: %w", c.path, err)
+	}
 	return nil
 }

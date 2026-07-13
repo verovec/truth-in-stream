@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2225,6 +2226,11 @@ func LoadCrawl() (Crawl, error) {
 	if raw, ok := os.LookupEnv("CRAWL_CHECKPOINT_PATH"); ok {
 		checkpointPath = raw
 	}
+	// Sharded producers share one /state volume, so give each shard its own
+	// checkpoint file; a single file would be clobbered by concurrent atomic writes.
+	if shards > 1 && checkpointPath != "" {
+		checkpointPath = shardCheckpointPath(checkpointPath, shardIndex)
+	}
 	errorBudget, err := intEnv("CRAWL_ERROR_BUDGET", defaultCrawlErrorBudget, 0, math.MaxInt32)
 	if err != nil {
 		return Crawl{}, err
@@ -2247,6 +2253,13 @@ func LoadCrawl() (Crawl, error) {
 		ErrorBudget:    errorBudget,
 		GateFailClosed: gateFailClosed,
 	}, nil
+}
+
+// shardCheckpointPath inserts a per-shard suffix before the extension so each
+// sharded producer writes its own checkpoint file (crawl-checkpoint.shard2.json).
+func shardCheckpointPath(path string, index int) string {
+	ext := filepath.Ext(path)
+	return fmt.Sprintf("%s.shard%d%s", strings.TrimSuffix(path, ext), index, ext)
 }
 
 // crawlGateFailClosed parses CRAWL_GATE_FAIL_MODE: "open" (default) publishes a

@@ -389,7 +389,7 @@ services:
       # CRAWL_ERROR_BUDGET pages may be skipped before the run fails; a page's
       # extract failure is skipped, not fatal. CRAWL_GATE_FAIL_MODE=closed holds a
       # chunk whose gate call errored (retried next run) instead of publishing it.
-      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH:-/state/crawl-checkpoint.json}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
       CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
       CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       # Fact-checkability gate: on by default, so a key is required unless you set
@@ -600,7 +600,7 @@ services:
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
-      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH:-/state/crawl-checkpoint.json}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
       CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
       CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"

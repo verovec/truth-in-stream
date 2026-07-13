@@ -11,10 +11,11 @@ import (
 )
 
 // memCheckpoint is an in-memory Checkpoint for behavior tests: it records resolved
-// pages without touching disk.
+// pages without touching disk and remembers whether Clear was called.
 type memCheckpoint struct {
-	mu   sync.Mutex
-	done map[int64]struct{}
+	mu      sync.Mutex
+	done    map[int64]struct{}
+	cleared bool
 }
 
 func newMemCheckpoint(seed ...int64) *memCheckpoint {
@@ -39,6 +40,20 @@ func (c *memCheckpoint) MarkDone(ids ...int64) {
 }
 
 func (c *memCheckpoint) Save() error { return nil }
+
+func (c *memCheckpoint) Clear() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done = make(map[int64]struct{})
+	c.cleared = true
+	return nil
+}
+
+func (c *memCheckpoint) wasCleared() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cleared
+}
 
 // TestRunCrawlResumesFromCheckpoint proves a page already resolved on a previous
 // run is skipped: it is neither gated (no repeated LLM spend) nor published.
@@ -82,8 +97,13 @@ func TestRunCrawlResumesFromCheckpoint(t *testing.T) {
 	if stats.Published != 1 {
 		t.Fatalf("published = %d, want 1", stats.Published)
 	}
-	if !cp.Done(20) {
-		t.Fatal("page 20 was not checkpointed after a successful publish")
+	// The run completed, so the checkpoint is cleared: the next scheduled run starts
+	// fresh and re-crawls every page (catching updates) rather than skipping them.
+	if !cp.wasCleared() {
+		t.Fatal("completed run did not clear the checkpoint; the next run would skip everything")
+	}
+	if cp.Done(20) || cp.Done(10) {
+		t.Fatal("checkpoint still reports pages done after a completed run's clear")
 	}
 }
 
@@ -149,6 +169,22 @@ func TestRunCrawlSkipsFailedBatchWithinBudget(t *testing.T) {
 	}
 }
 
+func TestRunCrawlAbortsOnCanceledContext(t *testing.T) {
+	t.Parallel()
+	// A canceled context must abort with an error, not be charged to the budget and
+	// masked as a partial success.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	src := twoBatchSource()
+	cfg := CrawlConfig{
+		Categories: []string{"c"}, Corpus: "c", Project: "simplewiki",
+		MaxPages: 100, MaxPriority: 10, ErrorBudget: 1000, // huge budget: only cancellation should fail it
+	}
+	if _, err := RunCrawl(ctx, slog.New(slog.DiscardHandler), src, &capturePublisher{}, nil, cfg); err == nil {
+		t.Fatal("a canceled crawl returned success instead of propagating the cancellation")
+	}
+}
+
 func TestRunCrawlFailsWhenErrorBudgetExhausted(t *testing.T) {
 	t.Parallel()
 	src := twoBatchSource()
@@ -170,7 +206,8 @@ func TestRunCrawlFailsWhenErrorBudgetExhausted(t *testing.T) {
 }
 
 // TestRunCrawlGateFailClosedHoldsChunk proves fail-closed drops a chunk whose gate
-// call errored and does NOT checkpoint its page, so a rerun retries it.
+// call errored and counts its page as unresolved (Skipped), so with headroom in the
+// error budget the run still completes but the page is not published.
 func TestRunCrawlGateFailClosedHoldsChunk(t *testing.T) {
 	t.Parallel()
 	pub := &capturePublisher{}
@@ -180,6 +217,7 @@ func TestRunCrawlGateFailClosedHoldsChunk(t *testing.T) {
 	cp := newMemCheckpoint()
 	cfg := gatedCrawlConfig()
 	cfg.GateFailMode = GateFailClosed
+	cfg.ErrorBudget = 10 // one held page is within budget
 	cfg.Checkpoint = cp
 
 	stats, err := RunCrawl(t.Context(), slog.New(slog.DiscardHandler), gatedSource(), pub, gate, cfg)
@@ -192,8 +230,30 @@ func TestRunCrawlGateFailClosedHoldsChunk(t *testing.T) {
 	if stats.Published != 0 {
 		t.Fatalf("published = %d, want 0", stats.Published)
 	}
-	if cp.Done(10) {
-		t.Fatal("a page held by a fail-closed gate error was checkpointed; it must be retried next run")
+	if stats.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the held page charged to the budget)", stats.Skipped)
+	}
+}
+
+// TestRunCrawlGateFailClosedExhaustsBudgetWhenGateBroken proves a persistently
+// broken gate under fail-closed fails the run loudly (budget exhausted by held
+// pages) instead of silently re-gating forever.
+func TestRunCrawlGateFailClosedExhaustsBudgetWhenGateBroken(t *testing.T) {
+	t.Parallel()
+	pub := &capturePublisher{}
+	gate := gateFunc(func(_ context.Context, _ string) (bool, error) {
+		return false, errors.New("model unavailable")
+	})
+	cfg := gatedCrawlConfig()
+	cfg.GateFailMode = GateFailClosed
+	cfg.ErrorBudget = 0 // no headroom: the first held page fails the run
+
+	_, err := RunCrawl(t.Context(), slog.New(slog.DiscardHandler), gatedSource(), pub, gate, cfg)
+	if err == nil {
+		t.Fatal("a broken fail-closed gate did not fail the run; it would re-gate forever")
+	}
+	if !strings.Contains(err.Error(), "error budget exhausted") {
+		t.Fatalf("error = %v, want an error-budget-exhausted signal", err)
 	}
 }
 
@@ -211,20 +271,21 @@ func TestRunCrawlGateFailClosedHoldsPageWithAnErroredChunk(t *testing.T) {
 		}
 		return true, nil
 	})
-	cp := newMemCheckpoint()
 	cfg := gatedCrawlConfig()
 	cfg.GateFailMode = GateFailClosed
-	cfg.Checkpoint = cp
+	cfg.ErrorBudget = 10 // the held page is within budget
 
-	if _, err := RunCrawl(t.Context(), slog.New(slog.DiscardHandler), gatedSource(), pub, gate, cfg); err != nil {
+	stats, err := RunCrawl(t.Context(), slog.New(slog.DiscardHandler), gatedSource(), pub, gate, cfg)
+	if err != nil {
 		t.Fatalf("RunCrawl: %v", err)
 	}
-	// The clean lead chunk published, but the page had a held chunk, so it is not
-	// checkpointed: the whole page retries so the held chunk is re-judged.
+	// The clean lead chunk published, but the page had a held chunk, so the page is
+	// counted unresolved (Skipped) and not checkpointed: the whole page retries so
+	// the held chunk is re-judged.
 	if len(pub.jobs) != 1 || pub.jobs[0].Kind != "lead" {
 		t.Fatalf("published %d jobs, want only the clean lead chunk", len(pub.jobs))
 	}
-	if cp.Done(10) {
-		t.Fatal("page with a held chunk was checkpointed; it must retry to re-judge the held chunk")
+	if stats.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the page with a held chunk is unresolved)", stats.Skipped)
 	}
 }

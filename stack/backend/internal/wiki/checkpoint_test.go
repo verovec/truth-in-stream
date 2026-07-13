@@ -58,6 +58,36 @@ func TestCheckpointRoundTripsAcrossLoads(t *testing.T) {
 	}
 }
 
+func TestCheckpointClearRemovesFileAndState(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "crawl-checkpoint.json")
+	cp, err := LoadCheckpoint(path)
+	if err != nil {
+		t.Fatalf("LoadCheckpoint error = %v", err)
+	}
+	cp.MarkDone(1, 2)
+	if err := cp.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("checkpoint file missing before Clear: %v", err)
+	}
+
+	if err := cp.Clear(); err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+	if cp.Done(1) {
+		t.Fatal("Clear did not drop the in-memory resolved set")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("Clear did not remove the checkpoint file (stat err = %v)", err)
+	}
+	// Clearing an already-absent file is not an error.
+	if err := cp.Clear(); err != nil {
+		t.Fatalf("second Clear() error = %v", err)
+	}
+}
+
 func TestCheckpointCorruptFileTreatedAsFresh(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "crawl-checkpoint.json")

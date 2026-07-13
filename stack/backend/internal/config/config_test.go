@@ -1578,6 +1578,21 @@ func TestLoadCrawlCheckpointDisabledWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadCrawlShardsCheckpointPath(t *testing.T) {
+	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
+	t.Setenv("CRAWL_SHARDS", "4")
+	t.Setenv("CRAWL_SHARD_INDEX", "2")
+	c, err := LoadCrawl()
+	if err != nil {
+		t.Fatalf("LoadCrawl: %v", err)
+	}
+	// Each shard gets its own checkpoint file so concurrent shards on one /state
+	// volume do not clobber each other.
+	if c.CheckpointPath != "/state/crawl-checkpoint.shard2.json" {
+		t.Fatalf("sharded checkpoint = %q, want /state/crawl-checkpoint.shard2.json", c.CheckpointPath)
+	}
+}
+
 func TestLoadCrawlRejectsBadGateFailMode(t *testing.T) {
 	t.Setenv("CRAWL_CATEGORIES", "Category:Physics")
 	t.Setenv("CRAWL_GATE_FAIL_MODE", "sometimes")
