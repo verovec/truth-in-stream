@@ -97,6 +97,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	finalGateCfg, err := config.LoadFinalGate(secondPassCfg)
+	if err != nil {
+		return err
+	}
 	locale := politicalCfg.Locale()
 	debugSearchCfg, err := config.LoadDebugSearch()
 	if err != nil {
@@ -287,7 +291,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, logger)
 	if err != nil {
 		return err
 	}
@@ -305,7 +309,7 @@ func run(logger *slog.Logger) error {
 	// interrupted by a prior crash to failed so the admin can reanalyse.
 	var batchVerifier service.BatchVerifier
 	if verifyPath != nil {
-		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, logger)
 		if err != nil {
 			return err
 		}
@@ -649,7 +653,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPass config.SecondPass, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -665,10 +669,11 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 	if err != nil {
 		return nil, err
 	}
-	// The second pass attaches to the credibility-only verify stage; the political
-	// path owns its own two-axis lifecycle and does not run the credibility second
-	// pass, so it is wired only when political mode is off.
-	secondPassCfg, err := buildSecondPass(secondPass, pol, locale, logger)
+	// The terminal gate attaches to whichever verify stage runs: the credibility path
+	// re-judges a weak credibility verdict, the political path re-judges a weak
+	// two-axis verdict (mapping the reasoner's credibility back onto the literal axis).
+	// It is wired for both, so a political run gets the same last-resort adjudication.
+	secondPassCfg, err := buildSecondPass(finalGate, locale)
 	if err != nil {
 		return nil, err
 	}
@@ -695,21 +700,21 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 		logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
 	}
 	if secondPassCfg != nil {
-		logger.Info("deeper-reasoner second pass enabled for grounded mid-confidence verdicts", slog.String("model", secondPass.Model))
+		logger.Info("terminal reasoning gate enabled for weak verdicts", slog.String("provider", finalGate.Provider), slog.String("model", finalGate.Model))
 	}
 	return path, nil
 }
 
-// buildSecondPass wires the deeper-reasoner second pass, or returns nil (so the
-// verify path runs its single fast pass unchanged) when the feature is not active
-// or political mode owns the verify stage. The reverifier is a verify client built
-// on the larger reasoning model; it shares the credibility verifier's locale so the
-// re-judged rationale stays in the viewer's language. The API key is never logged.
-func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale domain.Locale, logger *slog.Logger) (*service.SecondPassConfig, error) {
-	if !cfg.Active() || pol != nil {
-		if cfg.Active() && pol != nil {
-			logger.Info("deeper-reasoner second pass skipped: political mode owns the verify stage")
-		}
+// buildSecondPass wires the terminal reasoning gate, or returns nil (so the verify
+// path runs its single fast pass unchanged) when the feature is not active. The
+// reverifier is a verify client built on the gate's own provider and reasoning model
+// - decoupled from the hot-path LLM_PROVIDER so the expensive reasoner can run on a
+// different backend - and it shares the credibility verifier's locale so the re-judged
+// rationale stays in the viewer's language. The gate is wired regardless of political
+// mode: the political path routes its weak two-axis verdicts through the same reasoner.
+// The API key is never logged.
+func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.SecondPassConfig, error) {
+	if !cfg.Active() {
 		return nil, nil
 	}
 	reverifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, Model: cfg.Model, Locale: locale})
@@ -717,10 +722,10 @@ func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale
 		return nil, err
 	}
 	return &service.SecondPassConfig{
-		Reverifier: reverifierAdapter{reverifier},
-		MidBandLo:  cfg.BandLo,
-		MidBandHi:  cfg.BandHi,
-		Deadline:   cfg.Deadline,
+		Reverifier:    reverifierAdapter{reverifier},
+		TriggerBelow:  cfg.TriggerBelow,
+		MinConfidence: cfg.MinConfidence,
+		Deadline:      cfg.Deadline,
 	}, nil
 }
 

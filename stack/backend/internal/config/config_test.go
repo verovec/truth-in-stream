@@ -2024,6 +2024,187 @@ func TestLoadSecondPassRejectsInvertedBand(t *testing.T) {
 	}
 }
 
+// TestLoadFinalGateFallsBackToSecondPass proves the terminal gate inherits every
+// unset knob from the already-loaded second pass: its enable flag, provider, key,
+// model, and deadline, plus a trigger floor at the second pass's upper band and the
+// default min-confidence.
+func TestLoadFinalGateFallsBackToSecondPass(t *testing.T) {
+	t.Setenv("FACTCHECK_SECOND_PASS", "true")
+	t.Setenv("DEEPSEEK_API_KEY", "d-test")
+	t.Setenv("FACTCHECK_SECOND_PASS_BAND_HI", "0.75")
+	t.Setenv("FACTCHECK_SECOND_PASS_DEADLINE", "20s")
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	got, err := LoadFinalGate(sp)
+	if err != nil {
+		t.Fatalf("LoadFinalGate: %v", err)
+	}
+	if !got.Enabled || !got.Active() {
+		t.Fatalf("gate must inherit the enabled+keyed second pass: %+v", got)
+	}
+	if got.Provider != LLMProviderDeepSeek {
+		t.Errorf("provider = %q, want the second pass's deepseek", got.Provider)
+	}
+	if got.Model != defaultSecondPassModel {
+		t.Errorf("model = %q, want the second pass's %q", got.Model, defaultSecondPassModel)
+	}
+	if got.TriggerBelow != 0.75 {
+		t.Errorf("trigger floor = %v, want the second pass upper band 0.75", got.TriggerBelow)
+	}
+	if got.MinConfidence != defaultFinalGateMinConfidence {
+		t.Errorf("min confidence = %v, want default %v", got.MinConfidence, defaultFinalGateMinConfidence)
+	}
+	if got.Deadline != 20*time.Second {
+		t.Errorf("deadline = %v, want the second pass's 20s", got.Deadline)
+	}
+}
+
+// TestLoadFinalGateOverrides proves each FACTCHECK_FINAL_GATE_* knob overrides its
+// second-pass fallback, and the gate's own enable flag can turn it on independently.
+func TestLoadFinalGateOverrides(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "d-test")
+	t.Setenv("FACTCHECK_FINAL_GATE", "true")
+	t.Setenv("FACTCHECK_FINAL_GATE_MODEL", "deepseek-v4-pro-max")
+	t.Setenv("FACTCHECK_FINAL_GATE_TRIGGER_BELOW", "0.6")
+	t.Setenv("FACTCHECK_FINAL_GATE_MIN_CONFIDENCE", "0.95")
+	t.Setenv("FACTCHECK_FINAL_GATE_DEADLINE", "30s")
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	got, err := LoadFinalGate(sp)
+	if err != nil {
+		t.Fatalf("LoadFinalGate: %v", err)
+	}
+	if !got.Active() {
+		t.Fatal("FACTCHECK_FINAL_GATE=true with a deepseek key must be Active")
+	}
+	if got.Model != "deepseek-v4-pro-max" {
+		t.Errorf("model = %q, want the gate override", got.Model)
+	}
+	if got.TriggerBelow != 0.6 || got.MinConfidence != 0.95 || got.Deadline != 30*time.Second {
+		t.Errorf("overrides wrong: %+v", got)
+	}
+}
+
+// TestLoadFinalGateDecouplesProvider proves the gate can run on a different provider
+// than the shared LLM_PROVIDER, and that switching providers drops the carried
+// second-pass model so a stale model id can never reach a provider that does not know
+// it (the operator must then name the gate's own model).
+func TestLoadFinalGateDecouplesProvider(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "deepseek")
+	t.Setenv("FACTCHECK_SECOND_PASS", "true")
+	t.Setenv("DEEPSEEK_API_KEY", "d-test")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "anthropic")
+	t.Setenv("FACTCHECK_FINAL_GATE_API_KEY", "sk-gate")
+	t.Setenv("FACTCHECK_FINAL_GATE_MODEL", "claude-opus-4-5")
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	got, err := LoadFinalGate(sp)
+	if err != nil {
+		t.Fatalf("LoadFinalGate: %v", err)
+	}
+	if got.Provider != LLMProviderAnthropic {
+		t.Errorf("provider = %q, want the decoupled anthropic override", got.Provider)
+	}
+	if !got.Active() {
+		t.Fatal("gate under anthropic with its own key must be Active")
+	}
+	if got.Model != "claude-opus-4-5" {
+		t.Errorf("model = %q, want the gate override", got.Model)
+	}
+}
+
+// TestLoadFinalGateRejectsBadThresholds proves an out-of-range threshold or a
+// non-positive deadline fails fast (validated eagerly, like the second-pass band).
+func TestLoadFinalGateRejectsBadThresholds(t *testing.T) {
+	tests := map[string]string{
+		"FACTCHECK_FINAL_GATE_TRIGGER_BELOW":  "1.5",
+		"FACTCHECK_FINAL_GATE_MIN_CONFIDENCE": "-0.1",
+		"FACTCHECK_FINAL_GATE_DEADLINE":       "0s",
+	}
+	for key, val := range tests {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, val)
+			sp, err := LoadSecondPass()
+			if err != nil {
+				t.Fatalf("LoadSecondPass: %v", err)
+			}
+			if _, err := LoadFinalGate(sp); err == nil {
+				t.Fatalf("LoadFinalGate with %s=%s = nil error, want error", key, val)
+			}
+		})
+	}
+}
+
+// TestLoadFinalGateActiveRejectsUnknownProvider proves an ACTIVE gate (enabled and
+// keyed) with an unsupported provider fails fast rather than silently proceeding.
+func TestLoadFinalGateActiveRejectsUnknownProvider(t *testing.T) {
+	t.Setenv("FACTCHECK_FINAL_GATE", "true")
+	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "openai")
+	// An unknown provider resolves its key via the Anthropic slot, so this key makes
+	// the gate Active and the provider guard fire.
+	t.Setenv("FACTCHECK_FINAL_GATE_API_KEY", "sk-gate")
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if _, err := LoadFinalGate(sp); err == nil {
+		t.Fatal("LoadFinalGate must reject an unknown provider on an active gate")
+	}
+}
+
+// TestLoadFinalGateBadProviderDegradesOffWhenInactive proves a bad provider override
+// never bricks boot when the gate will not run - whether the gate is disabled or
+// enabled-but-keyless (Active()==false either way), matching the keyless-degrades-off
+// contract every optional LLM stage keeps.
+func TestLoadFinalGateBadProviderDegradesOffWhenInactive(t *testing.T) {
+	cases := map[string]map[string]string{
+		"disabled":            {"FACTCHECK_FINAL_GATE_PROVIDER": "openai"},
+		"enabled but keyless": {"FACTCHECK_FINAL_GATE": "true", "FACTCHECK_FINAL_GATE_PROVIDER": "openai"},
+	}
+	for name, env := range cases {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			sp, err := LoadSecondPass()
+			if err != nil {
+				t.Fatalf("LoadSecondPass: %v", err)
+			}
+			got, err := LoadFinalGate(sp)
+			if err != nil {
+				t.Fatalf("LoadFinalGate must not error on a bad provider for an inactive gate: %v", err)
+			}
+			if got.Active() {
+				t.Fatal("gate must be inactive")
+			}
+		})
+	}
+}
+
+// TestLoadFinalGateActiveRequiresModel proves an active gate under a provider with no
+// default reasoning model (Anthropic here) fails fast instead of silently running the
+// cheap default stage model.
+func TestLoadFinalGateActiveRequiresModel(t *testing.T) {
+	t.Setenv("FACTCHECK_FINAL_GATE", "true")
+	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "anthropic")
+	t.Setenv("FACTCHECK_FINAL_GATE_API_KEY", "sk-gate")
+	// No FACTCHECK_FINAL_GATE_MODEL: anthropic has no reasoning default here.
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if _, err := LoadFinalGate(sp); err == nil {
+		t.Fatal("LoadFinalGate must require an explicit model for an active anthropic gate")
+	}
+}
+
 func TestLoadPolitical(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -571,12 +571,13 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
-	// Deeper second pass, off by default: a grounded mid-confidence verdict gets
-	// re-judged by a stronger reasoning model and may be upgraded in place. It runs
-	// only after the fast verdict has already emitted above and outside the verify
-	// pool, so it never delays the live result or consumes a scoring slot; it is a
-	// no-op when the feature is off or the verdict does not qualify.
-	vp.maybeReverify(ctx, out, pu, claim, verdict, ret)
+	// Terminal reasoning gate, off by default: a weak verdict (unverifiable, or below
+	// the trigger floor) gets re-judged by a stronger reasoning model and may be
+	// upgraded in place, with the speaker tally moved to match. It runs only after the
+	// fast verdict has already emitted above and outside the verify pool, so it never
+	// delays the live result or consumes a scoring slot; it is a no-op when the feature
+	// is off or the verdict is already strong.
+	vp.maybeReverify(ctx, out, mem, pu, claim, verdict, ret)
 }
 
 // retrieve embeds the atomic claim and pulls the high-recall evidence cluster
@@ -847,6 +848,24 @@ func (vp *VerifyPath) recordSpeakerTally(ctx context.Context, out chan<- LiveEve
 		return
 	}
 	tally := mem.observeVerdict(speaker, verdict.Verdict, len(verdict.Flags) > 0)
+	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerTally, SpeakerTally: &tally})
+}
+
+// recordSpeakerReTally corrects the speaker tally after the terminal gate upgraded a
+// claim's verdict: it moves the claim from its prior credibility bucket to the new one
+// and emits a fresh tally snapshot, so the aggregate breakdown stays consistent with the
+// upgraded per-claim verdict the viewer now sees. It is the tally counterpart of a gate
+// upgrade; recordSpeakerTally already counted the fast verdict, so this moves that single
+// count rather than adding a second (no double-count). It is a no-op when the credibility
+// bucket is unchanged (a same-bucket confidence bump), so a gate that only sharpens
+// confidence emits no redundant tally frame. The misleading-framing tally needs no
+// correction: a gate upgrade carries the claim's manipulation flags through unchanged,
+// so the framing count the fast verdict set still holds.
+func (vp *VerifyPath) recordSpeakerReTally(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, old, upgraded *VerifiedVerdict) {
+	if speaker == "" || old == nil || upgraded == nil || old.Verdict == upgraded.Verdict {
+		return
+	}
+	tally := mem.reobserveVerdict(speaker, old.Verdict, upgraded.Verdict)
 	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerTally, SpeakerTally: &tally})
 }
 

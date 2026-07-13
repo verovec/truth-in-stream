@@ -20,117 +20,130 @@ type ClaimReverifier interface {
 	Reverify(ctx context.Context, claim string, passages []EvidencePassage) (ClaimVerdict, error)
 }
 
-// SecondPassConfig configures the deeper-reasoner second pass. It is nil unless
-// the feature is wired (flag on, reasoner keyed): a nil config is a hard no-op, so
-// the default-off path is byte-for-byte the legacy verify path. Reverifier is the
-// deeper reasoning model. MidBandLo and MidBandHi bound the fast-verdict confidence
-// band that qualifies for a second look (inclusive); a verdict outside the band is
-// left untouched. Deadline bounds one reverify call so a slow or expensive reasoner
-// can never stall the claim's worker indefinitely.
+// SecondPassConfig configures the terminal reasoning gate (VER-192). It is nil
+// unless the feature is wired (flag on, reasoner keyed): a nil config is a hard
+// no-op, so the default-off path is byte-for-byte the legacy verify path. Reverifier
+// is the deeper reasoning model. TriggerBelow is the confidence floor below which
+// the pipeline's best verdict is weak enough to escalate (a verdict at or above the
+// floor is already strong and never escalated); an unverifiable verdict always
+// escalates. MinConfidence is the grounded confidence the reasoner's re-judgment
+// must reach before it is allowed to REPLACE the weak verdict. Deadline bounds one
+// reverify call so a slow or expensive reasoner can never stall the claim's worker
+// indefinitely.
 type SecondPassConfig struct {
-	Reverifier ClaimReverifier
-	MidBandLo  float64
-	MidBandHi  float64
-	Deadline   time.Duration
+	Reverifier    ClaimReverifier
+	TriggerBelow  float64
+	MinConfidence float64
+	Deadline      time.Duration
 }
 
-// secondPass is the validated, wired second-pass policy. It is nil on the
+// secondPass is the validated, wired terminal-gate policy. It is nil on the
 // VerifyPath when the feature is off, and every entry point guards on nil, so the
 // disabled path adds no work and no latency.
 type secondPass struct {
-	reverifier ClaimReverifier
-	midBandLo  float64
-	midBandHi  float64
-	deadline   time.Duration
+	reverifier    ClaimReverifier
+	triggerBelow  float64
+	minConfidence float64
+	deadline      time.Duration
 }
 
 // newSecondPass validates and builds the policy from its config. It fails when a
-// required collaborator is missing or a bound is out of range (a band outside
-// [0,1] or inverted, a non-positive deadline), so a misconfiguration surfaces at
-// wiring time rather than as a silently skipped second pass.
+// required collaborator is missing or a threshold is out of range (outside [0,1] or
+// a non-positive deadline), so a misconfiguration surfaces at wiring time rather
+// than as a silently skipped gate.
 func newSecondPass(cfg SecondPassConfig) (*secondPass, error) {
 	switch {
 	case cfg.Reverifier == nil:
-		return nil, errors.New("service: second pass requires a reverifier")
-	case cfg.MidBandLo < 0 || cfg.MidBandLo > 1:
-		return nil, fmt.Errorf("service: second pass mid-band low %v outside [0, 1]", cfg.MidBandLo)
-	case cfg.MidBandHi < 0 || cfg.MidBandHi > 1:
-		return nil, fmt.Errorf("service: second pass mid-band high %v outside [0, 1]", cfg.MidBandHi)
-	case cfg.MidBandLo > cfg.MidBandHi:
-		return nil, fmt.Errorf("service: second pass mid-band low %v above high %v", cfg.MidBandLo, cfg.MidBandHi)
+		return nil, errors.New("service: terminal gate requires a reverifier")
+	case cfg.TriggerBelow < 0 || cfg.TriggerBelow > 1:
+		return nil, fmt.Errorf("service: terminal gate trigger floor %v outside [0, 1]", cfg.TriggerBelow)
+	case cfg.MinConfidence < 0 || cfg.MinConfidence > 1:
+		return nil, fmt.Errorf("service: terminal gate min confidence %v outside [0, 1]", cfg.MinConfidence)
 	case cfg.Deadline <= 0:
-		return nil, fmt.Errorf("service: second pass deadline must be positive, got %s", cfg.Deadline)
+		return nil, fmt.Errorf("service: terminal gate deadline must be positive, got %s", cfg.Deadline)
 	}
 	return &secondPass{
-		reverifier: cfg.Reverifier,
-		midBandLo:  cfg.MidBandLo,
-		midBandHi:  cfg.MidBandHi,
-		deadline:   cfg.Deadline,
+		reverifier:    cfg.Reverifier,
+		triggerBelow:  cfg.TriggerBelow,
+		minConfidence: cfg.MinConfidence,
+		deadline:      cfg.Deadline,
 	}, nil
 }
 
-// qualifies is the gating predicate, the heart of the card's "deeper look only
-// where it can help" rule. A fast verdict qualifies for a second pass only when it
-// is grounded in surviving evidence (basis evidence), it has retrieved passages to
-// re-read, and its confidence falls inside the configurable mid band. It NEVER
-// qualifies a knowledge-basis or unverifiable verdict: a deeper model cannot
-// manufacture evidence retrieval never found, and escalating an ungrounded verdict
-// would only tempt it to assert unsourced confidence past the cap. It is a pure
-// function so the gate is table-testable without the model.
-func (sp *secondPass) qualifies(verdict *VerifiedVerdict, passageCount int) bool {
+// weak is the gating predicate, the heart of the card's terminal-gate rule: run the
+// deeper reasoner only when the pipeline's best verdict is weak - it is unverifiable,
+// or its confidence sits below the trigger floor. A verdict at or above the floor is
+// already strong and is never escalated. It requires passageCount > 0 because the
+// reasoner grounds its re-judgment in retrieved evidence: with nothing to re-read it
+// can do no better than the honest weak verdict the pipeline already produced, so a
+// no-evidence unverifiable stands. It is a pure function so the gate is table-testable
+// without the model. This inverts the old mid-band, evidence-only qualifier: the gate
+// now fires precisely where the pipeline was least sure, regardless of basis.
+func (sp *secondPass) weak(verdict *VerifiedVerdict, passageCount int) bool {
 	if verdict == nil || passageCount == 0 {
 		return false
 	}
-	if verdict.Basis != BasisEvidence {
-		return false
-	}
-	return verdict.Confidence >= sp.midBandLo && verdict.Confidence <= sp.midBandHi
+	return verdict.Verdict == VerdictUnverifiable || verdict.Confidence < sp.triggerBelow
 }
 
-// upgrade folds a reasoning re-judgment into the fast verdict. It is deterministic
-// and table-testable, and it enforces the second pass's two invariants:
-//
-//   - The knowledge-confidence cap can never be exceeded by an upgrade. A reasoning
-//     verdict that came back without a surviving citation (basis knowledge) is the
-//     deeper model's own ungrounded judgment; it can refine the verdict but its
-//     confidence is bounded at the cap, exactly as the fast path bounds a
-//     knowledge-only verdict. A grounded (evidence) re-judgment keeps its clamped
-//     confidence.
-//   - Only a reasoning verdict that is itself grounded (evidence basis with at least
-//     one surviving citation) is allowed to REPLACE the fast verdict's state and
-//     confidence. If the reasoner came back ungrounded, the original grounded fast
-//     verdict stands - the deeper look may not downgrade a grounded verdict to an
-//     ungrounded one, only strengthen a grounded one.
-//
-// The reverifier's result is already citation-guarded (ValidateCitations ran in the
-// adapter), so basis knowledge here means "no citation survived"; this function is
-// the service-layer enforcement on top of that, defense in depth for the cap.
+// accept reports whether a reasoning re-judgment is strong enough to REPLACE the
+// pipeline's weak verdict: it must be grounded (evidence basis with at least one
+// surviving citation) AND reach the terminal-gate confidence floor. Anything less -
+// an ungrounded re-judgment, or a grounded-but-tentative one - is not adopted: the
+// gate prefers the pipeline's honest weak verdict over a shaky upgrade, and never
+// asserts a confident verdict the deeper model could not itself ground. It is a pure
+// function so the acceptance rule is table-testable without the model.
+func (sp *secondPass) accept(reasoned ClaimVerdict) bool {
+	return reasoned.Basis == BasisEvidence &&
+		len(reasoned.Citations) > 0 &&
+		reasoned.Confidence >= sp.minConfidence
+}
+
+// upgrade folds a reasoning re-judgment into the pipeline's weak credibility verdict
+// under the terminal-gate acceptance rule. It is deterministic and table-testable.
+// When the re-judgment is accepted (grounded AND at least MinConfidence) it replaces
+// the weak verdict; otherwise the prior verdict stands - an unverifiable prior stays
+// unverifiable and a low-confidence-but-valid prior is retained rather than traded
+// for an ungrounded or tentative upgrade. This makes the precedence explicit: the
+// gate can only strengthen a weak verdict into a grounded, high-confidence one, never
+// weaken it or replace it with an unsourced guess.
 func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matches []domain.SegmentMatch) *VerifiedVerdict {
-	if reasoned.Basis != BasisEvidence || len(reasoned.Citations) == 0 {
-		// The deeper model could not ground its re-judgment; keep the grounded fast
-		// verdict rather than trading it for an ungrounded one.
+	if !sp.accept(reasoned) {
 		return orig
 	}
 	upgraded := verdictFromResult(reasoned, matches)
-	// Defense in depth: a grounded re-judgment keeps its clamped confidence, but if
-	// resolving citations against the retrieved matches dropped them all, the verdict
-	// is no longer grounded and must not exceed the knowledge cap.
+	// A citation-guarded evidence re-judgment whose ids fail to resolve against the
+	// retrieved matches is no longer grounded; do not adopt it - keep the prior verdict
+	// rather than emit an ungrounded high-confidence upgrade.
 	if len(upgraded.Citations) == 0 {
-		upgraded.Basis = BasisKnowledge
-		upgraded.Confidence = capKnowledgeConfidence(upgraded.Confidence)
+		return orig
 	}
 	return upgraded
 }
 
-// capKnowledgeConfidence mirrors the verify package's knowledge cap at the service
-// layer: a verdict not grounded in a surviving citation can never render
-// high-confidence, no matter which pass produced it.
-func capKnowledgeConfidence(c float64) float64 {
-	const knowledgeConfidenceCap = 0.6
-	if c < 0 {
-		return 0
+// gateReverify runs the terminal gate's shared pre-fold steps for all four entry
+// points (live/batch x credibility/political): given the passages the reasoner will
+// ground against, it returns the deeper re-judgment when the verdict is weak and the
+// reasoning call succeeds, or ok=false (a no-op) when the verdict is already strong or
+// the call fails (logged, non-fatal). The caller has already guarded vp.secondPass !=
+// nil (so the default-off path allocates no passages) and folds the result with its own
+// upgrade rule - sp.upgrade on the credibility axis, sp.upgradePolitical on the two-axis
+// path - so the one place that changes when the gate protocol changes is here, not four.
+// stage names the calling path (e.g. "live credibility", "batch political") so a
+// reverify failure in the logs still says which pipeline and axis degraded.
+func (vp *VerifyPath) gateReverify(ctx context.Context, stage string, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool) {
+	sp := vp.secondPass
+	if !sp.weak(fast, len(passages)) {
+		return ClaimVerdict{}, false
 	}
-	return min(c, knowledgeConfidenceCap)
+	reasoned, err := sp.reverify(ctx, claim.Text, passages)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "terminal-gate reverify failed", slog.String("stage", stage), slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return ClaimVerdict{}, false
+	}
+	return reasoned, true
 }
 
 // reverify runs the deeper reasoning call under its own bounded deadline,
@@ -143,37 +156,35 @@ func (sp *secondPass) reverify(ctx context.Context, claim string, passages []Evi
 	return sp.reverifier.Reverify(reverifyCtx, claim, passages)
 }
 
-// maybeReverify is the second pass's single entry point on the verify path. It is
-// a no-op when the feature is off (sp nil), when the fast verdict does not qualify,
-// or when the reasoning call fails - in every case the fast verdict already emitted
-// to the viewer stands untouched. When the deeper model upgrades a qualifying
-// verdict, it re-emits the verified frame for the same claim id so the client
-// replaces the displayed verdict in place. It runs AFTER the fast verdict is
-// emitted, so it never delays the live per-claim result, and outside the verify
-// pool, so it never consumes a scoring slot.
+// maybeReverify is the terminal gate's single entry point on the credibility verify
+// path. It is a no-op when the feature is off (sp nil), when the fast verdict is not
+// weak enough to escalate, or when the reasoning call fails - in every case the fast
+// verdict already emitted to the viewer stands untouched. When the deeper model
+// grounds a high-confidence re-judgment of a weak verdict, it re-emits the verified
+// frame for the same claim id so the client replaces the displayed verdict in place.
+// It runs AFTER the fast verdict is emitted, so it never delays the live per-claim
+// result, and outside the verify pool, so it never consumes a scoring slot.
 //
-// It deliberately does NOT re-fold the upgraded verdict into the speaker score: the
-// fast verdict was already observed in that running aggregate, and re-observing the
-// same claim would double-count it. The second pass corrects the displayed
-// per-claim verdict, not the speaker tally - so a one-claim upgrade can never skew
-// the aggregate by counting the claim twice.
-func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) {
-	sp := vp.secondPass
-	// qualifies counts the evidence-bearing passages the reverifier would actually
-	// receive (those carrying an evidence id), not every retrieved match, so the gate
-	// reflects what the deeper model can ground against rather than the raw hit count.
-	passages := passagesFromMatches(ret.matches)
-	if sp == nil || !sp.qualifies(fast, len(passages)) {
+// When it upgrades a weak verdict it also corrects the speaker tally, moving the claim
+// from its prior bucket to the new one (recordSpeakerReTally): the fast verdict was
+// already counted, so this MOVES that single count rather than adding a second, and the
+// aggregate credibility breakdown stays consistent with the upgraded per-claim verdict
+// the viewer now sees. This is required precisely because the gate now fires on weak
+// (including unverifiable) verdicts: an unverifiable-to-definite upgrade would otherwise
+// leave the tally showing the claim as unverifiable while the UI shows it disputed.
+func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) {
+	if vp.secondPass == nil {
 		return
 	}
-	reasoned, err := sp.reverify(ctx, claim.Text, passages)
-	if err != nil {
-		if ctx.Err() == nil {
-			vp.logger.ErrorContext(ctx, "second-pass reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
-		}
+	// passagesFromMatches counts the evidence-bearing passages the reverifier would
+	// actually receive (those carrying an evidence id), not every retrieved match, so
+	// the gate reflects what the deeper model can ground against rather than the raw hit
+	// count.
+	reasoned, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passagesFromMatches(ret.matches))
+	if !ok {
 		return
 	}
-	upgraded := sp.upgrade(fast, reasoned, ret.matches)
+	upgraded := vp.secondPass.upgrade(fast, reasoned, ret.matches)
 	if upgraded == fast {
 		return
 	}
@@ -182,27 +193,23 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, p
 	// through so a cache-hit replay still feeds consistency detection.
 	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
+	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
 }
 
-// applyReverifyBatch is the batch counterpart of maybeReverify: it re-judges a
-// qualifying grounded fast verdict with the deeper reasoner and returns the
-// upgraded verdict, or the original fast verdict when the feature is off, the
-// verdict does not qualify, or the reasoning call fails. It emits nothing.
-// Batch document analysis has no realtime constraint, so it applies the same
-// second-pass upgrade the live path does, keeping a document's verdict for a
-// sentence identical to what the live path would show for the same sentence.
+// applyReverifyBatch is the batch counterpart of maybeReverify: it re-judges a weak
+// fast verdict with the deeper reasoner and returns the upgraded verdict, or the
+// original fast verdict when the feature is off, the verdict is not weak enough to
+// escalate, or the reasoning call fails. It emits nothing. Batch document analysis
+// has no realtime constraint, so it applies the same terminal-gate upgrade the live
+// path does, keeping a document's verdict for a sentence identical to what the live
+// path would show for the same sentence.
 func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) *VerifiedVerdict {
-	sp := vp.secondPass
-	passages := passagesFromMatches(ret.matches)
-	if sp == nil || !sp.qualifies(fast, len(passages)) {
+	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, err := sp.reverify(ctx, claim.Text, passages)
-	if err != nil {
-		if ctx.Err() == nil {
-			vp.logger.ErrorContext(ctx, "batch second-pass reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
-		}
+	reasoned, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passagesFromMatches(ret.matches))
+	if !ok {
 		return fast
 	}
-	return sp.upgrade(fast, reasoned, ret.matches)
+	return vp.secondPass.upgrade(fast, reasoned, ret.matches)
 }
