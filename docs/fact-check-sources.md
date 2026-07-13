@@ -4,13 +4,65 @@ This document explains where the fact-checker gets its evidence and how each
 source produces a verdict. It also covers what the user sees today vs. what a
 "show the source" / debug-mode feature would add.
 
-> **Quick correction to common assumptions**
-> - There is **no Google fact-check**. "Google" exists only as an optional
->   *LLM provider* (Gemini, `LLM_PROVIDER=gemini`) — it is the brain that reads
->   evidence, not a source of evidence. There is no Google Fact Check Tools API.
-> - There are **more sources than the obvious four.** Besides Assemblee,
->   Wikipedia, INSEE and the LLM, the system also uses **Eurostat**,
->   **Press/Attribution** and **general Web search** (both Brave Search).
+> **Two kinds of "source" on this page.** *Query-time* sources are read live when a claim is checked
+> (INSEE/Eurostat live stats, the `voting_records` lookup, Brave web/press search, and the LLM
+> verifier itself). *Ingested* sources are the connector fleet that fills the evidence corpora ahead
+> of time; those are the ones in the inventory below. "Google" is both an optional LLM provider
+> (Gemini) **and** the origin of the Google Fact Check Tools API (`factcheck` connector) - the two
+> are unrelated.
+
+---
+
+## Source inventory (the connector registry)
+
+This table is the canonical list and must match `stack/backend/internal/connector/registry.go`
+(mirror `sources.json`) exactly. Each ingested source is one producer that fills a queue and one
+worker that drains it into a store. **Cadence** is the scheduler's `DefaultCron` (UTC) or *host-only*
+(on-demand, never on the local scheduler). **Secret** is the only per-source key, read from Secrets
+Manager on the host and never operator-forwarded; keyless sources need no per-source Terraform. All
+crons are also overridable per environment via `SCHEDULE_<SOURCE>_ENABLED` / `SCHEDULE_<SOURCE>_CRON`.
+
+| Source | Access method | Cadence | Producer -> queue -> worker | Sink | Secret | Licence |
+|--------|---------------|---------|-----------------------------|------|--------|---------|
+| `wikipedia` | MediaWiki Action API category crawl (gated) | 03:00 | `wikicrawl` -> `crawl.chunks` -> `crawlworker` | `evidence_chunks` | `CHECKWORTHY_API_KEY` (gate) | CC BY-SA 4.0 (Wikipedia) |
+| `stats` | INSEE BDM SDMX + Eurostat JSON-Stat + interior CSV | host-only | `statsingest` -> `embedding.jobs` -> `embedworker` | `evidence_chunks` | none | Etalab LO 2.0 / CC BY 4.0 |
+| `sdmx` | SDMX 2.1 REST (ECB, OECD, expanded Eurostat) | host-only | `sdmxcrawl` -> `embedding.jobs` -> `embedworker` | `evidence_chunks` | none | CC BY 4.0 (Eurostat/OECD), ESCB reuse (ECB) |
+| `ods` | OpenDataSoft Explore v2.1 (DREES/DARES/URSSAF) + SSMSI CSV | host-only | `odsingest` -> `embedding.jobs` -> `embedworker` | `evidence_chunks` | none | Etalab LO 2.0 |
+| `factcheck` | Google Fact Check Tools API (`claims:search`) | 04:00 | `factcheckcrawl` -> `factcheck.claims` -> `factcheckworker` | `political_claims` | `FACTCHECK_API_KEY` | per-record ClaimReview `sdLicense` |
+| `scrutins` | AN `Scrutins.json.zip` open data (conditional GET) | 04:30 | `scrutinscrawl` -> `scrutins.votes` -> `scrutinsworker` | `voting_records` | none | Etalab LO 2.0 |
+| `an-amendements` | AN open-data JSON dump | 05:00 | `parliamentcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Etalab LO 2.0 |
+| `an-questions` | AN open-data JSON dump | 05:20 | `parliamentcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Etalab LO 2.0 |
+| `an-comptesrendus` | AN open-data XML dump | 05:40 | `parliamentcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Etalab LO 2.0 |
+| `senat-questions` | `data.senat.fr` CSV | 06:00 | `parliamentcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Sénat open-data licence |
+| `senat-dosleg` | `data.senat.fr` `dosleg.zip` (SQL dump) | 06:30 | `parliamentcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Sénat open-data licence |
+| `senat-scrutins` | same `dosleg.sql` (scr/votsen/posvot) | 07:00 | `parliamentcrawl` -> `scrutins.votes` -> `scrutinsworker` | `voting_records` | none | Sénat open-data licence |
+| `datacommons` | DataCommons ClaimReview feed (keyless object) | 05:00 | `datacommonscrawl` -> `factcheck.claims` -> `factcheckworker` | `political_claims` | none | feed compilation CC BY + per-record `sdLicense` |
+| `claimreview` | outlet ClaimReview JSON-LD (sitemap-discovered) | 05:30 | `claimreviewcrawl` -> `factcheck.claims` -> `factcheckworker` | `political_claims` | none | per-record `sdLicense` (reuse-forbidding skipped) |
+| `claimskg` | ClaimsKG CSV/TSV export (one-shot seed) | host-only | `claimskgseed` -> `factcheck.claims` -> `factcheckworker` | `political_claims` | none | third-party research corpus (claim/verdict/URL only) |
+| `viepublique` | DILA `vp_discours.json` dump (ETag) | 08:00 | `viepubliquecrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | Etalab LO 2.0 |
+| `hatvp` | `hatvp.fr` `liste.csv` + per-declaration XML | 08:30 | `hatvpcrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | none | HATVP reuse conditions (LO) |
+| `legifrance` | Legifrance PISTE API (OAuth2) | host-only | `legifrancecrawl` -> `evidence.chunks` -> `evidenceworker` | `evidence_chunks` | `LEGIFRANCE_CLIENT_ID` / `_SECRET` | Etalab LO 2.0 |
+
+**18 connectors.** The per-source prose below explains each one's access method, cadence, and
+attribution string in detail. TV live channels (section 6) are capture **inputs**, not an ingested
+source, so they are not in this table.
+
+### Claim-level legal guardrails (the claim-corpus paths)
+
+The `factcheck`, `datacommons`, `claimreview`, and `claimskg` paths ingest already-checked claims.
+They share one legal posture, enforced in code:
+
+- **Store claim text + categorical verdict + review URL + outlet + date only - never the article
+  body.** Reading the aggregated feed / structured markup rather than scraping an outlet's prose
+  keeps ingestion clear of the EU *sui generis* database right.
+- **Feed-first over scraping.** Prefer the official aggregators (Google Fact Check Tools API, the
+  DataCommons feed) over per-outlet reads; the `claimreview` outlet reader is sitemap-discovered,
+  honours `robots.txt` and its `Crawl-delay`, and skips any record whose `sdLicense` forbids reuse.
+- **Attribution and dedup.** Each stored claim keeps its outlet and review URL; the claim ID **is**
+  the review URL, so a claim carried by several paths collapses to one `political_claims` row.
+
+The evidence-chunk sources (stats, parliament, institutional) each carry a full attribution string
+(publisher, dataset code, resolvable URL) on every passage - see the per-source sections.
 
 ---
 
@@ -95,13 +147,19 @@ similarity guess.
 
 **What it answers:** general factual/background claims with no better structured source.
 
-- **Where the data comes from:** a MediaWiki XML dump, one corpus per
-  environment (`WIKI_CORPUS`). Article lead sections are chunked.
-- **Storage:** the `wiki_chunks` table (`migrations/0004_wiki_chunks.up.sql`):
-  `title`, `url`, `content`, and an `embedding` (`halfvec(1024)`, HNSW cosine).
-- **Retrieval (vector search):** the claim is embedded and the nearest chunks
-  are pulled by cosine similarity (ANN). Each becomes an evidence passage with
-  its article title + URL attached (`evidence_id = wiki:{page_id}:{chunk_index}`).
+- **Where the data comes from:** a MediaWiki dump (`WIKI_CORPUS`, the `wikipedia`
+  connector's dump path) **and** the gated category crawl (`CRAWL_CORPUS`). Article
+  lead (and, for the crawl, body) sections are chunked. See
+  [`docs/ingestion-pipeline.md`](ingestion-pipeline.md) for both paths.
+- **Storage:** the generic `evidence_chunks` table
+  (`migrations/0013_evidence_chunks.up.sql`, which replaced the old Wikipedia-only
+  `wiki_chunks`): `source`, `external_id`, `title`, `url`, `content`, `kind`, and an
+  `embedding` (`halfvec(1024)`, HNSW cosine). Wikipedia rows carry `source = WIKI_CORPUS`
+  or `CRAWL_CORPUS`.
+- **Retrieval (hybrid search):** the claim is embedded and the nearest chunks are
+  pulled by cosine similarity, fused with a French lexical search (RRF, VER-195).
+  Each becomes an evidence passage with its article title + URL attached
+  (`evidence_id = wiki:{page_id}:{chunk_index}`).
 - **Into the verdict:** Wikipedia is the general-knowledge / fallback evidence —
   it grounds claims that aren't a statistic, vote, or quote.
 
@@ -213,9 +271,13 @@ recorded crime/delinquency (SSMSI).
 This is not a *source*; it's the **judge** that reads the retrieved evidence and
 produces the verdict. Evidence comes from sources 1-3 and 5; the LLM decides.
 
-- **Provider:** chosen by `LLM_PROVIDER` — Anthropic Claude (default,
-  `claude-haiku-4-5`) or Google **Gemini** (`LLM_PROVIDER=gemini`). This is the
-  only place "Google" appears. Factory: `internal/llm/factory.go`.
+- **Provider:** chosen by `LLM_PROVIDER` — **DeepSeek** (the default, its cheap
+  chat model over the OpenAI-compatible API, `DEEPSEEK_API_KEY`), Anthropic Claude
+  (`LLM_PROVIDER=anthropic`, `claude-haiku-4-5`), or Google **Gemini**
+  (`LLM_PROVIDER=gemini`, `GEMINI_API_KEY`). Factory: `internal/llm/factory.go`. A
+  separate **terminal reasoning gate** (`FACTCHECK_SECOND_PASS`, VER-192) can
+  re-judge a weak verdict on a stronger reasoner off the hot path; its provider is
+  decoupled from `LLM_PROVIDER`. See [`docs/configuration.md`](configuration.md).
 - **Two verifiers:**
   - `verify/verify.go` — credibility axis: `credible | disputed | unverifiable`.
   - `verify/political.go` (behind `FACTCHECK_POLITICAL`) — two axes:
@@ -485,7 +547,7 @@ operator exports it as CSV/TSV. Producer: `internal/claimskg` via `cmd/claimskgs
 
 ---
 
-## 8. Institutional evidence sources (vie-publique, HATVP, Legifrance)
+## 12. Institutional evidence sources (vie-publique, HATVP, Legifrance)
 
 **What it answers:** the deeper institutional layer - *"the minister said X on date
 Y"* (vie-publique public-speech metadata), *"official Z declared interest W"*

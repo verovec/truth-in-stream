@@ -1,139 +1,150 @@
 # Ingestion Pipeline
 
-How the Wikipedia evidence corpus (`wiki_chunks`) is built, embedded, and kept consistent in
-Postgres + pgvector, and how a checked statement's confidence is scored against it.
+How the fact-checker's evidence corpora are built, embedded, and kept consistent in
+Postgres + pgvector, and the resilience semantics that let an operator turn the ingestion hosts
+off between runs without losing or corrupting work.
 
-> **Status.** This document describes the **target** pipeline. The **dump** path
-> (`cmd/wikisync` + `cmd/embedworker`) is built and accurate today. The **category-crawl** path
-> (`cmd/wikicrawl` + `cmd/crawlworker`), the **fact-checkability gate**, the **compose auto-prime**,
-> and the **crawl cloud wiring** are being delivered by epic **VER-74**
-> (`docs/superpowers/specs/2026-06-16-checkworthy-crawl-ingestion-design.md`). Sections describing
-> unbuilt work are marked **(target - VER-74)**. Ground truth is always the migrations
-> (`stack/backend/migrations/*.up.sql`), the sqlc queries (`stack/backend/queries/wiki.sql`), and the
-> commands under `stack/backend/cmd/`. If you change the pipeline, update this file in the same change.
+> Ground truth is always the code, never this page: the connector registry
+> (`stack/backend/internal/connector/registry.go`, mirrored in `sources.json`), the migrations
+> (`stack/backend/migrations/*.up.sql`), the sqlc queries (`stack/backend/queries/*.sql`), the
+> config loaders (`stack/backend/internal/config`), and the commands under `stack/backend/cmd/`. If
+> you change the pipeline, update this file in the same change.
 
-> Scope: the **wiki evidence** corpus (`wiki_chunks`). It is **evidence-only**: it enriches matched
-> claims but does **not** decide coverage/checkability of a live statement - that is the `claims`
-> table. See `.claude/skills/data-map` for the full data dictionary.
+> Scope: the **evidence corpora** an ingestion run fills - the generic `evidence_chunks` store, the
+> curated `political_claims` claim corpus, and the `voting_records` store. They are **evidence-only**:
+> they enrich matched claims but do not decide whether a live statement is checkable - that is the
+> `claims` table. See `.claude/skills/data-map` for the full data dictionary.
 
 ---
 
-## 0. Two ingestion paths, one corpus
+## 1. One fleet, three evidence stores
 
-There are two ways to fill `wiki_chunks`, sharing the broker, the embedding model, the schema, and the
-vector-consistency guarantees. They never touch each other's checkpoints or staging.
+Every ingestion source is one row in the **connector registry**
+(`internal/connector/registry.go`): a producer that fills a broker queue and a worker that drains it
+into a store. Adding a source is one registry entry plus its producer package and compose service;
+no central wiring file is edited. The full per-source inventory - access method, cadence, licence,
+attribution - is [`docs/fact-check-sources.md`](fact-check-sources.md); this page is the pipeline
+mechanics common to all of them.
 
-| | **Dump path** (built) | **Category-crawl path** (target - VER-74) |
+The workers write into three stores, one per evidence shape:
+
+| Store | Written by | Holds |
+|-------|-----------|-------|
+| `evidence_chunks` | `embedworker` (`embedding.jobs`), `crawlworker` (`crawl.chunks`), `evidenceworker` (`evidence.chunks`) | Embedded text passages: Wikipedia (dump + category crawl), statistics (INSEE/Eurostat/SDMX/ODS), parliament text, and institutional sources. One `source` discriminator per corpus; searched by cosine + lexical hybrid. |
+| `political_claims` | `factcheckworker` (`factcheck.claims`) | Curated already-checked claims (claim text + categorical verdict + review URL + outlet + date), embedded for the fast-path borrow. |
+| `voting_records` | `scrutinsworker` (`scrutins.votes`) | Roll-call votes (Assemblée nationale + Sénat); an exact relational lookup, not vector search. |
+
+`evidence_chunks` is the single source-extensible evidence store (migration `0013`, generalizing the
+former Wikipedia-only `wiki_chunks`): a new source is rows under a new `source` value, never a
+migration and never a new column. Its identity is the generic natural key
+`(source, external_id, chunk_index)`.
+
+---
+
+## 2. The queues and their workers
+
+Each pipeline is one durable, priority-ordered RabbitMQ work queue with a competing-consumer worker
+fleet. Every worker replica is a competing consumer on the same queue, so throughput scales with the
+replica count for the same spend.
+
+| Queue | Producers | Worker | Sink |
+|-------|-----------|--------|------|
+| `embedding.jobs` | `wikisync` (dump), `statsingest`, `sdmxcrawl`, `odsingest` | `embedworker` | `evidence_chunks` |
+| `crawl.chunks` | `wikicrawl` (category crawl) | `crawlworker` | `evidence_chunks` |
+| `evidence.chunks` | `parliamentcrawl` (textual datasets), `viepubliquecrawl`, `hatvpcrawl`, `legifrancecrawl` | `evidenceworker` | `evidence_chunks` |
+| `factcheck.claims` | `factcheckcrawl`, `datacommonscrawl`, `claimreviewcrawl`, `claimskgseed` | `factcheckworker` | `political_claims` |
+| `scrutins.votes` | `scrutinscrawl`, `parliamentcrawl` (Sénat scrutins) | `scrutinsworker` | `voting_records` |
+
+```mermaid
+flowchart LR
+    P["producer<br/>publish"] -->|"1 msg/unit<br/>priority 0..N"| Q[["&lt;base&gt;.v&lt;n&gt;<br/>durable, x-max-priority"]]
+    Q -->|"fair dispatch<br/>prefetch = concurrency"| W1["worker 1"]
+    Q --> W2["worker 2"]
+    Q --> W3["worker N"]
+    W1 & W2 & W3 -->|ack| Q
+    Q -.->|"Nack(false):<br/>poison / retry-budget"| D[["&lt;base&gt;.dlq.v&lt;n&gt;<br/>dead-letter companion"]]
+```
+
+- **Versioned names.** Each queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a
+  comma-separated, oldest-first list (default `1`). The newest version is active - the producer
+  publishes to it and stamps `x-queue-version` on every message; a worker drops a message stamped
+  with a version it does not know. To roll, append a version; workers on the old version drain it,
+  then it leaves the list. These are versions of one logical queue, not per-worker queues.
+- **Priority.** The queue is declared with `x-max-priority` (`RABBITMQ_MAX_PRIORITY`, default 10).
+  Higher-priority units (e.g. lead chunks over body chunks) are delivered first.
+- **Prefetch / QoS.** `RABBITMQ_PREFETCH` (default 1; the embed worker sizes it to in-flight
+  batches) caps the unacked messages the broker pushes to one consumer, so no single slow worker
+  hoards work.
+
+---
+
+## 3. The two Wikipedia paths into `evidence_chunks`
+
+Wikipedia fills `evidence_chunks` (`source = WIKI_CORPUS` for the dump, `CRAWL_CORPUS` for the
+crawl) two ways. They share the broker, the embedding model, the schema, and the consistency
+guarantees, and never touch each other's checkpoints or staging.
+
+| | **Dump path** | **Category-crawl path** |
 |---|---|---|
 | Source | Multi-GB Wikimedia dump over HTTP | MediaWiki **Action API**, category-driven, no dump |
 | Producer | `cmd/wikisync` | `cmd/wikicrawl` (DB-free) |
 | Filter | none (all lead paragraphs) | **fact-checkability LLM gate** in the producer |
 | Worker | `cmd/embedworker` | `cmd/crawlworker` |
 | Queue | `embedding.jobs.v<n>` | `crawl.chunks.v<n>` |
-| Corpus tag | `WIKI_CORPUS` | `CRAWL_CORPUS` (`<project>-crawl`) |
-| Lifecycle | bulk-into-live (or `-atomic` swap) | additive upsert into live |
+| Lifecycle | bulk-into-live (or `-atomic` staging swap) | additive upsert into live |
 | Use it for | a whole language's worth of leads | a focused, pre-filtered, evidence-only slice |
 
-Both paths produce the same row shape and feed the same search. The crawl path is the one that
-satisfies "no dump download," "embed only fact-checkable content," "prime the broker on compose up,"
-and "scale by the number of workers I start."
+### Dump path (bulk-into-live)
 
----
-
-## 1. Components
-
-| Component | Code | Role |
-|-----------|------|------|
-| **Dump producer** | `cmd/wikisync` + `internal/wiki` | Download dump, chunk lead sections, upsert into the live table (embedding NULL), publish one embed job per chunk. Opt-in `-atomic` builds a staging table and swaps it in. |
-| **Crawl producer** *(target - VER-74)* | `cmd/wikicrawl` + `internal/wiki/crawl.go`,`crawlproduce.go` | DB-free: traverse Wikipedia categories over the Action API, extract lead + body, chunk, **gate each chunk for fact-checkability**, publish one self-contained job per passing chunk, exit. |
-| **Fact-checkability gate** *(target - VER-74)* | `internal/llm` + the gate classifier | Per-chunk LLM judgment "is this verifiable, citable factual evidence?" in the crawl producer, before publish. Fail-open on error. |
-| **Broker** | RabbitMQ (`internal/queue`) | Durable, version-suffixed, priority work queues - one per path (`embedding.jobs`, `crawl.chunks`). |
-| **Embed fleet (dump)** | `cmd/embedworker` + `internal/embedjob` + `internal/embed` | Competing consumers; buffer a batch, embed in one Voyage call, write vectors back in place. |
-| **Crawl fleet** *(target - VER-74)* | `cmd/crawlworker` + `internal/crawljob` | Competing consumers; embed each self-contained job, upsert content + vector into live in one statement. |
-| **Store** | `internal/store/postgres` + pgvector | `wiki_chunks` live, `wiki_chunks_staging` (atomic only), `wiki_sync_state` checkpoint. |
-| **Clusterer** | `cmd/wikicluster` + `internal/cluster` | Spherical k-means over embedded vectors; writes `cluster_id` + `importance`. |
-| **Verifier** | `cmd/wikiverify` | Gates consistency over embedded rows, reports embedded coverage as progress; non-zero on a real defect. |
-| **Confidence scorer** | `internal/service/confidence.go` | At search time, aggregates a statement's closeness to matched chunks **and** curated claims into one score. Read-only over the corpus. |
-| **Embedding model** | Voyage `voyage-4-large` | 1024-dim, `halfvec(1024)`, HNSW cosine. `input_type=document` on ingest, `input_type=query` on search. <=1000 inputs/request. |
-
----
-
-## 2. The fact-checkability gate *(target - VER-74)*
-
-The point of the crawl path is to embed **only content that can serve as fact-check evidence**, not all
-of Wikipedia's prose. The gate is an LLM classifier that runs **in the crawl producer**, on each chunk,
-after chunking and before publishing.
-
-- **Judgment.** "Does this passage contain verifiable, citable factual content suitable as fact-check
-  evidence?" - a forced-tool, temperature-0 call on the cheapest fast Claude model (Haiku-class). It is
-  distinct from `internal/checkworthy`, which judges a single short **spoken statement** on the live
-  path; this judges a 256-512-token wiki passage. Both are thin callers over the shared `internal/llm`
-  transport.
-- **Placement (producer, by design).** Only passing chunks reach the broker, so the broker volume and
-  **all** downstream embedding spend are bounded to evidence. The producer stays DB-free. The trade-off:
-  the gate decision is baked at crawl time - re-tuning the prompt/threshold means re-crawling.
-- **Fail-open.** On any gate error (transport, malformed reply) the chunk is **published anyway** and the
-  error logged, so a flaky model can never silently empty the corpus. The live `checkworthy` cascade
-  degrades to a heuristic; the ingest gate has none, so it fails open.
-- **Kill-switch.** `CRAWL_CHECKWORTHY=false` publishes every chunk (the pre-gate behavior). The gate is
-  paced by `CRAWL_CHECKWORTHY_RPM` and bounded by `CRAWL_MAX_PAGES`.
+Default: chunks land in `evidence_chunks` immediately with `embedding` NULL and become searchable
+the moment the fleet writes each vector, so the corpus grows monotonically and is queryable
+mid-ingest - no swap.
 
 ```mermaid
 flowchart LR
-    X["chunk (lead/body)"] --> G{"internal/llm gate<br/>citable factual evidence?"}
-    G -- pass --> P["publish CrawlJob"]
-    G -- fail --> D["drop + count"]
-    G -- error --> P
-```
-
----
-
-## 3. Dump-path topology (built)
-
-Default (bulk-into-live): chunks land in the live table immediately and each becomes searchable the
-moment the fleet writes its vector, so the corpus grows monotonically and is queryable mid-ingest - no
-swap.
-
-```mermaid
-flowchart LR
-    DUMP["dumps.wikimedia.org<br/>{corpus}-latest-pages-articles-<br/>multistream.xml.bz2"]
+    DUMP["dumps.wikimedia.org<br/>{corpus}-latest-pages-articles"]
     subgraph PROD["cmd/wikisync (producer)"]
       D["download + verify<br/>(Last-Modified)"]
       C["extract lead, chunk<br/>(256-512 tok)"]
-      U["upsert to wiki_chunks (live)<br/>(embedding NULL; unchanged<br/>chunks keep their vector)"]
+      U["upsert evidence_chunks (live)<br/>(embedding NULL; unchanged<br/>chunks keep their vector)"]
       P["publish 1 job/chunk<br/>(priority by importance)"]
     end
-    Q[["RabbitMQ<br/>embedding.jobs.v&lt;n&gt;<br/>(priority queue)"]]
+    Q[["RabbitMQ<br/>embedding.jobs.v&lt;n&gt;"]]
     subgraph FLEET["cmd/embedworker x N (competing consumers)"]
       W1["worker 1<br/>(batched embed)"]
-      W2["worker 2"]
       WN["worker N"]
     end
-    V["Voyage voyage-4-large<br/>input_type=document<br/>(batch per call)"]
-    LIVE[("wiki_chunks (live)<br/>halfvec(1024) + HNSW<br/>NULL rows invisible to search")]
+    V["Voyage voyage-4-large<br/>input_type=document"]
+    LIVE[("evidence_chunks (live)<br/>halfvec(1024) + HNSW<br/>NULL rows invisible to search")]
 
     DUMP --> D --> C --> U --> P --> Q
-    Q --> W1 & W2 & WN
-    W1 & W2 & WN --> V
+    Q --> W1 & WN
+    W1 & WN --> V
     V -- "UPDATE ... FROM unnest (in place)" --> LIVE
-    LIVE -. "search filters embedding IS NOT NULL" .-> LIVE
 ```
 
-The opt-in `-atomic` mode keeps the wholesale-cutover shape: ingest builds `wiki_chunks_staging`, carries
-forward unchanged vectors, the fleet drains it, then a single transaction builds the HNSW index and
-renames staging over live - readers see the old corpus until the swap commits. Use it for a breaking
-re-chunk where serving a mix of old and new chunks is unacceptable.
+The opt-in `-atomic` mode (used by `make reingest`) builds a staging table, the fleet drains it, and
+one transaction builds the HNSW index and swaps staging over live - readers see the old corpus until
+the swap commits. Use it for a breaking re-chunk where serving a mix of old and new chunks is
+unacceptable. `-mode=delta` refetches only pages changed since the checkpoint; `-mode=reset` clears
+the corpus + checkpoint.
 
-## 3b. Crawl-path topology *(target - VER-74)*
+### Category-crawl path (additive, gated)
+
+`cmd/wikicrawl` traverses categories over the Action API, chunks lead + body, and runs a per-chunk
+**fact-checkability gate** (`internal/evidencegate`) before publishing, so only citable evidence
+reaches the broker and all downstream embedding spend is bounded to it. The producer is DB-free and
+publishes one self-contained `CrawlJob` per passing chunk; `cmd/crawlworker` embeds each and upserts
+content + vector into live `evidence_chunks` in one statement.
 
 ```mermaid
 flowchart LR
     CAT["Wikipedia<br/>Action API"]
-    subgraph PRODC["cmd/wikicrawl (producer, DB-free, + LLM)"]
+    subgraph PRODC["cmd/wikicrawl (producer, DB-free, + LLM gate)"]
       M["categorymembers BFS<br/>depth + page cap"]
       X["prop=extracts<br/>lead + full body"]
       C2["Chunk() lead/body"]
-      G2["gate: citable evidence?"]
+      G2["gate: citable evidence?<br/>drop if not (fail-open)"]
       P2["publish passing chunks"]
     end
     QC[["RabbitMQ<br/>crawl.chunks.v&lt;n&gt;"]]
@@ -142,7 +153,7 @@ flowchart LR
       CWN["worker N"]
     end
     Vc["Voyage voyage-4-large"]
-    LIVEC[("wiki_chunks (live) + HNSW")]
+    LIVEC[("evidence_chunks (live) + HNSW")]
 
     CAT --> M --> X --> C2 --> G2 --> P2 --> QC
     QC --> CW1 & CWN
@@ -150,307 +161,291 @@ flowchart LR
     CW1 & CWN -->|"UpsertEmbeddedChunk (content + vector)"| LIVEC
 ```
 
-The producer never touches the database; the worker never touches the dump pipeline's staging table.
-They communicate only through self-contained broker messages, so the broker can hold a complete,
-pre-filtered corpus indefinitely before any worker is started - the core convenience of this path.
+- **The gate** is a forced-tool, temperature-0 judgment ("is this passage verifiable, citable
+  factual evidence?") on the cheapest fast model via `internal/llm`. It runs **in the producer**, so
+  a rejected chunk never reaches the broker. It is distinct from `internal/checkworthy`, which judges
+  a short spoken statement on the live path.
+- **Fail-open.** On any gate error the chunk is published anyway and the error logged, so a flaky
+  model can never silently empty the corpus. `CRAWL_CHECKWORTHY=false` publishes every chunk.
+- **Baked at crawl time.** Re-tuning the prompt/threshold means re-crawling. Dropped-vs-published is
+  counted and logged per batch and at the end of the run.
 
 ---
 
-## 4. Modes & flags
+## 4. The embed-worker per-batch lifecycle (token-aware batching)
 
-### Dump path (`cmd/wikisync -mode=<bulk|delta|reset>`)
+`cmd/embedworker` (the `embedding.jobs` fleet) buffers deliveries up to `EMBED_WORKER_BATCH_SIZE`
+(128) or `EMBED_WORKER_BATCH_WAIT` (200ms), then:
 
-| Mode / flag | What it does | Touches broker? | Embeds where? |
-|-------------|--------------|-----------------|---------------|
-| **bulk** (default) | Bulk-into-live: ingest the dump straight into `wiki_chunks` (embedding NULL), checkpoint, publish one job per chunk, exit. The fleet fills vectors in place; the corpus is queryable throughout. | Yes | Fleet to live, in place |
-| **bulk `-atomic`** | Build in `wiki_chunks_staging`, wait for the fleet to drain, build HNSW, atomically swap over live. | Yes | Fleet to staging |
-| **bulk `-dry-run`** | Report the token/cost estimate of the pending chunks and stop. | No | - |
-| **bulk `-atomic -publish-only`** | Atomic ingest + publish, then exit; the consumer owns the drain + swap (cloud producer path). | Yes (publish only) | Fleet to staging |
-| **delta** | Ask MediaWiki RecentChanges what changed since the checkpoint; refetch + re-chunk only those pages, publish one embedding job per changed chunk to the fleet, delete removed pages, advance checkpoint. A mid-window failure resumes from the last confirmed batch (revision-skip + NULL-embedding filter), re-embedding nothing already confirmed. | Yes | Fleet to live, in place |
-| **reset** | Clear the live corpus + checkpoint so the next bulk run rebuilds from scratch. | No | - |
+1. Drop any message that can never succeed (unknown queue version, malformed) - acked, so one poison
+   message never sinks the batch.
+2. **Token-aware split.** Before the provider call the batch is packed to a token budget:
+   `EMBED_WORKER_MAX_BATCH_TOKENS` (default 96000 = 80% of Voyage's 120000 ceiling). An over-budget
+   batch is split before the call; an oversize size-class splits recursively rather than thrashing
+   per-chunk.
+3. `EmbedDocuments([...])` embeds each sub-batch in one Voyage call.
+4. Write in one `UPDATE evidence_chunks ... FROM unnest(...)` - text-form `halfvec`, matching on
+   **content** as well as identity so a vector is never attached to text it was not computed from.
+5. **Ack** the batch.
+6. On batch embed failure, fall back to per-chunk embed; on write failure, re-enqueue each job at
+   `attempt+1`. After `EMBED_WORKER_MAX_ATTEMPTS` (5) a job is dead-lettered (see section 5). Shutdown
+   mid-batch Nacks with requeue (attempt not incremented).
+7. An `UPDATE` matching no row (chunk gone, content changed, staging swapped) drops the job as
+   obsolete.
 
-Constraints: `-publish-only` and `-atomic` require `-mode=bulk`; `-publish-only` and `-dry-run` cannot
-combine. `-max-duration=<dur>` caps wall-clock; the committed prefix resumes on the next run.
-
-### Crawl path (`cmd/wikicrawl`) *(target - VER-74)*
-
-No modes. One run = crawl `CRAWL_CATEGORIES`, gate, publish passing chunks, exit. Always additive into
-live. Re-running is harmless (idempotent upserts). Knobs are env (section 11), not flags.
-`CRAWL_CHECKWORTHY=false` disables the gate.
-
----
-
-## 5. End-to-end flows
-
-### Dump default: bulk-into-live (built)
-
-1. **Plan.** `StagingPlan()` reads the checkpoint; if the live version matches and 0 chunks are
-   un-embedded it is a no-op.
-2. **Ingest in place.** Stream the dump and `UpsertChunks()` straight into `wiki_chunks` - new/changed
-   chunks land with `embedding` NULL, unchanged chunks keep their vector, each page's stale chunk tail is
-   trimmed. NULL rows are not in the HNSW index, so search ignores them.
-3. **Checkpoint.** Record the dump version now serving.
-4. **Publish + exit.** `RunBulkLivePublish` pages the un-embedded live chunks and publishes one job per
-   chunk, then exits. The fleet embeds in place; the corpus grows monotonically and is usable within
-   minutes. Use `make wiki-verify` to watch coverage climb.
-
-### Dump opt-in: `-atomic` (stage-and-swap)
-
-```mermaid
-sequenceDiagram
-    participant S as wikisync (producer)
-    participant DB as Postgres
-    participant Q as RabbitMQ
-    participant W as embedworker fleet
-    participant Vy as Voyage
-
-    Note over S,DB: Plan
-    S->>DB: StagingPlan() read checkpoint + staging stamp
-    alt live version matches AND 0 NULL embeddings
-        DB-->>S: PlanAlreadyCurrent
-        S-->>S: log "already current", exit (no-op)
-    else
-        DB-->>S: PlanBuild / PlanResumeEmbed
-    end
-    Note over S,DB: Ingest (build)
-    S->>S: download + verify dump
-    S->>DB: ResetStaging() + stamp building:version
-    loop per article
-        S->>DB: UpsertStagingChunks() embedding NULL
-    end
-    S->>DB: CarryForwardEmbeddings() + MarkStagingReady()
-    Note over S,Q: Publish (at-least-once, keyset paged)
-    loop pages of unembedded staging chunks
-        S->>Q: Publish Job @ priority
-    end
-    Note over Q,Vy: Drain (competing consumers)
-    par fleet
-        W->>Q: consume (prefetch = concurrency)
-        W->>Vy: EmbedDocuments([content]) input_type=document
-        W->>DB: UPDATE wiki_chunks_staging SET embedding
-        W->>Q: ack
-    end
-    Note over S,DB: Finalize
-    loop poll every WIKI_DRAIN_POLL_INTERVAL
-        S->>DB: CountUnembeddedStaging()
-    end
-    S->>DB: buildStagingIndex() + swapStaging() TX
-    Note over DB: Readers see old corpus until COMMIT, then new corpus atomically
-```
-
-### Crawl flow *(target - VER-74)*
-
-1. **Crawl.** `CategoryMembers` issues `action=query&list=categorymembers` over the Action API, BFS over
-   subcategories to `CRAWL_MAX_DEPTH`, dedupes page ids, stops at `CRAWL_MAX_PAGES`, follows continuation,
-   honors maxlag/Retry-After.
-2. **Extract.** Per batch of titles: `Extracts` (lead, `exintro`) + `FullExtracts` (full plain text +
-   revision). Body = full text with the lead prefix stripped.
-3. **Chunk + index.** `Chunk(lead)` produces `kind=lead`, `Chunk(body)` produces `kind=body`; contiguous
-   `chunk_index` (leads `0..L-1`, bodies `L..`), keeping the `(page_id, chunk_index)` PK stable.
-4. **Gate.** Each chunk is judged for fact-checkability (section 2); failing chunks are dropped and counted.
-5. **Publish.** One self-contained `CrawlJob` per passing chunk, publisher confirms (at-least-once).
-   Priority: `lead = max`, `body = max/2`.
-6. **Consume.** `crawljob.Worker`: unmarshal -> validate -> `EmbedDocuments([content])` -> check shape
-   1x1024 -> `UpsertEmbeddedChunk(chunk, embedding)` (content **and** vector in one statement). A row is
-   never visible to search without its matching vector.
+Below the batch layer the embed client retries Voyage up to 6x on 429/timeout, honoring
+`Retry-After`, otherwise 1s-60s exponential backoff + jitter; `EMBED_WORKER_RPM` is an optional
+per-replica hard cap. The `crawl.chunks`, `evidence.chunks`, `factcheck.claims`, and `scrutins.votes`
+workers mirror these ack/retry/requeue semantics per message.
 
 ---
 
-## 6. The queues (one shared work queue per path)
+## 5. Resilience semantics
 
-```mermaid
-flowchart LR
-    P["producer<br/>publish"] -->|"1 msg/chunk<br/>priority 0..N"| Q[["jobs.v&lt;n&gt;<br/>durable, x-max-priority"]]
-    Q -->|"fair dispatch<br/>prefetch = concurrency"| W1["worker 1"]
-    Q --> W2["worker 2"]
-    Q --> W3["worker N"]
-    W1 & W2 & W3 -->|ack| Q
-```
+The operator turns the ingestion hosts off between runs to save cost. This is safe at any instant:
+every message is either already committed to its sink or returns to the queue for reprocessing, so
+no work is lost and no row is corrupted. The mechanisms:
 
-- Each path has **one** durable priority queue (`embedding.jobs` for the dump fleet, `crawl.chunks` for
-  the crawl fleet), version-suffixed via `VersionedName()` (e.g. `embedding.jobs.v1`). Every message
-  carries an `x-queue-version` header.
-- Every worker replica is a **competing consumer** on the same queue. Throughput scales with replica
-  count - bringing up more workers drains faster for the same spend.
-- **Prefetch / QoS** is sized to in-flight batches, so no single slow worker hoards work.
-- Multiple queue *names* exist only for the **versioned-queue convention** (`RABBITMQ_QUEUE_VERSIONS`,
-  oldest-first): during a rolling deploy a new consumer drains old versions while producers publish to
-  the newest. These are versions of one logical queue, not per-worker queues.
+### Self-healing reconnect
 
-### Dump per-batch lifecycle (`internal/embedjob`)
+The transport (`internal/queue`) is self-healing. A broker restart, a network blip, or the weekly
+Amazon MQ maintenance reboot closes the connection; the client **redials with exponential backoff and
+jitter, re-declares its topology, and re-establishes publishers and consumers transparently**, so a
+`Publish` blocks across the outage and a `Consume` stream survives it without a call-site change. The
+first redial waits `RABBITMQ_RECONNECT_MIN_BACKOFF` (250ms), each subsequent one doubles up to
+`RABBITMQ_RECONNECT_MAX_BACKOFF` (30s), and every wait is jittered down to half its ceiling so a
+fleet reconnecting after the same restart does not thunder in lockstep. `Close` ends the loop with
+`ErrClosed` so a caller stops rather than wait for a reconnect that will never come.
 
-Each job is `Job{page_id, chunk_index, content, attempt, staging}`. The worker buffers deliveries up to
-`EMBED_WORKER_BATCH_SIZE` (128) or `EMBED_WORKER_BATCH_WAIT` (200ms), then:
+### Dead-letter queues and replay
 
-1. Drop any message that can never succeed (unknown version, malformed) - acked, so one poison message
-   never sinks the batch.
-2. `EmbedDocuments([...])` embeds the **whole batch in one Voyage call**.
-3. Write in **one** `UPDATE wiki_chunks ... FROM unnest(...)` - text-form `halfvec`, matching on
-   **content** as well as identity so a vector is never attached to text it was not computed from. A
-   `staging` job writes to `wiki_chunks_staging`.
-4. **Ack** the batch.
-5. On batch **embed** failure, fall back to per-chunk embed; on **write** failure, re-enqueue each job at
-   `attempt+1`. After `EMBED_WORKER_MAX_ATTEMPTS` (5) a job is logged and dropped. Shutdown mid-batch
-   Nacks with requeue (attempt not incremented).
-6. An `UPDATE` matching no row (chunk gone, content changed, staging swapped) drops the job as obsolete.
+Nothing is dropped silently. A message a consumer rejects - a poison message (malformed, unknown
+version, bad provider shape) or one past its retry budget - is `Nack(false)`ed and **dead-lettered**
+to a companion queue rather than acked away. Each queue is declared with a dead-letter exchange
+pointing at `<base>.dlq.v<n>` (e.g. `embedding.jobs.v1` yields `embedding.jobs.dlq.v1`). DLQ routing
+is on by default (`RABBITMQ_DLQ_ENABLED=true`) and must be set identically on producers and consumers
+or their queue declarations conflict.
 
-Below the batch layer the embed client retries Voyage up to 6x on 429/timeout, honoring `Retry-After`,
-otherwise 1s-60s exponential backoff + jitter; `EMBED_WORKER_RPM` is an optional per-replica hard cap.
+**Replay procedure.** DLQs are for inspection and replay, not discard:
 
-### Crawl per-message lifecycle (`internal/crawljob`) *(target - VER-74)*
+1. See the depth: `make pipeline-health` prints per-queue **and per-DLQ** backlog; the RabbitMQ
+   management UI (local: <http://localhost:15672>, `app`/`dev`) shows individual parked messages.
+2. Inspect a parked message's body and headers to find the defect (bad payload, a fixed bug, an
+   outage that has since cleared).
+3. Once fixed, move the messages back onto the live queue - via the management UI's "Move messages"
+   (shovel) action, or the `rabbitmqadmin` CLI - where the fleet drains them normally. Because every
+   worker write is an idempotent upsert, a replayed message that partly succeeded before is harmless.
 
-Each job is a self-contained `CrawlJob` (page id, chunk index, title, url, revision, corpus, content,
-section, kind, attempt). The worker mirrors `embedjob` semantics: malformed/invalid/unknown-version
-ack-drops; a provider shape other than 1x1024 ack-drops; a transient embed/write failure republishes at
-`attempt+1`, dropped after `CRAWL_WORKER_MAX_ATTEMPTS`; shutdown Nacks with requeue. The upsert writes
-content + vector in one statement, keeping the existing embedding only when content is byte-identical.
+A parked message is worth attention: the `dlq-depth` CloudWatch alarm (below) pages on any nonzero
+DLQ.
 
----
+### Producer checkpoints and error budgets
 
-## 7. Data model
+Producers are re-runnable without duplicating rows (every job key is a stable source id, never a
+UUID/timestamp) and resume from a checkpoint after an interrupted run:
 
-`stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`. The crawl path adds **no
-migration** - it writes the same `wiki_chunks` shape.
+| Producer | Checkpoint / marker | Resume behaviour |
+|----------|---------------------|------------------|
+| `wikicrawl` | `CRAWL_CHECKPOINT_PATH` (default `/state/crawl-checkpoint.json`) | Records resolved pages; a killed crawl resumes without re-crawling them. A per-shard suffix isolates parallel shards. |
+| `wikisync` | `evidence_sync_state` row (per `source`) | Delta resumes from `last_change_ts`; a mid-window bulk failure resumes from the last confirmed batch via the NULL-embedding filter. |
+| `factcheckcrawl` | `FACTCHECK_CHECKPOINT_PATH` (a `/state` volume) | Each query/publisher stream is a checkpoint unit; a killed run resumes at the next undrained stream and clears on full success. |
+| `scrutinscrawl` | `SCRUTINS_MARKER_PATH` (default `/state/scrutins-marker.json`) | Persisted ETag/Last-Modified makes the dump download a conditional GET; an unchanged archive returns 304 and does no work. |
+| `parliamentcrawl` | per-dataset manifest (per-source state volume) + conditional GET | Diffs the dump against a manifest that fingerprints each record, so a daily run republishes only new or changed records. |
+| `viepubliquecrawl` / `hatvpcrawl` / `legifrancecrawl` | conditional-GET marker + per-identifier manifest diff | Skip an unchanged feed; republish only records whose fingerprint moved. |
 
-### `wiki_chunks` (live) / `wiki_chunks_staging` (build, identical shape)
+`wikicrawl` also carries an **error budget** (`CRAWL_ERROR_BUDGET`, default 50): a run may skip that
+many pages (an extract failure or a fail-closed gate error) before it aborts, so a partial run is
+visible rather than silently truncated or crashing on the first transient error.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `page_id` | `bigint` | PK part. Wikipedia page id. |
-| `chunk_index` | `integer` | PK part. Ordinal within the page. |
-| `title`, `url` | `text` | Article metadata. |
-| `revision_id` | `bigint` | Source revision; delta diffs against it. |
-| `corpus` | `text` | `WIKI_CORPUS` (dump) or `CRAWL_CORPUS` (crawl) - provenance + checkpoint key. |
-| `content` | `text` | Chunk text (`"{title}\n\n{text}"`). |
-| `embedding` | `halfvec(1024)` **NULL** | Filled by the fleet; NULL = unembedded (invisible to search). |
-| `section` | `text` `''` | Lead = `''`; body headings are reserved (`''` until `action=parse`). |
-| `kind` | `text` `'lead'` | `'lead'` (dump) or `'lead'`/`'body'` (crawl). |
-| `cluster_id` | `integer` NULL | Written only by `wikicluster`. |
-| `importance` | `double precision` NULL | `[0,1]`, written only by `wikicluster`; seeds next ingest's priority. |
-| `synced_at` | `timestamptz` | Last ingest/embed time. |
+### Drain-to-idle and consumer host self-stop
 
-- **PK** `(page_id, chunk_index)` is **global**: a page present in both dump and crawl collapses to one
-  row (last writer wins on content + provenance tag) - correct dedup, documented behavior.
-- **Index** `wiki_chunks_embedding_hnsw` - HNSW `halfvec_cosine_ops`, `m=16`, `ef_construction=200`.
-  HNSW skips NULL rows, so unembedded chunks cost nothing in the index.
+A worker normally runs until stopped, so an operator must remember to stop the consumer host once a
+queue empties. `WORKER_IDLE_TIMEOUT` closes that loop: a worker whose queue yields no delivery for
+that long **exits cleanly**, reporting what it drained through the standard Slack consumer-stop note.
+It is **off (0/empty) by default, including locally**, so a fleet meant to stay up is unaffected;
+capped at 24h.
 
-### `wiki_sync_state` (checkpoint - dump path only)
+The consumer command's `--stop-when-idle` (`scripts/ingest-host.sh`) hands the worker containers a
+drain-to-idle window (`WORKER_IDLE_TIMEOUT`, default `300s` on the host), waits over the existing SSM
+mechanics until every worker container has idle-exited, then stops the host - so cost is capped with
+no operator action. The containers run `restart: on-failure`, so a clean idle-exit stays exited while
+a crash still restarts. If the drain does not finish within `INGEST_DRAIN_TIMEOUT` (default `3600`s /
+1h) the host is left running for inspection and the command exits non-zero.
 
-`corpus` (PK), `dump_version`, `last_change_ts`, `synced_at`. The crawl path keeps **no checkpoint**
-(re-run is safe via idempotent upserts).
+### Graceful stop boundary
 
----
+Every producer and worker traps SIGTERM (`signal.NotifyContext`), stops taking new deliveries, nacks
+in-flight ones **with requeue** without incrementing the attempt count, and exits within a bounded
+grace period. The OS-level stop timeout before SIGKILL is `stop_grace_period: 120s`, set on the
+workers in **both** `docker-compose.yml` and the cloud override `docker-compose.ingest.yml`, so a
+`docker compose down` or host stop gives in-flight embed/DB calls 120s to finish or requeue. An
+at-least-once redelivery can re-embed the interrupted few messages (a bounded, paid re-embed), which
+the idempotent sinks make correct and never duplicated.
 
-## 8. Confidence by closeness
-
-When a live statement is checked, `internal/service/confidence.go` aggregates its retrieved cluster into
-one score - this is the "how close are we to the chunks and claims" number.
-
-- Each **curated claim** match contributes its cosine similarity as signed evidence: a corroborating
-  claim adds to Supporting, a contradicting claim adds to Contradicting, an unclear claim is ignored.
-- Each **Wikipedia evidence** match contributes its similarity scaled by a chunk-kind weight (a lead
-  summary outweighs buried body prose) to Supporting.
-- **Score** = `Supporting / (Supporting + Contradicting)`, bounded `[0,1]`; `0` when nothing
-  stance-bearing corroborates the statement.
-
-```mermaid
-flowchart LR
-    Q["statement"] --> R["retrieve cluster<br/>(chunks + claims, by cosine)"]
-    R --> A["computeConfidence<br/>similarity-weighted"]
-    A --> S["score + supporting/contradicting<br/>+ evidence-item count"]
-```
-
-The formula is deterministic and does no extra retrieval. Surfacing the score and its
-supporting/contradicting breakdown in the API/UI is **VER-77**; the formula itself is unchanged.
-
----
-
-## 9. Vector consistency - the guarantees
-
-Each guarantee maps to a concrete mechanism and holds for **both** ingestion paths.
-
-1. **One model, one dimension, one type.** Every vector is `voyage-4-large`, 1024-dim, `halfvec(1024)`.
-   `domain.EmbeddingDim = 1024` is validated on write and query. A dim/model mismatch is a bug, not a
-   config option.
-2. **Symmetric model, asymmetric prompt.** Ingest embeds `input_type=document`; search embeds
-   `input_type=query`. Same model, correct per-side input type.
-3. **Never serve a stale or half-embedded vector.** `SearchWikiChunks` filters `WHERE embedding IS NOT
-   NULL` and HNSW excludes NULL rows. Dump upsert keeps an embedding only if content is byte-identical
-   (else NULL); the crawl upsert writes content + vector together; both match on content so a vector is
-   never attached to text it was not computed from.
-4. **Growth shape.** Bulk-into-live and crawl grow one searchable chunk at a time (NULL rows invisible);
-   `-atomic` swaps wholesale in one validated transaction (non-empty, zero NULL) - readers never see a
-   mixture.
-5. **Idempotent, at-least-once writes.** A redelivered job rewrites the same vector; a job whose row no
-   longer matches is dropped. Duplicates from the keyset-paged / confirm-based publisher are harmless.
-6. **No binary-COPY corruption.** Vectors are written as pgvector **text** form `[a,b,c]::halfvec`
-   (`formatHalfVec`), never binary `COPY` (which corrupts `halfvec`).
-7. **Verifier reports coverage, gates consistency** (`cmd/wikiverify`). It reports embedded coverage as
-   progress (not a gate) and fails only on a real defect: chunks present, no zero-vector embeddings,
-   dimension exactly `halfvec(1024)`, `kind IN ('lead','body')`, HNSW index present and valid. It asserts
-   the whole live corpus - dump and crawl rows alike.
-8. **Clustering never mutates vectors.** `wikicluster` reads vectors, runs deterministic spherical
-   k-means, writes only `cluster_id` + `importance`. Idempotent.
-9. **Fact-checkability is a producer-side filter, not a consistency mechanism** *(target - VER-74)*. The
-   gate decides *what to publish*; it never alters a vector or a row already written. With the gate on,
-   the corpus is bounded to evidence; with `CRAWL_CHECKWORTHY=false` it is the full crawl. It fails open,
-   so a gate outage degrades to "more content," never to a corrupted or empty corpus.
-
-**Honest caveats:**
-- The dry-run cost estimate uses a chars/token heuristic and a fixed per-1M-token price - an estimate,
-  not a billed figure.
-- A per-chunk LLM gate on a large crawl is tens of thousands of Haiku calls - cheap per call, real in
-  aggregate; bounded by `CRAWL_CHECKWORTHY_RPM` and `CRAWL_MAX_PAGES`.
-- The gate decision is baked at crawl time; re-tuning the prompt means re-crawling. Dropped chunks are
-  counted/logged, not stored.
-- `prop=extracts` strips headings, so body chunks store `section=''` (real headings need `action=parse`,
-  deferred). Re-crawling re-embeds unchanged articles (no producer checkpoint in v1).
-- A chunk that fails every retry is dropped. In bulk-into-live/crawl it stays un-embedded; in `-atomic`
-  it blocks the swap (an `ErrDrainStalled` after the stall timeout - a safety stop needing attention).
-
----
-
-## 9b. Stop/restart safety assurance (VER-164)
-
-The operator turns the ingestion hosts off between runs to save cost via the `/crawler` and
-`/consumer` commands (start on demand, run one source, stop - see the runbook
-[`docs/ingestion-hosts.md`](ingestion-hosts.md)): `docker compose down` / an instance stop sends
-SIGTERM to every producer and worker, then the instance stops. This is safe at any instant during a
-run - every message is either already committed to its sink or returns to the queue for
-reprocessing on restart, so no work is lost and no row is corrupted. Four producer -> queue ->
-consumer pipelines share the one RabbitMQ transport (`internal/queue`): `embedding.jobs`
-(`cmd/wikisync`, `cmd/statsingest` -> `cmd/embedworker`), `crawl.chunks` (`cmd/wikicrawl` ->
-`cmd/crawlworker`), `factcheck.claims` (`cmd/factcheckcrawl` -> `cmd/factcheckworker`), and
-`scrutins.votes` (`cmd/scrutinscrawl` -> `cmd/scrutinsworker`). The guarantee rests on five
-properties, each mapped below to the code that enforces it and the test that pins it.
+### The stop/restart guarantee, mapped to code and tests
 
 | # | Property | Guaranteeing code | Pinned by test |
 |---|----------|-------------------|----------------|
-| 1 | Messages are published **persistent** and queues are **durable**, so a broker restart keeps enqueued work | `persistentPublishing` sets `DeliveryMode: amqp.Persistent`; `declareQueue` declares the queue `durable=true` (`internal/queue/queue.go`) | `queue.TestPersistentPublishingIsPersistentAndVersioned`, `queue.TestDeclareQueueDeclaresDurablePriorityQueue` (broker-free, run in CI); `queue.TestClientRoundTrip` proves it end to end when `TEST_RABBITMQ_URL` is set |
-| 2 | A consumer **acks only after its DB write commits**, so a mid-write stop redelivers | Each worker acks only on `ActionAck`, returned after the sink write returns nil; an embed/write failure returns `ActionRepublish` (re-enqueue then ack the original) or `ActionRequeue`, and never acks a lost job (`Process`/`handle`, four job packages) | embedjob `TestRunAcksSuccessfulDeliveries` + `TestProcessTransientWriteFailureRepublishes`; crawljob `TestRunAcksAfterUpsertAndReturns` + `TestProcessTransientFailureRepublishes`; factcheckjob `TestRunAcksAfterUpsertAndReturns` + `TestProcessRepublishesOnUpsertFailure`; scrutinsjob `TestRunAcksAfterUpsertAndReturns` + `TestProcessRepublishesOnTransientFailure` |
-| 3 | On SIGTERM the worker stops taking new deliveries and **nacks in-flight ones with requeue** without incrementing the attempt count, then exits within a bounded grace period | `signal.NotifyContext(SIGINT, SIGTERM)` cancels the context (each `cmd/*worker/main.go`); the queue closes the delivery stream on cancel (`queue.Consume`/`forward`); an interrupted `Process` sees `ctx.Err()` and returns `ActionRequeue` -> `Nack(requeue=true)` with no attempt bump; `Run` returns after `wg.Wait()` and `client.Close()` requeues anything still unacked | embedjob `TestRunNacksRequeueOnShutdown`; crawljob/factcheckjob/scrutinsjob `TestHandleNacksRequeueOnShutdown` + Process-level (`TestProcessShutdownRequeues`, `TestProcessRequeuesOnShutdown`); transport `queue.TestClientCloseEndsConsumerWithoutCancel` |
-| 4 | Writes are **idempotent upserts**, so an at-least-once redelivery rewrites the same row | wiki_chunks: `UpsertEmbeddedChunk` / content-guarded `SetLiveChunkEmbeddings`; political_claims: `UpsertPoliticalClaim` (keyed on `id`); voting_records: `UpsertVotingRecord` (keyed `(person, scrutin)`) - all `ON CONFLICT ... DO UPDATE` (`internal/store/postgres`) | store `TestUpsertEmbeddedChunkIsIdempotent`, `TestUpsertPoliticalClaimIsIdempotent`, `TestUpsertVotingRecordIsIdempotent` (CI Postgres service); worker redelivery `embedjob`/`crawljob` `TestProcessRedeliveryIsIdempotent`, factcheckjob `TestProcessIsIdempotentAcrossRedelivery`, scrutinsjob `TestProcessIsIdempotent` |
-| 5 | Producers are **re-runnable** without duplicating rows | Every job key is derived from a stable source id, never a UUID/timestamp: wikicrawl/wikisync `(page_id, chunk_index)`; statsingest `(SeriesPageID, PeriodChunkIndex)` from the `(series, period)` provenance; factcheckcrawl `ID = ClaimReview URL`; scrutinscrawl `ID = scrutin uid`. Re-running republishes the same keys, which the idempotent sinks (property 4) upsert in place | wiki `TestRunCrawlPublishesLeadAndBody`, `TestRunBulkEnqueueResumeEnqueuesOnlyRemaining`; stats `TestRunDeduplicatesSameProvenanceKey`, `TestRunIdempotentReRunPublishesNothingOnceEmbedded`; domain `TestSeriesPageIDStableAndPositive`, `TestPeriodChunkIndex`; factcheckarchive `TestRunIsIdempotentAcrossRuns`; scrutinsarchive `TestRunDiscoversAndPublishes`; real-RDS `make insee-idempotency-check` (section 13) |
+| 1 | Messages are published **persistent** and queues are **durable** | `persistentPublishing` + `declareQueue(durable=true)` (`internal/queue/queue.go`) | `queue.TestPersistentPublishingIsPersistentAndVersioned`, `TestDeclareQueueDeclaresDurablePriorityQueue` |
+| 2 | A consumer **acks only after its DB write commits** | Each worker acks only on `ActionAck` after the sink write returns nil; failures return `ActionRepublish`/`ActionRequeue` (`Process`/`handle`, every job package) | embedjob/crawljob/factcheckjob/scrutinsjob/evidencejob `TestRunAcks...` + `TestProcess...Republishes` |
+| 3 | On SIGTERM the worker **nacks in-flight deliveries with requeue** and exits within the grace period | `signal.NotifyContext(SIGINT, SIGTERM)` cancels the context; an interrupted `Process` returns `ActionRequeue` then `Nack(requeue=true)`; `client.Close()` requeues anything unacked | `Test...NacksRequeueOnShutdown` per job package; `queue.TestClientCloseEndsConsumerWithoutCancel` |
+| 4 | Writes are **idempotent upserts** | `UpsertEmbeddedChunk` / content-guarded `SetLiveChunkEmbeddings`; `UpsertPoliticalClaim`; `UpsertVotingRecord` - all `ON CONFLICT ... DO UPDATE` | store `TestUpsert...IsIdempotent`; worker `TestProcessRedeliveryIsIdempotent` |
+| 5 | Producers are **re-runnable** without duplicating rows | Every job key is a stable source id (`(source, external_id, chunk_index)`, ClaimReview URL, scrutin uid), never a UUID/timestamp | wiki/stats/factcheck/scrutins/parliament producer re-run tests; real-RDS `make insee-idempotency-check` |
+| 6 | A rejected message is **parked, not discarded** | `Nack(false)` dead-letters to `<base>.dlq.v<n>` via the dead-letter exchange (`DisableDLQ=false`) | `internal/queue` DLQ declaration tests and the DLQ-parked counts each worker reports on stop |
 
-**Boundary (deferred to the deployment card).** The in-process grace period is bounded by the
-longest in-flight embed/DB call; the OS-level stop timeout before SIGKILL is a compose
-`stop_grace_period` on the cloud host, owned by a later card - not the local `docker-compose.yml`
-touched here. An at-least-once redelivery can re-embed the interrupted few messages (a bounded,
-paid re-embed), which the idempotent sinks make correct and never duplicated.
+### The alarm surface (cloud)
+
+The observability module (`stack/terraform/modules/observability`) fans these alerts into the
+`*-alerts` SNS topic. The queue and run alarms key on the metrics the `mqmetrics` lambda and the
+producers emit; they are enabled per env by wiring the queue/source lists (empty disables them).
+
+| Alarm | Fires when | Missing-data policy |
+|-------|-----------|---------------------|
+| `queue-<base>-backlog-no-consumers` | A queue holds a backlog while no consumer is attached (`IF(consumers < 1, backlog, 0)`) - workers down while producers keep filling | `notBreaching` (a data gap is not an incident) |
+| `dlq-<base>-depth` | Any message is parked in `<base>.dlq` (threshold 0, low evaluation period) | `notBreaching` (an absent/empty DLQ is healthy) |
+| `source-<name>-no-run-24h` | A source emits no `RunSuccess` datapoint summing to at least 1 over the look-back window (default 24h) - a scheduled crawl silently stopped | `breaching` (absence **is** the incident here) |
+
+Alongside these, the module alarms on ALB 5xx, unhealthy target hosts, ECS running-task count, RDS
+CPU / free storage, Amazon MQ CPU, and a WAF blocked-request spike. The dashboard
+(`monitoring` module) graphs per-version queue backlog, consumer count, and the backlog rollup.
 
 ---
 
-## 10. How to use it (local)
+## 6. Data model
+
+`evidence_chunks` (migration `0013`, generalizing the former `wiki_chunks`; content-hash column
+added in `0018`, opt-in bit index in `0014`).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `source` | `text` | PK part + discriminator. Corpus/provenance tag (`WIKI_CORPUS`, `CRAWL_CORPUS`, `eurostat`, `insee-*`, `drees`, ...). Wiki-only reads exclude stat corpora with it. |
+| `external_id` | `text` | PK part. The source's own stable id (a Wikipedia page id, a statistical series key). |
+| `chunk_index` | `integer` | PK part. Ordinal within the item. |
+| `title`, `url` | `text` | Item metadata / provenance link. |
+| `content` | `text` | Chunk text (`"{title}\n\n{text}"`). |
+| `kind` | `text` `'lead'` | `'lead'` / `'body'`; the confidence weighter reads it. |
+| `embedding` | `halfvec(1024)` **NULL** | Filled by the fleet; NULL = unembedded, invisible to search (HNSW skips NULL). |
+| `content_hash` | `bytea` NULL | SHA-256 of the rendered content; drives the exact-dup embed short-circuit (section 7). |
+| `metadata` | `jsonb` `{}` | Source-specific provenance (revision id, section, clustering, ...) - a new source needs no new column. |
+| `synced_at` | `timestamptz` | Last ingest/embed time; the retention sweep and delta sync key on it. |
+
+- **PK** `(source, external_id, chunk_index)`. **Index** `evidence_chunks_embedding_hnsw` - HNSW
+  `halfvec_cosine_ops`, `m=16`, `ef_construction=200`; the same parameters as `claims_embedding_hnsw`
+  so `hnsw.ef_search` tuning behaves identically across both stores. `evidence_chunks_source_content_hash`
+  indexes `(source, content_hash)` for the dedup lookup.
+- **`evidence_sync_state`** (`source` PK, `last_change_ts`, `dump_version`, `synced_at`) is the
+  per-source ingestion checkpoint (was `wiki_sync_state`); the category-crawl path keeps its own file
+  checkpoint instead (section 5).
+- `political_claims` and `voting_records` come from migration `0011`; see the data dictionary.
+
+---
+
+## 7. Embedding-volume control (VER-203)
+
+Embedding every produced chunk is the pipeline's main recurring cost and its main index-RAM driver.
+Three measures bound it, from always-on to opt-in:
+
+1. **Exact-duplicate short-circuit (always on, no config).** Before embedding, the worker looks up
+   `(source, external_id, chunk_index, content_hash)`; if a row with that content already carries a
+   vector, the provider call is skipped and the existing vector kept. An exact re-crawl re-embeds
+   nothing.
+2. **Near-duplicate gate (`EVIDENCE_NEAR_DUP_SIMILARITY`, off by default).** At embed-write time the
+   generic evidence worker compares a fresh chunk to its nearest same-source neighbour; a chunk at or
+   above the configured cosine bar is a redundant re-rendering (boilerplate, a trivial-diff re-crawl,
+   the same statistic restated), so it is **stored for provenance but withheld from search** (no
+   vector, never in the HNSW index). A sensible on value sits well above the borrow threshold, e.g.
+   `0.97`. Leave it off until the golden eval proves no recall loss.
+3. **Per-source retention sweep (`make evidence-retention`).** `cmd/evidenceretention` deletes chunks
+   of one source last synced before `now - max-age`; re-ingest restores them. Dry-run by default:
+
+   ```bash
+   make evidence-retention ARGS="-source insee-emploi -max-age 720h"          # preview
+   make evidence-retention ARGS="-source insee-emploi -max-age 720h -apply"    # delete
+   ```
+
+A related **default-on decision threshold**, `EVIDENCE_BQ_THRESHOLD_VECTORS` (default ~50M vectors,
+derived from the VER-173 datastore benchmark), only drives a `make pipeline-health` warning once the
+embedded `evidence_chunks` count crosses it, prompting the operator to consider enabling the
+two-stage binary-quantization search (`EVIDENCE_BQ_MULTIPLIER`). See
+[`docs/datastore-scale-benchmark.md`](datastore-scale-benchmark.md).
+
+---
+
+## 8. Vector consistency - the guarantees
+
+Each holds for every path into `evidence_chunks`.
+
+1. **One model, one dimension, one type.** Every vector is `voyage-4-large`, 1024-dim,
+   `halfvec(1024)`. `domain.EmbeddingDim = 1024` is validated on write and query - a dim/model
+   mismatch is a bug, not a config option. Changing the model is the
+   [embedding-model migration runbook](embedding-model-migration.md).
+2. **Symmetric model, asymmetric prompt.** Ingest embeds `input_type=document`; search embeds
+   `input_type=query`.
+3. **Never serve a stale or half-embedded vector.** Search filters `WHERE embedding IS NOT NULL` and
+   HNSW excludes NULL rows. An upsert keeps an embedding only when content is byte-identical (else
+   NULL); crawl/evidence upserts write content + vector together; all match on content so a vector is
+   never attached to text it was not computed from.
+4. **Growth shape.** Bulk-into-live and crawl grow one searchable chunk at a time (NULL rows
+   invisible); `-atomic` swaps wholesale in one validated transaction - readers never see a mixture.
+5. **Idempotent, at-least-once writes.** A redelivered job rewrites the same vector; a job whose row
+   no longer matches is dropped.
+6. **No binary-COPY corruption.** Vectors are written as pgvector **text** form `[a,b,c]::halfvec`,
+   never binary `COPY` (which corrupts `halfvec`).
+7. **Verifier reports coverage, gates consistency** (`make wiki-verify`, `internal/store/postgres/evidence_verify.go`).
+   It reports embedded coverage as progress (not a gate) and fails only on a real defect: chunks
+   present, no zero-vector embeddings, dimension exactly `halfvec(1024)`, `kind IN ('lead','body')`,
+   HNSW index present and valid - over the whole live corpus.
+
+**Honest caveats:** the dry-run cost estimate is a chars/token heuristic, not a billed figure; a
+per-chunk LLM gate on a large crawl is tens of thousands of cheap calls, real in aggregate (bounded
+by `CRAWL_CHECKWORTHY_RPM` / `CRAWL_MAX_PAGES`); `prop=extracts` strips headings, so body chunks
+store `kind='body'` with no section heading; a chunk that fails every retry is dead-lettered (in
+`-atomic` it blocks the swap after the stall timeout - a safety stop needing attention).
+
+---
+
+## 9. Hybrid retrieval (query-time, VER-195)
+
+Retrieval fuses a French lexical full-text search with the vector search by **Reciprocal Rank
+Fusion**, so exact figures, dates, and named entities that dense embeddings blur are still retrieved.
+On by default (`MATCH_HYBRID_SEARCH=true`); `false` forces the pure vector search. It is query-time
+and writes nothing. While hybrid is on, evidence retrieval runs the single-stage vector branch, so
+`EVIDENCE_BQ_MULTIPLIER` has no effect for evidence (the server logs a one-time startup warning if
+both are set). Tuning: `MATCH_LEXICAL_TOP_K` (20), `MATCH_RRF_K` (60), and the per-corpus
+`MATCH_*_EF_SEARCH` knobs. See [`docs/configuration.md`](configuration.md#retrieval-and-matching).
+
+---
+
+## 10. Confidence by closeness (query-time)
+
+When a spoken statement is matched, its retrieved cluster is aggregated into one **confidence score**
+in exactly one place, `internal/service/confidence.go`. It is query-time and streamed on the live
+result frame, never stored.
+
+- Each **curated claim** match contributes its cosine similarity as signed evidence: a corroborating
+  claim adds to Supporting, a contradicting one to Contradicting, an unclear one is ignored.
+- Each **evidence** match contributes its similarity scaled by a chunk-kind weight (`lead` outweighs
+  `body`) to Supporting.
+- Only the strongest `MATCH_CONFIDENCE_CLUSTER_SIZE` matches feed the score.
+- **Score** = `Supporting / (Supporting + Contradicting)`, bounded `[0,1]`; `0` when nothing
+  stance-bearing corroborates the statement.
+
+The frame carries `confidence` (`{score, supporting, contradicting, evidence_items}`) and a
+per-match `contribution` so the breakdown is explainable.
+
+---
+
+## 11. How to use it (local)
 
 All commands are `make` targets (Compose under the hood). They need the dev stack and a real
-`EMBEDDING_API_KEY` in `.env`. The fleets are **paid** and live behind the `wiki` Compose profile, so a
-plain `make up` never starts them.
+`EMBEDDING_API_KEY` in `.env`. The fleets are **paid** and live behind Compose profiles, so a plain
+`make up` never starts them. Watch any queue drain at <http://localhost:15672> (`app`/`dev`).
 
-### Dump path: first-time bulk build
+### Wikipedia dump: first-time bulk build
 
 ```bash
 make up                              # postgres + migrate + offline seed (no fleet)
-make fleet-up EMBEDWORKER_REPLICAS=4 # broker + N competing workers (more = faster drain, same $)
+make fleet-up EMBEDWORKER_REPLICAS=4 # broker + N competing embed workers
 
 docker compose --profile tools run --rm wiki-populate \
   go run ./cmd/wikisync -mode=bulk -dry-run    # free cost estimate first
@@ -461,117 +456,59 @@ make wiki-verify                     # reports embedded coverage; green = consis
 make fleet-down
 ```
 
-Watch the queue at the RabbitMQ dashboard: <http://localhost:15672> (login `app` / `dev`).
-
-### Crawl path: focused, fact-checkable slice *(target - VER-74)*
+### Wikipedia category crawl: focused, fact-checkable slice
 
 ```bash
-# in .env
-CRAWL_CATEGORIES="Category:Climate change,Category:Vaccines"
-CRAWL_MAX_PAGES=2000
-CRAWL_CHECKWORTHY=true                # gate on: embed only fact-checkable content
-
-# Option A - auto-prime: bringing up the paid profile starts the broker + worker fleet
-# and runs a one-shot crawl (wiki-prime) that fills the broker; the fleet drains it.
-make prime                                       # == docker compose --profile wiki up -d
-
-# Option B - explicit producer run (different categories / re-prime):
+# in .env: CRAWL_CATEGORIES, CHECKWORTHY_API_KEY (or CRAWL_CHECKWORTHY=false)
+make prime                                       # broker + fleet + one-shot prime crawl (== docker compose --profile wiki up -d)
+# or, explicitly:
 make crawl-workers CRAWLWORKER_REPLICAS=6        # start N crawl consumers
 make crawl CRAWL_CATEGORIES="Category:Physics"   # crawl + gate + publish, then exit
-
-make wiki-verify                                 # combined corpus complete & consistent
+make wiki-verify
 make fleet-down
-```
-
-A plain `make up` starts nothing paid - no worker fleet, no auto-prime (the broker
-container is profileless and idle; it makes no API calls). The one-shot ops tools
-(`wiki-populate`, `wiki-reset`, `wiki-cluster`, `wiki-verify`, `wikicrawl`) live in the
-`tools` profile and only run when invoked (`make <target>` or
-`docker compose --profile tools run --rm <tool>`); they never auto-start on
-`docker compose --profile wiki up`. That is what makes the bare `--profile wiki up`
-auto-prime safe: it brings up only the broker, the worker fleet, and the one-shot
-`wiki-prime` crawl.
-
-### Ingesting more dump content
-
-The volume lever is `WIKI_CORPUS`; point it at a bigger dump and force a rebuild:
-
-```bash
-# in .env: WIKI_CORPUS=enwiki   (full English; was simplewiki ~250k)
-docker compose --profile tools run --rm wiki-populate \
-  go run ./cmd/wikisync -mode=bulk -dry-run      # check the larger bill first
-make reingest                                    # long, paid, unattended; green verify = ready
-```
-
-Valid names are Wikimedia dump names `{lang}wiki` (`enwiki`, `frwiki`, ...); non-dump names like
-`frwiktionary` are rejected.
-
-### Keeping a dump corpus fresh
-
-```bash
-make wiki-update     # delta sync: only articles changed since the checkpoint (publishes to the fleet, no swap)
 ```
 
 ### Key make targets
 
 | Target | Purpose |
 |--------|---------|
-| `make fleet-up [EMBEDWORKER_REPLICAS=N]` | Start broker + N dump workers. |
+| `make fleet-up [EMBEDWORKER_REPLICAS=N]` | Start broker + N embed workers. |
 | `make fleet-down` | Stop broker + workers (DB untouched). |
-| `make wiki-populate` | Dump bulk-into-live ingest + enqueue. Add `-atomic` for stage-and-swap. |
+| `make wiki-populate` | Dump bulk-into-live ingest + enqueue. |
 | `make wiki-update` | Incremental dump delta sync. |
-| `make wiki-cluster` | Cluster + importance-score the embedded corpus. |
-| `make wiki-verify` | Assert the live corpus complete/consistent. |
-| `make reingest` | reset, populate, cluster, verify. |
-| `make crawl` *(target - VER-74)* | Run the `wikicrawl` producer once against `CRAWL_CATEGORIES`. |
-| `make crawl-workers [CRAWLWORKER_REPLICAS=N]` *(target - VER-74)* | Start N `crawlworker` consumers. |
-| `make prime` *(target - VER-74)* | Bring up broker + worker fleet + a one-shot `wiki-prime` crawl that fills the broker from `CRAWL_CATEGORIES` (`== docker compose --profile wiki up -d`). |
+| `make wiki-cluster` / `make wiki-verify` | Cluster + importance-score / assert corpus consistency. |
+| `make reingest` | reset, then atomic populate, cluster, verify. |
+| `make crawl` / `make crawl-workers` | Run the category-crawl producer / start N crawl consumers. `CRAWL_SHARDS=N` fans one category list across N parallel producers. |
+| `make prime` | Broker + fleet + a one-shot prime crawl (`docker compose --profile wiki up -d`). |
+| `make stats-ingest` | Bulk-into-live ingest of the statistical sources (Eurostat + interior CSV + INSEE). |
+| `make factcheck-crawl` / `make factcheck-workers` | Curated-claim producer / consumers (`factcheck.claims`). |
+| `make scrutins-crawl` / `make scrutins-workers` | Voting-record producer / consumers (`scrutins.votes`). |
+| `make evidence-retention` | Per-source retention sweep (dry-run by default; `-apply` deletes). |
+| `make eval` | Offline French political retrieval eval gate (recall@1/@3 vs the reviewed baseline). |
+| `make pipeline-health` | Read-only end-to-end health snapshot (local + cloud). |
+| `make bench-datastore` | Datastore scale benchmark (throwaway pgvector; never touches the app DB). |
 
----
+### Self-updating stack from `.env`
 
-## 11. Configuration knobs
+The always-on `scheduler` service fires each **enabled** producer on its cron and a running worker
+fleet drains the queues. Every source defaults **disabled**, so a plain `make up` schedules nothing
+and never spends. The three originally-scheduled sources have dedicated knobs; the rest take their
+`DefaultCron` from the registry and are enabled by `SCHEDULE_<SOURCE>_ENABLED=true`:
 
-From the root `.env` (read by Compose). Defaults shown.
+```bash
+SCHEDULE_WIKIPEDIA_ENABLED=true
+SCHEDULE_WIKIPEDIA_CRON=0 3 * * *
+SCHEDULE_FACTCHECK_ENABLED=true
+SCHEDULE_SCRUTINS_ENABLED=true
+CRAWL_CATEGORIES=Category:Politique en France   # producer config the enabled sources need
+FACTCHECK_API_KEY=...                            # + the per-source keys/config
+EMBEDDING_API_KEY=...                            # workers cannot embed without it
+```
 
-### Shared / dump path
-
-| Env var | Default | What it controls |
-|---------|---------|------------------|
-| `WIKI_CORPUS` | `simplewiki` | Which Wikimedia dump = how much/what content. |
-| `EMBEDDING_API_KEY` | - | Voyage key (required for any embed). |
-| `EMBEDDING_MODEL` | `voyage-4-large` | Embedding model. Pinned to 1024-dim. |
-| `EMBEDWORKER_REPLICAS` | 2 | Number of competing dump workers. Linear throughput. |
-| `EMBED_WORKER_CONCURRENCY` | 4 | In-flight batches per replica. |
-| `EMBED_WORKER_BATCH_SIZE` | 128 | Chunks per Voyage call (<=1000). Main throughput lever. |
-| `EMBED_WORKER_MAX_BATCH_TOKENS` | 96000 | Token budget per Voyage call (<=120000). An over-budget batch is split before the call; a size-class 400 splits recursively rather than thrashing per-chunk. |
-| `EMBED_WORKER_BATCH_WAIT` | 200ms | How long a partial batch waits before sending. |
-| `RABBITMQ_PREFETCH` | concurrency x batch | Unacked jobs held per replica. |
-| `EMBED_WORKER_MAX_ATTEMPTS` | 5 | Delivery budget before a chunk is dropped. |
-| `EMBED_WORKER_RPM` | 0 (unpaced) | Per-replica Voyage rate cap. |
-| `WORKER_IDLE_TIMEOUT` | 0 (off) | Drain-to-idle window shared by every queue worker: with a positive value a worker whose queue is empty for this long exits cleanly (the consumer host's `--stop-when-idle` self-stop keys on it). Off locally so a fleet stays up. Capped at 24h. |
-| `WIKI_DRAIN_POLL_INTERVAL` / `_STALL_TIMEOUT` | 5s / 30m | Atomic drain poll / stall abort. |
-| `WIKI_CLUSTER_K` / `_MAX_ITERS` / `_SEED` | - | k-means parameters. |
-| `RABBITMQ_QUEUE` / `_QUEUE_VERSIONS` | `embedding.jobs` / `v1` | Dump queue base name and version roll. |
-
-### Crawl path *(target - VER-74)*
-
-| Env var | Default | What it controls |
-|---------|---------|------------------|
-| `CRAWL_CATEGORIES` | (required) | Comma-separated category titles, e.g. `Category:Physics`. |
-| `CRAWL_PROJECT` | `WIKI_CORPUS` | Wiki project to hit + URL host (e.g. `simplewiki`). |
-| `CRAWL_CORPUS` | `<project>-crawl` | Provenance tag stored in `wiki_chunks.corpus`. |
-| `CRAWL_MAX_DEPTH` | 1 | Subcategory recursion depth (0 = direct pages only). |
-| `CRAWL_MAX_PAGES` | 5000 | Hard cap on distinct pages collected. |
-| `CRAWL_INCLUDE_BODY` | true | When false, ingest lead only. |
-| `CRAWL_CHECKWORTHY` | true | Enable the producer-side fact-checkability gate. `false` publishes all. |
-| `CRAWL_CHECKWORTHY_MODEL` | `claude-haiku-4-5-20251001` | Gate model. |
-| `CRAWL_CHECKWORTHY_CONCURRENCY` | 8 | In-flight gate judgments in the producer. |
-| `CRAWL_CHECKWORTHY_RPM` | 0 (unpaced) | Per-producer Anthropic rate cap. |
-| `CHECKWORTHY_API_KEY` | - | Anthropic key for the gate. |
-| `RABBITMQ_CRAWL_QUEUE` | `crawl.chunks` | Crawl queue base name (versioned via `RABBITMQ_QUEUE_VERSIONS`). |
-| `CRAWL_WORKER_CONCURRENCY` | 4 | In-flight embeds per crawl worker (also prefetch). |
-| `CRAWL_WORKER_MAX_ATTEMPTS` | 5 | Crawl delivery budget. |
-| `CRAWLWORKER_REPLICAS` | 2 | Competing crawl worker replicas. |
+Then `make up` (includes the scheduler) plus the worker fleets (`make crawl-workers`, `make fleet-up`,
+`make factcheck-workers`, `make scrutins-workers`). Scheduled runs spend real money on every fire
+(the crawl gate, embedding, and - at query time - the verify path's terminal reasoning gate); start
+with tight `CRAWL_CATEGORIES` / `FACTCHECK_QUERIES`.
 
 ---
 
@@ -579,402 +516,116 @@ From the root `.env` (read by Compose). Defaults shown.
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `make wiki-populate` logs "already current" | Live corpus matches the dump version and is fully embedded. | Expected. Raise `WIKI_CORPUS` for more; `make reingest` to rebuild the same dump. |
-| `ErrDrainStalled` after 30m (atomic only) | A chunk failed every retry, or the fleet died. | Check worker logs / RabbitMQ; confirm key + quota; re-run with `-atomic` (resumes). Old corpus keeps serving. |
-| `wiki-verify` coverage below 100% | Fleet still embedding, or a few chunks dropped after retries. | Expected mid-ingest; corpus is usable. Leave the fleet running or re-publish the remainder. |
-| `wiki-verify` fails on HNSW index | Index missing/invalid after a manual change. | `make reingest` rebuilds the index. |
-| Workers idle while jobs sit | Fleet not up, or wrong queue version. | `make fleet-up`; confirm `RABBITMQ_QUEUE_VERSIONS` matches producer and workers. |
-| Delta refuses to run | No baseline, checkpoint too old, or a bulk build in progress. | Run/finish a bulk build first, then delta. |
+| `make wiki-populate` logs "already current" | Corpus matches the dump version and is fully embedded. | Expected. Raise `WIKI_CORPUS`; `make reingest` to rebuild. |
+| `make pipeline-health` shows `dlq=N` | Messages parked in a dead-letter queue. | Inspect them (section 5), fix the defect, replay via the management UI. |
+| Backlog with zero consumers | Fleet not up, or wrong queue version. | `make fleet-up`; confirm `RABBITMQ_QUEUE_VERSIONS` matches producer and workers. |
+| `wiki-verify` coverage below 100% | Fleet still embedding, or a few chunks dead-lettered after retries. | Expected mid-ingest; corpus is usable. Leave the fleet running or replay the DLQ. |
+| `wiki-verify` fails on HNSW index | Index missing/invalid after a manual change. | `make reingest` rebuilds it. |
 | Provider latency / Voyage timeouts | Provider-side, not a bug. | Tune `EMBED_WORKER_RPM` / `EMBED_WORKER_CONCURRENCY`; do not lower defaults blindly. |
-| **Crawl** publishes nothing *(VER-74)* | `CRAWL_CATEGORIES` empty/typo'd, or the gate dropped everything. | Check the category title; check the producer's published-vs-dropped counts; try `CRAWL_CHECKWORTHY=false` to isolate the gate. |
-| **Crawl** corpus has obvious non-evidence prose *(VER-74)* | Gate disabled or failing open under provider errors. | Confirm `CRAWL_CHECKWORTHY=true`; check producer logs for fail-open gate errors and Anthropic key/quota. |
-| **Crawl** gate is slow / expensive *(VER-74)* | Unpaced gate on a large crawl. | Lower `CRAWL_MAX_PAGES`, set `CRAWL_CHECKWORTHY_RPM`, or scope `CRAWL_CATEGORIES` tighter. |
+| Crawl publishes nothing | `CRAWL_CATEGORIES` empty/typo'd, or the gate dropped everything. | Check the category title and the published-vs-dropped counts; `CRAWL_CHECKWORTHY=false` isolates the gate. |
+| A scheduled source stopped silently | The producer errored on every recent run. | The `source-<name>-no-run-24h` alarm pages; check the producer logs and its key/quota. |
 
 ---
 
 ## 13. Cloud / production pipeline
 
-The local flow runs the producer and the fleet on one machine. In the cloud there is
-exactly **one** ingestion model: two on-demand **EC2 hosts** run the same producer and
-worker containers directly in the VPC, driven by the `/crawler` and `/consumer` commands.
-Same backend image, different entry points - no separate producer or worker image, no
-Fargate task, no ECS worker service, no autoscaler.
-
-The operator runbook is [`docs/ingestion-hosts.md`](ingestion-hosts.md); this section is the
-pipeline-level summary. The orchestrator is `scripts/ingest-host.sh` (all AWS calls) with the
-cloud override `docker-compose.ingest.yml`; the account guard (`scripts/aws-target-guard.sh` +
+In the cloud there is one ingestion model: two on-demand **EC2 hosts** run the same producer and
+worker containers directly in the VPC, driven by the `/crawler` and `/consumer` commands. Same
+backend image, different entry points - no separate producer/worker image, no Fargate task, no ECS
+worker service, no autoscaler. The operator runbook is [`docs/ingestion-hosts.md`](ingestion-hosts.md);
+this is the pipeline-level summary. The orchestrator is `scripts/ingest-host.sh` (all AWS calls) with
+the cloud override `docker-compose.ingest.yml`; the account guard (`scripts/aws-target-guard.sh` +
 `deploy/targets.json`) fronts every run.
 
 ### The two hosts
 
-Nothing ingestion-related runs 24/7: both hosts are **off** (or absent) by default and are
-stopped between runs, so idle cost is only their EBS volumes. Each is SSM-only (no inbound, no
-SSH, no public IP), IMDSv2-required, with an instance profile scoped to SSM core plus only the
-secrets, backend ECR repo, and CloudWatch Logs its containers use.
+Nothing ingestion-related runs 24/7: both hosts are off (or absent) by default and stopped between
+runs, so idle cost is only their EBS volumes. Each is SSM-only (no inbound, no SSH, no public IP),
+IMDSv2-required, with an instance profile scoped to SSM core plus only the secrets, backend ECR repo,
+and CloudWatch Logs its containers use.
 
-- `truth-in-stream-<env>-crawler-host` runs a source's **producer** - a one-shot that fills a
-  queue and exits (`docker compose run --rm`).
-- `truth-in-stream-<env>-consumer-host` runs a source's **worker** - long-running, drains the
-  queue into the database (`docker compose up -d`), stopped once the queue empties.
+- `truth-in-stream-<env>-crawler-host` runs a source's **producer** - a one-shot that fills a queue
+  and exits.
+- `truth-in-stream-<env>-consumer-host` runs a source's **worker** - long-running, drains the queue
+  into the database, stopped once the queue empties (or self-stopped via `--stop-when-idle`).
 
 They live behind `enable_ingestion_hosts` (default off) in `stack/terraform/dev` (module
-`stack/terraform/modules/ingestion-host`). Enabling them implies `enable_rds` (the consumer
-writes the corpus to the managed **dev RDS** instance), and their security groups are admitted
-by the broker on 5671 and RDS on 5432.
-
-| Source | Producer (`/crawler`) | Queue | Worker (`/consumer`) | Required producer env |
-|--------|-----------------------|-------|----------------------|-----------------------|
-| `wikipedia` | `wikicrawl` | `crawl.chunks` | `crawlworker` | `CRAWL_CATEGORIES` |
-| `stats` | `statsingest` | `embedding.jobs` | `embedworker` | (none) |
-| `factcheck` | `factcheckcrawl` | `factcheck.claims` | `factcheckworker` | `FACTCHECK_QUERIES` |
-| `scrutins` | `scrutinscrawl` | `scrutins.votes` | `scrutinsworker` | (none) |
-
-Required producer env is **non-secret** config the operator sets in the shell; the command
-forwards only these (never an API key). API keys come from Secrets Manager on the host, fetched
-by `scripts/ingest-fetch-env.sh` into a `0600` file - no secret ever passes through the SSM
-command or a log.
+`ingestion-host`). Enabling them implies `enable_rds`. The full per-source producer/worker/queue
+mapping is the connector registry; the source inventory is [`docs/fact-check-sources.md`](fact-check-sources.md).
 
 ### On-demand control: `/crawler` and `/consumer`
 
 The commands open an SSM connection, start the host if stopped, run one service over
-`aws ssm send-command`, stream the output, surface the container exit code, and can stop the
-host afterwards. `make crawler` / `make consumer` mirror them (`SOURCE=`, `ACTION=`, `ENV=`);
-the hosts live in `dev` today, so pass `ENV=dev`.
+`aws ssm send-command`, stream the output, surface the container exit code, and can stop the host
+afterwards. `make crawler` / `make consumer` mirror them (`SOURCE=`, `ACTION=`, `ENV=`); the hosts
+live in `dev` today, so pass `ENV=dev`.
 
 ```bash
 # Fill a queue (start the crawler host, run the producer, stop the host when done):
 ENVIRONMENT=dev CRAWL_CATEGORIES="Category:Retraites en France" /crawler wikipedia --stop-after
 
-# Drain a queue (start the consumer host, bring the worker up to drain into the DB):
-ENVIRONMENT=dev /consumer wikipedia            # up (default)
-ENVIRONMENT=dev /consumer wikipedia status     # watch state + backlog
-ENVIRONMENT=dev /consumer wikipedia down       # stop the host once the queue empties
-
-# Hands-off drain: run the worker, wait for it to idle out, then self-stop the host:
-ENVIRONMENT=dev /consumer wikipedia --stop-when-idle
+# Drain a queue (start the consumer host, run the worker):
+ENVIRONMENT=dev /consumer wikipedia              # up (default)
+ENVIRONMENT=dev /consumer wikipedia status       # watch state + backlog
+ENVIRONMENT=dev /consumer wikipedia --stop-when-idle   # drain to idle, then self-stop the host
 ```
 
-`DRY_RUN=1` drives the whole path (guard, resolve, start, send-command) without touching AWS,
-printing each mutating call - use it to rehearse. Stopping a host mid-run is safe: workers nack
-in-flight batches with requeue on SIGTERM within the 120s grace window (see
-[9b. Stop/restart safety](#9b-stoprestart-safety-assurance-ver-164)), so no work is lost.
-
-**Drain-to-idle and consumer self-stop (`--stop-when-idle`).** A worker normally runs until it
-is stopped, so an operator must remember to `down` the consumer host once the queue empties - and
-until then it bills for nothing. `--stop-when-idle` closes that loop. It hands the worker
-containers a drain-to-idle window (`WORKER_IDLE_TIMEOUT`, default `300s`): a worker whose queue
-yields no delivery for that long exits cleanly, reporting what it drained through the same Slack
-consumer-stop note the workers already post. The command then waits (over the existing SSM
-mechanics - no new infrastructure) until **every** worker container on the host has idle-exited
-and stops the host, so cost is capped automatically. The worker containers run `restart:
-on-failure`, so a clean idle-exit stays exited (a crash still restarts). If the drain does not
-complete within `INGEST_DRAIN_TIMEOUT` (default 1h) the host is left running for inspection and
-the command exits non-zero. A producer run that arrives after the host has stopped does not strand
-its messages - they sit durably in the queue, and the health command (below) plus the
-backlog-with-zero-consumers alarm make an off consumer host visible. `WORKER_IDLE_TIMEOUT` is off
-(empty) by default, including locally, so nothing changes for a worker fleet meant to stay up.
-
-### Prerequisites (human-gated, deferred to the operator)
-
-1. **Fill the dev account id.** `deploy/targets.json`'s `dev.account_id` is the placeholder
-   `000000000000`; the reused account guard (`scripts/aws-target-guard.sh`) refuses every `dev`
-   run until it holds the real dev AWS account id. The command surfaces the expected-vs-actual
-   mismatch; fix the file rather than bypassing the guard.
-2. **Provision the hosts.** `terraform apply` stays human-gated:
-   `terraform apply -var enable_ingestion_hosts=true` in `stack/terraform/dev` (run with
-   elevated credentials). Until then the command reports "no host found ... enable_ingestion_hosts
-   is off or not applied" and does nothing.
-3. **Populate the secrets.** The `app/*` secrets are created empty by Terraform and set out of
-   band (`aws secretsmanager put-secret-value`); the broker URL and RDS DSN are published by
-   their modules. A secret the host cannot read fails the run loudly, naming the variable.
-
-### INSEE re-run idempotency checkpoint
-
-After a real statsingest ingest into dev RDS, prove a re-run adds no duplicate passages - the
-validation of the VER-123/124 provenance-key scheme (the stable `(series, period)` key behind
-the `wiki_chunks (page_id, chunk_index)` upsert) against real RDS, not only the in-memory
-integration test. Run it over an open `make db-tunnel` tunnel (it `psql`s to `localhost`):
-
-```bash
-make db-tunnel ENV=dev                          # terminal 1: SSM port-forward to the private RDS
-PGPASSWORD=... make insee-idempotency-check ENV=dev  # terminal 2: count, re-run statsingest, assert no growth
-```
-
-It counts `wiki_chunks` rows whose `corpus` matches the INSEE corpora (`insee`, `insee-chomage`,
-`insee-emploi`, `insee-prix`, `insee-pib`), re-runs the stats producer, counts again, and exits
-non-zero if the count grew. The re-ingest runs through the crawler host (`INSEE_REINGEST_CMD`
-defaults to `scripts/ingest-host.sh crawler stats up --stop-after` - the same single ingestion
-model); override it to point elsewhere. `SKIP_INGEST=1` does a back-to-back count without
-re-ingesting; `DRY_RUN=1` dry-runs the re-ingest. Credentials ride in `PGPASSWORD`/`PGURL` in
-the environment, never on an argv.
-
-### Versioned queue
-
-The queue is `<base>.v<version>`; `RABBITMQ_QUEUE_VERSIONS` is a comma-separated, oldest-first
-list (default `1`). The newest version is active: the producer publishes to it and stamps it on
-every message (an AMQP header); a worker drops a message stamped with a version it does not know.
-To roll, append a new version; workers on the old version drain it, then it is removed from the
-list. Delivery stays at-least-once with publisher confirms and durable, priority-ordered queues.
-The same machinery serves every source's queue. Because the hosts run the containers directly,
-a version roll is just a new `RABBITMQ_QUEUE_VERSIONS` value in the run environment - it touches
-no task definition and no Terraform.
+`DRY_RUN=1` drives the whole path (guard, resolve, start, send-command) without touching AWS.
+Non-secret producer config (`CRAWL_CATEGORIES`, `FACTCHECK_QUERIES`, ...) is read from the shell and
+forwarded; API keys come from Secrets Manager on the host (`scripts/ingest-fetch-env.sh` into a
+`0600` file), never through the SSM command or a log.
 
 ### Pipeline health at a glance
 
-`make pipeline-health` (script: `scripts/pipeline-health.sh`) prints one **read-only** snapshot of
-the whole loop so an operator no longer needs several commands across two hosts and the database to
-know whether it is turning. It never starts, stops, or writes anything. Two clearly separated
-sections:
+`make pipeline-health` (`scripts/pipeline-health.sh`) prints one **read-only** snapshot of the whole
+loop - it never starts, stops, or writes anything. Two sections:
 
 - **Local** - corpus row counts from the compose Postgres (`claims`; `evidence_chunks` split into
   embedded vs un-embedded; `political_claims`; `voting_records`) and which fleet containers are
-  running (scheduler, workers).
+  running.
 - **Cloud** - the crawler and consumer host instance states, per-queue **and per-DLQ** backlog, and
-  each source's last-successful-run recency (the `RunSuccess` metric the producers emit).
+  each source's last-successful-run recency (the `RunSuccess` metric). Cloud corpus counts are read
+  over a `make db-tunnel` by pointing `PIPELINE_DB_DSN` at the tunnel.
 
-Each lookup degrades on its own: the local section says so when the stack (or just the database) is
-down; the cloud section says so when the account guard cannot resolve (no `deploy/targets.json`, or
-missing credentials) or a metric is unavailable (the metrics lambda is opt-in). Cloud corpus counts
-are read over a `make db-tunnel` by pointing `PIPELINE_DB_DSN` at the tunnel. The hosts live in
-`dev`, so pass `ENV=dev`:
+Each lookup degrades on its own when the stack, database, or account guard is unavailable. Hosts live
+in `dev`, so `make pipeline-health ENV=dev`.
 
-```bash
-make pipeline-health ENV=dev
-```
+### Prerequisites (human-gated)
 
-### Local autonomy: a self-updating stack from `.env`
+1. **Fill the dev account id** in `deploy/targets.json` (gitignored; the guard refuses every `dev`
+   run until it holds the real id).
+2. **Provision the hosts** - `terraform apply -var enable_ingestion_hosts=true` in
+   `stack/terraform/dev` (human-gated, elevated credentials).
+3. **Populate the secrets** - the `app/*` secrets are created empty by Terraform and set out of band
+   (`make push-secrets ENV=dev`); a secret the host cannot read fails the run loudly, naming the
+   variable.
 
-The compose stack can run the whole loop with no operator action: the always-on `scheduler` service
-fires each enabled producer on its cron, and a running worker fleet drains the queues continuously.
-Every source defaults **disabled** (a plain `make up` schedules nothing and never spends), so
-turning the stack into a self-updating system is an explicit, cost-aware choice. Add to the root
-`.env`:
+### INSEE re-run idempotency checkpoint
 
-```bash
-# Enable scheduled producers (each defaults DISABLED). *_CRON is a 5-field spec; defaults shown.
-SCHEDULE_WIKIPEDIA_ENABLED=true
-SCHEDULE_WIKIPEDIA_CRON=0 3 * * *
-SCHEDULE_FACTCHECK_ENABLED=true
-SCHEDULE_FACTCHECK_CRON=0 4 * * *
-SCHEDULE_SCRUTINS_ENABLED=true
-SCHEDULE_SCRUTINS_CRON=30 4 * * *
-
-# Producer config the enabled sources need:
-CRAWL_CATEGORIES=Category:Politique en France   # wikipedia (required when enabled)
-FACTCHECK_QUERIES=retraites,chômage             # factcheck (required when enabled)
-FACTCHECK_API_KEY=...                           # Google Fact Check Tools key (factcheck)
-CHECKWORTHY_API_KEY=...                          # optional crawl gate (or CRAWL_CHECKWORTHY=false)
-EMBEDDING_API_KEY=...                            # Voyage key - workers cannot embed without it
-```
-
-Then bring up the scheduler and a worker fleet that stays up to drain:
+After a real `statsingest` into dev RDS, prove a re-run adds no duplicate passages - the validation
+of the stable `(series, period)` provenance key against real RDS. Run over an open `make db-tunnel`:
 
 ```bash
-make up                     # includes the always-on scheduler
-make crawl-workers          # wikipedia -> crawl.chunks
-make fleet-up               # stats -> embedding.jobs
-make factcheck-workers      # factcheck -> factcheck.claims
-make scrutins-workers       # scrutins -> scrutins.votes
+make db-tunnel ENV=dev                                 # terminal 1
+PGPASSWORD=... make insee-idempotency-check ENV=dev     # terminal 2: count, re-run, assert no growth
 ```
 
-Locally `WORKER_IDLE_TIMEOUT` is unset, so the workers **do not** idle-exit - they stay up and
-drain each scheduled run as it lands. `make pipeline-health` confirms it is turning.
-
-**Cost.** Scheduled runs spend real money on every fire: the crawl fact-checkability gate
-(Anthropic, per `CHECKWORTHY_API_KEY`) and the embedding of every produced chunk/claim (Voyage, per
-`EMBEDDING_API_KEY`); the fact-check verify path's terminal DeepSeek gate spends per low-confidence
-claim at query time. Start with tight `CRAWL_CATEGORIES`/`FACTCHECK_QUERIES`, or set
-`CRAWL_CHECKWORTHY=false` to isolate the gate, before widening the crons.
-
-**Verify it end-to-end** with a short test cron (fires every two minutes) and watch a produce ->
-drain -> idle cycle happen with no operator action, then revert it:
-
-```bash
-SCHEDULE_WIKIPEDIA_CRON="*/2 * * * *"   # temporary; watch `make logs` and `make pipeline-health`
-```
-
-**Stop it.** Set the `SCHEDULE_*_ENABLED` flags back to `false` (or remove them) and
-`docker compose restart scheduler`; stop the worker fleets with `make fleet-down` (and the
-per-source `*-workers` containers). The producers are idempotent (workers upsert), so stopping and
-restarting never double-ingests.
+`SKIP_INGEST=1` counts back-to-back; `DRY_RUN=1` dry-runs the re-ingest; credentials ride in
+`PGPASSWORD`/`PGURL`, never on argv.
 
 ---
 
-## 11. Confidence by closeness (query-time scoring)
+## 14. Cross-references
 
-The pipeline above builds the evidence corpus; this section is what a *query* does with it. It is
-**query-time, not ingest-time**: nothing here writes to `wiki_chunks` or `claims`, and the score
-is streamed on the live result frame, never stored.
-
-When a spoken statement is matched, its retrieved cluster is aggregated into a single
-**confidence score** - how strongly the corpus corroborates the statement, by the closeness of
-its matches. The formula lives in exactly one place, `internal/service/confidence.go`
-(`computeConfidence`), and is bounded by the matcher config (`ConfidenceClusterSize`,
-`ConfidenceLeadWeight`, `ConfidenceBodyWeight`).
-
-- Each **curated claim** match contributes its cosine similarity as signed evidence: a
-  corroborating claim adds to **Supporting**, a contradicting claim adds to **Contradicting**, an
-  unclear claim is ignored.
-- Each **Wikipedia evidence** match contributes its similarity scaled by a chunk-kind weight (a
-  `lead` summary outweighs buried `body` prose) to **Supporting**.
-- Only the strongest `ConfidenceClusterSize` matches feed the score.
-- **Score** = `Supporting / (Supporting + Contradicting)`, bounded `[0, 1]`; `0` when nothing
-  stance-bearing corroborates the statement.
-
-The live result frame surfaces the score *and* its breakdown so it is explainable: `confidence`
-carries `{ score, supporting, contradicting, evidence_items }`, and every match carries its own
-`contribution` (the stance-bearing weight it added; `0` for an unclear claim, a non-positive
-similarity, or a match beyond the cluster cap). The per-match contributions sum to
-`supporting + contradicting`. The frontend renders the percentage with a compact
-supporting/contradicting breakdown beneath it. See the data dictionary for the field-level
-reference.
-
----
-
-## 12. Category-crawl ingestion (additive)
-
-A second, **additive** path fills `wiki_chunks` from a focused category slice over
-HTTP - no multi-gigabyte dump download. It never touches the dump pipeline
-(`wikisync`/`embedworker`) or its staging table; it upserts straight into live
-`wiki_chunks` alongside whatever the dump pipeline already wrote.
-
-```mermaid
-flowchart LR
-    CAT["Wikipedia<br/>Action API"]
-    subgraph PROD["cmd/wikicrawl (producer, DB-free, + LLM gate)"]
-      M["list=categorymembers<br/>BFS subcats to depth, page cap"]
-      X["prop=extracts<br/>lead (exintro) + full (explaintext)"]
-      C["Chunk() lead -> kind=lead<br/>body  -> kind=body"]
-      G["fact-checkability gate<br/>internal/evidencegate: citable<br/>evidence? drop if not (fail-open)"]
-      P["publish 1 self-contained<br/>CrawlJob per PASSING chunk"]
-    end
-    Q[["RabbitMQ<br/>crawl.chunks.v&lt;n&gt;<br/>durable, priority"]]
-    subgraph FLEET["cmd/crawlworker x N (competing consumers)"]
-      W1["worker 1"]
-      WN["worker N"]
-    end
-    V["Voyage voyage-4-large<br/>input_type=document"]
-    LIVE[("wiki_chunks (live)<br/>+ HNSW index")]
-
-    CAT --> M --> X --> C --> G --> P --> Q
-    Q --> W1 & WN
-    W1 & WN --> V
-    W1 & WN -->|"UpsertEmbeddedChunk<br/>(content + vector, atomic)"| LIVE
-```
-
-| Piece | Location | Responsibility |
-|---|---|---|
-| Category crawler | `internal/wiki/crawl.go` | `CategoryMembers` BFS over the Action API: subcategories to `MaxDepth`, dedupe page ids, stop at `MaxPages`, follow continuation. |
-| Body extracts | `internal/wiki/mediawiki.go` | `FullExtracts` (`explaintext`, no `exintro`) for the article body; the lead source `Extracts` is unchanged. |
-| Producer logic | `internal/wiki/crawlproduce.go` | `RunCrawl`: crawl, fetch lead + body, chunk, gate each chunk, publish one `CrawlJob` per *passing* chunk (lead chunks then body, contiguous `chunk_index`). Transport-free, DB-free. |
-| Fact-checkability gate | `internal/evidencegate/evidencegate.go` | Per-chunk LLM judgment: *"is this passage verifiable, citable factual evidence?"* A forced-tool, temperature-0 Haiku call on `internal/llm`. Distinct from `internal/checkworthy` (which judges a short spoken statement). The producer drops chunks it rejects before they reach the broker; on a gate error the chunk is published anyway (fail-open). |
-| Job + consumer | `internal/crawljob/crawljob.go` | The self-contained `CrawlJob` message and the `Worker` that embeds each chunk then upserts it live; mirrors `internal/embedjob` semantics. |
-| Producer binary | `cmd/wikicrawl/` | Wire config + API client + broker; run `RunCrawl`; exit. No DB connection. |
-| Consumer binary | `cmd/crawlworker/` | Wire config + Voyage embedder + store + broker; run the worker until SIGTERM. |
-| Store write | `queries/wiki.sql` (`UpsertEmbeddedChunk`), `internal/store/postgres/wiki.go` | Insert-or-replace content **and** embedding in one statement (text-form `::halfvec`, never binary COPY), so a row is never searchable without its vector. |
-
-**Self-contained messages.** Every field a live `wiki_chunks` row needs travels in
-the `CrawlJob` body, so the worker reads nothing from the database before writing
-and the broker can hold a primed corpus indefinitely before any worker is started -
-the convenience the path exists for.
-
-**Provenance and PK.** Crawl rows carry `corpus = CRAWL_CORPUS` (default
-`<project>-crawl`), distinct from the dump corpus, so a dump-corpus delta never
-touches crawl rows and vice versa. The `(page_id, chunk_index)` primary key is
-**global**, so a page present in both collapses to one row (last writer wins on
-content + provenance) - intended dedup.
-
-**Error handling.** The worker mirrors `embedjob`: malformed / invalid / unknown
-queue-version messages are ack-dropped; a bad provider shape (not 1x1024) is
-dropped; a transient embed/upsert failure is re-enqueued with the attempt
-incremented and dropped after `CRAWL_WORKER_MAX_ATTEMPTS`; a shutdown mid-work
-nacks for requeue. Vector consistency is identical to the dump pipeline (one
-model, 1024 dims, `halfvec`, `input_type=document`), so `make wiki-verify` asserts
-the combined corpus.
-
-**Fact-checkability gate (producer-side).** With `CRAWL_CHECKWORTHY=true` (the
-default), the producer runs a per-chunk LLM judgment after chunking and before
-publishing, with up to `CRAWL_CHECKWORTHY_CONCURRENCY` calls in flight and the
-rate capped by `CRAWL_CHECKWORTHY_RPM` (0 = unpaced). A chunk judged not citable
-evidence is **dropped** (never published), so the broker and all downstream
-embedding spend are bounded to fact-checkable content; dropped vs published is
-counted and logged per batch and at the end of the run. The gate **fails open**:
-on any LLM error the chunk is published anyway, so a flaky model can never
-silently empty the corpus. The decision is baked at crawl time - re-tuning the
-prompt means re-crawling. Set `CRAWL_CHECKWORTHY=false` to publish every chunk
-(the pre-gate behavior); when on, the producer requires `CHECKWORTHY_API_KEY` and
-fails fast without it. The gate runs **only** in the producer; the worker and the
-live `internal/checkworthy` path are untouched.
-
-### Configuration
-
-| Env var | Default | Controls |
-|---|---|---|
-| `CRAWL_CATEGORIES` | (required for producer) | Comma-separated category titles, e.g. `Category:Climate change,Category:Physics`. |
-| `CRAWL_PROJECT` | `WIKI_CORPUS` value | Wiki project queried and used to build article URLs (e.g. `simplewiki`). |
-| `CRAWL_CORPUS` | `<project>-crawl` | Provenance tag stored in `wiki_chunks.corpus`. |
-| `CRAWL_MAX_DEPTH` | `1` | Subcategory recursion depth (0 = direct pages only). |
-| `CRAWL_MAX_PAGES` | `5000` | Hard cap on distinct pages collected. |
-| `CRAWL_INCLUDE_BODY` | `true` | When false, ingest lead only (`kind='lead'`). |
-| `CRAWL_CHECKWORTHY` | `true` | Producer-side fact-checkability gate. `false` publishes every chunk (pre-gate behavior). |
-| `CHECKWORTHY_API_KEY` | (required when gate on) | Anthropic key for the gate; read from env, never logged. |
-| `CRAWL_CHECKWORTHY_MODEL` | `claude-haiku-4-5-20251001` | Gate model (cheapest fast Claude). |
-| `CRAWL_CHECKWORTHY_CONCURRENCY` | `8` | In-flight gate judgments in the producer. |
-| `CRAWL_CHECKWORTHY_RPM` | `0` (unpaced) | Per-producer Anthropic call-rate cap. |
-| `RABBITMQ_CRAWL_QUEUE` | `crawl.chunks` | Base queue name; versioned via `RABBITMQ_QUEUE_VERSIONS`. |
-| `CRAWL_WORKER_CONCURRENCY` | `4` | In-flight embeds per worker replica; also the prefetch. |
-| `CRAWL_WORKER_MAX_ATTEMPTS` | `5` | Delivery budget before a job is dropped. |
-| `CRAWLWORKER_REPLICAS` | `2` | Competing worker replicas (`make crawl-workers`). |
-
-The embedding key/model reuse `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`; the broker URL reuses `RABBITMQ_URL`.
-
-### How to run
-
-Behind the paid `wiki` Compose profile (a plain `make up` starts no worker fleet and
-no auto-prime; the profileless broker idles, making no API calls):
-
-```bash
-# Auto-prime: bring up the broker + worker fleet + a one-shot crawl that fills the
-# broker from CRAWL_CATEGORIES (set it and the gate key in .env first). The fleet
-# drains it as it fills.
-make prime                                            # == docker compose --profile wiki up -d
-
-# Or run the producer explicitly (re-prime / different categories):
-make crawl-workers CRAWLWORKER_REPLICAS=4              # start N crawl consumers
-make crawl CRAWL_CATEGORIES="Category:Climate change" CRAWL_MAX_PAGES=2000
-                                                       # crawl + gate + publish, then exit
-make wiki-verify                                       # corpus (dump + crawl) complete & consistent
-```
-
-`wiki-prime` (the auto-prime service) and the worker fleet (`embedworker`,
-`crawlworker`) live in the `wiki` profile, so `docker compose --profile wiki up -d`
-brings up exactly broker + fleet + a one-shot prime crawl. The one-shot ops tools
-(`wikicrawl` on-demand, `wiki-populate`, `wiki-reset`, `wiki-cluster`, `wiki-verify`)
-live in the separate `tools` profile and only run when invoked, never on `up` -
-that is what keeps the bare `--profile wiki up` auto-prime safe. `wiki-prime` requires
-`CRAWL_CATEGORIES` (it fails fast without it) and, with the gate on by default, a
-`CHECKWORTHY_API_KEY` (or `CRAWL_CHECKWORTHY=false`).
-
-### Known limitations (v1)
-
-Body chunks store `section=''` (extracts strip heading markup); the producer keeps
-no checkpoint, so a crash means re-run (safe via idempotent upserts); a re-crawl
-re-embeds unchanged articles. See the design for the rationale and follow-ups:
-`docs/superpowers/specs/2026-06-15-wikipedia-category-crawl-ingestion-design.md` SS11.
-
----
-
-## 13. Cross-references
-
+- Source inventory (per-connector access method, cadence, licence, attribution): [`docs/fact-check-sources.md`](fact-check-sources.md)
+- Configuration reference (every knob + default): [`docs/configuration.md`](configuration.md)
+- Datastore scale benchmark (index choice, BQ threshold): [`docs/datastore-scale-benchmark.md`](datastore-scale-benchmark.md)
+- Embedding-model migration runbook: [`docs/embedding-model-migration.md`](embedding-model-migration.md)
+- Cloud ingestion hosts runbook: [`docs/ingestion-hosts.md`](ingestion-hosts.md)
+- First-time setup: [`docs/first-setup.md`](first-setup.md)
 - Data dictionary: `.claude/skills/data-map/SKILL.md`
-- Design specs: `docs/superpowers/specs/2026-06-10-wikipedia-ingestion-design.md`,
-  `docs/superpowers/specs/2026-06-11-wiki-ingest-staging-redesign-design.md`,
-  `docs/superpowers/specs/2026-06-15-wikipedia-category-crawl-ingestion-design.md`
-- Schema: `stack/backend/migrations/0004_wiki_chunks.up.sql`, `0009_*`, `0010_*`
-- Queries: `stack/backend/queries/wiki.sql`
-- Confidence scoring (query-time): `stack/backend/internal/service/confidence.go`, `match.go`
-- LLM classifiers: `stack/backend/internal/llm` (shared transport), `internal/evidencegate` (crawl gate), `internal/checkworthy` (live)
-- Commands: `stack/backend/cmd/{wikisync,embedworker,wikicluster,wikiverify,wikicrawl,crawlworker}/`
-- Cloud ingestion (EC2 hosts): runbook [`docs/ingestion-hosts.md`](ingestion-hosts.md); `scripts/ingest-host.sh` (orchestrator), `scripts/ingest-fetch-env.sh` (host env), `docker-compose.ingest.yml` (cloud override), commands `.claude/commands/crawler.md` + `.claude/commands/consumer.md`
-- On-demand control: `scripts/aws-target-guard.sh` (+ `deploy/targets.json`, account guard), `scripts/ingestion-common.sh` (shared config), `scripts/insee-idempotency-check.sh` (real-RDS idempotency checkpoint), `scripts/ssm-port-forward.sh` (bastion tunnel), make targets `crawler`/`consumer`/`insee-idempotency-check`
-- Infra: `stack/terraform/README.md` (`enable_ingestion_hosts`, `enable_bastion`, `enable_rds`, the `rabbitmq` module)
+- Connector registry: `stack/backend/internal/connector/registry.go` (mirror `sources.json`)
+- Schema: `stack/backend/migrations/0013_evidence_chunks.up.sql`, `0018_*`, `0011_political_evidence.up.sql`
+- Queries: `stack/backend/queries/evidence.sql`
+- Transport / resilience: `stack/backend/internal/queue`; alarms `stack/terraform/modules/observability`
+- Commands: `stack/backend/cmd/{wikisync,wikicrawl,embedworker,crawlworker,evidenceworker,wikicluster,wikiverify,evidenceretention,eval}/`
