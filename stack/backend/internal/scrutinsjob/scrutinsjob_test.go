@@ -96,6 +96,66 @@ func TestProcessParsesAndUpserts(t *testing.T) {
 	}
 }
 
+// senatPayload is a self-contained Senat scrutin the parliament producer publishes
+// (the chamber-aware branch), naming two senators.
+const senatPayload = `{
+  "scrutin_id": "senat-2026-15",
+  "objet": "sur l'ensemble du projet de loi X",
+  "date": "2026-02-10",
+  "source_url": "https://www.senat.fr/scrutin-public/2026/scr2026-15.html",
+  "votes": [
+    {"person_id": "98046X", "person_name": "François MARC", "position": "contre"},
+    {"person_id": "98047Y", "person_name": "Yves FRÉVILLE", "position": "pour"}
+  ]
+}`
+
+// TestProcessSenatChamberWritesSenatRecords proves the chamber-aware dispatch: a job
+// stamped chamber=senat is parsed by the Senat parser and written with
+// domain.ChamberSenat, while the existing Assemblee path (empty chamber) is
+// unchanged.
+func TestProcessSenatChamberWritesSenatRecords(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{}
+	w := newTestWorker(store)
+
+	body, err := json.Marshal(ScrutinJob{ID: "senat-2026-15", Chamber: "senat", Scrutin: json.RawMessage(senatPayload)})
+	if err != nil {
+		t.Fatalf("marshal senat job: %v", err)
+	}
+	if res := w.Process(t.Context(), body, 5); res.Action != ActionAck {
+		t.Fatalf("Action = %v, want ActionAck", res.Action)
+	}
+	if store.count() != 2 {
+		t.Fatalf("upserted %d records, want 2", store.count())
+	}
+	for _, r := range store.records {
+		if r.Chamber != domain.ChamberSenat {
+			t.Errorf("record %q chamber = %q, want senat", r.PersonID, r.Chamber)
+		}
+		if r.ScrutinID != "senat-2026-15" {
+			t.Errorf("record scrutin id = %q", r.ScrutinID)
+		}
+	}
+}
+
+// TestProcessUnknownChamberIsDeadLettered proves a job stamped with a chamber the
+// worker does not know is dead-lettered, never written under the wrong parser.
+func TestProcessUnknownChamberIsDeadLettered(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{}
+	w := newTestWorker(store)
+	body, err := json.Marshal(ScrutinJob{ID: "x", Chamber: "bundestag", Scrutin: json.RawMessage(`{"scrutin_id":"x"}`)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if res := w.Process(t.Context(), body, 5); res.Action != ActionReject {
+		t.Fatalf("Action = %v, want ActionReject for an unknown chamber", res.Action)
+	}
+	if store.count() != 0 {
+		t.Fatalf("wrote %d records for an unknown chamber, want 0", store.count())
+	}
+}
+
 func TestProcessIsIdempotent(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{}

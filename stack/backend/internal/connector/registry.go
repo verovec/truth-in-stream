@@ -80,6 +80,69 @@ var descriptors = []Descriptor{
 		Queue:      "embedding.jobs",
 		ForwardEnv: []string{"WIKI_ENQUEUE_BATCH_SIZE"},
 	},
+	// The parliament sources all run the one parliamentcrawl producer selected by
+	// PARLIAMENT_DATASET; each downloads a bulk dump, diffs it against a per-dataset
+	// manifest, and publishes only new or changed records. The textual datasets emit
+	// generic evidence jobs to the shared evidence queue (an-amendements sets NewQueue
+	// because evidence.chunks is the first queue the evidence worker serves; the rest
+	// reuse it); the Senat scrutins dataset emits chamber-aware scrutin jobs to the
+	// existing scrutins queue. All are keyless (public Licence Ouverte / Senat open
+	// data).
+	{
+		Name:        "an-amendements",
+		DefaultCron: "0 5 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_LEGISLATURE", "PARLIAMENT_MAX_ITEMS"},
+		NewQueue:    true,
+	},
+	{
+		Name:        "an-questions",
+		DefaultCron: "20 5 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_LEGISLATURE", "PARLIAMENT_MAX_ITEMS"},
+	},
+	{
+		Name:        "an-comptesrendus",
+		DefaultCron: "40 5 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_LEGISLATURE", "PARLIAMENT_MAX_ITEMS"},
+	},
+	{
+		Name:        "senat-questions",
+		DefaultCron: "0 6 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_MAX_ITEMS"},
+	},
+	{
+		Name:        "senat-dosleg",
+		DefaultCron: "30 6 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "evidenceworker",
+		Queue:       "evidence.chunks",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_MAX_ITEMS"},
+	},
+	{
+		Name:        "senat-scrutins",
+		DefaultCron: "0 7 * * *",
+		Producer:    "parliamentcrawl",
+		Worker:      "scrutinsworker",
+		Queue:       "scrutins.votes",
+		RequiredEnv: []string{"PARLIAMENT_DATASET"},
+		ForwardEnv:  []string{"PARLIAMENT_DATASET", "PARLIAMENT_SINCE_YEAR", "PARLIAMENT_MAX_ITEMS"},
+	},
 }
 
 // All returns a copy of the registry in declaration order, so a caller cannot

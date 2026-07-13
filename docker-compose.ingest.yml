@@ -13,11 +13,18 @@
 #   /consumer <source> -> `docker compose -f docker-compose.ingest.yml up -d <worker>`
 #
 # Source -> producer / queue / worker:
-#   wikipedia  wikicrawl      / crawl.chunks     / crawlworker
-#   stats      statsingest    / embedding.jobs   / embedworker
-#   sdmx       sdmxcrawl      / embedding.jobs   / embedworker
-#   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
-#   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
+#   wikipedia         wikicrawl       / crawl.chunks     / crawlworker
+#   stats             statsingest     / embedding.jobs   / embedworker
+#   sdmx              sdmxcrawl       / embedding.jobs   / embedworker
+#   ods               odsingest       / embedding.jobs   / embedworker
+#   factcheck         factcheckcrawl  / factcheck.claims / factcheckworker
+#   scrutins          scrutinscrawl   / scrutins.votes   / scrutinsworker
+#   an-amendements    parliamentcrawl / evidence.chunks  / evidenceworker
+#   an-questions      parliamentcrawl / evidence.chunks  / evidenceworker
+#   an-comptesrendus  parliamentcrawl / evidence.chunks  / evidenceworker
+#   senat-questions   parliamentcrawl / evidence.chunks  / evidenceworker
+#   senat-dosleg      parliamentcrawl / evidence.chunks  / evidenceworker
+#   senat-scrutins    parliamentcrawl / scrutins.votes   / scrutinsworker
 #
 # Container logs ship to CloudWatch Logs under /truth-in-stream/<env>/ingest/*,
 # the exact prefix the host instance profile is scoped to write; the operator
@@ -205,6 +212,39 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinscrawl"
         awslogs-stream-prefix: "scrutinscrawl"
 
+  # parliament: the one producer for every parliament dataset, selected by
+  # PARLIAMENT_DATASET (an-amendements | an-questions | an-comptesrendus |
+  # senat-questions | senat-dosleg | senat-scrutins). It conditionally downloads the
+  # dataset's bulk dump (skipped when unchanged via the persisted ETag marker), diffs
+  # it against a per-dataset manifest, and publishes only new or changed records: the
+  # textual datasets emit generic evidence jobs to evidence.chunks, and senat-scrutins
+  # emits chamber-aware scrutin jobs to scrutins.votes. DB-free. Keyless (public
+  # Licence Ouverte / Senat open data). PARLIAMENT_DATASET is required (the operator
+  # command forwards it); state files are derived per dataset under /state.
+  parliamentcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/parliamentcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      PARLIAMENT_DATASET: "${PARLIAMENT_DATASET:-}"
+      PARLIAMENT_LEGISLATURE: "${PARLIAMENT_LEGISLATURE:-}"
+      PARLIAMENT_SINCE_YEAR: "${PARLIAMENT_SINCE_YEAR:-}"
+      PARLIAMENT_MAX_ITEMS: "${PARLIAMENT_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - parliament-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/parliamentcrawl"
+        awslogs-stream-prefix: "parliamentcrawl"
+
   # --- Workers (run by /consumer; long-running, drain the queue into the DB) ---
   #
   # stop_grace_period is 120s so that on `docker compose down` / host stop the
@@ -324,6 +364,33 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinsworker"
         awslogs-stream-prefix: "scrutinsworker"
 
+  # generic evidence consumer: drain evidence.chunks, embed each chunk, and upsert
+  # it into the live evidence corpus. Source-neutral: it serves every connector
+  # that targets evidence_chunks (an-amendements today).
+  evidenceworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/evidenceworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      EVIDENCE_WORKER_CONCURRENCY: "${EVIDENCE_WORKER_CONCURRENCY:-}"
+      EVIDENCE_WORKER_MAX_ATTEMPTS: "${EVIDENCE_WORKER_MAX_ATTEMPTS:-}"
+      EVIDENCE_WORKER_RPM: "${EVIDENCE_WORKER_RPM:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/evidenceworker"
+        awslogs-stream-prefix: "evidenceworker"
+
   # tv capture: long-running headless viewer. Reconciles the enabled TV channels
   # against running capture pipelines (streamlink|ffmpeg), feeds PCM to the
   # backend's live hub, and archives hourly MPEG-TS segments as kind `tv`
@@ -362,6 +429,10 @@ volumes:
   # Persists the scrutins-archive conditional-GET marker across producer runs on
   # the same host, so an unchanged archive is a 304 and re-runs skip the download.
   scrutins-state:
+  # Persists the parliament conditional-GET marker and per-identifier manifest
+  # across producer runs on the same host, so an unchanged dump is a 304 and a
+  # changed dump reprocesses only the records whose fingerprint moved.
+  parliament-state:
   # Holds in-progress TV capture segments before upload, so a host restart leaves
   # partial .ts for the worker's startup salvage pass.
   tv-capture-work:
