@@ -75,6 +75,10 @@ type Querier interface {
 	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
 	GetTVChannel(ctx context.Context, id uuid.UUID) (TvChannel, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
+	// Resolve a video by its storage object key. The key is UNIQUE, so this is the
+	// idempotency probe for a deterministic-key writer: a repeated request for the
+	// same recording finds the existing row instead of colliding on the constraint.
+	GetVideoByObjectKey(ctx context.Context, objectKey string) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
 	// Persist one atomic claim's verdict. ordinal is assigned by the identity
 	// column, preserving insertion order within the sentence.
@@ -93,6 +97,13 @@ type Querier interface {
 	// document and must not surface as a permanent "Pending" ghost card.
 	ListDocuments(ctx context.Context) ([]ListDocumentsRow, error)
 	ListTVChannels(ctx context.Context) ([]TvChannel, error)
+	// Every archived TV recording captured before the cutoff, oldest first, for
+	// retention pruning. Scoped to kind 'tv' with a real recorded_at so the scan
+	// touches only recordings and the caller need not filter in Go.
+	ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.Timestamptz) ([]Video, error)
+	// The consumption library (GET /api/videos, the /app grid) excludes kind 'tv':
+	// archived channel recordings are surfaced per-channel on /tv, not mixed into the
+	// general video library. Individual recordings remain fetchable by id for replay.
 	ListVideos(ctx context.Context) ([]Video, error)
 	// Claim a ready document for a fresh analysis run: flip it to analysing (the
 	// lock), zero the progress counter, and clear any prior error - all in one

@@ -160,6 +160,38 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 	return i, err
 }
 
+const getVideoByObjectKey = `-- name: GetVideoByObjectKey :one
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE object_key = $1
+`
+
+// Resolve a video by its storage object key. The key is UNIQUE, so this is the
+// idempotency probe for a deterministic-key writer: a repeated request for the
+// same recording finds the existing row instead of colliding on the constraint.
+func (q *Queries) GetVideoByObjectKey(ctx context.Context, objectKey string) (Video, error) {
+	row := q.db.QueryRow(ctx, getVideoByObjectKey, objectKey)
+	var i Video
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.ObjectKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.Status,
+		&i.Kind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceUrl,
+		&i.SourceID,
+		&i.DurationMs,
+		&i.Error,
+		&i.ChannelID,
+		&i.RecordedAt,
+	)
+	return i, err
+}
+
 const getVideoBySourceID = `-- name: GetVideoBySourceID :one
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
 FROM videos
@@ -189,12 +221,62 @@ func (q *Queries) GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) 
 	return i, err
 }
 
+const listTVRecordingsBefore = `-- name: ListTVRecordingsBefore :many
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+FROM videos
+WHERE kind = 'tv' AND recorded_at IS NOT NULL AND recorded_at < $1
+ORDER BY recorded_at
+`
+
+// Every archived TV recording captured before the cutoff, oldest first, for
+// retention pruning. Scoped to kind 'tv' with a real recorded_at so the scan
+// touches only recordings and the caller need not filter in Go.
+func (q *Queries) ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.Timestamptz) ([]Video, error) {
+	rows, err := q.db.Query(ctx, listTVRecordingsBefore, recordedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Video{}
+	for rows.Next() {
+		var i Video
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.ObjectKey,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.Status,
+			&i.Kind,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SourceUrl,
+			&i.SourceID,
+			&i.DurationMs,
+			&i.Error,
+			&i.ChannelID,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideos = `-- name: ListVideos :many
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
 FROM videos
+WHERE kind <> 'tv'
 ORDER BY created_at DESC, id
 `
 
+// The consumption library (GET /api/videos, the /app grid) excludes kind 'tv':
+// archived channel recordings are surfaced per-channel on /tv, not mixed into the
+// general video library. Individual recordings remain fetchable by id for replay.
 func (q *Queries) ListVideos(ctx context.Context) ([]Video, error) {
 	rows, err := q.db.Query(ctx, listVideos)
 	if err != nil {

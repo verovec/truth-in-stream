@@ -88,6 +88,20 @@ func RequireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+// RequireCaptureService rejects a request whose attached identity is neither a
+// verified admin nor the tvcapture service account (the tv-capture role) with
+// 403, before the protected handler runs. It gates the TV capture write-path so
+// the worker's credential is scoped to capture rather than blanket admin.
+func RequireCaptureService(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := auth.RequireCaptureService(IdentityFrom(r.Context())); err != nil {
+			httpx.Error(w, http.StatusForbidden, "capture service role required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // WithIdentity returns a copy of ctx carrying the validated identity.
 func WithIdentity(ctx context.Context, id auth.Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)

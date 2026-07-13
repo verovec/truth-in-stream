@@ -721,17 +721,90 @@ func TestLoadKeycloak(t *testing.T) {
 				JWKSURL:  "https://login.jeminforme.fr/realms/truth-in-stream/protocol/openid-connect/certs",
 			},
 		},
+		{
+			// The capture worker authenticates with a service-account client whose
+			// azp differs from the web client; the server must accept it, so the
+			// additional-client-ids list is parsed (comma-separated, trimmed).
+			name: "additional client ids are parsed for service accounts",
+			env: map[string]string{
+				"KEYCLOAK_ISSUER":                "https://id.example.com/realms/prod",
+				"KEYCLOAK_CLIENT_ID":             "truth-in-stream-web",
+				"KEYCLOAK_ADDITIONAL_CLIENT_IDS": " tv-capture , other-worker ",
+			},
+			want: Keycloak{
+				Issuer:              "https://id.example.com/realms/prod",
+				ClientID:            "truth-in-stream-web",
+				JWKSURL:             "https://id.example.com/realms/prod/protocol/openid-connect/certs",
+				AdditionalClientIDs: []string{"tv-capture", "other-worker"},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			if got := LoadKeycloak(); got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
+			if diff := cmp.Diff(tc.want, LoadKeycloak()); diff != "" {
+				t.Fatalf("LoadKeycloak() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
+}
+
+func TestLoadTVCapture(t *testing.T) {
+	t.Run("disabled by default needs no secret", func(t *testing.T) {
+		cfg, err := LoadTVCapture()
+		if err != nil {
+			t.Fatalf("LoadTVCapture: %v", err)
+		}
+		if cfg.Enabled || cfg.Active() {
+			t.Fatalf("capture enabled by default")
+		}
+		if cfg.SegmentDuration != time.Hour {
+			t.Errorf("segment duration = %v, want 1h", cfg.SegmentDuration)
+		}
+		if cfg.RetentionDays != 30 {
+			t.Errorf("retention days = %d, want 30", cfg.RetentionDays)
+		}
+		if cfg.ClientID != "tv-capture" {
+			t.Errorf("client id = %q, want tv-capture", cfg.ClientID)
+		}
+	})
+
+	t.Run("enabled requires the client secret", func(t *testing.T) {
+		t.Setenv("TV_CAPTURE_ENABLED", "true")
+		if _, err := LoadTVCapture(); err == nil {
+			t.Fatal("LoadTVCapture accepted enabled capture with no client secret")
+		}
+	})
+
+	t.Run("tunables and derived token url", func(t *testing.T) {
+		t.Setenv("TV_CAPTURE_ENABLED", "true")
+		t.Setenv("TV_CAPTURE_CLIENT_SECRET", "s3cr3t")
+		t.Setenv("KEYCLOAK_ISSUER", "https://id.example.com/realms/prod")
+		t.Setenv("TV_SEGMENT_SECONDS", "1800")
+		t.Setenv("TV_RECORDING_RETENTION_DAYS", "7")
+		t.Setenv("TV_CAPTURE_BACKEND_URL", "http://backend:8080/")
+		cfg, err := LoadTVCapture()
+		if err != nil {
+			t.Fatalf("LoadTVCapture: %v", err)
+		}
+		if !cfg.Active() {
+			t.Fatal("capture not active")
+		}
+		if cfg.SegmentDuration != 30*time.Minute {
+			t.Errorf("segment duration = %v, want 30m", cfg.SegmentDuration)
+		}
+		if cfg.RetentionDays != 7 {
+			t.Errorf("retention days = %d, want 7", cfg.RetentionDays)
+		}
+		if cfg.BackendBaseURL != "http://backend:8080" {
+			t.Errorf("backend base url = %q, want trimmed", cfg.BackendBaseURL)
+		}
+		if want := "https://id.example.com/realms/prod/protocol/openid-connect/token"; cfg.TokenURL != want {
+			t.Errorf("token url = %q, want %q", cfg.TokenURL, want)
+		}
+	})
 }
 
 func TestLoadPrecheck(t *testing.T) {

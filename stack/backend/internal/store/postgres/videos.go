@@ -63,6 +63,35 @@ func (s *Store) GetVideo(ctx context.Context, id string) (domain.Video, error) {
 	return videoFromRow(row), nil
 }
 
+// GetVideoByObjectKey returns the record with the given storage object key, or
+// domain.ErrVideoNotFound. It mirrors GetVideo's no-rows mapping so an absent
+// recording is a recognizable not-found, letting an idempotent writer resolve
+// its own prior insert by the deterministic key instead of colliding on it.
+func (s *Store) GetVideoByObjectKey(ctx context.Context, key string) (domain.Video, error) {
+	row, err := s.queries.GetVideoByObjectKey(ctx, key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Video{}, domain.ErrVideoNotFound
+	}
+	if err != nil {
+		return domain.Video{}, fmt.Errorf("postgres: get video by object key %q: %w", key, err)
+	}
+	return videoFromRow(row), nil
+}
+
+// ListTVRecordingsBefore returns every kind `tv` recording captured before
+// cutoff, oldest first, for retention pruning.
+func (s *Store) ListTVRecordingsBefore(ctx context.Context, cutoff time.Time) ([]domain.Video, error) {
+	rows, err := s.queries.ListTVRecordingsBefore(ctx, timestamptzValue(cutoff))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list tv recordings before %s: %w", cutoff, err)
+	}
+	videos := make([]domain.Video, 0, len(rows))
+	for _, r := range rows {
+		videos = append(videos, videoFromRow(r))
+	}
+	return videos, nil
+}
+
 // DeleteVideo removes the record with the given id. An unparseable id, like a
 // missing row, maps to domain.ErrVideoNotFound: neither can name a real record.
 func (s *Store) DeleteVideo(ctx context.Context, id string) error {

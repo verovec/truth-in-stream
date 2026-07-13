@@ -342,6 +342,13 @@ type Keycloak struct {
 	Issuer   string
 	ClientID string
 	JWKSURL  string
+	// AdditionalClientIDs are extra authorized parties (azp) the verifier accepts
+	// beyond the web ClientID: service-account clients that authenticate with the
+	// client-credentials grant carry their own azp. The tvcapture worker uses the
+	// tv-capture service client, so KEYCLOAK_ADDITIONAL_CLIENT_IDS is set to that
+	// client id wherever the worker runs. Comma-separated; empty keeps the
+	// verifier single-client.
+	AdditionalClientIDs []string
 }
 
 // LoadKeycloak reads the Keycloak OIDC configuration from the environment.
@@ -354,11 +361,114 @@ type Keycloak struct {
 // well formed.
 func LoadKeycloak() Keycloak {
 	issuer := strings.TrimRight(getenv("KEYCLOAK_ISSUER", defaultKeycloakIssuer), "/")
-	return Keycloak{
-		Issuer:   issuer,
-		ClientID: getenv("KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
-		JWKSURL:  getenv("KEYCLOAK_JWKS_URL", issuer+keycloakCertsPath),
+	var additional []string
+	for _, p := range strings.Split(os.Getenv("KEYCLOAK_ADDITIONAL_CLIENT_IDS"), ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			additional = append(additional, v)
+		}
 	}
+	return Keycloak{
+		Issuer:              issuer,
+		ClientID:            getenv("KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
+		JWKSURL:             getenv("KEYCLOAK_JWKS_URL", issuer+keycloakCertsPath),
+		AdditionalClientIDs: additional,
+	}
+}
+
+// keycloakTokenPath is the OIDC token endpoint the tvcapture worker's
+// client-credentials grant posts to, a sibling of the certs path.
+const keycloakTokenPath = "/protocol/openid-connect/token"
+
+const (
+	// defaultTVCaptureClientID is the Keycloak service-account client the capture
+	// worker authenticates as; it carries the scoped tv-capture realm role (not
+	// blanket admin), which authorizes only the TV feed and recording endpoints.
+	defaultTVCaptureClientID = "tv-capture"
+	// defaultTVCaptureBackendURL is the backend API base the worker calls (channel
+	// list, presign, register, prune) and dials the feed WebSocket on. Compose and
+	// the deploy host override it with the internal backend address.
+	defaultTVCaptureBackendURL = "http://localhost:8080"
+	// defaultTVCaptureWorkDir is where segments are written before upload; the
+	// container mounts a volume here so a crash leaves partial segments for the
+	// startup salvage pass.
+	defaultTVCaptureWorkDir = "/work"
+)
+
+// TVCapture configures the tvcapture worker: how it authenticates, which backend
+// it talks to, and the capture/archive/retention tunables. When Enabled is
+// false the worker idles (it does not exit, avoiding a restart loop under
+// restart: unless-stopped) and no secret is required. ClientSecret is read from
+// the environment only and never logged.
+type TVCapture struct {
+	Enabled         bool
+	BackendBaseURL  string
+	TokenURL        string
+	ClientID        string
+	ClientSecret    string
+	SegmentDuration time.Duration
+	RetentionDays   int
+	FeedStall       time.Duration
+	PollInterval    time.Duration
+	WorkDir         string
+	StreamlinkPath  string
+	FFmpegPath      string
+	SlackWebhookURL string
+}
+
+// Active reports whether capture is turned on. A worker built from an inactive
+// config idles without requiring credentials.
+func (c TVCapture) Active() bool { return c.Enabled }
+
+// LoadTVCapture reads the tvcapture worker configuration. TV_CAPTURE_ENABLED
+// gates the whole worker (default off). When enabled, TV_CAPTURE_CLIENT_SECRET
+// is required (the service-account credential); the rest default. The token
+// endpoint is derived from KEYCLOAK_ISSUER unless TV_CAPTURE_TOKEN_URL overrides
+// it. Bad values fail fast at startup.
+func LoadTVCapture() (TVCapture, error) {
+	enabled, err := boolEnvDefault("TV_CAPTURE_ENABLED", false)
+	if err != nil {
+		return TVCapture{}, err
+	}
+	segmentSeconds, err := intEnv("TV_SEGMENT_SECONDS", 3600, 60, 86400)
+	if err != nil {
+		return TVCapture{}, err
+	}
+	retentionDays, err := intEnv("TV_RECORDING_RETENTION_DAYS", 30, 1, 3650)
+	if err != nil {
+		return TVCapture{}, err
+	}
+	stallSeconds, err := intEnv("TV_FEED_STALL_SECONDS", 60, 5, 3600)
+	if err != nil {
+		return TVCapture{}, err
+	}
+	pollSeconds, err := intEnv("TV_CAPTURE_POLL_SECONDS", 30, 5, 3600)
+	if err != nil {
+		return TVCapture{}, err
+	}
+	tokenURL := os.Getenv("TV_CAPTURE_TOKEN_URL")
+	if tokenURL == "" {
+		issuer := strings.TrimRight(getenv("KEYCLOAK_ISSUER", defaultKeycloakIssuer), "/")
+		tokenURL = issuer + keycloakTokenPath
+	}
+	cfg := TVCapture{
+		Enabled:         enabled,
+		BackendBaseURL:  strings.TrimRight(getenv("TV_CAPTURE_BACKEND_URL", defaultTVCaptureBackendURL), "/"),
+		TokenURL:        tokenURL,
+		ClientID:        getenv("TV_CAPTURE_CLIENT_ID", defaultTVCaptureClientID),
+		ClientSecret:    os.Getenv("TV_CAPTURE_CLIENT_SECRET"),
+		SegmentDuration: time.Duration(segmentSeconds) * time.Second,
+		RetentionDays:   retentionDays,
+		FeedStall:       time.Duration(stallSeconds) * time.Second,
+		PollInterval:    time.Duration(pollSeconds) * time.Second,
+		WorkDir:         getenv("TV_CAPTURE_WORK_DIR", defaultTVCaptureWorkDir),
+		StreamlinkPath:  getenv("TV_STREAMLINK_PATH", "streamlink"),
+		FFmpegPath:      getenv("TV_FFMPEG_PATH", "ffmpeg"),
+		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK_URL"),
+	}
+	if enabled && cfg.ClientSecret == "" {
+		return TVCapture{}, fmt.Errorf("config: TV_CAPTURE_CLIENT_SECRET is required when TV_CAPTURE_ENABLED is set")
+	}
+	return cfg, nil
 }
 
 // defaultAnalysisCacheTTL is how long a completed video's cached analysis lives
