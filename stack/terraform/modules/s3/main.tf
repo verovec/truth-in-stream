@@ -95,6 +95,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
     }
   }
 
+  # Backstop expiry for TV capture archives under recordings/. Off by default
+  # (the tvcapture worker's daily prune is authoritative); a positive
+  # recordings_retention_days adds this prefix-scoped safety net without touching
+  # the whole-bucket rules above.
+  dynamic "rule" {
+    for_each = var.recordings_retention_days > 0 ? [1] : []
+
+    content {
+      id     = "expire-tv-recordings"
+      status = "Enabled"
+
+      filter {
+        prefix = "recordings/"
+      }
+
+      expiration {
+        days = var.recordings_retention_days
+      }
+    }
+  }
+
   # Serialize after the public-access block (always created, unlike the
   # count-gated versioning resource) so the bucket's security settings land
   # before the lifecycle PUT, avoiding a first-apply eventual-consistency race.

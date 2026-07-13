@@ -24,3 +24,9 @@ variable "expiration_days" {
   default     = 0
   description = "Days after which objects expire. 0 disables expiration (keep uploads indefinitely)."
 }
+
+variable "recordings_retention_days" {
+  type        = number
+  default     = 0
+  description = "Days after which objects under the recordings/ prefix (TV capture archives) expire. 0 disables the prefix rule (the default): the app-level daily prune is authoritative and this is only a backstop. Independent of expiration_days, which scopes the whole bucket."
+}

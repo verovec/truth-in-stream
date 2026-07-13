@@ -73,6 +73,28 @@ error.
 governed by those forwarded verify-path variables. To exercise document analysis locally, set
 `FACTCHECK_VERIFY_PATH=true` and `FACTCHECK_VERIFY_API_KEY` in `.env` before `make up`.
 
+## TV capture
+
+The `tvcapture` worker records enabled TV channels, feeds their audio into the live pipeline, and
+optionally archives them to S3. It is a separate long-running worker (`cmd/tvcapture`) gated by
+`TV_CAPTURE_ENABLED`; when off it idles without requiring credentials. For the full operator flow,
+legal posture, and provisioning, see the [Live TV capture runbook](tv-live.md). Defaults are the ones
+`config.LoadTVCapture` applies.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TV_CAPTURE_ENABLED` | `false` | Master switch for the worker. Off = the worker idles (no capture, no credential required) |
+| `TV_CAPTURE_BACKEND_URL` | `http://localhost:8080` | Backend API base the worker calls (channel list, presign, register, prune) and dials the feed WebSocket on. Operator-provided in the cloud (internal ALB or public URL the host can reach) |
+| `TV_CAPTURE_TOKEN_URL` | derived from `KEYCLOAK_ISSUER` (`<issuer>/protocol/openid-connect/token`) | Keycloak token endpoint for the client-credentials grant. Override only for an unusual topology |
+| `TV_CAPTURE_CLIENT_ID` | `tv-capture` | Keycloak service-account client the worker authenticates as; carries the scoped `tv-capture` realm role (not admin) |
+| `TV_CAPTURE_CLIENT_SECRET` | (none) | The service-account client secret. **Required when `TV_CAPTURE_ENABLED=true`**; read from env only, never logged. In the cloud it comes from Secrets Manager |
+| `TV_SEGMENT_SECONDS` | `3600` | Archive segment length in seconds (hourly MPEG-TS segments). Range 60–86400 |
+| `TV_RECORDING_RETENTION_DAYS` | `30` | Days a `tv` recording is kept before the daily prune deletes its S3 object and row. Range 1–3650. This app-level prune is authoritative; the S3 lifecycle backstop is off by default |
+| `TV_FEED_STALL_SECONDS` | `60` | How long a feed may go silent before the worker treats it as stalled and restarts the pipeline. Range 5–3600 |
+| `TV_CAPTURE_POLL_SECONDS` | `30` | Reconcile interval: how often the worker re-reads the enabled channels and starts/stops pipelines. Range 5–3600 |
+| `TV_CAPTURE_WORK_DIR` | `/work` | Where in-progress segments are written before upload; a persistent volume mounts here so a crash leaves partial segments for the startup salvage pass |
+| `KEYCLOAK_ADDITIONAL_CLIENT_IDS` | (none) | Comma-separated extra authorized parties (`azp`) the backend verifier accepts beyond the web client. Must include `tv-capture` wherever the backend validates the worker's client-credentials token |
+
 ## Authentication (Keycloak identity gate)
 
 Signing in through Keycloak is sufficient end to end: the whole `/api` subtree (every data flow and

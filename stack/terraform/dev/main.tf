@@ -39,6 +39,16 @@ locals {
     local.rds_dsn_secret_arn,
     aws_secretsmanager_secret.embedding_api_key.arn,
   ])
+  # The tvcapture host runs the TV capture worker, which reaches the backend HTTP
+  # API + feed WebSocket (with a Keycloak client-credentials token) and S3 via
+  # presigned PUT (the URL carries its own auth). It touches neither the broker nor
+  # RDS, so its instance profile reads only its own service-account client secret
+  # and the Slack webhook (crash/run alerts) - no broker URL, no DSN, no ECR-side
+  # API keys.
+  tvcapture_host_secret_arns = [
+    aws_secretsmanager_secret.tv_capture_client_secret.arn,
+    aws_secretsmanager_secret.slack_webhook_url.arn,
+  ]
 }
 
 module "vpc" {
@@ -195,6 +205,32 @@ module "consumer_host" {
   ecr_repository_arns = [module.ecr.repository_arns_by_name["backend"]]
 }
 
+# On-demand TV capture host. A third SSM-only EC2 instance (same shape as the
+# crawler/consumer hosts) that runs the long-running tvcapture worker from
+# docker-compose.ingest.yml. Unlike those hosts it uses NEITHER the broker nor
+# RDS: the worker reaches the backend HTTP API + feed WebSocket
+# (TV_CAPTURE_BACKEND_URL) and S3 via presigned PUT, so its SG is deliberately
+# NOT admitted to the broker (5671) or postgres (5432) allow-lists above. Its
+# instance profile reads only the tv-capture client secret and the Slack webhook.
+# Gated off by default (a running instance has a cost); enable it for a capture
+# run, then stop it to drop to EBS-only cost. Backend/Keycloak reachability from
+# this host is an operator prerequisite (docs/tv-live.md), not wired here.
+module "tvcapture_host" {
+  source = "../modules/ingestion-host"
+  count  = var.enable_ingestion_hosts ? 1 : 0
+
+  project     = local.project
+  environment = var.environment
+  name        = "tvcapture-host"
+
+  vpc_id        = module.vpc.vpc_id
+  subnet_id     = module.vpc.private_subnet_ids[0]
+  instance_type = var.tvcapture_host_instance_type
+
+  secret_arns         = local.tvcapture_host_secret_arns
+  ecr_repository_arns = [module.ecr.repository_arns_by_name["backend"]]
+}
+
 # External API keys. Terraform creates the containers only; set the values out
 # of band (aws secretsmanager put-secret-value) before the first deploy.
 resource "aws_secretsmanager_secret" "embedding_api_key" {
@@ -228,6 +264,25 @@ resource "aws_secretsmanager_secret" "factcheck_api_key" {
   recovery_window_in_days = 0
 }
 
+# Keycloak service-account client secret for the tvcapture worker
+# (TV_CAPTURE_CLIENT_SECRET). Created empty; the value is set out of band. The
+# worker authenticates to the backend as the scoped `tv-capture` client via the
+# client-credentials grant - it never holds an admin credential.
+resource "aws_secretsmanager_secret" "tv_capture_client_secret" {
+  name                    = "${local.project}/${var.environment}/app/tv-capture-client-secret"
+  description             = "Keycloak tv-capture client-credentials secret for the TV capture worker. Value set manually, never in Terraform."
+  recovery_window_in_days = 0
+}
+
+# Slack incoming webhook for TV capture run/crash alerts (SLACK_WEBHOOK_URL).
+# Created empty; the value is set out of band. Mirrors the prod slack_webhook_url
+# container. Optional at runtime; alerts are skipped when unset.
+resource "aws_secretsmanager_secret" "slack_webhook_url" {
+  name                    = "${local.project}/${var.environment}/app/slack-webhook-url"
+  description             = "Slack incoming webhook URL. Value set manually, never in Terraform."
+  recovery_window_in_days = 0
+}
+
 module "media_storage" {
   source = "../modules/s3"
 
@@ -235,6 +290,9 @@ module "media_storage" {
   environment = var.environment
 
   cors_allowed_origins = var.media_cors_allowed_origins
+  # Backstop lifecycle prune of the TV recordings/ prefix. Default 0 (off): the
+  # app-level daily retention job is authoritative. Set > 0 only as a safety net.
+  recordings_retention_days = var.recordings_retention_days
 }
 
 # Durable home for local pg_dump snapshots, so the embedded corpus survives a
