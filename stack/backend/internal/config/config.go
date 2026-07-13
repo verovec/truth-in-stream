@@ -543,6 +543,20 @@ const (
 	defaultMatchHybridSearch = true
 	defaultMatchLexicalTopK  = 20
 	defaultMatchRRFK         = 60
+	// Per-corpus HNSW ef_search (VER-202). 0 keeps pgvector's per-connection
+	// session default (the long-standing hot-path behavior); a positive value
+	// raises the per-query candidate list for that corpus alone, trading latency
+	// for recall, routed through the store's existing per-query searchTuned
+	// plumbing. The claims and evidence corpora carry independent knobs because a
+	// small trusted corpus and a large noisy one warrant different budgets. Both
+	// default to 0 (unchanged behavior); raise only with eval/latency evidence.
+	defaultMatchClaimsEfSearch   = 0
+	defaultMatchEvidenceEfSearch = 0
+	// maxHNSWEfSearch is pgvector's documented upper bound for hnsw.ef_search
+	// (valid range 1..1000). 0 is accepted as "keep the session default", so the
+	// config bound is [0, maxHNSWEfSearch]. Kept as a local constant so config
+	// stays free of a store-package dependency.
+	maxHNSWEfSearch = 1000
 )
 
 // Match holds the segment matching configuration across the curated claims and
@@ -562,6 +576,10 @@ type Match struct {
 	HybridSearch          bool
 	LexicalTopK           int
 	RRFK                  int
+	// ClaimsEfSearch and EvidenceEfSearch are the per-corpus HNSW ef_search
+	// values threaded into each corpus's retrieval; 0 keeps the session default.
+	ClaimsEfSearch   int
+	EvidenceEfSearch int
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
@@ -584,6 +602,8 @@ func LoadMatch() (Match, error) {
 		HybridSearch:          defaultMatchHybridSearch,
 		LexicalTopK:           defaultMatchLexicalTopK,
 		RRFK:                  defaultMatchRRFK,
+		ClaimsEfSearch:        defaultMatchClaimsEfSearch,
+		EvidenceEfSearch:      defaultMatchEvidenceEfSearch,
 	}
 	var err error
 	if m.TopK, err = intEnv("MATCH_TOP_K", m.TopK, 1, math.MaxInt32); err != nil {
@@ -633,6 +653,12 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	if m.RRFK, err = intEnv("MATCH_RRF_K", m.RRFK, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.ClaimsEfSearch, err = intEnv("MATCH_CLAIMS_EF_SEARCH", m.ClaimsEfSearch, 0, maxHNSWEfSearch); err != nil {
+		return Match{}, err
+	}
+	if m.EvidenceEfSearch, err = intEnv("MATCH_EVIDENCE_EF_SEARCH", m.EvidenceEfSearch, 0, maxHNSWEfSearch); err != nil {
 		return Match{}, err
 	}
 	return m, nil
@@ -712,6 +738,14 @@ const (
 	// filler; the old 0.6 sat above the on-topic band entirely.
 	// PRECHECK_WIKI_COVERAGE_THRESHOLD overrides it.
 	defaultPrecheckWikiCoverageThreshold = 0.46
+	// defaultPrecheckCoverageEfSearch raises hnsw.ef_search for the coverage probe
+	// above pgvector's session default. Coverage decides whether a segment is
+	// checkable at all, so missing the true nearest neighbor is a false "not
+	// covered"; the VER-173 benchmark showed 200 reaches full recall for a
+	// marginal latency cost. It matches the former service-side coverageEfSearch
+	// constant, now env-tunable (VER-202). PRECHECK_COVERAGE_EF_SEARCH overrides
+	// it; 0 keeps the session default.
+	defaultPrecheckCoverageEfSearch = 200
 )
 
 // Precheck holds the check-worthiness gate configuration. Enabled toggles the
@@ -728,6 +762,13 @@ type Precheck struct {
 	CoverageThreshold     float64
 	WikiCoverageEnabled   bool
 	WikiCoverageThreshold float64
+	// CoverageEfSearch is the HNSW ef_search the coverage probe runs at across
+	// both coverage corpora. It defaults to 200, the former hard-coded probe
+	// budget, now tunable from the environment. Unlike the matcher's per-corpus
+	// ef_search knobs, 0 does NOT keep pgvector's session default here: the
+	// coverage stage applies its recall-critical 200 default when the value is
+	// non-positive (see service.defaultCoverageEfSearch).
+	CoverageEfSearch int
 }
 
 // LoadPrecheck reads the precheck-gate configuration from the environment,
@@ -740,6 +781,7 @@ func LoadPrecheck() (Precheck, error) {
 		CoverageThreshold:     defaultPrecheckCoverageThreshold,
 		WikiCoverageEnabled:   true,
 		WikiCoverageThreshold: defaultPrecheckWikiCoverageThreshold,
+		CoverageEfSearch:      defaultPrecheckCoverageEfSearch,
 	}
 	if raw := os.Getenv("PRECHECK_ENABLED"); raw != "" {
 		enabled, err := strconv.ParseBool(raw)
@@ -770,6 +812,9 @@ func LoadPrecheck() (Precheck, error) {
 		p.WikiCoverageEnabled = enabled
 	}
 	if p.WikiCoverageThreshold, err = thresholdEnv("PRECHECK_WIKI_COVERAGE_THRESHOLD", p.WikiCoverageThreshold); err != nil {
+		return Precheck{}, err
+	}
+	if p.CoverageEfSearch, err = intEnv("PRECHECK_COVERAGE_EF_SEARCH", p.CoverageEfSearch, 0, maxHNSWEfSearch); err != nil {
 		return Precheck{}, err
 	}
 	return p, nil
@@ -893,6 +938,19 @@ const (
 	defaultVerifyFastDeadline     = 800 * time.Millisecond
 	defaultVerifyDeadline         = 4 * time.Second
 	defaultVerifyCacheTTL         = 30 * time.Second
+	// defaultVerifyCacheThreshold is the cosine-similarity bar the semantic claim
+	// cache (VER-202) requires before it replays a cached verdict for a new claim.
+	// The cache keys on the claim's query embedding: a paraphrase of a recent
+	// talking point embeds very close to the original and reuses its verdict with
+	// no verifier call, while a genuinely different claim stays below the bar and
+	// is verified afresh. The default is deliberately high (precision over recall)
+	// so a near-duplicate must be truly near before it shares a verdict, guarding
+	// against a false cache share. FACTCHECK_VERIFY_CACHE_THRESHOLD overrides it.
+	defaultVerifyCacheThreshold = 0.95
+	// defaultVerifyCacheMaxEntries bounds the in-process semantic cache so a long
+	// session cannot grow it without limit; the oldest entries are evicted first
+	// once the bound is reached. FACTCHECK_VERIFY_CACHE_MAX_ENTRIES overrides it.
+	defaultVerifyCacheMaxEntries = 1024
 	// defaultVerifyRetrievalThreshold is the cosine floor for the evidence the
 	// verify path retrieves and hands the LLM verifier. It is deliberately lower
 	// than the legacy match/evidence threshold (defaultMatchEvidenceThreshold,
@@ -957,6 +1015,12 @@ type VerifyPath struct {
 	FastDeadline     time.Duration
 	VerifyDeadline   time.Duration
 	CacheTTL         time.Duration
+	// CacheThreshold is the cosine-similarity bar the semantic claim cache
+	// requires before it replays a cached verdict for a new claim's embedding, and
+	// CacheMaxEntries bounds the cache's size (oldest evicted first). They matter
+	// only when CacheTTL is positive (the cache is enabled).
+	CacheThreshold  float64
+	CacheMaxEntries int
 	// RetrievalThreshold is the cosine floor for the evidence the verify path
 	// retrieves and feeds the verifier. It is a recall bar, lower than the legacy
 	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
@@ -986,6 +1050,8 @@ func LoadVerifyPath() (VerifyPath, error) {
 		FastDeadline:       defaultVerifyFastDeadline,
 		VerifyDeadline:     defaultVerifyDeadline,
 		CacheTTL:           defaultVerifyCacheTTL,
+		CacheThreshold:     defaultVerifyCacheThreshold,
+		CacheMaxEntries:    defaultVerifyCacheMaxEntries,
 		RetrievalThreshold: defaultVerifyRetrievalThreshold,
 	}
 	llmSel, err := loadLLMSelection()
@@ -1021,6 +1087,12 @@ func LoadVerifyPath() (VerifyPath, error) {
 	}
 	// 0 disables the repeated-claim cache; a positive value is the collapse window.
 	if v.CacheTTL, err = durationEnvAllowZero("FACTCHECK_VERIFY_CACHE_TTL", v.CacheTTL); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.CacheThreshold, err = thresholdEnv("FACTCHECK_VERIFY_CACHE_THRESHOLD", v.CacheThreshold); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.CacheMaxEntries, err = intEnv("FACTCHECK_VERIFY_CACHE_MAX_ENTRIES", v.CacheMaxEntries, 1, math.MaxInt32); err != nil {
 		return VerifyPath{}, err
 	}
 	return v, nil

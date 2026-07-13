@@ -407,15 +407,22 @@ func TestVerifyPathSkipsNonCheckableUnit(t *testing.T) {
 
 func TestVerifyPathCacheCollapsesRepeatedClaim(t *testing.T) {
 	t.Parallel()
-	// The same claim spoken twice within the cache TTL is verified once: the
-	// second occurrence is served from the cache without a verify call.
+	// A paraphrase of a recently verified claim is verified once: the two
+	// phrasings embed to near-identical vectors, so the second occurrence hits the
+	// semantic cache (keyed on the query embedding) without a verify call.
 	u1, u2 := "the treaty was signed in 1648.", "The treaty was signed in 1648."
+	// The two phrasings embed to the same vector - the paraphrase the semantic
+	// cache is meant to collapse - so the second lookup clears the similarity bar.
+	vec := []float32{0.6, 0.8}
 	stream := &fakeSegmentStream{transcripts: finalize(
 		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: u1, Speaker: "A"},
 		domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: u2, Speaker: "B"},
 	)}
 	mk := []domain.SegmentMatch{{Kind: domain.MatchKindEvidence, Claim: "Peace of Westphalia 1648", Similarity: 0.7, EvidenceID: "evidence:9:0"}}
-	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{u1: mk, u2: mk}}
+	matcher := liveMatcher{
+		matches:   map[string][]domain.SegmentMatch{u1: mk, u2: mk},
+		embedding: map[string][]float32{u1: vec, u2: vec},
+	}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
 		u1: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
 		u2: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
@@ -423,7 +430,8 @@ func TestVerifyPathCacheCollapsesRepeatedClaim(t *testing.T) {
 
 	vp, err := NewVerifyPath(VerifyPathConfig{
 		Decomposer: fakeDecomposer{}, Matcher: matcher, Verifier: verifier,
-		FastTau: 0.85, VerifyConcurrency: 1, FastDeadline: time.Second, VerifyDeadline: time.Second, CacheTTL: time.Minute,
+		FastTau: 0.85, VerifyConcurrency: 1, FastDeadline: time.Second, VerifyDeadline: time.Second,
+		CacheTTL: time.Minute, CacheThreshold: 0.95, CacheMaxEntries: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewVerifyPath: %v", err)
@@ -470,13 +478,6 @@ func TestNewVerifyPathValidates(t *testing.T) {
 				t.Fatalf("NewVerifyPath(%s) = nil error, want error", tt.name)
 			}
 		})
-	}
-}
-
-func TestNormalizeClaim(t *testing.T) {
-	t.Parallel()
-	if got := normalizeClaim("  The   Earth\tis ROUND. "); got != "the earth is round." {
-		t.Fatalf("normalizeClaim = %q", got)
 	}
 }
 

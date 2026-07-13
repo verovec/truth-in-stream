@@ -522,7 +522,7 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem 
 	}
 	members := pu.members
 	text := combinedText(members)
-	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, text)
+	result, decision, err := a.gateAndMatch(ctx, text)
 	if err != nil {
 		if ctx.Err() == nil {
 			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("ids", memberIDs(members)), slog.Any("err", err))
@@ -553,6 +553,24 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem 
 	if decision.Checkable {
 		a.detectConsistency(ctx, out, mem, pu, text, result.QueryEmbedding)
 	}
+}
+
+// gateAndMatch runs the legacy check-worthiness core for one unit, taking the
+// single-embed path when the analyzer's gate and matcher both support it (the
+// production wiring: a *Gate with an embedding coverage stage and the segment
+// match adapter) and otherwise the two-embed gateAndMatch. Selecting by
+// capability keeps a fake gate or matcher in tests, and the no-op allow-all
+// prechecker, on the unchanged path - neither embeds twice anyway - while the
+// real legacy pipeline collapses its former double embed into one.
+func (a *LiveAnalyzer) gateAndMatch(ctx context.Context, text string) (MatchResult, domain.PrecheckDecision, error) {
+	if gate, ok := a.prechecker.(*Gate); ok {
+		if matcher, ok := a.matcher.(embedOnceMatcher); ok {
+			if classifier, coverage, ready := gate.embedOnce(); ready {
+				return gateAndMatchEmbedOnce(ctx, classifier, coverage, matcher, text)
+			}
+		}
+	}
+	return gateAndMatch(ctx, a.prechecker, a.matcher, text)
 }
 
 // detectConsistency flags a checkable statement that contradicts an earlier

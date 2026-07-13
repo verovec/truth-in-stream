@@ -439,8 +439,20 @@ func TestLoadMatch(t *testing.T) {
 				"MATCH_HYBRID_SEARCH":            "false",
 				"MATCH_LEXICAL_TOP_K":            "30",
 				"MATCH_RRF_K":                    "40",
+				"MATCH_CLAIMS_EF_SEARCH":         "100",
+				"MATCH_EVIDENCE_EF_SEARCH":       "150",
 			},
-			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second, ConfidenceClusterSize: 3, ConfidenceLeadWeight: 0.9, ConfidenceBodyWeight: 0.4, HybridSearch: false, LexicalTopK: 30, RRFK: 40},
+			want: Match{TopK: 10, ScoreThreshold: 0.75, EvidenceTopK: 3, EvidenceThreshold: 0.8, MaxResults: 6, EmbedConcurrency: 2, Timeout: 30 * time.Second, ConfidenceClusterSize: 3, ConfidenceLeadWeight: 0.9, ConfidenceBodyWeight: 0.4, HybridSearch: false, LexicalTopK: 30, RRFK: 40, ClaimsEfSearch: 100, EvidenceEfSearch: 150},
+		},
+		{
+			name:    "claims ef_search above pgvector max fails",
+			env:     map[string]string{"MATCH_CLAIMS_EF_SEARCH": "1001"},
+			wantErr: true,
+		},
+		{
+			name:    "negative evidence ef_search fails",
+			env:     map[string]string{"MATCH_EVIDENCE_EF_SEARCH": "-1"},
+			wantErr: true,
 		},
 		{
 			name: "negative threshold accepted",
@@ -868,7 +880,7 @@ func TestLoadTVCapture(t *testing.T) {
 }
 
 func TestLoadPrecheck(t *testing.T) {
-	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46}
+	defaults := Precheck{Enabled: true, MinWords: 4, CoverageThreshold: 0.4, WikiCoverageEnabled: true, WikiCoverageThreshold: 0.46, CoverageEfSearch: 200}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -888,8 +900,9 @@ func TestLoadPrecheck(t *testing.T) {
 				"PRECHECK_COVERAGE_THRESHOLD":      "0.6",
 				"PRECHECK_WIKI_COVERAGE_ENABLED":   "false",
 				"PRECHECK_WIKI_COVERAGE_THRESHOLD": "0.5",
+				"PRECHECK_COVERAGE_EF_SEARCH":      "120",
 			},
-			want: Precheck{Enabled: false, MinWords: 6, CoverageThreshold: 0.6, WikiCoverageEnabled: false, WikiCoverageThreshold: 0.5},
+			want: Precheck{Enabled: false, MinWords: 6, CoverageThreshold: 0.6, WikiCoverageEnabled: false, WikiCoverageThreshold: 0.5, CoverageEfSearch: 120},
 		},
 		{
 			name:    "non-bool enabled fails",
@@ -1901,7 +1914,8 @@ func TestLoadVerifyPathDefaultsOff(t *testing.T) {
 	if got.MaxClaimsPerUnit != defaultVerifyMaxClaimsPerUnit || got.FastTau != defaultVerifyFastTau ||
 		got.Concurrency != defaultVerifyConcurrency || got.QueueDepth != defaultVerifyQueueDepth ||
 		got.FastDeadline != defaultVerifyFastDeadline || got.VerifyDeadline != defaultVerifyDeadline ||
-		got.CacheTTL != defaultVerifyCacheTTL || got.RetrievalThreshold != defaultVerifyRetrievalThreshold {
+		got.CacheTTL != defaultVerifyCacheTTL || got.RetrievalThreshold != defaultVerifyRetrievalThreshold ||
+		got.CacheThreshold != defaultVerifyCacheThreshold || got.CacheMaxEntries != defaultVerifyCacheMaxEntries {
 		t.Errorf("defaults wrong: %+v", got)
 	}
 	if got.Provider != LLMProviderDeepSeek {
@@ -1960,7 +1974,9 @@ func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
 	t.Setenv("FACTCHECK_VERIFY_CONCURRENCY", "3")
 	t.Setenv("FACTCHECK_VERIFY_QUEUE_DEPTH", "8")
 	t.Setenv("FACTCHECK_VERIFY_FAST_TAU", "0.9")
-	t.Setenv("FACTCHECK_VERIFY_CACHE_TTL", "0")
+	t.Setenv("FACTCHECK_VERIFY_CACHE_TTL", "45s")
+	t.Setenv("FACTCHECK_VERIFY_CACHE_THRESHOLD", "0.88")
+	t.Setenv("FACTCHECK_VERIFY_CACHE_MAX_ENTRIES", "256")
 	t.Setenv("FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD", "0.5")
 	got, err := LoadVerifyPath()
 	if err != nil {
@@ -1969,8 +1985,8 @@ func TestLoadVerifyPathActiveAndOverrides(t *testing.T) {
 	if !got.Active() {
 		t.Fatal("enabled with a key must be Active")
 	}
-	if got.Concurrency != 3 || got.QueueDepth != 8 || got.FastTau != 0.9 || got.CacheTTL != 0 ||
-		got.RetrievalThreshold != 0.5 {
+	if got.Concurrency != 3 || got.QueueDepth != 8 || got.FastTau != 0.9 || got.CacheTTL != 45*time.Second ||
+		got.RetrievalThreshold != 0.5 || got.CacheThreshold != 0.88 || got.CacheMaxEntries != 256 {
 		t.Errorf("overrides wrong: %+v", got)
 	}
 }
@@ -1984,6 +2000,8 @@ func TestLoadVerifyPathRejectsBadValues(t *testing.T) {
 		"FACTCHECK_VERIFY_DEADLINE":            "0s",
 		"FACTCHECK_VERIFY_FAST_DEADLINE":       "0s",
 		"FACTCHECK_VERIFY_RETRIEVAL_THRESHOLD": "1.5",
+		"FACTCHECK_VERIFY_CACHE_THRESHOLD":     "1.5",
+		"FACTCHECK_VERIFY_CACHE_MAX_ENTRIES":   "0",
 	}
 	for key, val := range tests {
 		t.Run(key, func(t *testing.T) {

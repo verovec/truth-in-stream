@@ -140,7 +140,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		// against" outcome is unverifiable/knowledge, mirroring the credibility
 		// path's no-evidence case.
 		verdict := politicalNoEvidenceVerdict()
-		vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -159,7 +159,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
-	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -185,7 +185,7 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 
 	if len(evidence) == 0 {
 		verdict := politicalNoEvidenceVerdict()
-		vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 	}
 
@@ -197,7 +197,7 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
 	verdict = vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
-	vp.cachePut(claim.Text, SourceVerified, verdict, ret.embedding)
+	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 }
 
@@ -229,7 +229,7 @@ func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEve
 	if upgraded == fast {
 		return
 	}
-	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
+	vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
 	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
 }

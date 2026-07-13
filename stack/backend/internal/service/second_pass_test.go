@@ -345,9 +345,13 @@ func TestVerifyPathSecondPassUpgradesInPlace(t *testing.T) {
 func TestVerifyPathSecondPassRecachesUpgrade(t *testing.T) {
 	t.Parallel()
 	unit := "the moon is made of rock."
+	vec := []float32{0.6, 0.8}
 	match := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", EvidenceID: "wiki:moon:0", Similarity: 0.5}
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
-	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{unit: {match}}}
+	matcher := liveMatcher{
+		matches:   map[string][]domain.SegmentMatch{unit: {match}},
+		embedding: map[string][]float32{unit: vec},
+	}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
 		unit: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.55, Citations: []EvidenceCitation{{EvidenceID: "wiki:moon:0", QuotedSpan: "rock"}}},
 	}}
@@ -356,19 +360,21 @@ func TestVerifyPathSecondPassRecachesUpgrade(t *testing.T) {
 	}}
 
 	vpCfg := VerifyPathConfig{
-		Decomposer: fakeDecomposer{},
-		Matcher:    matcher,
-		Verifier:   verifier,
-		FastTau:    0.85,
-		CacheTTL:   time.Minute,
-		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+		Decomposer:      fakeDecomposer{},
+		Matcher:         matcher,
+		Verifier:        verifier,
+		FastTau:         0.85,
+		CacheTTL:        time.Minute,
+		CacheThreshold:  0.95,
+		CacheMaxEntries: 16,
+		SecondPass:      &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
 	}
 	a := verifyPathFixture(t, stream, matcher, vpCfg)
 
 	_ = runVerifyPath(t, a)
 
 	vp := a.verify
-	cached, ok := vp.cacheGet(unit)
+	cached, ok := vp.cacheGet(vec, unit)
 	if !ok {
 		t.Fatal("claim not cached after the terminal gate")
 	}

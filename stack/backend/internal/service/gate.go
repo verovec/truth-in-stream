@@ -38,6 +38,57 @@ type SegmentPrechecker interface {
 	Evaluate(ctx context.Context, text string) (domain.PrecheckDecision, error)
 }
 
+// embeddingCoverage is the coverage stage's embed-once capability: it embeds a
+// query and decides coverage from a precomputed vector, so the classify -> embed
+// -> cover -> match sequence can share one embedding. CombinedCoverage satisfies
+// it; a coverage decider that cannot expose its embedding simply keeps the
+// two-embed gateAndMatch path.
+type embeddingCoverage interface {
+	EmbedQuery(ctx context.Context, text string) ([]float32, error)
+	CoveredVec(ctx context.Context, vec []float32) (bool, error)
+}
+
+// embedOnceMatcher is a matcher that can search from a precomputed query vector,
+// so the legacy path reuses the coverage stage's embedding instead of embedding
+// the same unit a second time. SegmentMatchAdapter satisfies it.
+type embedOnceMatcher interface {
+	MatchVec(ctx context.Context, text string, vec []float32) (MatchResult, error)
+}
+
+// gateAndMatchEmbedOnce is the single-embed variant of gateAndMatch for the
+// legacy path: it classifies the unit (no embedding), and only for a claim
+// embeds the text once, reusing that one vector for both the coverage decision
+// and the match. It returns the same (MatchResult, decision) shape as
+// gateAndMatch - a not_a_claim or not_covered skip carries the zero MatchResult -
+// so a caller cannot tell the two apart except by the embedding count. The
+// single embed is the behavior this card collapses: the former path embedded
+// once in coverage and again in the matcher.
+func gateAndMatchEmbedOnce(ctx context.Context, classifier ClaimClassifier, coverage embeddingCoverage, matcher embedOnceMatcher, text string) (MatchResult, domain.PrecheckDecision, error) {
+	claim, err := classifier.Classify(ctx, text)
+	if err != nil {
+		return MatchResult{}, domain.PrecheckDecision{}, fmt.Errorf("precheck: %w", err)
+	}
+	if !claim {
+		return MatchResult{}, domain.Skipped(domain.SkipReasonNotAClaim), nil
+	}
+	vec, err := coverage.EmbedQuery(ctx, text)
+	if err != nil {
+		return MatchResult{}, domain.PrecheckDecision{}, fmt.Errorf("precheck: %w", err)
+	}
+	covered, err := coverage.CoveredVec(ctx, vec)
+	if err != nil {
+		return MatchResult{}, domain.PrecheckDecision{}, fmt.Errorf("precheck: %w", err)
+	}
+	if !covered {
+		return MatchResult{}, domain.Skipped(domain.SkipReasonNotCovered), nil
+	}
+	result, err := matcher.MatchVec(ctx, text, vec)
+	if err != nil {
+		return MatchResult{}, domain.PrecheckDecision{}, fmt.Errorf("match: %w", err)
+	}
+	return result, domain.Checkable(), nil
+}
+
 // gateAndMatch is the check-worthiness core of the live pipeline: it runs the
 // precheck gate, then matches only checkable segments, so a single skip-vs-check
 // policy governs every verdict. It returns the precheck decision (whose

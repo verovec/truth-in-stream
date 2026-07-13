@@ -878,6 +878,38 @@ services:
       MATCH_HYBRID_SEARCH: "${MATCH_HYBRID_SEARCH:-}"
       MATCH_LEXICAL_TOP_K: "${MATCH_LEXICAL_TOP_K:-}"
       MATCH_RRF_K: "${MATCH_RRF_K:-}"
+      # Retrieval tuning (VER-202). Per-corpus matcher knobs; empty keeps the
+      # backend defaults. Threshold and top-k are already per corpus (curated
+      # claims vs wiki evidence); the ef_search knobs raise one corpus's HNSW
+      # candidate list independently (0 = pgvector session default). Forwarded
+      # explicitly - a variable in .env does nothing unless compose passes it
+      # through. Change a default only with golden-eval + latency evidence.
+      MATCH_TOP_K: "${MATCH_TOP_K:-}"
+      MATCH_SCORE_THRESHOLD: "${MATCH_SCORE_THRESHOLD:-}"
+      MATCH_EVIDENCE_TOP_K: "${MATCH_EVIDENCE_TOP_K:-}"
+      MATCH_EVIDENCE_SCORE_THRESHOLD: "${MATCH_EVIDENCE_SCORE_THRESHOLD:-}"
+      MATCH_MAX_RESULTS: "${MATCH_MAX_RESULTS:-}"
+      MATCH_EMBED_CONCURRENCY: "${MATCH_EMBED_CONCURRENCY:-}"
+      MATCH_TIMEOUT: "${MATCH_TIMEOUT:-}"
+      MATCH_CONFIDENCE_CLUSTER_SIZE: "${MATCH_CONFIDENCE_CLUSTER_SIZE:-}"
+      MATCH_CONFIDENCE_LEAD_WEIGHT: "${MATCH_CONFIDENCE_LEAD_WEIGHT:-}"
+      MATCH_CONFIDENCE_BODY_WEIGHT: "${MATCH_CONFIDENCE_BODY_WEIGHT:-}"
+      MATCH_CLAIMS_EF_SEARCH: "${MATCH_CLAIMS_EF_SEARCH:-}"
+      MATCH_EVIDENCE_EF_SEARCH: "${MATCH_EVIDENCE_EF_SEARCH:-}"
+      # Check-worthiness precheck gate (legacy gate-and-match path). Empty keeps the
+      # backend defaults. PRECHECK_COVERAGE_EF_SEARCH is the recall-critical coverage
+      # probe's HNSW budget (default 200), now env-tunable (VER-202).
+      PRECHECK_ENABLED: "${PRECHECK_ENABLED:-}"
+      PRECHECK_MIN_WORDS: "${PRECHECK_MIN_WORDS:-}"
+      PRECHECK_COVERAGE_THRESHOLD: "${PRECHECK_COVERAGE_THRESHOLD:-}"
+      PRECHECK_WIKI_COVERAGE_ENABLED: "${PRECHECK_WIKI_COVERAGE_ENABLED:-}"
+      PRECHECK_WIKI_COVERAGE_THRESHOLD: "${PRECHECK_WIKI_COVERAGE_THRESHOLD:-}"
+      PRECHECK_COVERAGE_EF_SEARCH: "${PRECHECK_COVERAGE_EF_SEARCH:-}"
+      # Live analyzer scoring pool (legacy path). Concurrency is the verdict worker
+      # count; queue depth is the ready-unit backlog before a unit sheds to
+      # not_checked. Empty keeps the backend defaults (4 / 32).
+      LIVE_CONCURRENCY: "${LIVE_CONCURRENCY:-}"
+      LIVE_QUEUE_DEPTH: "${LIVE_QUEUE_DEPTH:-}"
       # LLM provider for every LLM-backed stage (consistency, check-worthiness,
       # claim decomposition, claim typing, the credibility verifier). Defaults to
       # deepseek (DeepSeek's cheap chat model, keyed on DEEPSEEK_API_KEY). Set
@@ -931,7 +963,14 @@ services:
       FACTCHECK_VERIFY_QUEUE_DEPTH: "${FACTCHECK_VERIFY_QUEUE_DEPTH:-}"
       FACTCHECK_VERIFY_FAST_DEADLINE: "${FACTCHECK_VERIFY_FAST_DEADLINE:-}"
       FACTCHECK_VERIFY_DEADLINE: "${FACTCHECK_VERIFY_DEADLINE:-}"
+      # Semantic claim cache (VER-202): a paraphrase of a recently verified claim
+      # replays its verdict with no verifier call. FACTCHECK_VERIFY_CACHE_TTL bounds
+      # the window (0 disables), FACTCHECK_VERIFY_CACHE_THRESHOLD is the cosine bar
+      # for a hit (default 0.95, high = precision over recall), and
+      # FACTCHECK_VERIFY_CACHE_MAX_ENTRIES bounds the in-process size (default 1024).
       FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
+      FACTCHECK_VERIFY_CACHE_THRESHOLD: "${FACTCHECK_VERIFY_CACHE_THRESHOLD:-}"
+      FACTCHECK_VERIFY_CACHE_MAX_ENTRIES: "${FACTCHECK_VERIFY_CACHE_MAX_ENTRIES:-}"
       # Terminal reasoning gate (VER-192): when the verify path's best verdict for a
       # claim is weak - unverifiable, or confidence below the trigger floor - a stronger
       # reasoning model re-judges the same retrieved evidence one last time and upgrades
@@ -975,6 +1014,10 @@ services:
       # is the thin-result floor below which the router broadens to web search.
       FACTCHECK_POLITICAL: "${FACTCHECK_POLITICAL:-}"
       FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS: "${FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS:-}"
+      # Cosine bar to borrow a curated two-axis political claim (literal verdict +
+      # manipulation flags + real source) with no LLM call (default 0.85). Empty
+      # keeps the default; only read when FACTCHECK_POLITICAL and the verify path are on.
+      FACTCHECK_POLITICAL_CURATED_TAU: "${FACTCHECK_POLITICAL_CURATED_TAU:-}"
       # Political source packs (read only when FACTCHECK_POLITICAL is on). Web search
       # is the mandatory open-ended fallback, so WEBSEARCH_API_KEY (a Brave token) is
       # required in political mode; the press pack joins only when PRESS_API_KEY is
