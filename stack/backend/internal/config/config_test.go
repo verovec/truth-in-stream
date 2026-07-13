@@ -2120,19 +2120,16 @@ func TestLoadFinalGateDecouplesProvider(t *testing.T) {
 	}
 }
 
-func TestLoadFinalGateRejectsBadValues(t *testing.T) {
+// TestLoadFinalGateRejectsBadThresholds proves an out-of-range threshold or a
+// non-positive deadline fails fast (validated eagerly, like the second-pass band).
+func TestLoadFinalGateRejectsBadThresholds(t *testing.T) {
 	tests := map[string]string{
-		"FACTCHECK_FINAL_GATE_PROVIDER":       "grok",
 		"FACTCHECK_FINAL_GATE_TRIGGER_BELOW":  "1.5",
 		"FACTCHECK_FINAL_GATE_MIN_CONFIDENCE": "-0.1",
 		"FACTCHECK_FINAL_GATE_DEADLINE":       "0s",
 	}
 	for key, val := range tests {
 		t.Run(key, func(t *testing.T) {
-			// Enable the gate so the provider override is validated (a disabled gate
-			// deliberately tolerates a bad provider - see TestLoadFinalGateDisabledIgnoresBadProvider).
-			t.Setenv("FACTCHECK_FINAL_GATE", "true")
-			t.Setenv("DEEPSEEK_API_KEY", "d-test")
 			t.Setenv(key, val)
 			sp, err := LoadSecondPass()
 			if err != nil {
@@ -2145,20 +2142,49 @@ func TestLoadFinalGateRejectsBadValues(t *testing.T) {
 	}
 }
 
-// TestLoadFinalGateDisabledIgnoresBadProvider proves a bad provider override on a
-// disabled gate degrades to off rather than crashing boot for a feature never used.
-func TestLoadFinalGateDisabledIgnoresBadProvider(t *testing.T) {
+// TestLoadFinalGateActiveRejectsUnknownProvider proves an ACTIVE gate (enabled and
+// keyed) with an unsupported provider fails fast rather than silently proceeding.
+func TestLoadFinalGateActiveRejectsUnknownProvider(t *testing.T) {
+	t.Setenv("FACTCHECK_FINAL_GATE", "true")
 	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "openai")
+	// An unknown provider resolves its key via the Anthropic slot, so this key makes
+	// the gate Active and the provider guard fire.
+	t.Setenv("FACTCHECK_FINAL_GATE_API_KEY", "sk-gate")
 	sp, err := LoadSecondPass()
 	if err != nil {
 		t.Fatalf("LoadSecondPass: %v", err)
 	}
-	got, err := LoadFinalGate(sp)
-	if err != nil {
-		t.Fatalf("LoadFinalGate must not error on a bad provider when disabled: %v", err)
+	if _, err := LoadFinalGate(sp); err == nil {
+		t.Fatal("LoadFinalGate must reject an unknown provider on an active gate")
 	}
-	if got.Active() {
-		t.Fatal("gate must be inactive when the feature is off")
+}
+
+// TestLoadFinalGateBadProviderDegradesOffWhenInactive proves a bad provider override
+// never bricks boot when the gate will not run - whether the gate is disabled or
+// enabled-but-keyless (Active()==false either way), matching the keyless-degrades-off
+// contract every optional LLM stage keeps.
+func TestLoadFinalGateBadProviderDegradesOffWhenInactive(t *testing.T) {
+	cases := map[string]map[string]string{
+		"disabled":            {"FACTCHECK_FINAL_GATE_PROVIDER": "openai"},
+		"enabled but keyless": {"FACTCHECK_FINAL_GATE": "true", "FACTCHECK_FINAL_GATE_PROVIDER": "openai"},
+	}
+	for name, env := range cases {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			sp, err := LoadSecondPass()
+			if err != nil {
+				t.Fatalf("LoadSecondPass: %v", err)
+			}
+			got, err := LoadFinalGate(sp)
+			if err != nil {
+				t.Fatalf("LoadFinalGate must not error on a bad provider for an inactive gate: %v", err)
+			}
+			if got.Active() {
+				t.Fatal("gate must be inactive")
+			}
+		})
 	}
 }
 

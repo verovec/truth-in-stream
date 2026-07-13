@@ -129,7 +129,9 @@ func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matc
 // nil (so the default-off path allocates no passages) and folds the result with its own
 // upgrade rule - sp.upgrade on the credibility axis, sp.upgradePolitical on the two-axis
 // path - so the one place that changes when the gate protocol changes is here, not four.
-func (vp *VerifyPath) gateReverify(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool) {
+// stage names the calling path (e.g. "live credibility", "batch political") so a
+// reverify failure in the logs still says which pipeline and axis degraded.
+func (vp *VerifyPath) gateReverify(ctx context.Context, stage string, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool) {
 	sp := vp.secondPass
 	if !sp.weak(fast, len(passages)) {
 		return ClaimVerdict{}, false
@@ -137,7 +139,7 @@ func (vp *VerifyPath) gateReverify(ctx context.Context, claim AtomicClaim, fast 
 	reasoned, err := sp.reverify(ctx, claim.Text, passages)
 	if err != nil {
 		if ctx.Err() == nil {
-			vp.logger.ErrorContext(ctx, "terminal-gate reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+			vp.logger.ErrorContext(ctx, "terminal-gate reverify failed", slog.String("stage", stage), slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		return ClaimVerdict{}, false
 	}
@@ -178,7 +180,7 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, m
 	// actually receive (those carrying an evidence id), not every retrieved match, so
 	// the gate reflects what the deeper model can ground against rather than the raw hit
 	// count.
-	reasoned, ok := vp.gateReverify(ctx, claim, fast, passagesFromMatches(ret.matches))
+	reasoned, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passagesFromMatches(ret.matches))
 	if !ok {
 		return
 	}
@@ -205,7 +207,7 @@ func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim,
 	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, ok := vp.gateReverify(ctx, claim, fast, passagesFromMatches(ret.matches))
+	reasoned, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passagesFromMatches(ret.matches))
 	if !ok {
 		return fast
 	}

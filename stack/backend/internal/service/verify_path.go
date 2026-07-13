@@ -852,22 +852,20 @@ func (vp *VerifyPath) recordSpeakerTally(ctx context.Context, out chan<- LiveEve
 }
 
 // recordSpeakerReTally corrects the speaker tally after the terminal gate upgraded a
-// claim's verdict: it moves the claim from its prior bucket to the new one and emits a
-// fresh tally snapshot, so the aggregate credibility breakdown stays consistent with
-// the upgraded per-claim verdict the viewer now sees. It is the tally counterpart of a
-// gate upgrade; recordSpeakerTally already counted the fast verdict, so this moves that
-// single count rather than adding a second (no double-count). It is a no-op when the
-// verdict's bucket and flagged status are unchanged (a same-bucket confidence bump), so
-// a gate that only sharpens confidence emits no redundant tally frame.
+// claim's verdict: it moves the claim from its prior credibility bucket to the new one
+// and emits a fresh tally snapshot, so the aggregate breakdown stays consistent with the
+// upgraded per-claim verdict the viewer now sees. It is the tally counterpart of a gate
+// upgrade; recordSpeakerTally already counted the fast verdict, so this moves that single
+// count rather than adding a second (no double-count). It is a no-op when the credibility
+// bucket is unchanged (a same-bucket confidence bump), so a gate that only sharpens
+// confidence emits no redundant tally frame. The misleading-framing tally needs no
+// correction: a gate upgrade carries the claim's manipulation flags through unchanged,
+// so the framing count the fast verdict set still holds.
 func (vp *VerifyPath) recordSpeakerReTally(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, speaker string, old, upgraded *VerifiedVerdict) {
-	if speaker == "" || old == nil || upgraded == nil {
+	if speaker == "" || old == nil || upgraded == nil || old.Verdict == upgraded.Verdict {
 		return
 	}
-	oldFlagged, newFlagged := len(old.Flags) > 0, len(upgraded.Flags) > 0
-	if old.Verdict == upgraded.Verdict && oldFlagged == newFlagged {
-		return
-	}
-	tally := mem.reobserveVerdict(speaker, old.Verdict, oldFlagged, upgraded.Verdict, newFlagged)
+	tally := mem.reobserveVerdict(speaker, old.Verdict, upgraded.Verdict)
 	_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventSpeakerTally, SpeakerTally: &tally})
 }
 

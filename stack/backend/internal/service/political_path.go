@@ -221,7 +221,7 @@ func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEve
 	if vp.secondPass == nil {
 		return
 	}
-	reasoned, ok := vp.gateReverify(ctx, claim, fast, EvidencePassagesFrom(evidence))
+	reasoned, ok := vp.gateReverify(ctx, "live political", claim, fast, EvidencePassagesFrom(evidence))
 	if !ok {
 		return
 	}
@@ -242,7 +242,7 @@ func (vp *VerifyPath) applyPoliticalGateBatch(ctx context.Context, claim AtomicC
 	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, ok := vp.gateReverify(ctx, claim, fast, EvidencePassagesFrom(evidence))
+	reasoned, ok := vp.gateReverify(ctx, "batch political", claim, fast, EvidencePassagesFrom(evidence))
 	if !ok {
 		return fast
 	}

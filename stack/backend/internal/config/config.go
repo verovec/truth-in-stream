@@ -1118,17 +1118,8 @@ func LoadFinalGate(sp SecondPass) (FinalGate, error) {
 	// Provider decoupling: FACTCHECK_FINAL_GATE_PROVIDER overrides the shared
 	// LLM_PROVIDER for the terminal gate only, so the costly reasoner can run on a
 	// different backend than the hot path. Unset -> the second pass's provider. The
-	// provider keys stay the global GEMINI_API_KEY/DEEPSEEK_API_KEY. The override is
-	// validated only when the gate is enabled: a bad provider on a disabled gate
-	// degrades to off rather than crashing a service that never uses it.
+	// provider keys stay the global GEMINI_API_KEY/DEEPSEEK_API_KEY.
 	provider := strings.ToLower(strings.TrimSpace(getenv("FACTCHECK_FINAL_GATE_PROVIDER", g.Provider)))
-	if g.Enabled {
-		switch provider {
-		case LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini:
-		default:
-			return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_PROVIDER %q is not a known provider (want %q, %q, or %q)", provider, LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini)
-		}
-	}
 	providerChanged := provider != g.Provider
 	g.Provider = provider
 
@@ -1143,11 +1134,23 @@ func LoadFinalGate(sp SecondPass) (FinalGate, error) {
 		modelFallback = g.secondPassModel()
 	}
 	g.Model = getenv("FACTCHECK_FINAL_GATE_MODEL", modelFallback)
-	// An active gate with no model would silently run the provider's cheap default
-	// stage model instead of the intended reasoner (Anthropic/Gemini name no reasoning
-	// default here), quietly defeating the gate. Require an explicit model instead.
-	if g.Active() && g.Model == "" {
-		return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_MODEL is required under provider %q (it has no default reasoning model)", g.Provider)
+
+	// Both configuration guards fire only when the gate is Active (enabled AND keyed),
+	// so a disabled or keyless gate degrades to off rather than bricking boot for a
+	// feature it will never run - the same keyless-degrades-off contract every other
+	// optional LLM stage keeps. An unknown provider must not silently proceed, and an
+	// active gate with no model would run the provider's cheap default stage model
+	// instead of the intended reasoner (Anthropic/Gemini name no reasoning default
+	// here), quietly defeating the gate.
+	if g.Active() {
+		switch g.Provider {
+		case LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini:
+		default:
+			return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_PROVIDER %q is not a known provider (want %q, %q, or %q)", g.Provider, LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini)
+		}
+		if g.Model == "" {
+			return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_MODEL is required under provider %q (it has no default reasoning model)", g.Provider)
+		}
 	}
 
 	if g.TriggerBelow, err = floatEnv("FACTCHECK_FINAL_GATE_TRIGGER_BELOW", g.TriggerBelow); err != nil {

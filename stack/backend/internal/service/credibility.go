@@ -93,21 +93,17 @@ func (s *speakerCredibility) observe(state string) SpeakerTally {
 }
 
 // reobserve moves a claim from its prior verdict bucket to a new one after the terminal
-// gate upgraded that claim's verdict: it decrements the old state's count, increments
-// the new, and adjusts the misleading-framing tally for a change in flagged status. It
-// keeps the aggregate consistent with the corrected per-claim verdict without
-// double-counting the claim - the claim was already observed once, so a move (not a
-// second observe) is what a one-claim verdict change demands. An unknown state on
-// either side is ignored, mirroring observe/increment.
-func (s *speakerCredibility) reobserve(oldState string, oldFlagged bool, newState string, newFlagged bool) SpeakerTally {
+// gate upgraded that claim's verdict: it decrements the old state's count and increments
+// the new. It keeps the aggregate consistent with the corrected per-claim verdict
+// without double-counting the claim - the claim was already observed once, so a move
+// (not a second observe) is what a one-claim verdict change demands. An unknown state on
+// either side is ignored, mirroring observe/increment. It does not touch the
+// misleading-framing tally: a gate upgrade carries the claim's manipulation flags
+// through unchanged (the credibility reasoner does not assess framing), so the framing
+// count the first observation set is already correct.
+func (s *speakerCredibility) reobserve(oldState, newState string) SpeakerTally {
 	s.decrement(oldState)
 	s.increment(newState)
-	switch {
-	case oldFlagged && !newFlagged && s.misleadingFraming > 0:
-		s.misleadingFraming--
-	case !oldFlagged && newFlagged:
-		s.misleadingFraming++
-	}
 	return s.snapshot()
 }
 
