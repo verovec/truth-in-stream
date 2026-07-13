@@ -5,12 +5,20 @@ Tests, continuous integration, and the Claude-assisted delivery workflow.
 ## Tests
 
 ```bash
-cd stack/backend  && go test -race ./...
+cd stack/backend  && make test      # go test -race ./... (store/seed integration tests skip w/o a DB)
+make itest                          # (repo root) provision a throwaway DB, run the full backend suite against real pgvector
 cd stack/frontend && npm test
 ./scripts/doctor.test.sh            # local-stack preflight (stubs the docker CLI)
+./scripts/test-db.test.sh           # throwaway integration-test DB provisioning (stubs the docker CLI)
 ./scripts/secrets_test.sh           # operator secrets tool (stubs AWS + editor)
 ./scripts/iam-apply-guard.test.sh   # pre-apply IAM guard (stubs the aws CLI)
 ```
+
+`make itest` creates a dedicated `truthinstream_test` database and points `TEST_DATABASE_URL` at it,
+so the schema-resetting integration tests never touch the seeded `truthinstream` dev database — the
+same isolation CI gets from its own `test` database. See
+[Local setup -> Running the tests](local-setup.md#running-the-tests) for the details and the
+missing-database troubleshooting.
 
 Every behaviour change ships with its tests in the same change. Go tests are table-driven and must
 pass under `-race`; the frontend uses Vitest. See the `testing` skill for the full gate.
