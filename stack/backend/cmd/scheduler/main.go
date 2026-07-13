@@ -36,6 +36,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/schedule"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsarchive"
+	"github.com/verovec/truth-in-stream/backend/internal/source/parliament"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
 )
 
@@ -62,10 +63,23 @@ type producerBuilder func(logger *slog.Logger) (crawlnotify.Producer, func(), er
 // scheduled source is one entry here plus its connector descriptor - no other edit
 // to this file. TestBuildersCoverSchedulableSources guards that this table and the
 // registry's schedulable sources stay in lockstep.
-var builders = map[string]producerBuilder{
-	"wikipedia": buildWikipedia,
-	"factcheck": buildFactcheck,
-	"scrutins":  buildScrutins,
+var builders = buildersTable()
+
+// buildersTable maps each schedulable source to its producer builder. The several
+// parliament datasets share one builder parameterized by the descriptor name (the
+// scheduler runs them all in one process, so the dataset comes from the registry,
+// not the single PARLIAMENT_DATASET env the host uses). Adding a scheduled source is
+// one entry here plus its connector descriptor.
+func buildersTable() map[string]producerBuilder {
+	b := map[string]producerBuilder{
+		"wikipedia": buildWikipedia,
+		"factcheck": buildFactcheck,
+		"scrutins":  buildScrutins,
+	}
+	for _, dataset := range parliament.Datasets() {
+		b[dataset] = buildParliament(dataset)
+	}
+	return b
 }
 
 // scheduleSpecs derives the config specs from the registry's schedulable sources,
@@ -300,4 +314,50 @@ func buildScrutins(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
 		return nil, nil, err
 	}
 	return producer, closer, nil
+}
+
+// buildParliament builds the producer builder for one parliament dataset. The Senat
+// scrutins dataset publishes to the scrutins queue drained by the scrutins worker;
+// every textual dataset publishes to the evidence queue drained by the evidence
+// worker.
+func buildParliament(dataset string) producerBuilder {
+	return func(logger *slog.Logger) (crawlnotify.Producer, func(), error) {
+		parliamentCfg, err := config.LoadParliamentFor(dataset)
+		if err != nil {
+			return nil, nil, err
+		}
+		queueCfg, err := parliamentQueueCfg(dataset)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		client, err := queue.New(queueCfg.ClientConfig(0))
+		if err != nil {
+			return nil, nil, err
+		}
+		closer := func() { _ = client.Close() }
+
+		producer, err := parliament.New(parliament.Config{
+			Dataset:      parliamentCfg.Dataset,
+			Legislature:  parliamentCfg.Legislature,
+			MarkerPath:   parliamentCfg.MarkerPath,
+			ManifestPath: parliamentCfg.ManifestPath,
+			MaxPriority:  queueCfg.MaxPriority,
+			MaxItems:     parliamentCfg.MaxItems,
+			SinceYear:    parliamentCfg.SinceYear,
+		}, qPublisher{client: client}, logger)
+		if err != nil {
+			closer()
+			return nil, nil, err
+		}
+		return producer, closer, nil
+	}
+}
+
+// parliamentQueueCfg binds a parliament dataset to its queue.
+func parliamentQueueCfg(dataset string) (config.Queue, error) {
+	if parliament.IsVotingDataset(dataset) {
+		return config.LoadScrutinsQueue()
+	}
+	return config.LoadEvidenceQueue()
 }

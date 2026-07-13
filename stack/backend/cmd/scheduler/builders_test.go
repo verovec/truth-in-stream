@@ -6,6 +6,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsarchive"
+	"github.com/verovec/truth-in-stream/backend/internal/source/parliament"
 )
 
 // namePub is a no-op Publisher for constructing a producer purely to read its
@@ -54,6 +55,13 @@ func TestProducerNamesMatchDescriptors(t *testing.T) {
 		"wikipedia": wikiProducer{}.Name(),
 		"factcheck": factcheckProducer{}.Name(),
 		"scrutins":  scrutins.Name(),
+	}
+	for _, dataset := range parliament.Datasets() {
+		p, err := parliament.New(parliament.Config{Dataset: dataset, Legislature: "17", MaxPriority: 1}, namePub{}, nil)
+		if err != nil {
+			t.Fatalf("build parliament producer %q: %v", dataset, err)
+		}
+		producerNames[dataset] = p.Name()
 	}
 
 	for _, d := range connector.All() {

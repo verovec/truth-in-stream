@@ -45,7 +45,13 @@ type Stats struct {
 // it on a transient-failure re-enqueue so a job that keeps failing is eventually
 // dropped.
 type ScrutinJob struct {
-	ID      string          `json:"id"`
+	ID string `json:"id"`
+	// Chamber selects the parser. Empty (the default, backward-compatible with the
+	// Assemblee scrutins archive) means the Assemblee open-data JSON, parsed by
+	// votingrecord.ParseScrutin. "senat" means the self-contained Senat payload the
+	// parliament producer publishes, parsed by votingrecord.ParseSenatScrutin. Either
+	// way the worker writes voting_records with the right chamber.
+	Chamber string          `json:"chamber,omitempty"`
 	Scrutin json.RawMessage `json:"scrutin"`
 	Attempt int             `json:"attempt,omitzero"`
 }
@@ -286,10 +292,10 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return Result{Action: ActionReject}
 	}
 
-	records, err := votingrecord.ParseScrutin(wrapScrutin(job.Scrutin))
+	records, err := parseRecords(job)
 	if err != nil {
 		w.logger.ErrorContext(ctx, "dead-lettering unparseable scrutin job",
-			slog.String("id", job.ID), slog.Any("err", err))
+			slog.String("id", job.ID), slog.String("chamber", job.Chamber), slog.Any("err", err))
 		return Result{Action: ActionReject}
 	}
 
@@ -302,6 +308,23 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		return w.afterFailure(ctx, job, priority, "upsert", err)
 	}
 	return Result{Action: ActionAck}
+}
+
+// parseRecords parses a scrutin job into voting records, dispatching on the
+// chamber: an empty chamber is the Assemblee open-data JSON (re-wrapped in its
+// {"scrutin": {...}} envelope for votingrecord.ParseScrutin), and "senat" is the
+// self-contained Senat payload votingrecord.ParseSenatScrutin reads directly. A
+// chamber the worker does not know is an error, so a mis-stamped job is
+// dead-lettered rather than silently written under the wrong parser.
+func parseRecords(job ScrutinJob) ([]domain.VotingRecord, error) {
+	switch job.Chamber {
+	case "", string(domain.ChamberAssemblee):
+		return votingrecord.ParseScrutin(wrapScrutin(job.Scrutin))
+	case string(domain.ChamberSenat):
+		return votingrecord.ParseSenatScrutin(job.Scrutin)
+	default:
+		return nil, fmt.Errorf("scrutinsjob: unknown chamber %q", job.Chamber)
+	}
 }
 
 // wrapScrutin restores the {"scrutin": {...}} envelope votingrecord.ParseScrutin

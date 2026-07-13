@@ -281,6 +281,66 @@ licence postures:
 
 ---
 
+## 7. Parliament open data (Assemblee nationale + Senat)
+
+**What it answers:** what parliament actually did and said - an amendment's fate
+and content ("cet amendement a ete rejete"), a written question and whether the
+government answered it ("le gouvernement n'a jamais repondu sur Z"), a debate
+excerpt, a legislative dossier, and how a senator voted on a named scrutin
+("le senateur X a vote contre Y").
+
+**One producer, six datasets.** `internal/source/parliament` +
+`cmd/parliamentcrawl` ingest six open-data datasets, selected by
+`PARLIAMENT_DATASET`. Every run does a conditional GET (persisted
+ETag/Last-Modified) to skip an unchanged dump, then diffs the dump against a
+**per-dataset manifest** that fingerprints each record, so a daily run republishes
+only new or changed records (not the whole corpus). Older AN legislatures are an
+explicit backfill (`PARLIAMENT_LEGISLATURE=16`); Senat scrutins volume is bounded
+by `PARLIAMENT_SINCE_YEAR`; `PARLIAMENT_MAX_ITEMS` caps any run. Textual datasets
+render attributed French passages chunked to the corpus convention and publish the
+generic `connector.EvidenceJob` to `evidence.chunks`, drained by `cmd/evidenceworker`
+(`internal/evidencejob`) into `evidence_chunks`. The voting dataset publishes a
+chamber-aware scrutins job to `scrutins.votes`, drained by the existing
+`scrutinsworker` (`internal/scrutinsjob` now dispatches by chamber) into
+`voting_records` with `chamber=senat`.
+
+| Dataset | Source id | Real dump | Target | `evidence_id` / record |
+|---------|-----------|-----------|--------|------------------------|
+| AN amendements | `an-amendements` | `.../repository/{leg}/loi/amendements_div_legis/Amendements.json.zip` (JSON) | evidence | `an-amendements:{uid}:{i}` |
+| AN questions ecrites | `an-questions` | `.../repository/{leg}/questions/questions_ecrites/Questions_ecrites.json.zip` (JSON) | evidence | `an-questions:{uid}:{i}` |
+| AN comptes rendus | `an-comptesrendus` | `.../repository/{leg}/vp/syceronbrut/syseron.xml.zip` (XML) | evidence | `an-comptesrendus:{uid}:{i}` |
+| Senat questions | `senat-questions` | `data.senat.fr/data/questions/questions-depuis-un-an.csv` (CSV, Latin-1) | evidence | `senat-questions:{ref}:{i}` |
+| Senat dosleg | `senat-dosleg` | `data.senat.fr/data/dosleg/dosleg.zip` -> `dosleg.sql`, `loi`+`typloi` tables | evidence | `senat-dosleg:{loicod}:{i}` |
+| Senat scrutins | `senat-scrutins` | same `dosleg.sql`, `scr`+`votsen`+`posvot`+`auteur` tables joined | `voting_records` (chamber=senat) | `voting:senat-{sesann}-{scrnum}:{i}` |
+
+Each parser was written against a **real downloaded sample** captured as a fixture
+(`internal/source/parliament/testdata/*`); the Senat scrutins/dosleg fixtures are
+verbatim excerpts of the official `dosleg.sql` COPY blocks. The Senat roll-call
+votes ARE published in machine-readable form - inside the official `dosleg` PostgreSQL
+dump (`scr` = scrutins, `votsen` = per-senator votes, `posvot` = position labels,
+`auteur` = senators), joined by the streaming COPY reader in `pgdump.go`. The Senat
+scrutin page (`www.senat.fr/scrutin-public/{year}/scr{year}-{num}.html`) is the
+human-facing provenance link but carries no machine-readable export, so the dump is
+the canonical source (the third-party NosSenateurs.fr mirror is deliberately not used).
+
+**Licences.**
+- Assemblee nationale (amendements, questions, comptes rendus): **Licence Ouverte /
+  Open Licence version 2.0** (Etalab). Attribution: *"Source : Assemblee nationale -
+  data.assemblee-nationale.fr, Licence Ouverte / Open Licence version 2.0"*.
+- Senat (questions, dosleg, scrutins): the **Senat open-data licence**
+  (`data.senat.fr/licence/`). Attribution: *"Source : Senat - data.senat.fr"*.
+
+**Cloud parity.** All six run through the framework registry: one
+`docker-compose.ingest.yml` `parliamentcrawl` service (dataset via
+`PARLIAMENT_DATASET`), a per-dataset state file on the `parliament-state` volume,
+and the manifest resolution the host script reads
+(`ENVIRONMENT=dev scripts/ingest-host.sh crawler <source> up|status|down`). The
+delivery e2e verifies manifest/compose/host-script resolution per dataset; a real
+dev-account run additionally needs `deploy/targets.json` (gitignored on this public
+repo) present on the operator's machine.
+
+---
+
 ## What the user sees today vs. "show the source" / debug mode
 
 ### What's already in the result payload

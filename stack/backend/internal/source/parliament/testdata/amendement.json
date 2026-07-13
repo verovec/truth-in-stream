@@ -1,0 +1,42 @@
+{
+  "amendement": {
+    "uid": "AMANR5L17PO838901B0324P1D1N002215",
+    "legislature": "17",
+    "identification": {
+      "numeroLong": "CL2215",
+      "numeroOrdreDepot": "2215",
+      "prefixeOrganeExamen": "CL"
+    },
+    "texteLegislatifRef": "PION5L17B0324",
+    "signataires": {
+      "auteur": {
+        "typeAuteur": "Depute",
+        "acteurRef": "PA123456",
+        "groupePolitiqueRef": "PO845420"
+      },
+      "cosignataires": []
+    },
+    "pointeurFragmentTexte": {
+      "division": {
+        "titre": "Article 3",
+        "articleDesignationCourte": "Art. 3",
+        "avant_A_Apres": "A",
+        "articleAdditionnel": false
+      }
+    },
+    "corps": {
+      "contenuAuteur": {
+        "dispositif": "<p>Substituer aux alin&eacute;as 4 &agrave; 6 l'alin&eacute;a suivant&nbsp;:</p><p>&laquo;&nbsp;La dur&eacute;e est port&eacute;e &agrave; douze mois.&nbsp;&raquo;</p>",
+        "exposeSommaire": "<p>Cet amendement vise &agrave; allonger le d&eacute;lai pr&eacute;vu par l'article 3.</p>"
+      }
+    },
+    "cycleDeVie": {
+      "dateDepot": "2026-06-02",
+      "datePublication": "2026-06-03",
+      "etatDesTraitements": { "etat": "AC", "sousEtat": null },
+      "sort": "Adopté",
+      "dateSort": "2026-06-10"
+    },
+    "loiReference": { "codeLoi": "L440", "divisionCodeLoi": "L440-1" }
+  }
+}
