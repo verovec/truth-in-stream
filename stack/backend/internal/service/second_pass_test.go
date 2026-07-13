@@ -377,6 +377,42 @@ func TestVerifyPathSecondPassRecachesUpgrade(t *testing.T) {
 	}
 }
 
+// TestVerifyPathTerminalGateMovesTallyOnUpgrade proves the speaker tally moves with a
+// weak-verdict upgrade rather than diverging from the displayed verdict: the fast pass
+// counts an unverifiable claim, then the gate upgrades it to disputed and re-tallies it
+// (unverifiable 1 -> 0, disputed 0 -> 1) - no double-count, and the aggregate matches
+// the UI.
+func TestVerifyPathTerminalGateMovesTallyOnUpgrade(t *testing.T) {
+	t.Parallel()
+	unit := "the moon is made of rock."
+	match := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", EvidenceID: "wiki:moon:0", Similarity: 0.5}
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{unit: {match}}}
+	// Fast pass is unsure: unverifiable, but there IS evidence to re-read, so the gate fires.
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0.3},
+	}}
+	reverifier := &fakeReverifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.95, Citations: []EvidenceCitation{{EvidenceID: "wiki:moon:0", QuotedSpan: "rock"}}},
+	}}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{},
+		Verifier:   verifier,
+		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+	})
+
+	events := runVerifyPath(t, a)
+	tallies := speakerTallies(events)
+	if len(tallies) < 2 {
+		t.Fatalf("speaker tally events = %d, want at least 2 (fast, then the corrected re-tally)", len(tallies))
+	}
+	final := tallies[len(tallies)-1]
+	if final.Disputed != 1 || final.Unverifiable != 0 {
+		t.Fatalf("final tally = disputed %d unverifiable %d, want the claim moved to disputed (1/0)", final.Disputed, final.Unverifiable)
+	}
+}
+
 // TestVerifyPathTerminalGateStrongVerdictSkipped proves a strong fast verdict
 // (confidence at or above the trigger floor, not unverifiable) is never escalated, so
 // the reasoner is never invoked and the fast verdict stands as the only verified frame.

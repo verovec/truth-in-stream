@@ -121,6 +121,29 @@ func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matc
 	return upgraded
 }
 
+// gateReverify runs the terminal gate's shared pre-fold steps for all four entry
+// points (live/batch x credibility/political): given the passages the reasoner will
+// ground against, it returns the deeper re-judgment when the verdict is weak and the
+// reasoning call succeeds, or ok=false (a no-op) when the verdict is already strong or
+// the call fails (logged, non-fatal). The caller has already guarded vp.secondPass !=
+// nil (so the default-off path allocates no passages) and folds the result with its own
+// upgrade rule - sp.upgrade on the credibility axis, sp.upgradePolitical on the two-axis
+// path - so the one place that changes when the gate protocol changes is here, not four.
+func (vp *VerifyPath) gateReverify(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool) {
+	sp := vp.secondPass
+	if !sp.weak(fast, len(passages)) {
+		return ClaimVerdict{}, false
+	}
+	reasoned, err := sp.reverify(ctx, claim.Text, passages)
+	if err != nil {
+		if ctx.Err() == nil {
+			vp.logger.ErrorContext(ctx, "terminal-gate reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
+		}
+		return ClaimVerdict{}, false
+	}
+	return reasoned, true
+}
+
 // reverify runs the deeper reasoning call under its own bounded deadline,
 // returning the citation-guarded re-judgment. It is bounded independently of the
 // verify pool: the second pass never acquires a verify-pool slot, so it cannot
@@ -140,28 +163,26 @@ func (sp *secondPass) reverify(ctx context.Context, claim string, passages []Evi
 // It runs AFTER the fast verdict is emitted, so it never delays the live per-claim
 // result, and outside the verify pool, so it never consumes a scoring slot.
 //
-// It deliberately does NOT re-fold the upgraded verdict into the speaker score: the
-// fast verdict was already observed in that running aggregate, and re-observing the
-// same claim would double-count it. The gate corrects the displayed per-claim
-// verdict, not the speaker tally - so a one-claim upgrade can never skew the
-// aggregate by counting the claim twice.
-func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) {
-	sp := vp.secondPass
-	// weak counts the evidence-bearing passages the reverifier would actually receive
-	// (those carrying an evidence id), not every retrieved match, so the gate reflects
-	// what the deeper model can ground against rather than the raw hit count.
-	passages := passagesFromMatches(ret.matches)
-	if sp == nil || !sp.weak(fast, len(passages)) {
+// When it upgrades a weak verdict it also corrects the speaker tally, moving the claim
+// from its prior bucket to the new one (recordSpeakerReTally): the fast verdict was
+// already counted, so this MOVES that single count rather than adding a second, and the
+// aggregate credibility breakdown stays consistent with the upgraded per-claim verdict
+// the viewer now sees. This is required precisely because the gate now fires on weak
+// (including unverifiable) verdicts: an unverifiable-to-definite upgrade would otherwise
+// leave the tally showing the claim as unverifiable while the UI shows it disputed.
+func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) {
+	if vp.secondPass == nil {
 		return
 	}
-	reasoned, err := sp.reverify(ctx, claim.Text, passages)
-	if err != nil {
-		if ctx.Err() == nil {
-			vp.logger.ErrorContext(ctx, "second-pass reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
-		}
+	// passagesFromMatches counts the evidence-bearing passages the reverifier would
+	// actually receive (those carrying an evidence id), not every retrieved match, so
+	// the gate reflects what the deeper model can ground against rather than the raw hit
+	// count.
+	reasoned, ok := vp.gateReverify(ctx, claim, fast, passagesFromMatches(ret.matches))
+	if !ok {
 		return
 	}
-	upgraded := sp.upgrade(fast, reasoned, ret.matches)
+	upgraded := vp.secondPass.upgrade(fast, reasoned, ret.matches)
 	if upgraded == fast {
 		return
 	}
@@ -170,6 +191,7 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, p
 	// through so a cache-hit replay still feeds consistency detection.
 	vp.cachePut(claim.Text, SourceVerified, upgraded, ret.embedding)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
+	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
 }
 
 // applyReverifyBatch is the batch counterpart of maybeReverify: it re-judges a weak
@@ -180,17 +202,12 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, p
 // path does, keeping a document's verdict for a sentence identical to what the live
 // path would show for the same sentence.
 func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) *VerifiedVerdict {
-	sp := vp.secondPass
-	passages := passagesFromMatches(ret.matches)
-	if sp == nil || !sp.weak(fast, len(passages)) {
+	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, err := sp.reverify(ctx, claim.Text, passages)
-	if err != nil {
-		if ctx.Err() == nil {
-			vp.logger.ErrorContext(ctx, "batch second-pass reverify failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
-		}
+	reasoned, ok := vp.gateReverify(ctx, claim, fast, passagesFromMatches(ret.matches))
+	if !ok {
 		return fast
 	}
-	return sp.upgrade(fast, reasoned, ret.matches)
+	return vp.secondPass.upgrade(fast, reasoned, ret.matches)
 }

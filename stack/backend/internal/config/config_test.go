@@ -2129,6 +2129,10 @@ func TestLoadFinalGateRejectsBadValues(t *testing.T) {
 	}
 	for key, val := range tests {
 		t.Run(key, func(t *testing.T) {
+			// Enable the gate so the provider override is validated (a disabled gate
+			// deliberately tolerates a bad provider - see TestLoadFinalGateDisabledIgnoresBadProvider).
+			t.Setenv("FACTCHECK_FINAL_GATE", "true")
+			t.Setenv("DEEPSEEK_API_KEY", "d-test")
 			t.Setenv(key, val)
 			sp, err := LoadSecondPass()
 			if err != nil {
@@ -2138,6 +2142,40 @@ func TestLoadFinalGateRejectsBadValues(t *testing.T) {
 				t.Fatalf("LoadFinalGate with %s=%s = nil error, want error", key, val)
 			}
 		})
+	}
+}
+
+// TestLoadFinalGateDisabledIgnoresBadProvider proves a bad provider override on a
+// disabled gate degrades to off rather than crashing boot for a feature never used.
+func TestLoadFinalGateDisabledIgnoresBadProvider(t *testing.T) {
+	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "openai")
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	got, err := LoadFinalGate(sp)
+	if err != nil {
+		t.Fatalf("LoadFinalGate must not error on a bad provider when disabled: %v", err)
+	}
+	if got.Active() {
+		t.Fatal("gate must be inactive when the feature is off")
+	}
+}
+
+// TestLoadFinalGateActiveRequiresModel proves an active gate under a provider with no
+// default reasoning model (Anthropic here) fails fast instead of silently running the
+// cheap default stage model.
+func TestLoadFinalGateActiveRequiresModel(t *testing.T) {
+	t.Setenv("FACTCHECK_FINAL_GATE", "true")
+	t.Setenv("FACTCHECK_FINAL_GATE_PROVIDER", "anthropic")
+	t.Setenv("FACTCHECK_FINAL_GATE_API_KEY", "sk-gate")
+	// No FACTCHECK_FINAL_GATE_MODEL: anthropic has no reasoning default here.
+	sp, err := LoadSecondPass()
+	if err != nil {
+		t.Fatalf("LoadSecondPass: %v", err)
+	}
+	if _, err := LoadFinalGate(sp); err == nil {
+		t.Fatal("LoadFinalGate must require an explicit model for an active anthropic gate")
 	}
 }
 

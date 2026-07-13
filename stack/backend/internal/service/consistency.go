@@ -91,6 +91,29 @@ func (m *speakerMemory) observeVerdict(speaker, state string, flagged bool) Spea
 	return snapshot
 }
 
+// reobserveVerdict moves a claim already folded into the tally from its prior verdict
+// bucket to a new one after the terminal gate upgraded that claim's verdict. It
+// decrements the old state's count and increments the new (and adjusts the
+// misleading-framing tally for a change in flagged status) under the same lock the
+// first observation took, so the aggregate reflects the corrected verdict without
+// double-counting the claim. It is the counterpart the gate calls instead of a second
+// observeVerdict: re-observing would add a second count, but a weak fast verdict and
+// its gate upgrade are the same claim and must occupy exactly one bucket. The
+// aggregator is created on first use for symmetry, though a re-observed claim was
+// always observed first.
+func (m *speakerMemory) reobserveVerdict(speaker, oldState string, oldFlagged bool, newState string, newFlagged bool) SpeakerTally {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc := m.credibility[speaker]
+	if sc == nil {
+		sc = &speakerCredibility{}
+		m.credibility[speaker] = sc
+	}
+	snapshot := sc.reobserve(oldState, oldFlagged, newState, newFlagged)
+	snapshot.Speaker = speaker
+	return snapshot
+}
+
 // speakerLock returns the per-speaker detection lock, creating it on first use.
 // Detection for one speaker is serialized under it so the prior-lookup, stance
 // check, and append form one atomic step: without it two workers scoring the

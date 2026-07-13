@@ -277,6 +277,57 @@ func TestPoliticalPathTerminalGateUpgradesWeakVerdict(t *testing.T) {
 	if seen := reverifier.seen(); len(seen) != 1 {
 		t.Fatalf("reverifier calls = %v, want exactly one (the weak verdict fired the gate)", seen)
 	}
+	// The speaker tally MOVES with the upgrade, not just the displayed row: the fast
+	// verdict counted the claim as unverifiable, then the gate re-tallies it as disputed
+	// (unverifiable 1 -> 0, disputed 0 -> 1). Without the move the aggregate would still
+	// show the claim unverifiable while the UI shows it inaccurate.
+	tallies := speakerTallies(events)
+	if len(tallies) < 2 {
+		t.Fatalf("speaker tally events = %d, want at least 2 (fast, then the corrected re-tally)", len(tallies))
+	}
+	final := tallies[len(tallies)-1]
+	if final.Disputed != 1 || final.Unverifiable != 0 {
+		t.Fatalf("final tally = disputed %d unverifiable %d, want the claim moved to disputed (1/0)", final.Disputed, final.Unverifiable)
+	}
+}
+
+// TestPoliticalPathTerminalGateBatchUpgradesWeakVerdict proves the batch document
+// path applies the same terminal gate as the live path (batch/live consistency): a
+// weak two-axis verdict is upgraded to the reasoner's grounded literal-axis verdict.
+func TestPoliticalPathTerminalGateBatchUpgradesWeakVerdict(t *testing.T) {
+	t.Parallel()
+	unit := "l'immigration a fait exploser la délinquance."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	evID := source.NewEvidenceID(source.KindStatsINSEE, "DELINQ", 0).String()
+	reverifier := &fakeReverifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.95, Citations: []EvidenceCitation{{EvidenceID: evID, QuotedSpan: "aucune corrélation"}}, Rationale: "réfuté"},
+	}}
+	a := politicalFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{},
+		Verifier:   &fakeVerifier{},
+		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+	}, PoliticalConfig{Classifier: fakeClassifier{}, Retriever: &fakeRouterRetriever{}, Verifier: &fakePoliticalVerifier{}})
+
+	vp := a.verify
+	evidence := []source.Evidence{srcEvidence(source.KindStatsINSEE, "DELINQ", "aucune corrélation établie entre immigration et délinquance")}
+	fast := politicalNoEvidenceVerdict() // literal unverifiable: weak
+	got := vp.applyPoliticalGateBatch(context.Background(), AtomicClaim{ClaimID: "c1", Text: unit}, fast, evidence)
+	if got == fast {
+		t.Fatal("batch gate did not upgrade a weak verdict")
+	}
+	if got.Literal != LiteralInaccurate || got.Verdict != VerdictDisputed {
+		t.Fatalf("batch upgrade = literal %q credibility %q, want inaccurate/disputed", got.Literal, got.Verdict)
+	}
+	if got.Basis != BasisEvidence || got.Confidence != 0.95 {
+		t.Fatalf("batch upgrade = %+v, want grounded at 0.95", got)
+	}
+	if len(got.Citations) != 1 || len(got.Citations[0].Sources) != 1 {
+		t.Fatalf("batch upgrade citations = %+v, want one with provenance", got.Citations)
+	}
+	if seen := reverifier.seen(); len(seen) != 1 {
+		t.Fatalf("reverifier calls = %v, want one", seen)
+	}
 }
 
 func TestPoliticalPathTalliesMoveAndFramingTallyMoves(t *testing.T) {
