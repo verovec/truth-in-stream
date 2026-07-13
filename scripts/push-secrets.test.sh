@@ -21,6 +21,7 @@ V_SESSION="session-SENTINEL-secret-aaaaaaaaaaaaaaaaaaaaaaaa"
 V_DEEPSEEK="deepseek-SENTINEL-key"
 V_GEMINI="gemini-SENTINEL-key"
 V_SLACK="https://hooks.slack.test/SENTINEL-webhook"
+V_TV_CLIENT="tv-capture-SENTINEL-client-secret"
 V_DSN="postgres://SENTINEL-must-not-push"
 V_RABBIT="amqps://SENTINEL-must-not-push"
 V_NONLISTED="SENTINEL-non-allowlisted-value"
@@ -71,6 +72,7 @@ SESSION_SECRET=$V_SESSION
 DEEPSEEK_API_KEY=$V_DEEPSEEK
 GEMINI_API_KEY=$V_GEMINI
 SLACK_WEBHOOK_URL=$V_SLACK
+TV_CAPTURE_CLIENT_SECRET=$V_TV_CLIENT
 # terraform-owned: must NOT be pushed
 DATABASE_URL=$V_DSN
 RABBITMQ_URL=$V_RABBIT
@@ -179,7 +181,7 @@ echo "TEST: every allowlisted key present in .env is pushed exactly once"
   out="$(printf 'prod\n' | "$PUSH" prod 2>&1)"
   log="$(cat "$AWS_CALL_LOG")"
   for name in embedding-api-key transcription-api-key auth-email auth-password-hash \
-    session-secret deepseek-api-key gemini-api-key slack-webhook-url; do
+    session-secret deepseek-api-key gemini-api-key slack-webhook-url tv-capture-client-secret; do
     count="$(grep -cF "truth-in-stream/prod/app/$name" <(grep 'put-secret-value' <<<"$log"))"
     if [[ "$count" -eq 1 ]]; then ok "pushes $name once"; else fail "pushes $name once (got $count)"; fi
   done

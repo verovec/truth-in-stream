@@ -26,6 +26,12 @@ variable "media_cors_allowed_origins" {
   description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Empty (the default) derives the app origins (https://<domain> + https://www.<domain>) from domain_name; set an explicit list to override."
 }
 
+variable "recordings_retention_days" {
+  type        = number
+  default     = 0
+  description = "Backstop S3 lifecycle expiry (in days) for the TV recordings/ prefix in the media bucket. 0 disables the rule (the default): the tvcapture worker's app-level daily prune is authoritative. Set > 0 only as a safety net."
+}
+
 # --- Cost right-sizing baseline (VER-134) ---
 # Prod runs a deliberately small, single-AZ baseline to avoid over-provisioning.
 # Every reduction below is reversible by raising a variable, never by editing

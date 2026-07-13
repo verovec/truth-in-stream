@@ -79,6 +79,21 @@ echo "TEST: consumer role writes the broker, RDS DSN, and the embedding key - no
   assert_not_contains "$env" "FACTCHECK_API_KEY=" "does not write the crawler-only factcheck key"
 )
 
+echo "TEST: tvcapture role writes the client secret and Slack webhook - not the broker, DSN, or worker keys"
+(
+  make_sandbox
+  bash "$FETCH" tvcapture dev >/dev/null 2>&1
+  env="$(cat "$ENV_OUT")"
+  assert_contains "$env" "TV_CAPTURE_CLIENT_SECRET=" "writes the tv-capture client secret"
+  assert_contains "$env" "SLACK_WEBHOOK_URL=" "writes the Slack webhook"
+  assert_not_contains "$env" "RABBITMQ_URL=" "does not write the broker URL (tvcapture uses no broker)"
+  assert_not_contains "$env" "DATABASE_URL=" "does not write the RDS DSN (tvcapture uses no database)"
+  assert_not_contains "$env" "EMBEDDING_API_KEY=" "does not write the embedding key"
+  log="$(cat "$AWS_CALL_LOG")"
+  assert_contains "$log" "truth-in-stream/dev/app/tv-capture-client-secret" "reads the tv-capture client secret id"
+  assert_contains "$log" "truth-in-stream/dev/app/slack-webhook-url" "reads the Slack webhook secret id"
+)
+
 echo "TEST: the secret value lands in the env file but never in the command output"
 (
   make_sandbox

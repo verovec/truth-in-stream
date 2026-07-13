@@ -64,6 +64,7 @@ ALLOWLIST=(
   DEEPSEEK_API_KEY
   GEMINI_API_KEY
   SLACK_WEBHOOK_URL
+  TV_CAPTURE_CLIENT_SECRET
 )
 
 # Lowercase + underscores-to-dashes, e.g. EMBEDDING_API_KEY -> embedding-api-key.

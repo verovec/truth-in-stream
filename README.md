@@ -124,6 +124,7 @@ Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observabilit
 | Infrastructure & operations (AWS edge, deploy, backups, observability) | [`docs/infrastructure.md`](docs/infrastructure.md) |
 | Ingestion pipeline (local + cloud, diagrams, consistency) | [`docs/ingestion-pipeline.md`](docs/ingestion-pipeline.md) |
 | Fact-check evidence sources | [`docs/fact-check-sources.md`](docs/fact-check-sources.md) |
+| Live TV capture (on-demand cloud recorder, channels, retention, legal posture) | [`docs/tv-live.md`](docs/tv-live.md) |
 | PDF fact-check (upload in the backoffice -> analyse -> read on the Documents surface with in-PDF highlights) | [`docs/pdf-fact-check.md`](docs/pdf-fact-check.md) |
 | Backoffice (admin-only ingestion area, access model) | [`docs/backoffice.md`](docs/backoffice.md) |
 | Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |

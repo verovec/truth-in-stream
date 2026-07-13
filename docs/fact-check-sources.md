@@ -165,6 +165,39 @@ If a Google Fact Check integration is wanted, it would be a new
 
 ---
 
+## 6. TV live channels (capture inputs, not evidence)
+
+These are **inputs to fact-check**, not evidence sources: the `tvcapture` worker records these
+channels and feeds their audio into the same live pipeline as an imported video (the evidence still
+comes from sources 1–5 above). The seed registry lives in
+`internal/seed/tv_channel.go`; every channel ships **disabled**, with archiving **armed**, so an
+operator turns each on deliberately. See the [Live TV capture runbook](tv-live.md) for the full flow.
+
+TV capture is scoped to **free, non-DRM** sources. DRM commercial broadcasters (TF1, France 2, M6)
+are deliberately **out of scope** and not in the registry. The registry has two classes with distinct
+licence postures:
+
+| Channel | Kind | `source_ref` | Licence / legal posture |
+|---------|------|--------------|-------------------------|
+| franceinfo | YouTube live | `youtube.com/franceinfo/live` | Official embed sanctioned; **stream-ripping/archiving conflicts with YouTube ToS** |
+| France 24 (FR) | YouTube live | `youtube.com/@FRANCE24/live` | same YouTube ToS posture |
+| BFMTV | YouTube live | `youtube.com/@BFMTV/live` | same |
+| Euronews (FR) | YouTube live | `youtube.com/c/euronewsfr/live` | same |
+| LCP | YouTube live | `youtube.com/@LCP/live` | same |
+| Public Sénat | YouTube live | `youtube.com/@publicsenat/live` | same |
+| CNEWS | YouTube live | `youtube.com/@CNEWSofficiel/live` | same |
+| LCI | YouTube live | `youtube.com/@LCI/live` | same |
+| Assemblée nationale | HLS portal | `videos.assemblee-nationale.fr/direct` | Public-broadcast constitutional mandate + Etalab precedent — **cleanest to archive** |
+| Sénat | HLS portal | `videos.senat.fr/direct` | same parliamentary posture |
+
+- **YouTube class:** embedding the official live is fine, but archiving it conflicts with YouTube's
+  Terms of Service, so archiving is **per-channel opt-in** and paired with **short retention** (the
+  recording is a short-lived working copy for analysis, not a rebroadcast archive).
+- **Parliamentary class:** public-broadcast under a constitutional mandate, aligned with the Etalab
+  open-data precedent and DRM-free HLS — the cleanest sources to archive.
+
+---
+
 ## What the user sees today vs. "show the source" / debug mode
 
 ### What's already in the result payload

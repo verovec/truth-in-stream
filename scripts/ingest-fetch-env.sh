@@ -9,9 +9,10 @@ set -euo pipefail
 #
 # The instance profile scopes GetSecretValue to exactly this host role's secret
 # ARNs (the crawler host: broker URL, RDS DSN, the producer-side keys; the
-# consumer host: broker URL, RDS DSN, the embedding key), so the secret set is
-# selected by role here to match. A secret this role's profile cannot read is a
-# misconfiguration and fails loudly.
+# consumer host: broker URL, RDS DSN, the embedding key; the tvcapture host: the
+# tv-capture client secret and the Slack webhook only - it uses neither the broker
+# nor RDS), so the secret set is selected by role here to match. A secret this
+# role's profile cannot read is a misconfiguration and fails loudly.
 #
 # Secret VALUES are NEVER printed: only the variable name and its secret id are
 # logged, and set -x is never enabled. The env file is written 0600 via a private
@@ -19,7 +20,7 @@ set -euo pipefail
 # values never land in a world-readable path.
 #
 # Usage:
-#   scripts/ingest-fetch-env.sh <crawler|consumer> [env]
+#   scripts/ingest-fetch-env.sh <crawler|consumer|tvcapture> [env]
 #
 # Configuration (environment): PROJECT (default truth-in-stream), AWS_REGION
 # (default eu-west-3), INGEST_ENV_FILE (default ./.env). DRY_RUN=1 lists the
@@ -39,25 +40,33 @@ command -v aws >/dev/null 2>&1 || fatal "aws is required but not on PATH"
 
 role="${1:-}"
 env="${2:-${INGEST_ENV:-dev}}"
-[[ -n "$role" ]] || fatal "usage: ingest-fetch-env.sh <crawler|consumer> [env]"
+[[ -n "$role" ]] || fatal "usage: ingest-fetch-env.sh <crawler|consumer|tvcapture> [env]"
 
 # secret_pairs ROLE: echo the "<secret-suffix> <ENV_VAR>" mappings this host role
-# reads. Both roles share the broker URL and the RDS DSN; the producer keys are
-# crawler-only and the embedding key is consumer-only, matching the exact secret
-# ARNs each host's instance profile is granted (stack/terraform/dev/main.tf).
+# reads. The crawler and consumer hosts share the broker URL and the RDS DSN (plus
+# the producer keys for the crawler, the embedding key for the consumer); the
+# tvcapture host uses neither the broker nor RDS - only its own client secret and
+# the Slack webhook - matching the exact secret ARNs each host's instance profile
+# is granted (stack/terraform/dev/main.tf).
 secret_pairs() {
-  echo "rabbitmq/url RABBITMQ_URL"
-  echo "rds/dsn DATABASE_URL"
   case "$1" in
     crawler)
+      echo "rabbitmq/url RABBITMQ_URL"
+      echo "rds/dsn DATABASE_URL"
       echo "app/checkworthy-api-key CHECKWORTHY_API_KEY"
       echo "app/factcheck-api-key FACTCHECK_API_KEY"
       ;;
     consumer)
+      echo "rabbitmq/url RABBITMQ_URL"
+      echo "rds/dsn DATABASE_URL"
       echo "app/embedding-api-key EMBEDDING_API_KEY"
       ;;
+    tvcapture)
+      echo "app/tv-capture-client-secret TV_CAPTURE_CLIENT_SECRET"
+      echo "app/slack-webhook-url SLACK_WEBHOOK_URL"
+      ;;
     *)
-      fatal "unknown role '$1'; one of: crawler consumer"
+      fatal "unknown role '$1'; one of: crawler consumer tvcapture"
       ;;
   esac
 }

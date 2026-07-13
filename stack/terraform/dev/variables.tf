@@ -20,6 +20,12 @@ variable "media_cors_allowed_origins" {
   description = "Browser origins allowed to PUT/GET media objects directly via presigned URLs. Defaults to any origin while there is no fixed frontend domain; restrict to the app origin once one exists."
 }
 
+variable "recordings_retention_days" {
+  type        = number
+  default     = 0
+  description = "Backstop S3 lifecycle expiry (in days) for the TV recordings/ prefix in the media bucket. 0 disables the rule (the default): the tvcapture worker's app-level daily prune is authoritative. Set > 0 only as a safety net if a stuck worker could leave recordings behind."
+}
+
 variable "enable_rds" {
   type        = bool
   default     = false
@@ -54,6 +60,12 @@ variable "consumer_host_instance_type" {
   type        = string
   default     = "t3.medium"
   description = "Consumer-host instance class (x86_64 family; the AMI is x86_64). t3.medium is larger than the crawler because the worker fleets embed and upsert in parallel; raise it to scale drain throughput."
+}
+
+variable "tvcapture_host_instance_type" {
+  type        = string
+  default     = "t3.medium"
+  description = "TV-capture-host instance class (x86_64 family; the AMI is x86_64). t3.medium suits a few concurrent channels: each enabled channel runs a streamlink|ffmpeg pipeline that transcodes to PCM, which is CPU-bound; raise it to run more channels at once."
 }
 
 variable "enable_wiki_sync" {
