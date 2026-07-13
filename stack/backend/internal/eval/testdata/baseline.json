@@ -1,0 +1,17 @@
+{
+  "_about": "Committed baseline floors for the retrieval eval gate (VER-191) and the two-axis verdict gate. Moving any number here is a deliberate, reviewed act: raise a floor when quality ratchets up, or lower one only with the reason recorded in the PR (see README.md, 'Updating the baseline'). retrieval floors gate the deterministic lexical retrieval oracle's recall@1 over the French political/statistical golden cases (overall and per category); recall@3 is reported but not gated. verdict floors mirror the two-axis literal/flag accuracy the verify-path gate enforces (a drift-guard test binds them to the code constants). The paraphrase floor is below 1.0 on purpose: a purely lexical baseline mis-ranks a reworded claim that shares no distinctive number or entity with its evidence, exactly the gap the upcoming hybrid dense+lexical retrieval must close.",
+  "verdict": {
+    "min_literal_accuracy": 1.0,
+    "min_flag_accuracy": 1.0
+  },
+  "retrieval": {
+    "min_overall_recall_at_1": 0.93,
+    "categories": {
+      "number-precision": 1.0,
+      "named-entity": 1.0,
+      "date-anchored": 1.0,
+      "paraphrase": 0.66,
+      "near-miss": 1.0
+    }
+  }
+}

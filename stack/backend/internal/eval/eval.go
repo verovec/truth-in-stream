@@ -129,6 +129,14 @@ type ModelVerdict struct {
 // exercises, a provenance note justifying the labels, the retrieved passages, and
 // the recorded model verdict. Adversarial marks the true-but-misleading and
 // same-topic-opposite-truth cases that are the redesign's whole point.
+//
+// Category and Relevant add the retrieval axis. Category, when set, is one of the
+// five retrieval-stress classes (RetrievalCategories) the case exercises; Relevant
+// lists the passage ids that are the true retrieval targets for the claim (a
+// subset of Passages), the rest being distractors the oracle must rank below them.
+// A case with a non-empty Category and Relevant participates in the retrieval
+// recall gate; a case leaving both empty is a verdict-only case and is scored only
+// on the two-axis literal/flag path.
 type Case struct {
 	ID              string       `json:"id"`
 	Statement       string       `json:"statement"`
@@ -137,6 +145,8 @@ type Case struct {
 	ExpectedFlags   []string     `json:"expected_flags"`
 	Provenance      string       `json:"provenance"`
 	Adversarial     bool         `json:"adversarial"`
+	Category        string       `json:"category,omitempty"`
+	Relevant        []string     `json:"relevant,omitempty"`
 	Passages        []Passage    `json:"passages"`
 	ModelVerdict    ModelVerdict `json:"model_verdict"`
 }
@@ -188,8 +198,40 @@ func LoadGolden(path string) (Golden, error) {
 		if err := validateRecordedCitations(c); err != nil {
 			return Golden{}, err
 		}
+		if err := validateRetrieval(c); err != nil {
+			return Golden{}, err
+		}
 	}
 	return g, nil
+}
+
+// validateRetrieval rejects a malformed retrieval labeling so an authoring slip
+// is a hard load error rather than a silently skewed recall number. It requires a
+// case's category to be one of the five retrieval-stress classes (or empty), a
+// retrieval case (non-empty category or relevant set) to carry both a category and
+// at least one relevant target, and every relevant id to resolve to one of the
+// case's passages - a relevant target retrieval could never surface is a fixture
+// bug, not a recall of zero.
+func validateRetrieval(c Case) error {
+	if !validCategory(c.Category) {
+		return fmt.Errorf("eval: case %q has unknown retrieval category %q", c.ID, c.Category)
+	}
+	if c.Category == "" && len(c.Relevant) == 0 {
+		return nil
+	}
+	if c.Category == "" || len(c.Relevant) == 0 {
+		return fmt.Errorf("eval: case %q is a partial retrieval case: category %q with %d relevant targets (need both)", c.ID, c.Category, len(c.Relevant))
+	}
+	byID := make(map[string]struct{}, len(c.Passages))
+	for _, p := range c.Passages {
+		byID[p.ID] = struct{}{}
+	}
+	for _, id := range c.Relevant {
+		if _, ok := byID[id]; !ok {
+			return fmt.Errorf("eval: case %q marks unknown relevant target %q", c.ID, id)
+		}
+	}
+	return nil
 }
 
 // validateRecordedCitations rejects a recorded verdict whose citations could not

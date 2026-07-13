@@ -73,7 +73,7 @@ ENV ?= prod
 SOURCE ?= wikipedia
 ACTION ?= up
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -190,6 +190,9 @@ bench-datastore: ## Run the datastore scale benchmark (VER-173): spin a throwawa
 	$(COMPOSE) --profile bench run --rm vectorbench go run ./cmd/vectorbench -out=/app/vectorbench-report.md $(BENCH_FLAGS)
 	$(COMPOSE) --profile bench down
 	@echo "bench complete: report at stack/backend/vectorbench-report.md"
+
+eval: ## Run the French political retrieval eval gate (VER-191): score the deterministic lexical retrieval oracle's recall@1/recall@3 per category over the committed golden set and print pass/fail against the reviewed baseline (stack/backend/internal/eval/testdata/baseline.json). Fully offline - no model API, no database, no Docker. Exits non-zero on a recall regression. Needs the Go toolchain (override with GO=). The two-axis verdict accuracy gate runs alongside as `go test ./internal/eval/...`; see stack/backend/internal/eval/README.md
+	cd stack/backend && $(GO) run ./cmd/eval
 
 crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
 	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
