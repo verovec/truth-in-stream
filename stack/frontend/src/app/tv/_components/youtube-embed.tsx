@@ -82,6 +82,21 @@ function embedVideo(id: string): string {
   return `https://www.youtube.com/embed/${id}`;
 }
 
+// safeExternalHref returns source_ref only when it is an http(s) URL, so the
+// fallback link can never carry a javascript:/data: scheme from a poisoned or
+// mistaken admin-supplied channel reference (a stored-XSS vector). A non-http(s)
+// ref yields null and the caller renders plain text with no link.
+function safeExternalHref(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // YoutubeEmbed renders the official iframe for a youtube channel in a 16:9
 // responsive frame. When no embed URL can be derived from the source_ref it
 // shows a clear "open on YouTube" link to the source rather than a broken frame.
@@ -96,19 +111,22 @@ export function YoutubeEmbed({
   const embedUrl = youtubeEmbedUrl(sourceRef);
 
   if (!embedUrl) {
+    const href = safeExternalHref(sourceRef);
     return (
       <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-black/15 bg-black/[0.03] p-4 text-center dark:border-white/15 dark:bg-white/5">
         <p className="text-sm text-ink/60 dark:text-paper/60">
           {t.tv.embed.unavailable}
         </p>
-        <a
-          href={sourceRef}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm font-medium text-bleu hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:border-white/15 dark:bg-white/5 dark:text-sky-300 dark:hover:bg-white/10 dark:focus-visible:outline-paper/60"
-        >
-          {t.tv.embed.openOnYoutube}
-        </a>
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm font-medium text-bleu hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:border-white/15 dark:bg-white/5 dark:text-sky-300 dark:hover:bg-white/10 dark:focus-visible:outline-paper/60"
+          >
+            {t.tv.embed.openOnYoutube}
+          </a>
+        ) : null}
       </div>
     );
   }

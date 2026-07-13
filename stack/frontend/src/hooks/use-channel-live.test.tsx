@@ -106,6 +106,21 @@ describe("useChannelLive", () => {
     expect(h.analysis().status).toBe("ended");
   });
 
+  test("ignores a trailing interim after off_air (stays ended, no caption)", () => {
+    const h = harness();
+    act(() => h.last().handlers.onOpen());
+    act(() => h.last().handlers.onFrame(JSON.stringify({ type: "off_air" })));
+    // A late interim the backend may emit before the socket closes must not
+    // repopulate the caption or leave the ended status.
+    act(() =>
+      h
+        .last()
+        .handlers.onFrame(JSON.stringify({ type: "interim", text: "late words" })),
+    );
+    expect(h.analysis().status).toBe("ended");
+    expect(h.analysis().caption).toBe("");
+  });
+
   test("ends on a clean close without reconnecting", () => {
     const h = harness();
     act(() => h.last().handlers.onOpen());

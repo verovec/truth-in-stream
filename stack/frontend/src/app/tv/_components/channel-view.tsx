@@ -85,7 +85,7 @@ function LiveChannelStage({
                 {t.tv.channel.analysisDelay}
               </p>
             </div>
-            <LiveFactCheckPanel />
+            <LiveFactCheckPanel showClock={false} />
           </div>
         </div>
       </ChannelLiveProvider>

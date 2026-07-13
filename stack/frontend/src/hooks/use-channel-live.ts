@@ -98,6 +98,12 @@ export function useChannelLive(
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     function ingestFrame(raw: string): void {
+      // Once the channel has gone off air, ignore any trailing frame the backend
+      // may still emit before the socket closes: a late interim would otherwise
+      // repopulate the live caption under an already-ended status.
+      if (offAir) {
+        return;
+      }
       if (offAirType(raw)) {
         offAir = true;
         setCaption("");

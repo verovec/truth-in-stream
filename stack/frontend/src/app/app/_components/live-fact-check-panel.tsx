@@ -37,7 +37,16 @@ function NO_CLAIMS(): LiveClaim[] {
 // region can highlight and scroll the origin into view. It reads the shared
 // live snapshot, so it and the top-of-page summary strip track one session over
 // one WebSocket.
-export function LiveFactCheckPanel() {
+// showClock renders the playback-time readout next to the heading. It defaults
+// on for the video path (a real <video> drives the clock); the /tv channel view
+// passes false because a live channel has no in-page playback clock (a
+// cross-origin YouTube iframe, or no player at all for HLS), so the readout would
+// sit frozen at 0:00.
+export function LiveFactCheckPanel({
+  showClock = true,
+}: {
+  showClock?: boolean;
+} = {}) {
   const statements = useLiveAnalysisSelector(
     (snapshot) => snapshot?.statements ?? EMPTY,
   );
@@ -112,7 +121,7 @@ export function LiveFactCheckPanel() {
           </h2>
           <LiveStatusPill status={status} />
         </div>
-        <PlaybackClock />
+        {showClock ? <PlaybackClock /> : null}
       </header>
       <ConnectionNotice status={status} />
 

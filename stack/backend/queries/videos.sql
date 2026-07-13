@@ -32,7 +32,7 @@ ORDER BY recorded_at;
 -- (channel_id nulled by a channel delete) is excluded by the equality match.
 SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
 FROM videos
-WHERE kind = 'tv' AND channel_id = $1 AND status = 'ready'
+WHERE kind = 'tv' AND channel_id = $1 AND status = 'ready' AND recorded_at IS NOT NULL
 ORDER BY recorded_at DESC;
 
 -- name: DeleteVideo :execrows

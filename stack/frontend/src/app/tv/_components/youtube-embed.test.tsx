@@ -81,4 +81,19 @@ describe("YoutubeEmbed", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
   });
+
+  test("renders no link for a non-http(s) source_ref (no javascript: XSS vector)", () => {
+    render(
+      // A poisoned/mistaken registry entry: the fallback must never render this
+      // as a clickable href.
+      <YoutubeEmbed
+        sourceRef="javascript:alert(document.cookie)"
+        title="Evil"
+      />,
+    );
+    expect(
+      screen.getByText(fr.app.tv.embed.unavailable),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
 });
