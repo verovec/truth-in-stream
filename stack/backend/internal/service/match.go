@@ -34,6 +34,22 @@ type EvidenceSearcher interface {
 	SearchEvidence(ctx context.Context, query []float32, topK, efSearch int, sources []string) ([]domain.EvidenceHit, error)
 }
 
+// HybridClaimSearcher is the optional lexical+vector capability of a claim
+// store. A store that implements it lets the matcher fuse the vector search with
+// a French lexical full-text search by Reciprocal Rank Fusion; text is the raw
+// query for the lexical branch. It is a separate optional interface, not an
+// addition to ClaimSearcher, so a store or test fake that only does vector
+// search needs no change and the matcher transparently falls back to Search.
+type HybridClaimSearcher interface {
+	SearchHybrid(ctx context.Context, text string, query []float32, topK, lexicalK, rrfK, efSearch int) ([]domain.ClaimMatch, error)
+}
+
+// HybridEvidenceSearcher is the optional lexical+vector capability of the
+// evidence store, the evidence-corpus companion to HybridClaimSearcher.
+type HybridEvidenceSearcher interface {
+	SearchEvidenceHybrid(ctx context.Context, text string, query []float32, topK, lexicalK, rrfK, efSearch int, sources []string) ([]domain.EvidenceHit, error)
+}
+
 // ErrEmptySegment is returned when a segment contains no text to match.
 var ErrEmptySegment = errors.New("service: segment text is empty")
 
@@ -84,6 +100,14 @@ type MatcherConfig struct {
 	ConfidenceClusterSize int
 	ConfidenceLeadWeight  float64
 	ConfidenceBodyWeight  float64
+
+	// HybridSearch fuses a French lexical full-text branch with the vector
+	// branch by Reciprocal Rank Fusion when the store supports it (a store that
+	// does not falls back to pure vector search). LexicalTopK bounds the lexical
+	// candidate pool per corpus and RRFK is the fusion smoothing constant.
+	HybridSearch bool
+	LexicalTopK  int
+	RRFK         int
 }
 
 func (c MatcherConfig) validate() error {
@@ -108,6 +132,10 @@ func (c MatcherConfig) validate() error {
 		return fmt.Errorf("service: matcher confidence lead weight %v outside [0, 1]", c.ConfidenceLeadWeight)
 	case !validWeight(c.ConfidenceBodyWeight):
 		return fmt.Errorf("service: matcher confidence body weight %v outside [0, 1]", c.ConfidenceBodyWeight)
+	case c.HybridSearch && (c.LexicalTopK < 1 || c.LexicalTopK > math.MaxInt32):
+		return fmt.Errorf("service: matcher lexical topK must be in [1, %d] when hybrid search is on, got %d", math.MaxInt32, c.LexicalTopK)
+	case c.HybridSearch && c.RRFK < 1:
+		return fmt.Errorf("service: matcher RRF constant must be at least 1 when hybrid search is on, got %d", c.RRFK)
 	}
 	return nil
 }
@@ -165,11 +193,11 @@ func (m *Matcher) MatchSegment(ctx context.Context, segment string) ([]Match, []
 		return nil, nil, err
 	}
 
-	matches, err := m.claimMatches(ctx, query)
+	matches, err := m.claimMatches(ctx, segment, query)
 	if err != nil {
 		return nil, nil, err
 	}
-	evidence, err := m.evidenceMatches(ctx, query)
+	evidence, err := m.evidenceMatches(ctx, segment, query)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,9 +240,12 @@ func (m *Matcher) Contributions(matches []Match) []float64 {
 	})
 }
 
-// claimMatches retrieves and threshold-filters curated claim hits.
-func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, error) {
-	hits, err := m.claims.Search(ctx, query, m.cfg.TopK, 0)
+// claimMatches retrieves and threshold-filters curated claim hits. It runs the
+// hybrid lexical+vector search when enabled and the store supports it, otherwise
+// the pure vector search; both return hits nearest-first, so the threshold loop
+// below is identical either way.
+func (m *Matcher) claimMatches(ctx context.Context, segment string, query []float32) ([]Match, error) {
+	hits, err := m.searchClaims(ctx, segment, query)
 	if err != nil {
 		return nil, fmt.Errorf("service: search claims: %w", err)
 	}
@@ -239,12 +270,14 @@ func (m *Matcher) claimMatches(ctx context.Context, query []float32) ([]Match, e
 }
 
 // evidenceMatches retrieves and threshold-filters Wikipedia evidence hits. It is
-// a no-op (empty result, no query) when evidence retrieval is disabled.
-func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match, error) {
+// a no-op (empty result, no query) when evidence retrieval is disabled. Like
+// claimMatches it runs the hybrid search when enabled and supported, otherwise
+// the pure vector search.
+func (m *Matcher) evidenceMatches(ctx context.Context, segment string, query []float32) ([]Match, error) {
 	if m.cfg.EvidenceTopK == 0 {
 		return nil, nil
 	}
-	hits, err := m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, 0, nil)
+	hits, err := m.searchEvidence(ctx, segment, query)
 	if err != nil {
 		return nil, fmt.Errorf("service: search evidence: %w", err)
 	}
@@ -270,6 +303,29 @@ func (m *Matcher) evidenceMatches(ctx context.Context, query []float32) ([]Match
 		})
 	}
 	return matches, nil
+}
+
+// searchClaims runs the curated-claims retrieval: the hybrid lexical+vector
+// search when hybrid is configured and the store implements it, the pure vector
+// search otherwise. The fallback keeps hybrid additive - a store or fake without
+// the capability is transparently vector-only.
+func (m *Matcher) searchClaims(ctx context.Context, segment string, query []float32) ([]domain.ClaimMatch, error) {
+	if m.cfg.HybridSearch {
+		if hs, ok := m.claims.(HybridClaimSearcher); ok {
+			return hs.SearchHybrid(ctx, segment, query, m.cfg.TopK, m.cfg.LexicalTopK, m.cfg.RRFK, 0)
+		}
+	}
+	return m.claims.Search(ctx, query, m.cfg.TopK, 0)
+}
+
+// searchEvidence is searchClaims over the evidence corpus.
+func (m *Matcher) searchEvidence(ctx context.Context, segment string, query []float32) ([]domain.EvidenceHit, error) {
+	if m.cfg.HybridSearch {
+		if hs, ok := m.evidence.(HybridEvidenceSearcher); ok {
+			return hs.SearchEvidenceHybrid(ctx, segment, query, m.cfg.EvidenceTopK, m.cfg.LexicalTopK, m.cfg.RRFK, 0, nil)
+		}
+	}
+	return m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, 0, nil)
 }
 
 // embedSegment embeds one segment as a retrieval query under the shared

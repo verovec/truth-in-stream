@@ -861,6 +861,17 @@ services:
       # halfvec column. Off until the corpus approaches the halfvec HNSW's RAM
       # ceiling; validate recall on the real corpus before enabling.
       EVIDENCE_BQ_MULTIPLIER: "${EVIDENCE_BQ_MULTIPLIER:-}"
+      # Hybrid retrieval (VER-195): fuse a French lexical full-text branch with
+      # the vector branch by Reciprocal Rank Fusion so exact figures, dates, and
+      # named entities dense embeddings blur are caught. On by default; a store
+      # without the lexical index (or MATCH_HYBRID_SEARCH=false) falls back to the
+      # pure vector search. Optional tuning falls back to binary defaults when
+      # empty: MATCH_LEXICAL_TOP_K (20, the lexical candidate pool per corpus) and
+      # MATCH_RRF_K (60, the RRF smoothing constant). Forwarded explicitly - a
+      # variable in .env does nothing unless compose passes it through.
+      MATCH_HYBRID_SEARCH: "${MATCH_HYBRID_SEARCH:-}"
+      MATCH_LEXICAL_TOP_K: "${MATCH_LEXICAL_TOP_K:-}"
+      MATCH_RRF_K: "${MATCH_RRF_K:-}"
       # LLM provider for every LLM-backed stage (consistency, check-worthiness,
       # claim decomposition, claim typing, the credibility verifier). Defaults to
       # deepseek (DeepSeek's cheap chat model, keyed on DEEPSEEK_API_KEY). Set

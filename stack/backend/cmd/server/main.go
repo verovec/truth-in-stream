@@ -257,6 +257,9 @@ func run(logger *slog.Logger) error {
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
 	})
 	if err != nil {
 		return err
@@ -638,6 +641,9 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)

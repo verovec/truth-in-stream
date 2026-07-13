@@ -235,6 +235,79 @@ func (q *Queries) GetOtherEvidenceSource(ctx context.Context, source string) (st
 	return source_2, err
 }
 
+const lexicalSearchEvidenceChunks = `-- name: LexicalSearchEvidenceChunks :many
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+       (embedding <=> $1)::float8 AS distance
+FROM evidence_chunks, websearch_to_tsquery('french', immutable_unaccent($2::text)) AS q
+WHERE search_vector @@ q
+  AND embedding IS NOT NULL
+  AND ($3::text[] IS NULL OR source = ANY($3::text[]))
+ORDER BY ts_rank_cd(search_vector, q) DESC, source, external_id, chunk_index
+LIMIT $4
+`
+
+type LexicalSearchEvidenceChunksParams struct {
+	QueryEmbedding *pgvector.HalfVector
+	QueryText      string
+	Sources        []string
+	ResultLimit    int32
+}
+
+type LexicalSearchEvidenceChunksRow struct {
+	Source     string
+	ExternalID string
+	ChunkIndex int32
+	Title      string
+	Url        string
+	Content    string
+	Kind       string
+	Metadata   []byte
+	Distance   float64
+}
+
+// Lexical half of hybrid retrieval (VER-195) over the evidence corpus, mirroring
+// LexicalSearchClaims. The GIN index on search_vector drives the @@ filter (a
+// bounded index scan, no seq scan); ts_rank_cd ranks by cover density. Only
+// embedded chunks are eligible so a fused hit always carries a real cosine
+// distance (the same wire shape SearchEvidenceChunks returns) and an unembedded
+// chunk - which has no vector similarity to fuse - is never a lexical-only match.
+// The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
+// natural key for a stable ranking.
+func (q *Queries) LexicalSearchEvidenceChunks(ctx context.Context, arg LexicalSearchEvidenceChunksParams) ([]LexicalSearchEvidenceChunksRow, error) {
+	rows, err := q.db.Query(ctx, lexicalSearchEvidenceChunks,
+		arg.QueryEmbedding,
+		arg.QueryText,
+		arg.Sources,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LexicalSearchEvidenceChunksRow{}
+	for rows.Next() {
+		var i LexicalSearchEvidenceChunksRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.ExternalID,
+			&i.ChunkIndex,
+			&i.Title,
+			&i.Url,
+			&i.Content,
+			&i.Kind,
+			&i.Metadata,
+			&i.Distance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchEvidenceChunks = `-- name: SearchEvidenceChunks :many
 SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
        (embedding <=> $1)::float8 AS distance

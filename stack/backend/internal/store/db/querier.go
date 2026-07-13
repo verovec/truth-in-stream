@@ -84,6 +84,27 @@ type Querier interface {
 	// column, preserving insertion order within the sentence.
 	InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
+	// Lexical half of hybrid retrieval (VER-195): the top result_limit claims whose
+	// French-folded search_vector matches the query terms, ranked by cover density
+	// (ts_rank_cd weighs term proximity, which favours exact-figure and named-entity
+	// overlap over raw term frequency). The GIN index on search_vector drives the @@
+	// filter, so this is a bounded index scan, never a seq scan. The same
+	// immutable_unaccent wrapper the generated column uses folds the query terms, so
+	// accent matching is symmetric. The row also carries the cosine distance to
+	// query_embedding so a fused lexical hit exposes the same wire-visible similarity
+	// a vector hit does; the ORDER BY is the lexical rank, so the vector distance is
+	// a carried attribute here and the HNSW index is not consulted. Ties break on id
+	// for a stable ranking.
+	LexicalSearchClaims(ctx context.Context, arg LexicalSearchClaimsParams) ([]LexicalSearchClaimsRow, error)
+	// Lexical half of hybrid retrieval (VER-195) over the evidence corpus, mirroring
+	// LexicalSearchClaims. The GIN index on search_vector drives the @@ filter (a
+	// bounded index scan, no seq scan); ts_rank_cd ranks by cover density. Only
+	// embedded chunks are eligible so a fused hit always carries a real cosine
+	// distance (the same wire shape SearchEvidenceChunks returns) and an unembedded
+	// chunk - which has no vector similarity to fuse - is never a lexical-only match.
+	// The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
+	// natural key for a stable ranking.
+	LexicalSearchEvidenceChunks(ctx context.Context, arg LexicalSearchEvidenceChunksParams) ([]LexicalSearchEvidenceChunksRow, error)
 	// ordinal, not created_at, carries insertion order: an analysis run writes its
 	// claims in one transaction, so their created_at values are identical.
 	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]ListDocumentClaimsRow, error)
