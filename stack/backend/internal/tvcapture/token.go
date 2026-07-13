@@ -24,6 +24,12 @@ import (
 // actually expires, so an in-flight request never rides an about-to-die token.
 const tokenRefreshSkew = 30 * time.Second
 
+// defaultTokenTTL is the assumed lifetime when the token endpoint omits or
+// reports a non-positive expires_in. It must exceed tokenRefreshSkew, or the
+// cached token would be treated as already expired and refetched on every call.
+// 5 minutes matches Keycloak's default access-token lifespan.
+const defaultTokenTTL = 5 * time.Minute
+
 // tokenSource caches a Keycloak client-credentials access token and refreshes it
 // when it nears expiry. It is safe for concurrent use; the client secret it holds
 // is never included in a returned error.
@@ -108,8 +114,8 @@ func (s *tokenSource) fetch(ctx context.Context) (string, time.Duration, error) 
 		return "", 0, errors.New("tvcapture: token endpoint returned empty access_token")
 	}
 	ttl := time.Duration(tr.ExpiresIn) * time.Second
-	if ttl <= 0 {
-		ttl = tokenRefreshSkew
+	if ttl <= tokenRefreshSkew {
+		ttl = defaultTokenTTL
 	}
 	return tr.AccessToken, ttl, nil
 }

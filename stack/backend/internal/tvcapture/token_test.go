@@ -65,6 +65,33 @@ func TestTokenSourceCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestTokenSourceCachesWhenExpiresInMissing(t *testing.T) {
+	t.Parallel()
+	// A token endpoint that reports no (or a non-positive) expires_in must not
+	// defeat caching: the fallback TTL has to exceed the refresh skew, or the
+	// token would be treated as instantly expired and refetched on every call.
+	var fetches atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"tok"}`)) // expires_in omitted -> 0
+	}))
+	defer srv.Close()
+
+	now := time.Unix(2_000_000, 0)
+	ts := newTokenSource(srv.Client(), srv.URL, "tv-capture", "s3cr3t")
+	ts.now = func() time.Time { return now }
+
+	if _, err := ts.Token(context.Background()); err != nil {
+		t.Fatalf("first token: %v", err)
+	}
+	if _, err := ts.Token(context.Background()); err != nil {
+		t.Fatalf("second token: %v", err)
+	}
+	if fetches.Load() != 1 {
+		t.Fatalf("expected the token to be cached, got %d fetches", fetches.Load())
+	}
+}
+
 func TestTokenSourceErrorsOnNon200(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

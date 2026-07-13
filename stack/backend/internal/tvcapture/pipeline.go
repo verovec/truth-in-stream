@@ -54,10 +54,13 @@ func ffmpegArgs(slug, source string, kind sourceKind, archive bool, segment time
 		args = append(args, "-i", source)
 	}
 
-	// PCM output to stdout for the live analyzer.
+	// PCM output to stdout for the live analyzer. Map only the first audio stream
+	// (0:a:0): the s16le raw muxer takes exactly one stream, and simulcasts often
+	// carry several audio tracks (audio description, secondary language), which a
+	// bare 0:a would map all of and fail on.
 	args = append(
 		args,
-		"-map", "0:a",
+		"-map", "0:a:0",
 		"-f", "s16le",
 		"-ar", strconv.Itoa(pcmSampleRate),
 		"-ac", strconv.Itoa(pcmChannels),

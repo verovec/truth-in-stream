@@ -39,6 +39,12 @@ func (c *wsFeedConnector) Connect(ctx context.Context, channelID string) (frameS
 	if err != nil {
 		return nil, fmt.Errorf("tvcapture: dial feed for channel %s failed", channelID)
 	}
+	// The worker only writes PCM; it never reads application messages. But the
+	// server's publisher handler runs a ping loop and closes the socket if no pong
+	// returns, and coder/websocket only answers pings while something is reading.
+	// CloseRead runs that reader (discarding any inbound frame), so pings are
+	// ponged and the session is not force-closed on the ping interval.
+	conn.CloseRead(ctx)
 	return &wsFrameSink{conn: conn}, nil
 }
 

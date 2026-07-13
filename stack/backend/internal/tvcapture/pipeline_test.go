@@ -23,7 +23,7 @@ func TestFFmpegArgs(t *testing.T) {
 			want: []string{
 				"-hide_banner", "-loglevel", "warning",
 				"-i", "pipe:0",
-				"-map", "0:a", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+				"-map", "0:a:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
 				"-map", "0:v?", "-map", "0:a", "-c", "copy",
 				"-f", "segment", "-segment_time", "3600", "-strftime", "1",
 				"-segment_format", "mpegts", "/work/tf1/%Y%m%d_%H%M%S.ts",
@@ -36,7 +36,7 @@ func TestFFmpegArgs(t *testing.T) {
 			want: []string{
 				"-hide_banner", "-loglevel", "warning",
 				"-i", "https://example.com/live.m3u8",
-				"-map", "0:a", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+				"-map", "0:a:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
 				"-map", "0:v?", "-map", "0:a", "-c", "copy",
 				"-f", "segment", "-segment_time", "3600", "-strftime", "1",
 				"-segment_format", "mpegts", "/work/tf1/%Y%m%d_%H%M%S.ts",
@@ -49,7 +49,7 @@ func TestFFmpegArgs(t *testing.T) {
 			want: []string{
 				"-hide_banner", "-loglevel", "warning",
 				"-i", "https://example.com/live.m3u8",
-				"-map", "0:a", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+				"-map", "0:a:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
 			},
 		},
 	}

@@ -381,7 +381,8 @@ const keycloakTokenPath = "/protocol/openid-connect/token"
 
 const (
 	// defaultTVCaptureClientID is the Keycloak service-account client the capture
-	// worker authenticates as; it carries the admin realm role.
+	// worker authenticates as; it carries the scoped tv-capture realm role (not
+	// blanket admin), which authorizes only the TV feed and recording endpoints.
 	defaultTVCaptureClientID = "tv-capture"
 	// defaultTVCaptureBackendURL is the backend API base the worker calls (channel
 	// list, presign, register, prune) and dials the feed WebSocket on. Compose and

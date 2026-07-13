@@ -177,16 +177,17 @@ func (n *fakeNotifier) first() crawlnotify.CrawlEvent {
 
 func testSupCfg(workDir string) supervisorConfig {
 	return supervisorConfig{
-		WorkDir:             workDir,
-		Segment:             time.Hour,
-		FeedStall:           40 * time.Millisecond,
-		SegmentPoll:         5 * time.Millisecond,
-		WatchdogTick:        5 * time.Millisecond,
-		BackoffBase:         time.Millisecond,
-		BackoffMax:          5 * time.Millisecond,
-		HealthyReset:        time.Hour,
-		MaxAttempts:         3,
-		FinalArchiveTimeout: time.Second,
+		WorkDir:              workDir,
+		Segment:              time.Hour,
+		FeedStall:            40 * time.Millisecond,
+		SegmentPoll:          5 * time.Millisecond,
+		WatchdogTick:         5 * time.Millisecond,
+		BackoffBase:          time.Millisecond,
+		BackoffMax:           5 * time.Millisecond,
+		HealthyReset:         time.Hour,
+		MaxAttempts:          3,
+		FinalArchiveTimeout:  time.Second,
+		FeedReconnectBackoff: time.Millisecond,
 	}
 }
 
@@ -335,4 +336,81 @@ func contains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// failSink is a frameSink whose every Send fails, standing in for a dropped feed.
+type failSink struct{}
+
+func (failSink) Send(context.Context, []byte) error { return errors.New("feed down") }
+func (failSink) Close() error                       { return nil }
+
+// flakyFeed fails the first connection's sends, then hands out a healthy sink on
+// reconnect, so a test can prove the sender reconnects and the reader keeps
+// draining meanwhile.
+type flakyFeed struct {
+	mu       sync.Mutex
+	connects int
+	healthy  *fakeSink
+}
+
+func (f *flakyFeed) Connect(context.Context, string) (frameSink, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connects++
+	if f.connects == 1 {
+		return failSink{}, nil
+	}
+	return f.healthy, nil
+}
+
+func (f *flakyFeed) connectCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connects
+}
+
+func TestSupervisorReconnectsFeedWithoutStoppingCapture(t *testing.T) {
+	t.Parallel()
+	ch := Channel{ID: "c1", Slug: "tf1", Enabled: true, ArchiveEnabled: true}
+	healthy := &fakeSink{}
+	feed := &flakyFeed{healthy: healthy}
+	arch := &fakeArchiver{}
+	notifier := &fakeNotifier{}
+
+	runner := &fakeRunner{
+		behavior: func(_ int, p *fakeProcess, spec captureSpec) {
+			dir := filepath.Join(spec.WorkDir, spec.Channel.Slug)
+			_ = os.MkdirAll(dir, 0o755)
+			_ = os.WriteFile(filepath.Join(dir, "20260101_000000.ts"), []byte("ts"), 0o600)
+			// Produce PCM continuously until the process is stopped: the point is
+			// that a failing feed must never stall this drain.
+			for {
+				if _, err := p.pw.Write(make([]byte, pcmFrameBytes)); err != nil {
+					return
+				}
+			}
+		},
+	}
+
+	sup := newSupervisor(ch, runner, feed, arch, realClock{}, testSupCfg(t.TempDir()), discardLogger(), notifier)
+	sup.start(context.Background())
+
+	// The first feed connection fails every Send; the sender must reconnect and
+	// deliver to the healthy sink, which proves the capture kept draining and the
+	// feed recovered on its own.
+	waitFor(t, func() bool { return healthy.frameCount() > 0 }, "frames delivered after feed reconnect")
+	if feed.connectCount() < 2 {
+		t.Fatalf("feed did not reconnect: %d connects", feed.connectCount())
+	}
+
+	sup.stop()
+
+	// A feed outage is not a capture death: no alert fires, and the final segment
+	// is still archived because the reader never stalled.
+	if notifier.count() != 0 {
+		t.Fatalf("feed outage must not alert, got %d events", notifier.count())
+	}
+	if !contains(arch.archivedList(), "20260101_000000.ts") {
+		t.Fatalf("final segment not archived after feed outage: %v", arch.archivedList())
+	}
 }

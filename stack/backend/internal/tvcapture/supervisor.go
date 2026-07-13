@@ -47,13 +47,14 @@ type supervisorConfig struct {
 	StreamlinkPath string
 	FFmpegPath     string
 
-	SegmentPoll         time.Duration
-	WatchdogTick        time.Duration
-	BackoffBase         time.Duration
-	BackoffMax          time.Duration
-	HealthyReset        time.Duration
-	MaxAttempts         int
-	FinalArchiveTimeout time.Duration
+	SegmentPoll          time.Duration
+	WatchdogTick         time.Duration
+	BackoffBase          time.Duration
+	BackoffMax           time.Duration
+	HealthyReset         time.Duration
+	MaxAttempts          int
+	FinalArchiveTimeout  time.Duration
+	FeedReconnectBackoff time.Duration
 }
 
 func (c supervisorConfig) withDefaults() supervisorConfig {
@@ -79,10 +80,23 @@ func (c supervisorConfig) withDefaults() supervisorConfig {
 		c.MaxAttempts = 5
 	}
 	if c.FinalArchiveTimeout <= 0 {
-		c.FinalArchiveTimeout = 2 * time.Minute
+		// Bounded below the worker container's stop_grace_period (120s) so a final
+		// archive on shutdown finishes (or is abandoned, leaving the .ts for the
+		// next startup salvage) before the runtime SIGKILLs the process, rather
+		// than being cut off mid-upload.
+		c.FinalArchiveTimeout = 90 * time.Second
+	}
+	if c.FeedReconnectBackoff <= 0 {
+		c.FeedReconnectBackoff = 5 * time.Second
 	}
 	return c
 }
+
+// feedFrameBuffer is how many ~100ms PCM frames the reader buffers ahead of the
+// feed sender. It absorbs a brief feed hiccup or reconnect without blocking the
+// reader; when it fills (feed down or slow) the reader drops frames rather than
+// stalling ffmpeg, so archiving is never held up by the analysis feed.
+const feedFrameBuffer = 64
 
 // channelSupervisor is the manager's handle on a running per-channel supervisor.
 type channelSupervisor interface {
@@ -186,8 +200,10 @@ func (s *supervisor) run(ctx context.Context) {
 }
 
 // runOnce runs a single capture lifecycle: salvage leftovers, start the process,
-// connect the feed, pump PCM + archive segments + watch the feed until the
-// process exits or the context is canceled, then archive the final segment.
+// then read PCM to the feed, archive segments, and watch for a stall until the
+// process exits or the context is canceled, then archive the final segment. The
+// feed is decoupled from the reader: a feed drop or reconnect never stops the
+// PCM drain, so archiving continues even while live analysis is briefly down.
 func (s *supervisor) runOnce(ctx context.Context) error {
 	ch := s.channel
 	dir := filepath.Join(s.cfg.WorkDir, ch.Slug)
@@ -208,24 +224,27 @@ func (s *supervisor) runOnce(ctx context.Context) error {
 		return fmt.Errorf("tvcapture: start capture: %w", err)
 	}
 
-	sink, err := s.feed.Connect(ctx, ch.ID)
-	if err != nil {
-		proc.Stop()
-		_ = proc.Wait()
-		return fmt.Errorf("tvcapture: connect feed: %w", err)
-	}
-
 	activity := &activityTracker{}
 	activity.mark(s.clock.Now())
 
 	var wg sync.WaitGroup
 	stopWorkers := make(chan struct{})
 	procDone := make(chan struct{})
+	// The reader buffers frames ahead of the sender and drops when full, so a feed
+	// outage never blocks ffmpeg's stdout (and thus never stalls archiving). The
+	// sender owns the feed connection and reconnects with backoff.
+	frames := make(chan []byte, feedFrameBuffer)
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.pumpPCM(procCtx, proc.PCM(), sink, activity)
+		s.readPCM(proc.PCM(), frames, activity)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.sendFeed(ctx, ch.ID, frames)
 	}()
 
 	if ch.ArchiveEnabled {
@@ -256,8 +275,7 @@ func (s *supervisor) runOnce(ctx context.Context) error {
 	close(procDone)
 	close(stopWorkers)
 	procCancel()
-	wg.Wait()
-	_ = sink.Close()
+	wg.Wait() // readPCM closes frames on EOF; sendFeed drains it and closes the sink
 
 	if ch.ArchiveEnabled {
 		finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.FinalArchiveTimeout)
@@ -282,10 +300,16 @@ func (s *supervisor) spec() captureSpec {
 	}
 }
 
-// pumpPCM reads the process's PCM stream in ~100ms frames and forwards each to
-// the feed, recording the time of the last bytes read for the watchdog. It ends
-// when the stream closes (process exit) or a Send fails.
-func (s *supervisor) pumpPCM(ctx context.Context, r io.Reader, sink frameSink, activity *activityTracker) {
+// readPCM reads the process's PCM stream in ~100ms frames and hands each to the
+// feed sender over frames, recording the time of the last bytes read for the
+// watchdog. It always drains the reader (so ffmpeg never blocks on a full stdout
+// pipe and archiving is unaffected by the feed): when the buffered channel is
+// full - the sender is behind because the feed is down or reconnecting - it drops
+// the frame rather than blocking. It closes frames when the stream ends (process
+// exit), which stops the sender. Activity is marked on every read, so the
+// watchdog trips only on a genuine upstream stall, not on a feed outage.
+func (s *supervisor) readPCM(r io.Reader, frames chan<- []byte, activity *activityTracker) {
+	defer close(frames)
 	buf := make([]byte, pcmFrameBytes)
 	for {
 		n, err := io.ReadFull(r, buf)
@@ -293,13 +317,52 @@ func (s *supervisor) pumpPCM(ctx context.Context, r io.Reader, sink frameSink, a
 			activity.mark(s.clock.Now())
 			frame := make([]byte, n)
 			copy(frame, buf[:n])
-			if serr := sink.Send(ctx, frame); serr != nil {
-				s.logger.Warn("tvcapture: feed send failed", slog.Any("err", serr))
-				return
+			select {
+			case frames <- frame:
+			default:
+				// Sender is behind (feed down/reconnecting); drop this frame so the
+				// read never blocks. Analysis has a gap; the archive does not.
 			}
 		}
 		if err != nil {
 			return
+		}
+	}
+}
+
+// sendFeed consumes PCM frames and writes them to the channel's live publisher
+// socket, owning the feed connection for the capture's lifetime. It connects
+// lazily and, on a send or connect failure, closes the socket and retries with a
+// fixed backoff, dropping frames while the feed is down. Decoupling the feed from
+// the reader means a hub outage costs only an analysis gap, never a capture or
+// archive stall. It returns when frames is closed (process exit), closing the
+// socket on the way out.
+func (s *supervisor) sendFeed(ctx context.Context, channelID string, frames <-chan []byte) {
+	var sink frameSink
+	var nextRetry time.Time
+	defer func() {
+		if sink != nil {
+			_ = sink.Close()
+		}
+	}()
+	for frame := range frames {
+		if sink == nil {
+			if s.clock.Now().Before(nextRetry) {
+				continue
+			}
+			conn, err := s.feed.Connect(ctx, channelID)
+			if err != nil {
+				s.logger.Warn("tvcapture: feed connect failed, will retry", slog.Any("err", err))
+				nextRetry = s.clock.Now().Add(s.cfg.FeedReconnectBackoff)
+				continue
+			}
+			sink = conn
+		}
+		if err := sink.Send(ctx, frame); err != nil {
+			s.logger.Warn("tvcapture: feed send failed, reconnecting", slog.Any("err", err))
+			_ = sink.Close()
+			sink = nil
+			nextRetry = s.clock.Now().Add(s.cfg.FeedReconnectBackoff)
 		}
 	}
 }
