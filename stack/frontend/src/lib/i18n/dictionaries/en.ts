@@ -138,6 +138,32 @@ export const en: Dictionary = {
           deleting: "Deleting…",
           deleteError: "Delete failed: {message}",
           deleteErrorFallback: "Delete failed.",
+          analysis: {
+            badge: {
+              analysing: "Analysing",
+              analysingPct: "Analysing {pct}%",
+              complete: "Analysed",
+              failed: "Analysis failed",
+            },
+            analysedOn: "Analysed on {date}",
+            counts:
+              "{total} claims · {credible} credible · {disputed} disputed · {unverifiable} unverifiable",
+            failedError: "The analysis failed: {message}",
+            failedFallback: "The analysis failed.",
+            analyse: "Analyse",
+            retry: "Retry analysis",
+            reanalyse: "Re-analyse",
+            confirm:
+              "Re-analyse this video? The stored result will be replaced.",
+            confirmYes: "Confirm",
+            confirmNo: "Cancel",
+            starting: "Starting…",
+            errors: {
+              conflict: "An analysis is already running for this video.",
+              notReady: "This video is not ready for analysis.",
+              failed: "The analysis could not be started.",
+            },
+          },
         },
       },
       documents: {
