@@ -1021,10 +1021,12 @@ services:
       # (0.90) is the grounded confidence to adopt a re-judgment, and
       # FACTCHECK_FINAL_GATE_DEADLINE (12s) bounds one reverify call.
       # FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR (0.5) loosens the gate for a sparse
-      # corpus: no-passage weak verdicts escalate too, and a knowledge-basis
-      # re-judgment settling a definite verdict at or above the floor is adopted
-      # (kept honest by its knowledge basis and capped confidence); 0 restores
-      # the strict evidence-only gate.
+      # corpus: an indeterminate or sub-floor no-passage verdict escalates too,
+      # and a knowledge-basis re-judgment settling a definite verdict at or
+      # above the floor is adopted - only for claims that retrieved no passages
+      # at all, so an uncited opinion never displaces an evidence-grounded
+      # verdict. Inert when FACTCHECK_KNOWLEDGE_FALLBACK=false; 0 restores the
+      # strict evidence-only gate.
       FACTCHECK_SECOND_PASS: "${FACTCHECK_SECOND_PASS:-}"
       FACTCHECK_SECOND_PASS_API_KEY: "${FACTCHECK_SECOND_PASS_API_KEY:-}"
       FACTCHECK_SECOND_PASS_MODEL: "${FACTCHECK_SECOND_PASS_MODEL:-}"

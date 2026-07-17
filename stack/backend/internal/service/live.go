@@ -427,7 +427,11 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 		speaker := unit.speaker
 		members := unit.take()
 		pu := pendingUnit{speaker: speaker, members: members, context: prevContext}
-		prevContext = contextTail(speaker, combinedText(members))
+		if a.verify != nil {
+			// Only the verify path's decomposer consumes the context; the legacy
+			// path skips the join-and-extract so its flush cost is unchanged.
+			prevContext = contextTail(speaker, combinedText(members))
+		}
 		return a.dispatch(ctx, out, queue, pu)
 	}
 

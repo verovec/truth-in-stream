@@ -15,7 +15,7 @@ import {
   claimsForUnit,
   emptyClaims,
 } from "@/lib/live/claims";
-import { type ClaimHighlight, claimHighlights } from "@/lib/live/highlight";
+import { claimHighlights, NO_HIGHLIGHTS } from "@/lib/live/highlight";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { LiveSocket, LiveSocketFactory } from "@/lib/live/ports";
 import { type LiveStatus, MAX_RECONNECT_ATTEMPTS } from "@/lib/live/session";
@@ -221,7 +221,3 @@ export function useChannelLive(
     speakers: speakerList,
   };
 }
-
-// NO_HIGHLIGHTS is the stable empty result for a segment with no anchored
-// claims, mirroring the video hook's identity-stable empty.
-const NO_HIGHLIGHTS: readonly ClaimHighlight[] = [];

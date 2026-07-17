@@ -8,41 +8,53 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
+// runeRange is one [start, end) rune-offset interval inside a searched text.
+type runeRange struct {
+	start int
+	end   int
+}
+
 // claimSpans anchors one claim's verbatim quote onto the unit's member
-// segments: it locates the quote inside the members' combined text (the exact
-// string the decomposer read) and projects the matched range onto each member
-// it overlaps, as [start, end) rune offsets local to that member's text. A
-// quote that crosses a segment boundary yields one span per segment. An empty
-// or unlocatable quote yields nil: the claim is still verified, it just cannot
-// be highlighted, which is strictly better than highlighting the wrong words.
-func claimSpans(members []unitMember, quote string) []domain.ClaimSpan {
+// segments: it locates the quote inside text (the members' combined text the
+// decomposer read - passed in so it is joined once per unit, not once per
+// claim) and projects every matched range onto each member it overlaps, as
+// [start, end) rune offsets local to that member's text. When the quoted words
+// repeat inside the unit, every occurrence is anchored: the decomposer does not
+// say which repetition it meant, and marking all of them is faithful where
+// picking one would highlight the wrong row half the time. A quote crossing a
+// segment boundary yields one span per segment. An empty or unlocatable quote
+// yields nil: the claim is still verified, it just cannot be highlighted, which
+// is strictly better than highlighting the wrong words.
+func claimSpans(members []unitMember, text, quote string) []domain.ClaimSpan {
 	if strings.TrimSpace(quote) == "" {
 		return nil
 	}
-	start, end, ok := locateQuote(combinedText(members), quote)
-	if !ok {
+	ranges := locateQuote(text, quote)
+	if len(ranges) == 0 {
 		return nil
 	}
-	spans := make([]domain.ClaimSpan, 0, len(members))
-	// Members sit in the combined rune space at cumulative offsets, each
-	// separated from the previous by the single joining space combinedText
-	// writes.
-	memberStart := 0
-	for i, m := range members {
-		if i > 0 {
-			memberStart++
+	spans := make([]domain.ClaimSpan, 0, len(ranges))
+	for _, r := range ranges {
+		// Members sit in the combined rune space at cumulative offsets, each
+		// separated from the previous by the single joining space combinedText
+		// writes.
+		memberStart := 0
+		for i, m := range members {
+			if i > 0 {
+				memberStart++
+			}
+			memberLen := utf8.RuneCountInString(m.seg.Text)
+			spanStart := max(r.start, memberStart)
+			spanEnd := min(r.end, memberStart+memberLen)
+			if spanStart < spanEnd {
+				spans = append(spans, domain.ClaimSpan{
+					SegmentID: m.id,
+					Start:     spanStart - memberStart,
+					End:       spanEnd - memberStart,
+				})
+			}
+			memberStart += memberLen
 		}
-		memberLen := utf8.RuneCountInString(m.seg.Text)
-		spanStart := max(start, memberStart)
-		spanEnd := min(end, memberStart+memberLen)
-		if spanStart < spanEnd {
-			spans = append(spans, domain.ClaimSpan{
-				SegmentID: m.id,
-				Start:     spanStart - memberStart,
-				End:       spanEnd - memberStart,
-			})
-		}
-		memberStart += memberLen
 	}
 	if len(spans) == 0 {
 		return nil
@@ -50,36 +62,58 @@ func claimSpans(members []unitMember, quote string) []domain.ClaimSpan {
 	return spans
 }
 
-// locateQuote finds quote inside text and returns its [start, end) rune
-// offsets. It tries the exact substring first, then a tolerant match that
-// case-folds and collapses whitespace runs on both sides (speech-to-text output
-// and a model's copy of it routinely disagree on casing and spacing), mapping
-// the normalized hit back onto the original rune offsets. It reports ok=false
-// when the quote does not appear even normalized - the caller then skips the
-// highlight rather than guessing.
-func locateQuote(text, quote string) (start, end int, ok bool) {
+// locateQuote finds every non-overlapping occurrence of quote inside text as
+// [start, end) rune ranges. It tries exact substring matches first, then a
+// tolerant pass that case-folds and collapses whitespace runs on both sides
+// (speech-to-text output and a model's copy of it routinely disagree on casing
+// and spacing), mapping each normalized hit back onto the original rune
+// offsets. An empty result means the quote does not appear even normalized -
+// the caller then skips the highlight rather than guessing.
+func locateQuote(text, quote string) []runeRange {
 	if quote == "" {
-		return 0, 0, false
+		return nil
 	}
-	if i := strings.Index(text, quote); i >= 0 {
-		start = utf8.RuneCountInString(text[:i])
-		return start, start + utf8.RuneCountInString(quote), true
+	if ranges := exactOccurrences(text, quote); len(ranges) > 0 {
+		return ranges
 	}
 
 	normText, index := normalizeForSearch(text)
 	normQuote, _ := normalizeForSearch(quote)
 	if normQuote == "" {
-		return 0, 0, false
+		return nil
 	}
-	i := strings.Index(normText, normQuote)
-	if i < 0 {
-		return 0, 0, false
+	var ranges []runeRange
+	for from := 0; ; {
+		i := strings.Index(normText[from:], normQuote)
+		if i < 0 {
+			break
+		}
+		at := from + i
+		start := utf8.RuneCountInString(normText[:at])
+		end := start + utf8.RuneCountInString(normQuote)
+		// index maps each normalized rune back to the original rune that produced
+		// it; the end bound is one past the original rune of the last matched one.
+		ranges = append(ranges, runeRange{start: index[start], end: index[end-1] + 1})
+		from = at + len(normQuote)
 	}
-	from := utf8.RuneCountInString(normText[:i])
-	to := from + utf8.RuneCountInString(normQuote)
-	// index maps each normalized rune back to the original rune that produced
-	// it; the end bound is one past the original rune of the last matched one.
-	return index[from], index[to-1] + 1, true
+	return ranges
+}
+
+// exactOccurrences finds every non-overlapping exact occurrence of quote in
+// text, as rune ranges.
+func exactOccurrences(text, quote string) []runeRange {
+	var ranges []runeRange
+	for from := 0; ; {
+		i := strings.Index(text[from:], quote)
+		if i < 0 {
+			break
+		}
+		at := from + i
+		start := utf8.RuneCountInString(text[:at])
+		ranges = append(ranges, runeRange{start: start, end: start + utf8.RuneCountInString(quote)})
+		from = at + len(quote)
+	}
+	return ranges
 }
 
 // normalizeForSearch lowercases text and collapses every whitespace run to a

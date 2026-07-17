@@ -7,7 +7,7 @@ import {
   useVerticalSplit,
 } from "@/hooks/use-vertical-split";
 import type { LiveClaim } from "@/lib/live/claims";
-import type { ClaimHighlight } from "@/lib/live/highlight";
+import { type ClaimHighlight, NO_HIGHLIGHTS } from "@/lib/live/highlight";
 import { deriveFactChecks } from "@/lib/live/fact-checks";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveStatement } from "@/lib/live/statements";
@@ -29,10 +29,10 @@ function NO_CLAIMS(): LiveClaim[] {
   return EMPTY_CLAIMS;
 }
 
-// NO_HIGHLIGHTS is the same stable-identity fallback for highlightsFor.
-const EMPTY_HIGHLIGHTS: readonly ClaimHighlight[] = [];
-function NO_HIGHLIGHTS(): readonly ClaimHighlight[] {
-  return EMPTY_HIGHLIGHTS;
+// NO_HIGHLIGHTS_FOR is the same stable-identity fallback for highlightsFor,
+// returning the shared empty from the highlight module.
+function NO_HIGHLIGHTS_FOR(): readonly ClaimHighlight[] {
+  return NO_HIGHLIGHTS;
 }
 
 // LiveFactCheckPanel feeds the live analysis stream for the selected video into
@@ -73,7 +73,7 @@ export function LiveFactCheckPanel({
   // the claims store changes, so the memoized statement list re-renders only
   // when a claim (and thus a highlight's verdict tint) actually progresses.
   const highlightsFor = useLiveAnalysisSelector(
-    (snapshot) => snapshot?.highlightsFor ?? NO_HIGHLIGHTS,
+    (snapshot) => snapshot?.highlightsFor ?? NO_HIGHLIGHTS_FOR,
   );
   // tick increments on every selection so re-selecting the same fact-check entry
   // still scrolls its origin subtitle back into view.

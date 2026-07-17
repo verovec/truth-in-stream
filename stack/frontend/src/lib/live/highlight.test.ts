@@ -44,7 +44,7 @@ describe("claimHighlights", () => {
     ],
   };
 
-  test("indexes spans by segment id, sorted by start, joined with status", () => {
+  test("indexes spans by segment id, joined with status and quote", () => {
     const state = applyClaimsFrame(emptyClaims(), frame);
     const index = claimHighlights(state);
     expect(index.get("s1")).toEqual([
@@ -55,6 +55,7 @@ describe("claimHighlights", () => {
         end: 19,
         status: "pending",
         verdict: undefined,
+        quote: "chomage a baisse",
       },
       {
         unitId: "u0",
@@ -63,6 +64,7 @@ describe("claimHighlights", () => {
         end: 40,
         status: "pending",
         verdict: undefined,
+        quote: "impots ont augmente. Oui",
       },
     ]);
     expect(index.get("s2")).toHaveLength(1);
@@ -137,5 +139,27 @@ describe("segmentTextParts", () => {
       { text: "abcd", highlight: first },
       { text: "ef", highlight: second },
     ]);
+  });
+
+  test("a slice that is not part of the claim's quote renders plain", () => {
+    // The offsets were computed against a different session's text that reused
+    // this segment id (the TV reconnect case): the quote no longer matches, so
+    // no words are marked - marking the wrong words would be worse.
+    const stale = highlight({ start: 0, end: 10, quote: "le chomage a baisse" });
+    expect(segmentTextParts("Une toute autre phrase.", [stale])).toEqual([
+      { text: "Une toute autre phrase." },
+    ]);
+  });
+
+  test("a boundary-crossing fragment of the quote still matches", () => {
+    // A span covers only its segment's share of a cross-segment quote, so the
+    // guard tests substring-of-quote, with case and whitespace folded.
+    const fragment = highlight({
+      start: 0,
+      end: 10,
+      quote: "baisse. Les IMPOTS",
+    });
+    const parts = segmentTextParts("Les impots montent.", [fragment]);
+    expect(parts[0]).toEqual({ text: "Les impots", highlight: fragment });
   });
 });

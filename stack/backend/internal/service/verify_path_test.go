@@ -614,6 +614,67 @@ func TestVerifyPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
 	}
 }
 
+func TestKnowledgeFallbackDegradesInsteadOfShedding(t *testing.T) {
+	t.Parallel()
+	// The fallback is best-effort: a no-evidence claim facing a saturated pool
+	// or a failing verifier degrades to the instant legacy unverifiable, never
+	// to unchecked or error - fallback-on can improve on legacy, not worsen it.
+	t.Run("saturated pool yields the legacy no-evidence verdict", func(t *testing.T) {
+		t.Parallel()
+		vp, err := NewVerifyPath(VerifyPathConfig{
+			Decomposer:        fakeDecomposer{},
+			Matcher:           liveMatcher{},
+			Verifier:          &fakeVerifier{},
+			FastTau:           0.85,
+			VerifyConcurrency: 1,
+			VerifyQueueDepth:  0,
+			FastDeadline:      time.Second,
+			VerifyDeadline:    50 * time.Millisecond,
+			KnowledgeFallback: true,
+		})
+		if err != nil {
+			t.Fatalf("NewVerifyPath: %v", err)
+		}
+		// Occupy the pool's only slot so the fallback cannot acquire one.
+		vp.verifySem <- struct{}{}
+		defer func() { <-vp.verifySem }()
+
+		verdict, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
+		if err != nil || shed {
+			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
+		}
+		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge || verdict.Confidence != 0 {
+			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
+		}
+	})
+
+	t.Run("verifier failure yields the legacy no-evidence verdict", func(t *testing.T) {
+		t.Parallel()
+		claim := "no evidence claim"
+		vp, err := NewVerifyPath(VerifyPathConfig{
+			Decomposer:        fakeDecomposer{},
+			Matcher:           liveMatcher{},
+			Verifier:          &fakeVerifier{err: map[string]error{claim: errors.New("verifier boom")}},
+			FastTau:           0.85,
+			VerifyConcurrency: 1,
+			FastDeadline:      time.Second,
+			VerifyDeadline:    time.Second,
+			KnowledgeFallback: true,
+			Logger:            discardLogger(),
+		})
+		if err != nil {
+			t.Fatalf("NewVerifyPath: %v", err)
+		}
+		verdict, shed, err := vp.verifyClaim(t.Context(), claim, nil)
+		if err != nil || shed {
+			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
+		}
+		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge {
+			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
+		}
+	})
+}
+
 func TestVerifyPathClaimsEventCarriesQuoteAndSpans(t *testing.T) {
 	t.Parallel()
 	// The decomposer's verbatim quote anchors onto the unit's member segment as

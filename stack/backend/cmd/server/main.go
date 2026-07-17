@@ -696,7 +696,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 	// re-judges a weak credibility verdict, the political path re-judges a weak
 	// two-axis verdict (mapping the reasoner's credibility back onto the literal axis).
 	// It is wired for both, so a political run gets the same last-resort adjudication.
-	secondPassCfg, err := buildSecondPass(finalGate, locale)
+	secondPassCfg, err := buildSecondPass(finalGate, locale, cfg.KnowledgeFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -739,7 +739,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 // rationale stays in the viewer's language. The gate is wired regardless of political
 // mode: the political path routes its weak two-axis verdicts through the same reasoner.
 // The API key is never logged.
-func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.SecondPassConfig, error) {
+func buildSecondPass(cfg config.FinalGate, locale domain.Locale, knowledgeFallback bool) (*service.SecondPassConfig, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -747,12 +747,21 @@ func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.Secon
 	if err != nil {
 		return nil, err
 	}
+	// FACTCHECK_KNOWLEDGE_FALLBACK=false must restore the strict no-evidence
+	// contract everywhere: left alone, the gate's knowledge floor would still
+	// escalate zero-passage claims to the reasoner and adopt knowledge
+	// re-judgments - the exact behavior the operator turned off, from the
+	// costlier model. Zeroing the floor keeps the two knobs one coherent switch.
+	knowledgeFloor := cfg.KnowledgeFloor
+	if !knowledgeFallback {
+		knowledgeFloor = 0
+	}
 	return &service.SecondPassConfig{
 		Reverifier:     reverifierAdapter{reverifier},
 		TriggerBelow:   cfg.TriggerBelow,
 		MinConfidence:  cfg.MinConfidence,
 		Deadline:       cfg.Deadline,
-		KnowledgeFloor: cfg.KnowledgeFloor,
+		KnowledgeFloor: knowledgeFloor,
 	}, nil
 }
 

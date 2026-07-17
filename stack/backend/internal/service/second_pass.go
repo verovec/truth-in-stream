@@ -90,17 +90,22 @@ func newSecondPass(cfg SecondPassConfig) (*secondPass, error) {
 // (knowledgeFloor zero) it requires passageCount > 0, because the reasoner grounds
 // its re-judgment in retrieved evidence and with nothing to re-read it could do no
 // better than the honest weak verdict; with a positive knowledgeFloor a no-passage
-// weak verdict escalates too, so the reasoner can settle it from general knowledge
-// while the evidence corpus is still small. It is a pure function so the gate is
-// table-testable without the model. This inverts the old mid-band, evidence-only
-// qualifier: the gate now fires precisely where the pipeline was least sure,
-// regardless of basis.
+// verdict escalates too - but only an indeterminate or sub-floor one. A definite
+// no-passage knowledge verdict at or above the floor already IS the best a model
+// can say without evidence (the knowledge fallback just produced it), so escalating
+// it would buy a second, costlier knowledge opinion per uncovered claim for no
+// grounding gain. It is a pure function so the gate is table-testable without the
+// model. This inverts the old mid-band, evidence-only qualifier: the gate now fires
+// precisely where the pipeline was least sure, regardless of basis.
 func (sp *secondPass) weak(verdict *VerifiedVerdict, passageCount int) bool {
 	if verdict == nil {
 		return false
 	}
-	if passageCount == 0 && sp.knowledgeFloor <= 0 {
-		return false
+	if passageCount == 0 {
+		if sp.knowledgeFloor <= 0 {
+			return false
+		}
+		return verdict.Verdict == VerdictUnverifiable || verdict.Confidence < sp.knowledgeFloor
 	}
 	return verdict.Verdict == VerdictUnverifiable || verdict.Confidence < sp.triggerBelow
 }
@@ -110,17 +115,21 @@ func (sp *secondPass) weak(verdict *VerifiedVerdict, passageCount int) bool {
 // surviving citation) must reach the terminal-gate confidence floor. With a positive
 // knowledgeFloor, a knowledge-basis re-judgment that settles a definite verdict
 // (never unverifiable - that could not improve on the weak prior) is also accepted
-// at or above that floor, kept honest downstream by its knowledge basis and the
-// verifier's knowledge confidence cap. Anything less is not adopted: the gate
-// prefers the pipeline's honest weak verdict over a shaky upgrade. It is a pure
-// function so the acceptance rule is table-testable without the model.
-func (sp *secondPass) accept(reasoned ClaimVerdict) bool {
+// at or above that floor - but ONLY when there were no passages to ground against
+// (passageCount 0): with evidence on the table, an uncited knowledge opinion (often
+// a citation-guard demotion of a failed grounding) must never displace or out-rank
+// a verdict that evidence could still settle, so the strict evidence-only rule
+// stands. The adopted knowledge verdict is kept honest downstream by its basis and
+// the verifier's confidence cap. It is a pure function so the acceptance rule is
+// table-testable without the model.
+func (sp *secondPass) accept(reasoned ClaimVerdict, passageCount int) bool {
 	if reasoned.Basis == BasisEvidence &&
 		len(reasoned.Citations) > 0 &&
 		reasoned.Confidence >= sp.minConfidence {
 		return true
 	}
-	return sp.knowledgeFloor > 0 &&
+	return passageCount == 0 &&
+		sp.knowledgeFloor > 0 &&
 		reasoned.Basis == BasisKnowledge &&
 		reasoned.Verdict != VerdictUnverifiable &&
 		reasoned.Confidence >= sp.knowledgeFloor
@@ -133,11 +142,12 @@ func (sp *secondPass) accept(reasoned ClaimVerdict) bool {
 // but-valid prior is retained rather than traded for a tentative upgrade. An
 // accepted evidence re-judgment must still resolve at least one citation against the
 // retrieved matches (an unresolvable grounding is no grounding); an accepted
-// knowledge re-judgment carries no citations by construction and is adopted as the
-// capped, source-less judgment it is. The gate can strengthen a weak verdict, never
-// weaken one into an unsourced high-confidence guess.
-func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matches []domain.SegmentMatch) *VerifiedVerdict {
-	if !sp.accept(reasoned) {
+// knowledge re-judgment - only possible when there were no passages at all - carries
+// no citations by construction and is adopted as the capped, source-less judgment it
+// is. The gate can strengthen a weak verdict, never weaken one into an unsourced
+// high-confidence guess, and never trade a cited verdict for an uncited one.
+func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matches []domain.SegmentMatch, passageCount int) *VerifiedVerdict {
+	if !sp.accept(reasoned, passageCount) {
 		return orig
 	}
 	upgraded := verdictFromResult(reasoned, matches)
@@ -209,11 +219,12 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, m
 	// actually receive (those carrying an evidence id), not every retrieved match, so
 	// the gate reflects what the deeper model can ground against rather than the raw hit
 	// count.
-	reasoned, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passagesFromMatches(ret.matches))
+	passages := passagesFromMatches(ret.matches)
+	reasoned, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passages)
 	if !ok {
 		return
 	}
-	upgraded := vp.secondPass.upgrade(fast, reasoned, ret.matches)
+	upgraded := vp.secondPass.upgrade(fast, reasoned, ret.matches, len(passages))
 	if upgraded == fast {
 		return
 	}
@@ -236,9 +247,10 @@ func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim,
 	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passagesFromMatches(ret.matches))
+	passages := passagesFromMatches(ret.matches)
+	reasoned, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passages)
 	if !ok {
 		return fast
 	}
-	return vp.secondPass.upgrade(fast, reasoned, ret.matches)
+	return vp.secondPass.upgrade(fast, reasoned, ret.matches, len(passages))
 }

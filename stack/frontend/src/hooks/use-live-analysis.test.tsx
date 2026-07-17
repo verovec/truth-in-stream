@@ -329,6 +329,7 @@ describe("useLiveAnalysis", () => {
         end: 25,
         status: "pending",
         verdict: undefined,
+        quote: "bridge opened in 1937",
       },
     ]);
 

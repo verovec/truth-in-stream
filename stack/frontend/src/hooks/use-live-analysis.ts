@@ -27,7 +27,11 @@ import {
   emptyClaims,
   type LiveClaim,
 } from "@/lib/live/claims";
-import { type ClaimHighlight, claimHighlights } from "@/lib/live/highlight";
+import {
+  type ClaimHighlight,
+  claimHighlights,
+  NO_HIGHLIGHTS,
+} from "@/lib/live/highlight";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import {
@@ -454,8 +458,3 @@ export function useLiveAnalysis(
     speakers: speakerList,
   };
 }
-
-// NO_HIGHLIGHTS is the stable empty result for a segment with no anchored
-// claims, so per-row lookups return one identity and never re-render a
-// memoized list with a fresh empty array.
-const NO_HIGHLIGHTS: readonly ClaimHighlight[] = [];

@@ -11,6 +11,10 @@ import type { ClaimStatus, ClaimVerdict } from "./frames";
 // ClaimHighlight is one claim's anchored range inside one statement's text,
 // joined with the claim's current lifecycle so the mark can tint by verdict as
 // results arrive. Offsets count Unicode code points (the backend counts runes).
+// quote is the claim's verbatim source words; the renderer checks the sliced
+// text against it, so an offset that no longer matches the words it was
+// computed for (a segment id reused across backend sessions on the channel
+// path, a stale snapshot) renders plain instead of marking arbitrary words.
 export type ClaimHighlight = {
   unitId: string;
   claimId: string;
@@ -18,13 +22,19 @@ export type ClaimHighlight = {
   end: number;
   status: ClaimStatus;
   verdict?: ClaimVerdict;
+  quote?: string;
 };
+
+// NO_HIGHLIGHTS is the shared stable empty result for a segment with no
+// anchored claims, so per-row lookups return one identity and never re-render
+// a memoized list with a fresh empty array.
+export const NO_HIGHLIGHTS: readonly ClaimHighlight[] = [];
 
 // claimHighlights indexes every anchored claim span by the segment id it points
 // at, so a statement row looks up its own highlights in one map read. Claims
 // without spans (an unanchorable quote, a legacy snapshot) simply contribute
-// nothing. Within a segment, highlights sort by start so the renderer can walk
-// them left to right.
+// nothing. Ordering is segmentTextParts' concern - it sorts what it renders -
+// so the index preserves plain claim order.
 export function claimHighlights(
   state: ClaimsState,
 ): ReadonlyMap<string, readonly ClaimHighlight[]> {
@@ -40,13 +50,11 @@ export function claimHighlights(
           end: span.end,
           status: claim.status,
           verdict: claim.verdict,
+          quote: claim.quote,
         });
         bySegment.set(span.segmentId, list);
       }
     }
-  }
-  for (const list of bySegment.values()) {
-    list.sort((a, b) => a.start - b.start || a.end - b.end);
   }
   return bySegment;
 }
@@ -65,6 +73,9 @@ export type TextPart = {
 // never through a surrogate pair. Ranges are clamped to the text; an empty or
 // inverted range is dropped; an overlapping range is trimmed to start where the
 // previous highlight ended (first-come wins) and dropped when nothing remains.
+// A range whose sliced words are not part of the claim's quote is dropped too:
+// the offsets were computed for different text (a reused segment id across
+// backend sessions, a stale snapshot), and no mark beats marking wrong words.
 export function segmentTextParts(
   text: string,
   highlights: readonly ClaimHighlight[],
@@ -84,17 +95,40 @@ export function segmentTextParts(
     if (start >= end) {
       continue;
     }
+    const slice = codePoints.slice(start, end).join("");
+    if (!sliceMatchesQuote(slice, highlight.quote)) {
+      continue;
+    }
     if (start > cursor) {
       parts.push({ text: codePoints.slice(cursor, start).join("") });
     }
-    parts.push({
-      text: codePoints.slice(start, end).join(""),
-      highlight,
-    });
+    parts.push({ text: slice, highlight });
     cursor = end;
   }
   if (cursor < codePoints.length) {
     parts.push({ text: codePoints.slice(cursor).join("") });
   }
   return parts;
+}
+
+// sliceMatchesQuote reports whether the sliced statement words belong to the
+// claim's verbatim quote, under the same tolerance the backend anchored with
+// (case fold, whitespace collapse). A slice is a fragment of the quote when the
+// span crossed a segment boundary, so substring - not equality - is the test.
+// A highlight without a quote cannot be checked and is trusted as-is.
+function sliceMatchesQuote(slice: string, quote: string | undefined): boolean {
+  if (quote === undefined) {
+    return true;
+  }
+  const normalizedSlice = normalizeForMatch(slice);
+  if (normalizedSlice.length === 0) {
+    return false;
+  }
+  return normalizeForMatch(quote).includes(normalizedSlice);
+}
+
+// normalizeForMatch mirrors the backend quote locator's tolerance: lowercase
+// and collapse every whitespace run to one space.
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
