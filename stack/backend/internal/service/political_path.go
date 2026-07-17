@@ -202,13 +202,14 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		}
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
-	verdict = vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
-	// A degraded verdict is a transient artifact and is never cached; see
-	// scoreClaim for the rationale.
-	if !degraded {
-		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	upgraded := vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
+	// A degraded verdict is a transient artifact and is never cached (see
+	// scoreClaim) - but a gate re-judgment that replaced it IS a real judgment
+	// and is cached, exactly as the live path caches its upgrades.
+	if !degraded || upgraded != verdict {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
 	}
-	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: upgraded}
 }
 
 // maybePoliticalGate is the terminal gate on the political two-axis path, the

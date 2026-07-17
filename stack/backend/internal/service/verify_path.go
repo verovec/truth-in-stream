@@ -442,13 +442,14 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 	// Apply the deeper-reasoner second pass, same as the live credibility path,
 	// so a document verdict matches what live would show for the same sentence.
 	// It is a no-op when the feature is off or the verdict does not qualify.
-	verdict = vp.applyReverifyBatch(ctx, claim, verdict, ret)
-	// A degraded verdict is a transient artifact and is never cached; see
-	// scoreClaim for the rationale.
-	if !degraded {
-		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	upgraded := vp.applyReverifyBatch(ctx, claim, verdict, ret)
+	// A degraded verdict is a transient artifact and is never cached (see
+	// scoreClaim) - but a gate re-judgment that replaced it IS a real judgment
+	// and is cached, exactly as the live path caches its upgrades.
+	if !degraded || upgraded != verdict {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
 	}
-	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: upgraded}
 }
 
 // scoreUnit is the verify-path replacement for the legacy LiveAnalyzer.scoreUnit:
