@@ -11,13 +11,14 @@ import { json, stubBackend } from "@/test/fact-check";
 import { fr } from "@/lib/i18n/dictionaries/fr";
 import { formatTemplate } from "@/lib/i18n/text";
 import { ApiError } from "@/lib/http";
-import type { LibraryVideo } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
+import type { BackofficeVideo, VideoAnalysisDetail } from "./analysis-api";
 import { BackofficeVideosSection } from "./backoffice-videos-section";
 
 const list = fr.app.backoffice.videos.list;
+const analysis = list.analysis;
 
-function videoRecord(overrides: Partial<LibraryVideo> = {}): LibraryVideo {
+function videoRecord(overrides: Partial<BackofficeVideo> = {}): BackofficeVideo {
   return {
     id: "vid-1",
     title: "Common Myths",
@@ -27,6 +28,23 @@ function videoRecord(overrides: Partial<LibraryVideo> = {}): LibraryVideo {
     sizeBytes: 0,
     createdAt: "2026-06-10T18:00:00Z",
     updatedAt: "2026-06-10T18:00:00Z",
+    durationMs: null,
+    analysisStatus: "none",
+    analyzedAt: null,
+    ...overrides,
+  };
+}
+
+function analysisDetail(
+  overrides: Partial<VideoAnalysisDetail> = {},
+): VideoAnalysisDetail {
+  return {
+    analysisStatus: "none",
+    analysisError: null,
+    analyzedAt: null,
+    analysisRuns: 0,
+    analysisProgressMs: 0,
+    counters: null,
     ...overrides,
   };
 }
@@ -41,7 +59,7 @@ describe("BackofficeVideosSection", () => {
       kind: "upload",
     });
     const loadVideos = vi
-      .fn<() => Promise<LibraryVideo[]>>()
+      .fn<() => Promise<BackofficeVideo[]>>()
       .mockResolvedValueOnce([])
       .mockResolvedValue([confirmed]);
     stubBackend([
@@ -117,10 +135,10 @@ describe("BackofficeVideosSection", () => {
       kind: "youtube",
     });
     const loadVideos = vi
-      .fn<() => Promise<LibraryVideo[]>>()
+      .fn<() => Promise<BackofficeVideo[]>>()
       .mockResolvedValueOnce([])
       .mockResolvedValue([pending]);
-    const submitYoutube = vi.fn(async (): Promise<LibraryVideo> => pending);
+    const submitYoutube = vi.fn(async () => pending);
     const pollVideos = vi.fn(async () => [ready]);
 
     render(
@@ -170,7 +188,7 @@ describe("BackofficeVideosSection", () => {
     });
     const remove = vi.fn(async () => {});
     const loadVideos = vi
-      .fn<() => Promise<LibraryVideo[]>>()
+      .fn<() => Promise<BackofficeVideo[]>>()
       .mockResolvedValueOnce([keep, target])
       .mockResolvedValue([keep]);
 
@@ -222,5 +240,195 @@ describe("BackofficeVideosSection", () => {
     ).toBeInTheDocument();
     // The row is not removed on a failed delete.
     expect(screen.getByText("Town Hall")).toBeInTheDocument();
+  });
+
+  test("an analysing row polls the catalog until the run completes, then stops", async () => {
+    stubBackend([]);
+    const analysing = videoRecord({
+      analysisStatus: "analysing",
+      durationMs: 100000,
+    });
+    const complete = videoRecord({
+      analysisStatus: "complete",
+      analyzedAt: "2026-07-16T09:00:00Z",
+      durationMs: 100000,
+    });
+    const loadVideos = vi.fn(async () => [analysing]);
+    const pollVideos = vi
+      .fn<() => Promise<BackofficeVideo[]>>()
+      .mockResolvedValueOnce([analysing])
+      .mockResolvedValue([complete]);
+    const loadAnalysis = vi
+      .fn<() => Promise<VideoAnalysisDetail>>()
+      .mockImplementation(async () =>
+        analysisDetail({
+          analysisStatus: "analysing",
+          analysisProgressMs: 25000,
+        }),
+      );
+
+    render(
+      <BackofficeVideosSection
+        loadVideos={loadVideos}
+        pollVideos={pollVideos}
+        loadAnalysis={loadAnalysis}
+        pollIntervalMs={10}
+      />,
+    );
+
+    // Progress renders from the per-id detail against the known duration.
+    expect(
+      await screen.findByText(
+        formatTemplate(analysis.badge.analysingPct, { pct: 25 }),
+      ),
+    ).toBeInTheDocument();
+
+    loadAnalysis.mockImplementation(async () =>
+      analysisDetail({
+        analysisStatus: "complete",
+        analyzedAt: "2026-07-16T09:00:00Z",
+        counters: { total: 5, credible: 2, disputed: 2, unverifiable: 1 },
+      }),
+    );
+
+    // The list poll observes the completion and the row resolves to the new
+    // result: badge, date, and counters.
+    expect(await screen.findByText(analysis.badge.complete)).toBeInTheDocument();
+    expect(await screen.findByText(/5 affirmations/)).toBeInTheDocument();
+
+    // With no run in flight the polling goes quiet.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const settledPolls = pollVideos.mock.calls.length;
+    const settledDetails = loadAnalysis.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(pollVideos.mock.calls.length).toBe(settledPolls);
+    expect(loadAnalysis.mock.calls.length).toBe(settledDetails);
+  });
+
+  test("triggering an analysis flips the row to analysing and arms the polling", async () => {
+    stubBackend([]);
+    const idle = videoRecord({ durationMs: 100000 });
+    const analysing = videoRecord({
+      analysisStatus: "analysing",
+      durationMs: 100000,
+    });
+    const loadVideos = vi.fn(async () => [idle]);
+    const pollVideos = vi.fn(async () => [analysing]);
+    const startAnalysis = vi.fn(async () => {});
+    const loadAnalysis = vi.fn(async () =>
+      analysisDetail({ analysisStatus: "analysing", analysisProgressMs: 50000 }),
+    );
+
+    render(
+      <BackofficeVideosSection
+        loadVideos={loadVideos}
+        pollVideos={pollVideos}
+        startAnalysis={startAnalysis}
+        loadAnalysis={loadAnalysis}
+        pollIntervalMs={10}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: analysis.analyse }),
+    );
+
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledWith("vid-1"));
+    // The row reads analysing at once (the 202 recorded it server-side) and
+    // the armed polling brings the live progress in.
+    expect(
+      await screen.findByText(
+        formatTemplate(analysis.badge.analysingPct, { pct: 50 }),
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(pollVideos).toHaveBeenCalled());
+  });
+
+  test("a 409 conflict keeps its explanation visible while the row flips to analysing", async () => {
+    stubBackend([]);
+    const idle = videoRecord({ durationMs: 100000 });
+    const analysing = videoRecord({
+      analysisStatus: "analysing",
+      durationMs: 100000,
+    });
+    const loadVideos = vi.fn(async () => [idle]);
+    const pollVideos = vi.fn(async () => [analysing]);
+    const startAnalysis = vi
+      .fn()
+      .mockRejectedValue(new ApiError("analysis is already in progress", 409));
+    const loadAnalysis = vi.fn(async () =>
+      analysisDetail({ analysisStatus: "analysing", analysisProgressMs: 10000 }),
+    );
+
+    render(
+      <BackofficeVideosSection
+        loadVideos={loadVideos}
+        pollVideos={pollVideos}
+        startAnalysis={startAnalysis}
+        loadAnalysis={loadAnalysis}
+        pollIntervalMs={10}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: analysis.analyse }),
+    );
+
+    // The row reflects the live run the 409 revealed, and the explanation is
+    // not swallowed by that flip.
+    expect(
+      await screen.findByText(analysis.errors.conflict),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        formatTemplate(analysis.badge.analysingPct, { pct: 10 }),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(analysis.errors.conflict)).toBeInTheDocument();
+  });
+
+  test("a stale poll racing the trigger cannot flip an analysing row back", async () => {
+    stubBackend([]);
+    const preTrigger = videoRecord({
+      analysisStatus: "complete",
+      analyzedAt: "2026-07-10T09:00:00Z",
+      durationMs: 100000,
+    });
+    const loadVideos = vi.fn(async () => [preTrigger]);
+    // Every poll keeps reporting the pre-trigger stored result, as a response
+    // raced by the 202 would.
+    const pollVideos = vi.fn(async () => [preTrigger]);
+    const startAnalysis = vi.fn(async () => {});
+    const loadAnalysis = vi.fn(async () =>
+      analysisDetail({ analysisStatus: "analysing", analysisProgressMs: 1000 }),
+    );
+
+    render(
+      <BackofficeVideosSection
+        loadVideos={loadVideos}
+        pollVideos={pollVideos}
+        startAnalysis={startAnalysis}
+        loadAnalysis={loadAnalysis}
+        pollIntervalMs={10}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: analysis.reanalyse }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: analysis.confirmYes }));
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledWith("vid-1"));
+
+    // Polling runs, yet the stale "complete" (same analyzedAt) never displaces
+    // the analysing row.
+    await waitFor(() =>
+      expect(pollVideos.mock.calls.length).toBeGreaterThan(2),
+    );
+    expect(
+      screen.getByText(formatTemplate(analysis.badge.analysingPct, { pct: 1 })),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: analysis.reanalyse }),
+    ).not.toBeInTheDocument();
   });
 });
