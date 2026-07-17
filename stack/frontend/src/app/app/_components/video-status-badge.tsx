@@ -38,3 +38,17 @@ export function VideoKindBadge({ kind }: { kind: VideoKind }) {
     </span>
   );
 }
+
+// VideoAnalysedBadge marks a tile whose video carries a stored pre-analysis:
+// playback hydrates instantly instead of streaming. It rides the bleu accent so
+// it reads as capability, not lifecycle, distinct from the ready/failed tones.
+export function VideoAnalysedBadge() {
+  const { t } = useAppI18n();
+  return (
+    <span
+      className={`${badgeBase} bg-white/85 text-bleu dark:bg-night/80 dark:text-sky-300`}
+    >
+      {t.library.analysedBadge}
+    </span>
+  );
+}

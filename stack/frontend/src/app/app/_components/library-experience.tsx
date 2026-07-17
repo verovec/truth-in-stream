@@ -4,16 +4,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { VideoPlayer } from "@/components/playback/video-player";
+import { useVideoAnalysis } from "@/hooks/use-video-analysis";
+import { getVideo, type LibraryVideo, type PlayableVideo } from "@/lib/video/api";
 import {
-  getVideo,
-  type LibraryVideo,
-  listVideos,
-  type PlayableVideo,
-} from "@/lib/video/api";
+  type AnalysedLibraryVideo,
+  getVideoAnalysis,
+  listVideosWithAnalysis,
+  startVideoAnalysis,
+  type VideoAnalysis,
+  type VideoAnalysisStatus,
+} from "@/lib/video/analysis";
 import { ExportControls } from "@/components/export/export-controls";
 import type { Role } from "@/lib/auth/token";
+import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import { formatTemplate } from "@/lib/i18n/text";
 import { useAppI18n } from "@/components/i18n/app-i18n";
+import { AnalysisControl } from "./analysis-control";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { LiveSpeakerCredibility } from "./live-speaker-credibility";
 import { LiveSummaryStrip } from "./live-summary-strip";
@@ -66,15 +72,27 @@ function firstReadyId(videos: LibraryVideo[]): string | null {
 // a pure consumption surface - ingestion (upload, YouTube import, delete) lives in
 // the admin backoffice, not here. The library is fetched on the client (like the
 // rest of this app's data) so it rides the same-origin proxy that makes the
-// backend session cookie first-party; loadVideos is an injection seam for tests.
+// backend session cookie first-party; loadVideos, loadAnalysis, startAnalysis,
+// pollIntervalMs, socketFactory, and captureFactory are injection seams for
+// tests.
 export function LibraryExperience({
   role = "guest",
-  loadVideos = listVideos,
+  loadVideos = listVideosWithAnalysis,
+  loadAnalysis = getVideoAnalysis,
+  startAnalysis = startVideoAnalysis,
+  pollIntervalMs,
+  socketFactory,
+  captureFactory,
 }: {
   role?: Role;
-  loadVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
+  loadVideos?: (signal?: AbortSignal) => Promise<AnalysedLibraryVideo[]>;
+  loadAnalysis?: (id: string, signal?: AbortSignal) => Promise<VideoAnalysis>;
+  startAnalysis?: (id: string, signal?: AbortSignal) => Promise<void>;
+  pollIntervalMs?: number;
+  socketFactory?: LiveSocketFactory;
+  captureFactory?: AudioCaptureFactory;
 }) {
-  const [videos, setVideos] = useState<LibraryVideo[]>([]);
+  const [videos, setVideos] = useState<AnalysedLibraryVideo[]>([]);
   const [listState, setListState] = useState<ListState>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -122,6 +140,50 @@ export function LibraryExperience({
 
   const selectedVideo = videos.find((video) => video.id === selectedId) ?? null;
   const selectedStatus = selectedVideo?.status ?? null;
+
+  // The library list is the single source of each video's analysis status: the
+  // tracker reports observed transitions (a run started, completed, or failed)
+  // back here so the tile badge, the control, and the playback gate all read
+  // one truth. analyzedAt updates only when the transition carried it.
+  const handleAnalysisStatusChange = useCallback(
+    (
+      videoId: string,
+      status: VideoAnalysisStatus,
+      analyzedAt?: string | null,
+    ) => {
+      setVideos((prev) =>
+        prev.map((video) =>
+          video.id === videoId
+            ? {
+                ...video,
+                analysisStatus: status,
+                analyzedAt:
+                  analyzedAt === undefined ? video.analyzedAt : analyzedAt,
+              }
+            : video,
+        ),
+      );
+    },
+    [],
+  );
+
+  // Tracks the selected video's pre-analysis: fetches the stored frames of a
+  // complete video for hydration, polls while a run is analysing, and exposes
+  // the admin trigger.
+  const track = useVideoAnalysis({
+    video: selectedVideo,
+    onStatusChange: handleAnalysisStatusChange,
+    loadAnalysis,
+    startAnalysis,
+    pollIntervalMs,
+  });
+
+  // A video is on the analysed playback path when its stored frames are
+  // hydrated - kept through a re-analysis so the current result never vanishes
+  // mid-run - or the list says a stored result exists (frames still being
+  // fetched: the live socket must already stay closed while they load).
+  const analysed =
+    track.frames !== null || selectedVideo?.analysisStatus === "complete";
 
   // Keyed on selectedId (a stable string), not the selectedVideo object, so
   // rebuilding the videos array does not re-fetch and flicker the currently-
@@ -171,17 +233,25 @@ export function LibraryExperience({
 
   return (
     <PlaybackProvider>
-      {/* One live session feeds both the top-of-page summary strip and the
-          in-grid fact-check panel: the provider owns the single WebSocket and
-          publishes to a store the two read independently, so neither the player
-          nor the library re-renders as findings stream in. */}
-      <LiveAnalysisProvider videoId={activeVideoId}>
+      {/* One analysis session feeds both the top-of-page summary strip and the
+          in-grid fact-check panel: the provider owns the single WebSocket (or
+          the hydrated stored analysis for a pre-analysed video) and publishes
+          to a store the two read independently, so neither the player nor the
+          library re-renders as findings stream in. */}
+      <LiveAnalysisProvider
+        videoId={activeVideoId}
+        analysed={analysed}
+        analysedFrames={track.frames}
+        socketFactory={socketFactory}
+        captureFactory={captureFactory}
+      >
         <div className="flex flex-col gap-4">
           <LiveSummaryStrip />
           <LiveSpeakerCredibility />
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="flex flex-col gap-4">
               <PlayerStage active={active} />
+              <AnalysisControl role={role} video={selectedVideo} track={track} />
               <ExportControls role={role} videoId={activeVideoId} />
               <section className="flex flex-col gap-3">
                 {nowPlayingTitle ? (
@@ -216,9 +286,9 @@ export function LibraryExperience({
 type LibrarySectionProps = {
   listState: ListState;
   onRetry: () => void;
-  videos: LibraryVideo[];
+  videos: AnalysedLibraryVideo[];
   selectedId: string | null;
-  onSelect: (video: LibraryVideo) => void;
+  onSelect: (video: AnalysedLibraryVideo) => void;
 };
 
 function LibrarySection({
