@@ -14,7 +14,7 @@ OIDC client and no new Keycloak role.
 
 | Section | Actions |
 |---------|---------|
-| Videos | Upload a video file, import a YouTube link, watch ingest progress, and delete a video from the library. |
+| Videos | Upload a video file, import a YouTube link, watch ingest progress, and delete a video from the library. Every row also badges the video's pre-analysis state (with live progress while a run is going, completion date and claim counters once done, the stored error when failed) and carries the analyse and re-analyse controls; re-analyse asks for a two-step confirm because it overwrites the stored result. See [video pre-analysis](video-preanalysis.md). |
 | Documents | Upload a PDF for analysis (text is extracted in the browser, unchanged - see [PDF fact-check](pdf-fact-check.md)). |
 
 `/app` (the video library) and `/documents` are consumption-only: they list and play or read, with

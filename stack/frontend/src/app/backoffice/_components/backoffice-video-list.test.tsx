@@ -3,13 +3,16 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { fr } from "@/lib/i18n/dictionaries/fr";
 import { formatTemplate } from "@/lib/i18n/text";
 import { ApiError } from "@/lib/http";
-import type { BackofficeVideo, VideoAnalysisDetail } from "./analysis-api";
+import type {
+  AnalysedLibraryVideo,
+  VideoAnalysis,
+} from "@/lib/video/analysis";
 import { BackofficeVideoList } from "./backoffice-video-list";
 
 const list = fr.app.backoffice.videos.list;
 const analysis = list.analysis;
 
-function video(over: Partial<BackofficeVideo> = {}): BackofficeVideo {
+function video(over: Partial<AnalysedLibraryVideo> = {}): AnalysedLibraryVideo {
   return {
     id: "vid-1",
     title: "Common Myths",
@@ -26,20 +29,22 @@ function video(over: Partial<BackofficeVideo> = {}): BackofficeVideo {
   };
 }
 
-function detail(over: Partial<VideoAnalysisDetail> = {}): VideoAnalysisDetail {
+function detail(over: Partial<VideoAnalysis> = {}): VideoAnalysis {
   return {
     analysisStatus: "none",
     analysisError: null,
     analyzedAt: null,
     analysisRuns: 0,
     analysisProgressMs: 0,
+    engine: null,
     counters: null,
+    frames: null,
     ...over,
   };
 }
 
 function renderList(
-  videos: BackofficeVideo[],
+  videos: AnalysedLibraryVideo[],
   overrides: Partial<Parameters<typeof BackofficeVideoList>[0]> = {},
 ) {
   return render(
@@ -413,7 +418,7 @@ describe("BackofficeVideoList", () => {
     // run's badge: the row shows the indeterminate label until a fresh
     // progress read lands.
     loadAnalysis.mockImplementation(
-      () => new Promise<VideoAnalysisDetail>(() => {}),
+      () => new Promise<VideoAnalysis>(() => {}),
     );
     rerender(
       <BackofficeVideoList

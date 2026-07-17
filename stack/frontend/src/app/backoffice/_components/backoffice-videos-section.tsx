@@ -16,11 +16,11 @@ import { VideoUploader } from "@/app/app/_components/video-uploader";
 import { YoutubeUrlForm } from "@/app/app/_components/youtube-url-form";
 import {
   getVideoAnalysis,
-  listBackofficeVideos,
+  listVideosWithAnalysis,
   startVideoAnalysis,
-  type BackofficeVideo,
-  type VideoAnalysisDetail,
-} from "./analysis-api";
+  type AnalysedLibraryVideo,
+  type VideoAnalysis,
+} from "@/lib/video/analysis";
 import { BackofficeVideoList } from "./backoffice-video-list";
 
 // DEFAULT_POLL_MS is how often the section re-checks the backend while a
@@ -42,9 +42,9 @@ const DEFAULT_POLL_MS = 2500;
 // result, not a new completion (a genuine one always re-dates it). Taking
 // either would stop the polling loop with a live run invisible.
 function mergePolled(
-  prev: BackofficeVideo[],
-  listed: BackofficeVideo[],
-): BackofficeVideo[] {
+  prev: AnalysedLibraryVideo[],
+  listed: AnalysedLibraryVideo[],
+): AnalysedLibraryVideo[] {
   const byId = new Map(listed.map((video) => [video.id, video]));
   let changed = false;
   const next = prev.map((video) => {
@@ -92,8 +92,8 @@ type ListState =
 // uploader, and pollIntervalMs are injection seams so tests can drive each
 // path deterministically.
 export function BackofficeVideosSection({
-  loadVideos = listBackofficeVideos,
-  pollVideos = listBackofficeVideos,
+  loadVideos = listVideosWithAnalysis,
+  pollVideos = listVideosWithAnalysis,
   remove = deleteVideo,
   submitYoutube = submitYoutubeUrl,
   startAnalysis = startVideoAnalysis,
@@ -101,19 +101,19 @@ export function BackofficeVideosSection({
   uploader,
   pollIntervalMs = DEFAULT_POLL_MS,
 }: {
-  loadVideos?: (signal?: AbortSignal) => Promise<BackofficeVideo[]>;
-  pollVideos?: (signal?: AbortSignal) => Promise<BackofficeVideo[]>;
+  loadVideos?: (signal?: AbortSignal) => Promise<AnalysedLibraryVideo[]>;
+  pollVideos?: (signal?: AbortSignal) => Promise<AnalysedLibraryVideo[]>;
   remove?: (id: string, signal?: AbortSignal) => Promise<void>;
   submitYoutube?: (url: string, signal?: AbortSignal) => Promise<LibraryVideo>;
   startAnalysis?: (id: string, signal?: AbortSignal) => Promise<void>;
   loadAnalysis?: (
     id: string,
     signal?: AbortSignal,
-  ) => Promise<VideoAnalysisDetail>;
+  ) => Promise<VideoAnalysis>;
   uploader?: PutUploader;
   pollIntervalMs?: number;
 } = {}) {
-  const [videos, setVideos] = useState<BackofficeVideo[]>([]);
+  const [videos, setVideos] = useState<AnalysedLibraryVideo[]>([]);
   const [listState, setListState] = useState<ListState>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -263,7 +263,7 @@ export function BackofficeVideosSection({
 type ManagementListProps = {
   listState: ListState;
   onRetry: () => void;
-  videos: BackofficeVideo[];
+  videos: AnalysedLibraryVideo[];
   remove: (id: string, signal?: AbortSignal) => Promise<void>;
   onDeleted: () => void;
   startAnalysis: (id: string, signal?: AbortSignal) => Promise<void>;
@@ -271,7 +271,7 @@ type ManagementListProps = {
   loadAnalysis: (
     id: string,
     signal?: AbortSignal,
-  ) => Promise<VideoAnalysisDetail>;
+  ) => Promise<VideoAnalysis>;
   pollIntervalMs: number;
 };
 
