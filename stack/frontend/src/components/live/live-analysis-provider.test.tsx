@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
+import type { LiveFrame } from "@/lib/live/frames";
 import type { LiveAnalysisSnapshot } from "@/lib/live/live-analysis-store";
 import { emptySummary } from "@/lib/live/summary";
 import {
@@ -54,7 +55,7 @@ describe("LiveAnalysisProvider", () => {
       </LiveAnalysisProvider>,
     );
 
-    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1");
+    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1", expect.anything());
     expect(screen.getByTestId("probe")).toHaveTextContent("live:3");
   });
 
@@ -124,5 +125,74 @@ describe("useLiveAnalysisSelector", () => {
       /LiveAnalysisProvider/,
     );
     spy.mockRestore();
+  });
+});
+
+describe("LiveAnalysisProvider (analysed playback)", () => {
+  const frames: LiveFrame[] = [
+    { type: "subtitle", id: "s1", start: 1, end: 2, text: "stored line" },
+  ];
+
+  test("hydrates the stored frames into the shared store without the live hook", () => {
+    render(
+      <LiveAnalysisProvider videoId="vid-1" analysed analysedFrames={frames}>
+        <Probe
+          select={(s) =>
+            `${s?.status ?? "idle"}:${s?.statements.length ?? 0}:${
+              s?.statements[0]?.text ?? ""
+            }`
+          }
+        />
+      </LiveAnalysisProvider>,
+    );
+
+    // The stored session renders as a finished one; the live hook (socket +
+    // capture) is never invoked for an analysed video.
+    expect(screen.getByTestId("probe")).toHaveTextContent("ended:1:stored line");
+    expect(mockUseLiveAnalysis).not.toHaveBeenCalled();
+  });
+
+  test("suppresses the live session while an analysed video's frames are still loading", () => {
+    render(
+      <LiveAnalysisProvider videoId="vid-1" analysed analysedFrames={null}>
+        <Probe select={(s) => (s === null ? "idle" : "active")} />
+      </LiveAnalysisProvider>,
+    );
+
+    // No driver mounts: the snapshot stays idle and, critically, no socket can
+    // open even if playback starts before the stored result arrives.
+    expect(screen.getByTestId("probe")).toHaveTextContent("idle");
+    expect(mockUseLiveAnalysis).not.toHaveBeenCalled();
+  });
+
+  test("a non-analysed video keeps the live driver (regression)", () => {
+    mockUseLiveAnalysis.mockReturnValue(analysis());
+    render(
+      <LiveAnalysisProvider videoId="vid-1">
+        <Probe select={(s) => s?.status ?? "idle"} />
+      </LiveAnalysisProvider>,
+    );
+
+    expect(mockUseLiveAnalysis).toHaveBeenCalledWith(
+      "vid-1",
+      expect.anything(),
+    );
+    expect(screen.getByTestId("probe")).toHaveTextContent("live");
+  });
+
+  test("clears the snapshot when the analysed video is deselected", () => {
+    const { rerender } = render(
+      <LiveAnalysisProvider videoId="vid-1" analysed analysedFrames={frames}>
+        <Probe select={(s) => (s === null ? "idle" : "active")} />
+      </LiveAnalysisProvider>,
+    );
+    expect(screen.getByTestId("probe")).toHaveTextContent("active");
+
+    rerender(
+      <LiveAnalysisProvider videoId={null} analysed={false} analysedFrames={null}>
+        <Probe select={(s) => (s === null ? "idle" : "active")} />
+      </LiveAnalysisProvider>,
+    );
+    expect(screen.getByTestId("probe")).toHaveTextContent("idle");
   });
 });

@@ -290,6 +290,17 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
   } catch {
     return null;
   }
+  return parseLiveFrameValue(value);
+}
+
+/**
+ * Validates one already-decoded frame value into a typed live frame, or null
+ * when it is malformed or carries an unknown type. The stored-analysis REST
+ * payload delivers frames as JSON values inside a larger response - the same
+ * shapes the WebSocket sends as text - so hydration shares this one validator
+ * with the socket path and the two can never drift.
+ */
+export function parseLiveFrameValue(value: unknown): LiveFrame | null {
   if (!isRecord(value)) {
     return null;
   }

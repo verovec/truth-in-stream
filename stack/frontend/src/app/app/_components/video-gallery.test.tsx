@@ -2,10 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { fr } from "@/lib/i18n/dictionaries/fr";
-import type { LibraryVideo } from "@/lib/video/api";
+import type { AnalysedLibraryVideo } from "@/lib/video/analysis";
 import { VideoGallery } from "./video-gallery";
 
-function video(overrides: Partial<LibraryVideo> = {}): LibraryVideo {
+function video(
+  overrides: Partial<AnalysedLibraryVideo> = {},
+): AnalysedLibraryVideo {
   return {
     id: "vid-1",
     title: "Common Myths",
@@ -15,6 +17,8 @@ function video(overrides: Partial<LibraryVideo> = {}): LibraryVideo {
     sizeBytes: 0,
     createdAt: "2026-06-10T18:00:00Z",
     updatedAt: "2026-06-10T18:00:00Z",
+    analysisStatus: "none",
+    analyzedAt: null,
     ...overrides,
   };
 }
@@ -71,5 +75,28 @@ describe("VideoGallery", () => {
   test("shows an empty state when there is nothing to show", () => {
     render(<VideoGallery videos={[]} selectedId={null} onSelect={() => {}} />);
     expect(screen.getByText(fr.app.library.empty)).toBeInTheDocument();
+  });
+
+  test("badges a pre-analysed video from the list payload; others carry no badge", () => {
+    render(
+      <VideoGallery
+        videos={[
+          video({
+            analysisStatus: "complete",
+            analyzedAt: "2026-07-17T09:00:00Z",
+          }),
+          video({ id: "vid-2", title: "My Upload", kind: "upload" }),
+          video({ id: "vid-3", title: "Mid Run", analysisStatus: "analysing" }),
+        ]}
+        selectedId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    // Exactly one "Analysée" badge: complete carries it, none/analysing do not.
+    expect(screen.getAllByText(fr.app.library.analysedBadge)).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: /common myths/i }),
+    ).toHaveTextContent(fr.app.library.analysedBadge);
   });
 });

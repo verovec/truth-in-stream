@@ -62,7 +62,7 @@ const checked = (
 describe("LiveFactCheckPanel", () => {
   test("reads the active session from the shared live provider", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
-    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1");
+    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1", expect.anything());
   });
 
   test("separates the panel into a subtitles region and a fact-checks region", () => {
