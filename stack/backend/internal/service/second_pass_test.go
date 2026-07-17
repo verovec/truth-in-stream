@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/source"
 )
 
 // fakeReverifier returns the deeper re-judgment keyed by claim text and records
@@ -64,6 +65,9 @@ func TestNewSecondPassValidation(t *testing.T) {
 		{"min confidence below range", func(c *SecondPassConfig) { c.MinConfidence = -0.1 }, true},
 		{"min confidence above range", func(c *SecondPassConfig) { c.MinConfidence = 1.1 }, true},
 		{"non-positive deadline", func(c *SecondPassConfig) { c.Deadline = 0 }, true},
+		{"knowledge floor below range", func(c *SecondPassConfig) { c.KnowledgeFloor = -0.1 }, true},
+		{"knowledge floor above range", func(c *SecondPassConfig) { c.KnowledgeFloor = 1.1 }, true},
+		{"knowledge floor in range", func(c *SecondPassConfig) { c.KnowledgeFloor = 0.5 }, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,7 +174,7 @@ func TestSecondPassAccept(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := sp.accept(tc.reasoned); got != tc.want {
+			if got := sp.accept(tc.reasoned, 1); got != tc.want {
 				t.Errorf("accept = %v, want %v", got, tc.want)
 			}
 		})
@@ -196,7 +200,7 @@ func TestSecondPassUpgrade(t *testing.T) {
 			Citations:  []EvidenceCitation{{EvidenceID: "wiki:e:0", QuotedSpan: "evidence text"}},
 			Rationale:  "deeper",
 		}
-		got := sp.upgrade(orig, reasoned, matches)
+		got := sp.upgrade(orig, reasoned, matches, 1)
 		if got == orig {
 			t.Fatal("expected an upgraded verdict, got the original")
 		}
@@ -211,7 +215,7 @@ func TestSecondPassUpgrade(t *testing.T) {
 	t.Run("ungrounded knowledge re-judgment keeps the prior verdict", func(t *testing.T) {
 		t.Parallel()
 		reasoned := ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.99, Rationale: "ungrounded"}
-		if got := sp.upgrade(orig, reasoned, matches); got != orig {
+		if got := sp.upgrade(orig, reasoned, matches, 1); got != orig {
 			t.Errorf("upgrade = %+v, want the prior unverifiable verdict kept", got)
 		}
 	})
@@ -224,7 +228,7 @@ func TestSecondPassUpgrade(t *testing.T) {
 			Confidence: 0.85,
 			Citations:  []EvidenceCitation{{EvidenceID: "wiki:e:0", QuotedSpan: "evidence text"}},
 		}
-		if got := sp.upgrade(orig, reasoned, matches); got != orig {
+		if got := sp.upgrade(orig, reasoned, matches, 1); got != orig {
 			t.Errorf("upgrade = %+v, want the prior verdict kept (below floor)", got)
 		}
 	})
@@ -242,8 +246,141 @@ func TestSecondPassUpgrade(t *testing.T) {
 			Citations:  []EvidenceCitation{{EvidenceID: "not-retrieved", QuotedSpan: "x"}},
 			Rationale:  "confident but ungrounded",
 		}
-		if got := sp.upgrade(orig, reasoned, matches); got != orig {
+		if got := sp.upgrade(orig, reasoned, matches, 1); got != orig {
 			t.Errorf("upgrade = %+v, want the prior verdict kept (no surviving citation)", got)
+		}
+	})
+}
+
+// TestSecondPassKnowledgeFloor covers the sparse-corpus loosening: with a positive
+// KnowledgeFloor the gate escalates no-passage weak verdicts, and a knowledge-basis
+// re-judgment that settles a definite verdict at or above the floor is adopted
+// (without citations, keeping its knowledge basis); with the floor at zero the
+// strict evidence-only rules of the tests above are untouched.
+func TestSecondPassKnowledgeFloor(t *testing.T) {
+	t.Parallel()
+	sp, err := newSecondPass(SecondPassConfig{
+		Reverifier:     &fakeReverifier{},
+		TriggerBelow:   0.8,
+		MinConfidence:  0.9,
+		Deadline:       time.Second,
+		KnowledgeFloor: 0.5,
+	})
+	if err != nil {
+		t.Fatalf("newSecondPass: %v", err)
+	}
+
+	t.Run("weak escalates only an indeterminate or sub-floor no-passage verdict", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name    string
+			verdict *VerifiedVerdict
+			want    bool
+		}{
+			{"unverifiable escalates", &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}, true},
+			{"sub-floor knowledge escalates", &VerifiedVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.4}, true},
+			// A definite knowledge verdict at/above the floor already is the best a
+			// model can say without evidence; escalating it would just buy a second
+			// knowledge opinion per uncovered claim.
+			{"definite knowledge at the floor stands", &VerifiedVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55}, false},
+		}
+		for _, tc := range tests {
+			if got := sp.weak(tc.verdict, 0); got != tc.want {
+				t.Errorf("%s: weak = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("accept adopts a decided knowledge re-judgment at the floor only with no passages", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name         string
+			reasoned     ClaimVerdict
+			passageCount int
+			want         bool
+		}{
+			{"knowledge at the floor, no passages", ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.5}, 0, true},
+			{"knowledge above the floor, no passages", ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisKnowledge, Confidence: 0.6}, 0, true},
+			{"knowledge below the floor", ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.49}, 0, false},
+			{"unverifiable knowledge never adopted", ClaimVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0.6}, 0, false},
+			// With passages on the table an uncited knowledge opinion (typically a
+			// citation-guard demotion) must never displace a verdict evidence could
+			// still settle - the strict evidence-only rule stands.
+			{"knowledge with passages present is rejected", ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisKnowledge, Confidence: 0.6}, 2, false},
+			{"evidence rule still applies", ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.95, Citations: []EvidenceCitation{{EvidenceID: "wiki:e:0", QuotedSpan: "x"}}}, 1, true},
+		}
+		for _, tc := range tests {
+			if got := sp.accept(tc.reasoned, tc.passageCount); got != tc.want {
+				t.Errorf("%s: accept = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("upgrade with passages keeps a cited weak verdict over an uncited knowledge opinion", func(t *testing.T) {
+		t.Parallel()
+		matches := []domain.SegmentMatch{{Kind: domain.MatchKindEvidence, EvidenceID: "wiki:e:0", Claim: "evidence text"}}
+		orig := &VerifiedVerdict{
+			Verdict:    VerdictDisputed,
+			Basis:      BasisEvidence,
+			Confidence: 0.75,
+			Citations:  matches,
+		}
+		// The reasoner failed to ground and was demoted to a capped knowledge
+		// opinion; adopting it would trade a cited verdict for an unsourced one.
+		reasoned := ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.6}
+		if got := sp.upgrade(orig, reasoned, matches, 1); got != orig {
+			t.Errorf("upgrade = %+v, want the cited weak verdict kept", got)
+		}
+	})
+
+	t.Run("upgrade adopts the knowledge re-judgment without citations", func(t *testing.T) {
+		t.Parallel()
+		orig := &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}
+		reasoned := ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "contradicts consensus"}
+		got := sp.upgrade(orig, reasoned, nil, 0)
+		if got == orig {
+			t.Fatal("expected the knowledge re-judgment adopted, got the original")
+		}
+		if got.Verdict != VerdictDisputed || got.Basis != BasisKnowledge || got.Confidence != 0.55 {
+			t.Errorf("upgraded = %+v, want disputed knowledge at 0.55", got)
+		}
+		if len(got.Citations) != 0 {
+			t.Errorf("citations = %+v, want none on a knowledge upgrade", got.Citations)
+		}
+	})
+
+	t.Run("political upgrade keeps a routed-evidence verdict over an uncited knowledge opinion", func(t *testing.T) {
+		t.Parallel()
+		evidence := []source.Evidence{srcEvidence(source.KindStatsINSEE, "insee", "un chiffre officiel")}
+		orig := &VerifiedVerdict{
+			Verdict:    VerdictDisputed,
+			Basis:      BasisEvidence,
+			Confidence: 0.7,
+			Literal:    LiteralInaccurate,
+			Citations:  []domain.SegmentMatch{matchFromEvidence(evidence[0])},
+		}
+		reasoned := ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.6}
+		if got := sp.upgradePolitical(orig, reasoned, evidence, 1); got != orig {
+			t.Errorf("upgradePolitical = %+v, want the cited two-axis verdict kept", got)
+		}
+	})
+
+	t.Run("political upgrade adopts a decided knowledge literal, keeps flags", func(t *testing.T) {
+		t.Parallel()
+		orig := &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Literal: LiteralUnverifiable, Flags: []string{"missing-context"}}
+		reasoned := ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.6, Rationale: "conforme"}
+		got := sp.upgradePolitical(orig, reasoned, nil, 0)
+		if got == orig {
+			t.Fatal("expected the knowledge re-judgment adopted, got the original")
+		}
+		if got.Literal != LiteralAccurate || got.Verdict != VerdictCredible || got.Basis != BasisKnowledge {
+			t.Errorf("upgraded = %+v, want accurate/credible on a knowledge basis", got)
+		}
+		if len(got.Flags) != 1 || got.Flags[0] != "missing-context" {
+			t.Errorf("flags = %v, want the prior manipulation flags carried through", got.Flags)
+		}
+		if len(got.Citations) != 0 {
+			t.Errorf("citations = %+v, want none on a knowledge upgrade", got.Citations)
 		}
 	})
 }

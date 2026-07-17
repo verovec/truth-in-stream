@@ -23,13 +23,17 @@ afterEach(() => {
 // The panel reads the shared live snapshot, so a test drives it by mocking the
 // hook the provider's driver runs and rendering the panel under the provider.
 function renderPanel(
-  analysis: Omit<LiveAnalysis, "summary" | "claimsFor" | "speakers"> &
-    Partial<Pick<LiveAnalysis, "claimsFor" | "speakers">>,
+  analysis: Omit<
+    LiveAnalysis,
+    "summary" | "claimsFor" | "highlightsFor" | "speakers"
+  > &
+    Partial<Pick<LiveAnalysis, "claimsFor" | "highlightsFor" | "speakers">>,
 ) {
   mockUseLiveAnalysis.mockReturnValue({
     ...analysis,
     summary: summarizeStatements(analysis.statements),
     claimsFor: analysis.claimsFor ?? (() => []),
+    highlightsFor: analysis.highlightsFor ?? (() => []),
     speakers: analysis.speakers ?? [],
   });
   return render(

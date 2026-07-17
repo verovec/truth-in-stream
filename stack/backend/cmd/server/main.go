@@ -356,6 +356,7 @@ func run(logger *slog.Logger) error {
 		Logger:           logger,
 		Concurrency:      liveCfg.Concurrency,
 		QueueDepth:       liveCfg.QueueDepth,
+		MaxSentences:     liveCfg.MaxSentences,
 		Stance:           stanceClassifier,
 		ConsistencyTopK:  consistencyCfg.TopK,
 		ConsistencyFloor: consistencyCfg.SimilarityFloor,
@@ -712,6 +713,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 		CacheThreshold:    cfg.CacheThreshold,
 		CacheMaxEntries:   cfg.CacheMaxEntries,
 		Logger:            logger,
+		KnowledgeFallback: cfg.KnowledgeFallback,
 		Political:         pol,
 		SecondPass:        secondPassCfg,
 	})
@@ -745,11 +747,14 @@ func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.Secon
 	if err != nil {
 		return nil, err
 	}
+	// FACTCHECK_KNOWLEDGE_FALLBACK=false zeroes this floor inside NewVerifyPath,
+	// where both knobs meet, so the coherence rule holds for every constructor.
 	return &service.SecondPassConfig{
-		Reverifier:    reverifierAdapter{reverifier},
-		TriggerBelow:  cfg.TriggerBelow,
-		MinConfidence: cfg.MinConfidence,
-		Deadline:      cfg.Deadline,
+		Reverifier:     reverifierAdapter{reverifier},
+		TriggerBelow:   cfg.TriggerBelow,
+		MinConfidence:  cfg.MinConfidence,
+		Deadline:       cfg.Deadline,
+		KnowledgeFloor: cfg.KnowledgeFloor,
 	}, nil
 }
 
@@ -873,8 +878,13 @@ type decomposerAdapter struct {
 	client *claimdecomp.Client
 }
 
-func (d decomposerAdapter) Decompose(ctx context.Context, text, speaker, recentContext string) []string {
-	return d.client.Decompose(ctx, claimdecomp.Input{Text: text, Speaker: speaker, Context: recentContext})
+func (d decomposerAdapter) Decompose(ctx context.Context, text, speaker, recentContext string) []service.DecomposedClaim {
+	decomposed := d.client.Decompose(ctx, claimdecomp.Input{Text: text, Speaker: speaker, Context: recentContext})
+	claims := make([]service.DecomposedClaim, len(decomposed))
+	for i, c := range decomposed {
+		claims[i] = service.DecomposedClaim{Text: c.Text, Quote: c.Quote}
+	}
+	return claims
 }
 
 // verifierAdapter adapts the verify client to the service ClaimVerifier port: it

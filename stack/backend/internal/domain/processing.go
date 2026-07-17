@@ -108,6 +108,20 @@ func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ClaimSpan locates the verbatim words an atomic claim was extracted from
+// inside one transcript segment: the segment's correlation id (the subtitle id
+// the client keys statement rows on) and the [Start, End) offsets of the quoted
+// words within that segment's text. Offsets count runes, not bytes, so a
+// JavaScript client maps them onto its own string indices by code point rather
+// than by UTF-8 byte. The json tags are the claims frame's wire shape, served
+// verbatim to the client. A claim whose quote crosses a segment boundary
+// carries one span per segment it touches.
+type ClaimSpan struct {
+	SegmentID string `json:"segment_id"`
+	Start     int    `json:"start"`
+	End       int    `json:"end"`
+}
+
 // Confidence is the corroboration strength of a checked statement, aggregated
 // over its retrieved evidence cluster. Score is the bounded [0, 1] fraction of
 // stance-bearing evidence weight that corroborates the statement (rendered as a

@@ -27,6 +27,11 @@ import {
   emptyClaims,
   type LiveClaim,
 } from "@/lib/live/claims";
+import {
+  type ClaimHighlight,
+  claimHighlights,
+  NO_HIGHLIGHTS,
+} from "@/lib/live/highlight";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import {
@@ -65,6 +70,12 @@ export type LiveAnalysis = {
   // a legacy stream that emits no claim frames. The subtitle list reads it per
   // row to render the progressive per-claim disclosure under each statement.
   claimsFor: (statementId: string) => LiveClaim[];
+  // highlightsFor returns the claim word-ranges anchored inside one statement's
+  // text (by its subtitle id), joined with each claim's live verdict, so the
+  // transcript can mark the exact words that were checked. Empty on a legacy
+  // stream or when no claim anchored to the statement. A claim's spans can point
+  // at a non-anchor member of its unit, so rows read this rather than claimsFor.
+  highlightsFor: (segmentId: string) => readonly ClaimHighlight[];
   // speakers is each speaker's running verdict breakdown in stable label
   // order, empty on a legacy stream that emits no speaker-tally frames.
   speakers: SpeakerTally[];
@@ -120,11 +131,31 @@ function prepareFrame(
     // namespaced so it resolves to this session's statements after a reconnect.
     return { ...frame, id, earlierId: `${sessionSeq}:${frame.earlierId}` };
   }
-  if (frame.type === "claims" || frame.type === "claim_result") {
-    // Claim frames carry the unit's correlation id and no timestamps; namespacing
-    // the unit id alone keys them to this session's statement after a reconnect.
-    // claim_id is per-unit and needs no session prefix - it is only ever read
-    // within a unit already namespaced by id.
+  if (frame.type === "claims") {
+    // A claims frame carries the unit's correlation id and, per claim, the
+    // segment ids its highlight spans anchor to; all of them are namespaced so
+    // they key to this session's statements after a reconnect. claim_id is
+    // per-unit and needs no session prefix - it is only ever read within a unit
+    // already namespaced by id.
+    return {
+      ...frame,
+      id,
+      claims: frame.claims.map((claim) =>
+        claim.spans
+          ? {
+              ...claim,
+              spans: claim.spans.map((span) => ({
+                ...span,
+                segmentId: `${sessionSeq}:${span.segmentId}`,
+              })),
+            }
+          : claim,
+      ),
+    };
+  }
+  if (frame.type === "claim_result") {
+    // A claim result carries the unit's correlation id and no timestamps;
+    // namespacing the unit id alone keys it to this session's statement.
     return { ...frame, id };
   }
   return {
@@ -404,6 +435,14 @@ export function useLiveAnalysis(
     [claims],
   );
 
+  // The per-segment highlight index is rebuilt only when the claims store
+  // changes; highlightsFor reads it so the statement list can mark each row's
+  // checked words without scanning every unit per render.
+  const highlightsFor = useMemo(() => {
+    const index = claimHighlights(claims);
+    return (segmentId: string) => index.get(segmentId) ?? NO_HIGHLIGHTS;
+  }, [claims]);
+
   // The speaker list is a pure projection of the speakers state, memoized on it so
   // its identity is stable across interim/statement/claim updates that never touch
   // speaker scores.
@@ -415,6 +454,7 @@ export function useLiveAnalysis(
     status,
     summary,
     claimsFor,
+    highlightsFor,
     speakers: speakerList,
   };
 }

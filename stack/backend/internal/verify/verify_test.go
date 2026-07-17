@@ -286,13 +286,55 @@ func systemText(t *testing.T, system any) string {
 	return text
 }
 
-func TestVerifyRequiresPassages(t *testing.T) {
+func TestVerifyNoPassagesJudgesFromKnowledge(t *testing.T) {
 	t.Parallel()
-	c := newTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("Verify must not call the model when no passages are supplied")
+	// The knowledge fallback for a sparse evidence corpus: with no passages the
+	// model is still asked, the prompt states none were retrieved, and the
+	// citation guard pins the result to a capped knowledge basis - a fabricated
+	// citation cannot survive an empty passage set, so a no-passage verdict can
+	// never masquerade as evidence-grounded or high-confidence.
+	var captured struct {
+		Messages []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{
+			"verdict":    VerdictCredible,
+			"basis":      BasisEvidence,
+			"confidence": 0.95,
+			"citations":  []any{map[string]any{"evidence_id": "made-up", "quoted_span": "fabricated"}},
+			"rationale":  "broadly true",
+		}))
 	})
-	if _, err := c.Verify(context.Background(), "a claim", nil); err == nil {
-		t.Fatal("expected an error when no evidence passages are supplied")
+
+	got, err := c.Verify(context.Background(), "a claim", nil)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(captured.Messages) == 0 || len(captured.Messages[0].Content) == 0 {
+		t.Fatal("expected a user message with content")
+	}
+	user := captured.Messages[0].Content[0].Text
+	if !strings.Contains(user, "No evidence passages were retrieved") {
+		t.Errorf("user message must state no passages were retrieved; got %q", user)
+	}
+	if got.Verdict != VerdictCredible {
+		t.Errorf("verdict = %q, want %q", got.Verdict, VerdictCredible)
+	}
+	if got.Basis != BasisKnowledge {
+		t.Errorf("basis = %q, want demoted %q", got.Basis, BasisKnowledge)
+	}
+	if got.Confidence != knowledgeConfidenceCap {
+		t.Errorf("confidence = %v, want capped %v", got.Confidence, knowledgeConfidenceCap)
+	}
+	if len(got.Citations) != 0 {
+		t.Errorf("citations = %v, want the fabricated citation dropped", got.Citations)
 	}
 }
 
@@ -768,15 +810,37 @@ func TestReverifyUsesReasoningTokenCap(t *testing.T) {
 	}
 }
 
-// TestReverifyRequiresPassages asserts the reasoning path, like Verify, refuses an
-// empty evidence set rather than inviting an ungrounded reasoning verdict.
-func TestReverifyRequiresPassages(t *testing.T) {
+// TestReverifyNoPassagesJudgesFromKnowledge asserts the reasoning path, like
+// Verify, accepts an empty evidence set under the knowledge fallback: the model
+// is called and the guard demotes the result to a capped knowledge basis, so an
+// ungrounded reasoning verdict can never render as evidence-grounded.
+func TestReverifyNoPassagesJudgesFromKnowledge(t *testing.T) {
 	t.Parallel()
-	c := newReasonTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("Reverify must not call the model with no passages")
+	called := false
+	c := newReasonTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, deepseekReasonVerdict(t, map[string]any{
+			"verdict":    VerdictDisputed,
+			"basis":      BasisKnowledge,
+			"confidence": 0.9,
+			"citations":  []any{},
+			"rationale":  "contradicts well-established consensus",
+		}))
 	})
-	if _, err := c.Reverify(context.Background(), "a claim", nil); err == nil {
-		t.Fatal("expected an error when no passages are supplied")
+
+	got, err := c.Reverify(context.Background(), "a claim", nil)
+	if err != nil {
+		t.Fatalf("Reverify: %v", err)
+	}
+	if !called {
+		t.Fatal("Reverify must call the model under the knowledge fallback")
+	}
+	if got.Verdict != VerdictDisputed || got.Basis != BasisKnowledge {
+		t.Errorf("got %q/%q, want disputed/knowledge", got.Verdict, got.Basis)
+	}
+	if got.Confidence != knowledgeConfidenceCap {
+		t.Errorf("confidence = %v, want capped %v", got.Confidence, knowledgeConfidenceCap)
 	}
 }
 

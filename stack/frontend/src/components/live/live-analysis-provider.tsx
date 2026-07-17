@@ -58,11 +58,35 @@ function LiveAnalysisDriver({
   videoId: string;
   store: LiveAnalysisStore;
 }) {
-  const { statements, caption, status, summary, claimsFor, speakers } =
-    useLiveAnalysis(videoId);
+  const {
+    statements,
+    caption,
+    status,
+    summary,
+    claimsFor,
+    highlightsFor,
+    speakers,
+  } = useLiveAnalysis(videoId);
   useEffect(() => {
-    store.publish({ statements, caption, status, summary, claimsFor, speakers });
-  }, [store, statements, caption, status, summary, claimsFor, speakers]);
+    store.publish({
+      statements,
+      caption,
+      status,
+      summary,
+      claimsFor,
+      highlightsFor,
+      speakers,
+    });
+  }, [
+    store,
+    statements,
+    caption,
+    status,
+    summary,
+    claimsFor,
+    highlightsFor,
+    speakers,
+  ]);
   // When this session ends (the video is deselected or switched), clear the
   // snapshot so the strip falls back to idle instead of showing stale counts.
   useEffect(() => () => store.publish(null), [store]);

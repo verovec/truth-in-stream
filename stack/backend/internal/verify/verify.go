@@ -212,15 +212,13 @@ func New(cfg Config, opts ...llm.Option) (*Client, error) {
 // It forces a single record_verdict tool call so the result is always validated
 // structured data, then runs the deterministic citation guard (ValidateCitations)
 // so a fabricated or unsupported grounding can never prop up an evidence verdict.
-// It errors when no passages are supplied (this is the evidence verifier; the
-// knowledge-only no-evidence case is handled by the caller) or when the transport,
-// the forced tool call, or decoding fails - the caller absorbs the error rather
-// than emitting an ungrounded verdict.
+// With no passages supplied (the caller's knowledge fallback for a sparse evidence
+// corpus) the prompt says so and the model judges from general knowledge alone; the
+// citation guard then demotes any claimed evidence basis, so a no-passage verdict
+// can only ever be knowledge-basis with capped confidence. It errors when the
+// transport, the forced tool call, or decoding fails - the caller absorbs the error
+// rather than emitting an ungrounded verdict.
 func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (Result, error) {
-	if len(passages) == 0 {
-		return Result{}, fmt.Errorf("verify: no evidence passages supplied")
-	}
-
 	res, err := llm.Classify[Result](ctx, c.llm, c.verdictRequest(claim, passages, maxTokens))
 	if err != nil {
 		return Result{}, fmt.Errorf("verify: %w", err)
@@ -240,10 +238,6 @@ func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (
 // recording its verdict. The caller selects the reasoning model (the larger,
 // costlier tier) at construction; this method names no model.
 func (c *Client) Reverify(ctx context.Context, claim string, passages []Passage) (Result, error) {
-	if len(passages) == 0 {
-		return Result{}, fmt.Errorf("verify: no evidence passages supplied")
-	}
-
 	res, err := llm.Reason[Result](ctx, c.llm, c.verdictRequest(claim, passages, reasoningMaxTokens))
 	if err != nil {
 		return Result{}, fmt.Errorf("verify: %w", err)
@@ -311,11 +305,18 @@ func (c *Client) verdictRequest(claim string, passages []Passage, maxOut int64) 
 
 // buildPrompt renders the claim and the labeled evidence passages into the user
 // message. Each passage is fenced by its evidence_id so the model can cite it and
-// the citation guard can round-trip the id.
+// the citation guard can round-trip the id. With no passages (the knowledge
+// fallback) it says so explicitly, steering the model straight to the prompt's
+// knowledge-basis tiebreaker rather than leaving it to wonder where the evidence
+// went.
 func buildPrompt(claim string, passages []Passage) string {
 	var b strings.Builder
 	b.WriteString("Claim: ")
 	b.WriteString(claim)
+	if len(passages) == 0 {
+		b.WriteString("\n\nNo evidence passages were retrieved for this claim. Judge it from your general knowledge, with basis \"knowledge\".")
+		return b.String()
+	}
 	b.WriteString("\n\nEvidence passages:\n")
 	for _, p := range passages {
 		b.WriteString("\n[evidence_id: ")

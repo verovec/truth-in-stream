@@ -108,14 +108,30 @@ export type ManipulationFlag =
   | "misattributed"
   | "misleading-causation";
 
+// ClaimSpan locates the verbatim words a claim was extracted from inside one
+// transcript segment: the segment's correlation id (the subtitle id statement
+// rows key on) and the [start, end) offsets of the quoted words within that
+// segment's text. Offsets count Unicode code points, not UTF-16 units - the
+// backend counts runes - so a renderer must slice by code point.
+export type ClaimSpan = {
+  segmentId: string;
+  start: number;
+  end: number;
+};
+
 // AtomicClaim is one self-contained claim a unit decomposed into, announced on a
 // claims frame with its stable per-claim id (shared across that claim's
 // pending/checking/verified results so the client replaces it in place) and its
-// coreference-resolved text.
+// coreference-resolved text. quote is the verbatim run of statement words the
+// claim came from and spans locates those words inside the unit's segments, so
+// the transcript can highlight the exact words that were checked; both are
+// absent when the backend could not anchor the claim.
 export type AtomicClaim = {
   claimId: string;
   text: string;
   status: "pending";
+  quote?: string;
+  spans?: ClaimSpan[];
 };
 
 // ClaimsFrame announces the atomic claims a checkable unit decomposed into
@@ -234,6 +250,23 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+// isClaimSpan validates one wire span: a non-empty segment id and a non-empty,
+// non-negative [start, end) integer range. Anything else is dropped so a
+// malformed range can never produce a nonsense highlight.
+function isClaimSpan(
+  value: unknown,
+): value is { segment_id: string; start: number; end: number } {
+  return (
+    isRecord(value) &&
+    typeof value.segment_id === "string" &&
+    value.segment_id.length > 0 &&
+    Number.isInteger(value.start) &&
+    Number.isInteger(value.end) &&
+    (value.start as number) >= 0 &&
+    (value.end as number) > (value.start as number)
+  );
+}
+
 // isHttpUrl reports whether value is a non-empty http(s) URL, the only schemes
 // safe to place in a rendered href; it rejects anything else so a malformed
 // frame cannot smuggle a javascript:/data: link into the source chip.
@@ -329,7 +362,29 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
         // down, so one bad row does not lose the unit's other claims.
         continue;
       }
-      claims.push({ claimId: raw.claim_id, text: raw.text, status: "pending" });
+      const claim: AtomicClaim = {
+        claimId: raw.claim_id,
+        text: raw.text,
+        status: "pending",
+      };
+      if (typeof raw.quote === "string" && raw.quote.length > 0) {
+        claim.quote = raw.quote;
+      }
+      if (Array.isArray(raw.spans)) {
+        // A malformed span is dropped individually so one bad range never costs
+        // the claim (or its siblings) their verdicts - only the highlight.
+        const spans = raw.spans.filter(isClaimSpan).map(
+          (span): ClaimSpan => ({
+            segmentId: span.segment_id,
+            start: span.start,
+            end: span.end,
+          }),
+        );
+        if (spans.length > 0) {
+          claim.spans = spans;
+        }
+      }
+      claims.push(claim);
     }
     return { type: "claims", id: value.id, claims };
   }

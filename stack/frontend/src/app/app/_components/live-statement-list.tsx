@@ -6,6 +6,10 @@ import type { SkipReason } from "@/lib/fact-check/api";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import { formatTemplate, plural } from "@/lib/i18n/text";
 import type { LiveClaim } from "@/lib/live/claims";
+import {
+  type ClaimHighlight,
+  segmentTextParts,
+} from "@/lib/live/highlight";
 import { isScored, type LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
 import { useAppI18n, type AppDictionary } from "@/components/i18n/app-i18n";
@@ -34,6 +38,7 @@ export const LiveStatementList = memo(function LiveStatementList({
   selectedStatementId,
   selectionTick = 0,
   claimsFor,
+  highlightsFor,
   onSelect,
 }: {
   statements: LiveStatement[];
@@ -45,6 +50,10 @@ export const LiveStatementList = memo(function LiveStatementList({
   // legacy stream that emits no claim frames so the row renders exactly as
   // before when no claims arrive.
   claimsFor?: (statementId: string) => LiveClaim[];
+  // Returns the claim word-ranges anchored inside a statement's text so the
+  // exact words that were checked render marked, tinted by the claim's live
+  // verdict. Optional and empty on a legacy stream, leaving the text plain.
+  highlightsFor?: (segmentId: string) => readonly ClaimHighlight[];
   // Lifts a clicked statement's id to the parent so the line and its fact-check
   // entry highlight together. Optional so the list still renders standalone.
   onSelect?: (statementId: string) => void;
@@ -187,7 +196,10 @@ export const LiveStatementList = memo(function LiveStatementList({
                   </span>
                 </span>
                 <span className="text-[0.9375rem] leading-6 break-words text-ink dark:text-paper">
-                  {statement.text}
+                  <HighlightedStatementText
+                    text={statement.text}
+                    highlights={highlightsFor?.(statement.id) ?? []}
+                  />
                 </span>
               </button>
               {/* On the retrieve-then-verify path the unit fans into atomic
@@ -213,6 +225,71 @@ export const LiveStatementList = memo(function LiveStatementList({
     </ol>
   );
 });
+
+// HIGHLIGHT_CLASSES maps a highlight's lifecycle to its mark tint: a soft
+// neutral wash while the claim is pending/checking, the verdict tint once
+// verified. An unchecked or errored claim renders no mark - a highlight asserts
+// "these words were checked", which those terminals cannot honestly claim.
+const HIGHLIGHT_VERDICT_CLASSES: Record<string, string> = {
+  credible:
+    "bg-verdict-credible/15 underline decoration-2 underline-offset-2 decoration-verdict-credible/60",
+  disputed:
+    "bg-verdict-disputed/15 underline decoration-2 underline-offset-2 decoration-verdict-disputed/60",
+  unverifiable:
+    "bg-verdict-unverifiable/15 underline decoration-2 underline-offset-2 decoration-verdict-unverifiable/60",
+};
+
+// highlightClass resolves one highlight's mark styling from its claim's live
+// state, or null when the range must render plain (a shed or failed claim, or a
+// verified frame that carried no verdict).
+function highlightClass(highlight: ClaimHighlight): string | null {
+  if (highlight.status === "pending" || highlight.status === "checking") {
+    return "bg-ink/8 dark:bg-paper/10";
+  }
+  if (highlight.status === "verified" && highlight.verdict) {
+    return HIGHLIGHT_VERDICT_CLASSES[highlight.verdict] ?? null;
+  }
+  return null;
+}
+
+// HighlightedStatementText renders a statement's text with the exact words each
+// atomic claim was extracted from marked and tinted by that claim's live
+// verdict, so the viewer sees precisely which words were checked and how they
+// fared. With no anchored highlight the text renders as one plain string,
+// byte-for-byte the legacy row.
+function HighlightedStatementText({
+  text,
+  highlights,
+}: {
+  text: string;
+  highlights: readonly ClaimHighlight[];
+}) {
+  if (highlights.length === 0) {
+    return text;
+  }
+  const parts = segmentTextParts(text, highlights);
+  return (
+    <>
+      {parts.map((part, index) => {
+        const className = part.highlight ? highlightClass(part.highlight) : null;
+        if (!part.highlight || className === null) {
+          // A React key on the index is safe here: parts are derived positional
+          // slices, never reordered independently of the text.
+          return <span key={index}>{part.text}</span>;
+        }
+        return (
+          <mark
+            key={index}
+            data-claim-id={part.highlight.claimId}
+            className={`rounded-[3px] box-decoration-clone px-0.5 text-inherit ${className}`}
+          >
+            {part.text}
+          </mark>
+        );
+      })}
+    </>
+  );
+}
 
 // InconsistencyFlag is the inline marker that a statement contradicts an earlier
 // one by the same speaker. It quotes the earlier statement so the viewer can see

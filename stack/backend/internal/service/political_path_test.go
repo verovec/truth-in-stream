@@ -124,7 +124,11 @@ func politicalFixture(t *testing.T, stream SegmentStream, matcher SegmentMatcher
 		Matcher:    matcher,
 		Prechecker: allowAllPrechecker{},
 		Logger:     discardLogger(),
-		Verify:     vp,
+		// The fixtures feed up-to-three-sentence units and expect them scored at
+		// once; pin the cap so the wider default does not defer the flush to the
+		// idle window.
+		MaxSentences: 3,
+		Verify:       vp,
 	})
 	if err != nil {
 		t.Fatalf("NewLiveAnalyzer: %v", err)
@@ -550,6 +554,43 @@ func TestPoliticalPathRoutingFailureWithNoEvidenceIsUnverifiable(t *testing.T) {
 	}
 	if seen := verifier.seen(); len(seen) != 0 {
 		t.Fatalf("verifier called %v, want none with no evidence", seen)
+	}
+}
+
+func TestPoliticalPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
+	t.Parallel()
+	// With the knowledge fallback on, a claim that routes no evidence still
+	// reaches the two-axis verifier and its knowledge-basis judgment emits,
+	// mirroring the credibility path's sparse-corpus behavior.
+	unit := "le budget de la defense a double en dix ans."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{}} // empty, no error
+	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
+		unit: {Literal: LiteralAccurate, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "conforme aux ordres de grandeur connus"},
+	}}
+
+	a := politicalFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer:        fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:          &fakeVerifier{},
+		KnowledgeFallback: true,
+	}, PoliticalConfig{Classifier: fakeClassifier{}, Retriever: router, Verifier: verifier})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	last := results[len(results)-1]
+	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
+		t.Fatalf("terminal = %+v, want a verified verdict", last)
+	}
+	if last.Verdict.Literal != LiteralAccurate || last.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("fallback verdict = %+v, want the verifier's accurate/knowledge judgment", last.Verdict)
+	}
+	if seen := verifier.seen(); len(seen) != 1 || seen[0] != unit {
+		t.Fatalf("verifier calls = %v, want exactly the no-evidence claim", seen)
 	}
 }
 

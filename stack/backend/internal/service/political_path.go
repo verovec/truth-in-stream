@@ -135,10 +135,12 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		return
 	}
 
-	if len(evidence) == 0 {
+	if len(evidence) == 0 && !vp.knowledgeFallback {
 		// No routed evidence and no verifier call: the honest "nothing to check
 		// against" outcome is unverifiable/knowledge, mirroring the credibility
-		// path's no-evidence case.
+		// path's no-evidence case. With the knowledge fallback on, the two-axis
+		// verifier judges the claim from general knowledge instead, mirroring
+		// verifyClaim's fallback.
 		verdict := politicalNoEvidenceVerdict()
 		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
@@ -147,7 +149,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		return
 	}
 
-	verdict, shed, err := vp.verifyPolitical(ctx, claim.Text, evidence)
+	verdict, degraded, shed, err := vp.verifyPolitical(ctx, claim.Text, evidence)
 	if shed {
 		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
 		return
@@ -159,7 +161,11 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	// A degraded verdict (the knowledge fallback hit saturation or a flaky
+	// verifier) is emitted but never cached; see scoreClaim for the rationale.
+	if !degraded {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	}
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -183,22 +189,27 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
 
-	if len(evidence) == 0 {
+	if len(evidence) == 0 && !vp.knowledgeFallback {
 		verdict := politicalNoEvidenceVerdict()
 		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 	}
 
-	verdict, err := vp.verifyPoliticalBlocking(ctx, claim.Text, evidence)
+	verdict, degraded, err := vp.verifyPoliticalBlocking(ctx, claim.Text, evidence)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "batch political verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
-	verdict = vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
-	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
+	upgraded := vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
+	// A degraded verdict is a transient artifact and is never cached (see
+	// scoreClaim) - but a gate re-judgment that replaced it IS a real judgment
+	// and is cached, exactly as the live path caches its upgrades.
+	if !degraded || upgraded != verdict {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
+	}
+	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: upgraded}
 }
 
 // maybePoliticalGate is the terminal gate on the political two-axis path, the
@@ -221,11 +232,12 @@ func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEve
 	if vp.secondPass == nil {
 		return
 	}
-	reasoned, ok := vp.gateReverify(ctx, "live political", claim, fast, EvidencePassagesFrom(evidence))
+	passages := EvidencePassagesFrom(evidence)
+	reasoned, ok := vp.gateReverify(ctx, "live political", claim, fast, passages)
 	if !ok {
 		return
 	}
-	upgraded := vp.secondPass.upgradePolitical(fast, reasoned, evidence)
+	upgraded := vp.secondPass.upgradePolitical(fast, reasoned, evidence, len(passages))
 	if upgraded == fast {
 		return
 	}
@@ -242,25 +254,30 @@ func (vp *VerifyPath) applyPoliticalGateBatch(ctx context.Context, claim AtomicC
 	if vp.secondPass == nil {
 		return fast
 	}
-	reasoned, ok := vp.gateReverify(ctx, "batch political", claim, fast, EvidencePassagesFrom(evidence))
+	passages := EvidencePassagesFrom(evidence)
+	reasoned, ok := vp.gateReverify(ctx, "batch political", claim, fast, passages)
 	if !ok {
 		return fast
 	}
-	return vp.secondPass.upgradePolitical(fast, reasoned, evidence)
+	return vp.secondPass.upgradePolitical(fast, reasoned, evidence, len(passages))
 }
 
 // upgradePolitical folds a credibility reasoning re-judgment into a weak political
 // two-axis verdict under the terminal-gate acceptance rule. When the re-judgment is
-// accepted (grounded AND at least MinConfidence) and settles a definite literal
-// verdict, it replaces the weak verdict: the reasoner's credibility maps back onto the
-// literal axis (credible -> accurate, disputed -> inaccurate) via
-// literalFromCredibility, the credibility axis is re-derived from that literal through
-// the unchanged credibilityFromLiteral, and the prior verdict's manipulation flags are
-// carried through (the credibility reasoner does not assess framing). Otherwise the
-// prior verdict stands - an unverifiable prior stays unverifiable. It is deterministic
-// and table-testable.
-func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerdict, evidence []source.Evidence) *VerifiedVerdict {
-	if !sp.accept(reasoned) {
+// accepted and settles a definite literal verdict, it replaces the weak verdict: the
+// reasoner's credibility maps back onto the literal axis (credible -> accurate,
+// disputed -> inaccurate) via literalFromCredibility, the credibility axis is
+// re-derived from that literal through the unchanged credibilityFromLiteral, and the
+// prior verdict's manipulation flags are carried through (the credibility reasoner
+// does not assess framing). An accepted evidence re-judgment must still resolve at
+// least one citation against the routed evidence; an accepted knowledge re-judgment
+// (positive KnowledgeFloor, only possible when NO evidence was routed - accept
+// enforces it, so a cited two-axis verdict is never traded for an uncited opinion)
+// carries none and is adopted with its knowledge basis, so the UI still shows it as
+// source-less. Otherwise the prior verdict stands - an unverifiable prior stays
+// unverifiable. It is deterministic and table-testable.
+func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerdict, evidence []source.Evidence, passageCount int) *VerifiedVerdict {
+	if !sp.accept(reasoned, passageCount) {
 		return orig
 	}
 	literal := literalFromCredibility(reasoned.Verdict)
@@ -270,12 +287,12 @@ func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerd
 		return orig
 	}
 	citations := citationsFromEvidence(reasoned.Citations, evidence)
-	if len(citations) == 0 {
+	if reasoned.Basis == BasisEvidence && len(citations) == 0 {
 		return orig
 	}
 	return &VerifiedVerdict{
 		Verdict:    credibilityFromLiteral(literal),
-		Basis:      BasisEvidence,
+		Basis:      reasoned.Basis,
 		Confidence: reasoned.Confidence,
 		Citations:  citations,
 		Rationale:  reasoned.Rationale,
@@ -314,18 +331,28 @@ func (vp *VerifyPath) routeRetrieve(ctx context.Context, claim string, ct claimt
 // shed=true when the pool and its bounded queue are saturated so the caller emits
 // the honest unchecked terminal state. It projects the routed evidence into
 // verifier passages and resolves the verifier's citations back to wire matches
-// carrying their source provenance.
-func (vp *VerifyPath) verifyPolitical(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, bool, error) {
+// carrying their source provenance. A no-evidence claim (reachable only under the
+// knowledge fallback) is strictly best-effort: under saturation or a verifier
+// failure it degrades to the instant no-evidence verdict the fallback-off path
+// would have emitted, never to unchecked or error - and a degraded verdict is
+// reported as such so the caller never caches the transient artifact.
+func (vp *VerifyPath) verifyPolitical(ctx context.Context, claim string, evidence []source.Evidence) (verdict *VerifiedVerdict, degraded, shed bool, err error) {
 	if !vp.acquireVerifySlot(ctx) {
 		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
+			return nil, false, false, ctx.Err()
 		}
-		return nil, true, nil
+		if len(evidence) == 0 {
+			return politicalNoEvidenceVerdict(), true, false, nil
+		}
+		return nil, false, true, nil
 	}
 	defer func() { <-vp.verifySem }()
 
-	verdict, err := vp.runPoliticalVerifier(ctx, claim, evidence)
-	return verdict, false, err
+	verdict, err = vp.runPoliticalVerifier(ctx, claim, evidence)
+	if vp.degradeNoEvidence(ctx, err, len(evidence)) {
+		return politicalNoEvidenceVerdict(), true, false, nil
+	}
+	return verdict, false, false, err
 }
 
 // runPoliticalVerifier runs the two-axis verifier against routed evidence under
@@ -347,12 +374,18 @@ func (vp *VerifyPath) runPoliticalVerifier(ctx context.Context, claim string, ev
 // verifyPoliticalBlocking is the no-shed counterpart of verifyPolitical for a
 // batch job: it blocks on the verify pool until a slot frees (bounded only by
 // ctx) rather than shedding, so every routed claim ends with a two-axis verdict.
-func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, error) {
+// It shares verifyPolitical's degrade-on-failure floor (degraded verdicts are
+// never cached) for no-evidence claims.
+func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string, evidence []source.Evidence) (verdict *VerifiedVerdict, degraded bool, err error) {
 	if !vp.acquireVerifySlotBlocking(ctx) {
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 	defer func() { <-vp.verifySem }()
-	return vp.runPoliticalVerifier(ctx, claim, evidence)
+	verdict, err = vp.runPoliticalVerifier(ctx, claim, evidence)
+	if vp.degradeNoEvidence(ctx, err, len(evidence)) {
+		return politicalNoEvidenceVerdict(), true, nil
+	}
+	return verdict, false, err
 }
 
 // politicalVerdictFromResult builds the wire verdict from the two-axis judgment.

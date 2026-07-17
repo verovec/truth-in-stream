@@ -220,6 +220,80 @@ describe("parseLiveFrame", () => {
     });
   });
 
+  test("carries a claim's verbatim quote and highlight spans", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [
+          {
+            claim_id: "u0-0",
+            text: "Le chomage en France a baisse.",
+            status: "pending",
+            quote: "chomage a baisse",
+            spans: [
+              { segment_id: "3", start: 3, end: 19 },
+              { segment_id: "4", start: 0, end: 5 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "Le chomage en France a baisse.",
+          status: "pending",
+          quote: "chomage a baisse",
+          spans: [
+            { segmentId: "3", start: 3, end: 19 },
+            { segmentId: "4", start: 0, end: 5 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("drops a malformed span but keeps the claim and its valid spans", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [
+          {
+            claim_id: "u0-0",
+            text: "kept",
+            status: "pending",
+            quote: "kept",
+            spans: [
+              { segment_id: "", start: 0, end: 2 },
+              { segment_id: "3", start: 5, end: 5 },
+              { segment_id: "3", start: -1, end: 2 },
+              { segment_id: "3", start: 0.5, end: 2 },
+              { segment_id: "3", start: 1, end: 3 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "kept",
+          status: "pending",
+          quote: "kept",
+          spans: [{ segmentId: "3", start: 1, end: 3 }],
+        },
+      ],
+    });
+  });
+
   test("parses a verified claim_result with source, verdict, basis, and normalized matches", () => {
     const frame = parseLiveFrame(
       JSON.stringify({

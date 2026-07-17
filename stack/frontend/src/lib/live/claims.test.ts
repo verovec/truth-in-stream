@@ -51,6 +51,32 @@ describe("claims store", () => {
     ]);
   });
 
+  test("a claim's quote and spans survive its whole result lifecycle", () => {
+    const announced: ClaimsFrame = {
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "Le chomage a baisse.",
+          status: "pending",
+          quote: "chomage a baisse",
+          spans: [{ segmentId: "3", start: 3, end: 19 }],
+        },
+      ],
+    };
+    let state = applyClaimsFrame(emptyClaims(), announced);
+    state = applyClaimResultFrame(state, result("u0", "u0-0", "checking"));
+    state = applyClaimResultFrame(
+      state,
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
+    );
+    const claim = claimsForUnit(state, "u0")[0];
+    expect(claim.verdict).toBe("credible");
+    expect(claim.quote).toBe("chomage a baisse");
+    expect(claim.spans).toEqual([{ segmentId: "3", start: 3, end: 19 }]);
+  });
+
   test("pending -> checking -> verified replaces the claim row in place, keyed on claim_id", () => {
     let state = applyClaimsFrame(
       emptyClaims(),
