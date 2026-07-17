@@ -99,7 +99,7 @@ The two UI cards (VER-213, VER-214) wait for Epic B's VER-206.
 
 ---
 
-## Epic D - Imported-video pre-analysis (5 cards, IDs pending Linear creation)
+## Epic D - Imported-video pre-analysis (7 cards, IDs pending Linear creation)
 
 **Scope for its agent.** One-shot server-side pre-analysis of imported videos persisted in
 Postgres, analysed playback with pre-generated subtitles and a verdict-colored claim
@@ -110,13 +110,19 @@ timeline, backoffice analyse/re-analyse controls, and the docs close-out.
 (ffmpeg from object storage into the existing AssemblyAI + verify pipeline, realtime
 pacing), and mirrors the documents feature's `analysis_status` job lifecycle. Live TV and
 non-analysed videos keep the live pipeline untouched; analysed videos never re-analyse
-live. Spec: `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`.
+live. The ffmpeg/pacing piece (D2) and the claim-timeline UI (D5) are split out from
+their neighbors because they are the epic's two genuinely unprecedented pieces (no
+server-side audio path exists today; no custom seek-bar UI exists today) - the split is
+for focused review, not merge-conflict avoidance (the chain is serial regardless). Spec:
+`docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`.
 
 **Cards & internal order** (bodies staged in `CARDS-EPIC-PREANALYSIS-PENDING.md`;
 backfill VER-IDs here at creation):
-- `D1 (storage + read API) -> D2 (headless job + analyse endpoint) -> {D3 (player
-  playback + timeline), D4 (backoffice controls)} -> D5 (docs + e2e close-out)`.
-- D3 and D4 are file-disjoint and run in parallel once D2 is `In Review`/`Done`.
+- `D1 (storage + read API) -> D2 (ffmpeg audio-extraction adapter) -> D3 (headless job +
+  analyse endpoint) -> D4 (player: REST hydration + button) -> D5 (claim timeline
+  strip)`.
+- `D3 -> D6 (backoffice controls)`, running parallel to `D4`/`D5` (file-disjoint).
+- `D7 (docs + e2e close-out)` depends on `D5 + D6`.
 
 **Entry cards (no deps, start immediately):** D1.
 
@@ -134,8 +140,8 @@ and `docker-compose.yml` stay append-only with a rebase rule (same doctrine as t
 hot files below).
 
 **Parallelism:** can start as soon as its cards exist in Linear; no other epic is
-currently open. Within the epic: D1 -> D2 serial, then D3 beside D4 (player vs
-backoffice files), D5 last.
+currently open. Within the epic: D1 -> D2 -> D3 serial, then D4 -> D5 beside D6 (player
+vs backoffice files), D7 last.
 
 ---
 

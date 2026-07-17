@@ -1,13 +1,21 @@
 # Pending Linear cards - Epic D (video pre-analysis)
 
 Staged card bodies for the `epic:preanalysis` cards. The Linear connector was not
-authenticated when this epic was drafted; create these five cards verbatim (team
+authenticated when this epic was drafted; create these seven cards verbatim (team
 Veroveit, project Truth in Stream, state `Todo`, label `epic:preanalysis`, priorities as
 noted), record the assigned VER-IDs in `EPICS-TRUTH-IN-STREAM.md`, re-run `/roadmap`,
 then delete this file.
 
-Dependencies to record: D2 depends_on D1; D3 depends_on D2; D4 depends_on D2;
-D5 depends_on D3, D4.
+Dependencies to record: D2 depends_on D1; D3 depends_on D1, D2; D4 depends_on D3;
+D5 depends_on D4; D6 depends_on D3; D7 depends_on D5, D6.
+
+The audio-extraction piece (D2) and the claim timeline (D5) are split out from the job
+(D3) and the player plumbing (D4) on purpose: D2 is the epic's one genuinely novel,
+unprecedented capability (no existing server-side path reads a stored video today) and
+benefits from being validated in isolation before a job is built around it; D5 is the
+one piece of UI with no existing pattern to mirror. Neither split exists to avoid
+merge conflicts (the chain is serial either way) - it keeps each card's review surface
+focused.
 
 ---
 
@@ -30,9 +38,9 @@ of an analysis is the Redis snapshot cache keyed `analysis:v1:{video.ID}`
 `stack/backend/internal/handler/live.go`. This card adds the durable Postgres layer
 under those same ports. The documents feature is the schema and lifecycle precedent
 (`stack/backend/migrations/0012_documents.up.sql`,
-`stack/backend/internal/domain/document.go`). The pre-analysis job (next card) writes
-through the store added here; the frontend cards read the API added here. No job, no
-frontend, no ffmpeg in this card.
+`stack/backend/internal/domain/document.go`). Later cards in the epic write through the
+store added here (the pre-analysis job) and read the API added here (the frontend
+cards). No job, no ffmpeg, no frontend in this card.
 
 **Approach**
 
@@ -97,7 +105,81 @@ writing queries.
 
 ---
 
-## D2 - Headless server-side pre-analysis job for imported videos (priority: High, depends_on: D1)
+## D2 - ffmpeg audio-extraction adapter and pacing (priority: High, depends_on: D1)
+
+**Outcome**
+
+The backend can turn any stored video into a paced stream of 16 kHz PCM frames shaped
+exactly as AssemblyAI's realtime API expects, verified in isolation before any job or
+endpoint is built around it.
+
+**Context**
+
+Second card of the video pre-analysis epic (design:
+`docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`), split out from the
+pre-analysis job card on purpose: this is the epic's one genuinely novel, unprecedented
+capability - no path in this codebase reads a stored video object server-side today
+(imported-video analysis is entirely browser-driven, see
+`stack/frontend/src/lib/live/audio-capture.ts`). Isolating it lets the risky,
+needs-real-world-validation piece get built and tested on its own, ahead of the
+job-lifecycle wrapper (next card) that closely mirrors the proven `DocumentAnalyzer`
+pattern. ffmpeg is already installed in both backend images (yt-dlp dependency,
+`stack/backend/Dockerfile`). No job, no lock, no HTTP endpoint in this card - the
+output is a plain reader/channel of paced PCM frames that a later job feeds into
+`LiveAnalyzer.Run`.
+
+**Approach**
+
+New `stack/backend/internal/audioextract` package, exec pattern mirrored from
+`internal/ytdlp`: given a video's stored object (opened via `domain.MediaStore`), run
+ffmpeg to decode to 16 kHz s16le mono PCM on stdout. A chunker slices that stream to
+~100 ms frames - AssemblyAI closes with 3007 on frames outside 50-1000 ms (see the live
+path's existing pacing comment in `stack/backend/internal/transcribe`). A pacer submits
+frames at realtime by default, configurable via `PREANALYSIS_PACING_FACTOR`; verify
+AssemblyAI streaming's documented tolerance for faster-than-realtime submission via
+Context7/current docs before enabling any factor above 1.0 - correctness over speed.
+Design the package's public surface (e.g. an `Extract(ctx, source) (<-chan []byte,
+error)` or an `io.Reader` wrapper) so the next card's job service can consume it without
+knowing about ffmpeg, exec, or chunking internals.
+
+**Acceptance criteria**
+
+* Given a stored video object, the adapter produces a stream of PCM frames each within
+  AssemblyAI's 50-1000 ms bound, paced at the configured factor.
+* ffmpeg failures (bad/corrupt media, missing binary) surface as a typed error, not a
+  panic or a hang.
+* The component has no dependency on video/job/HTTP types - it is usable standalone in
+  a later job or a CLI debugging tool.
+
+**Implementation todos**
+
+- [ ] `internal/audioextract`: ffmpeg exec adapter -> 16 kHz s16le mono PCM stream
+- [ ] Chunker: slice to ~100 ms frames, enforce the 50-1000 ms bound
+- [ ] Pacer: realtime default, `PREANALYSIS_PACING_FACTOR` config, documented
+- [ ] Fake-exec unit tests: happy path, ffmpeg failure, malformed output, frame-size
+      bounds, pacing timing (via an injectable clock, not real sleeps)
+- [ ] Verify AssemblyAI streaming's faster-than-realtime tolerance against current docs
+      before defaulting the pacing factor away from 1.0; record the finding in the PR
+
+**Definition of Done**
+
+- [ ] AssemblyAI streaming pacing guidance verified against current docs and recorded
+      in the PR description
+- [ ] `go test -race ./...` green; new logic covered by table-driven tests
+- [ ] `gofmt`/`gofumpt`, `go vet ./...`, `golangci-lint run ./...` clean
+- [ ] Errors wrapped with `%w`; no dead code; only task files touched
+- [ ] No secrets or infrastructure identifiers committed
+- [ ] PR opened against `dev`, CI green
+
+**Code review (mandatory)**
+
+- [ ] Run a code review on the diff; resolve every correctness finding; address or
+      justify quality findings; re-review after changes. Not Done until the review
+      passes.
+
+---
+
+## D3 - Headless server-side pre-analysis job for imported videos (priority: High, depends_on: D1, D2)
 
 **Outcome**
 
@@ -109,30 +191,25 @@ transcription or LLM budget again.
 
 **Context**
 
-Second backend card of the video pre-analysis epic (design:
+Third card of the video pre-analysis epic (design:
 `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`); requires the storage
-and read API card (D1) to be merged or in review. Today imported-video analysis is
-browser-driven per view: the client streams playback audio to
+and read API card (D1) and the audio-extraction adapter (D2). Today imported-video
+analysis is browser-driven per view: the client streams playback audio to
 `GET /api/videos/{id}/live` -> `service.LiveAnalyzer` -> AssemblyAI streaming v3 ->
-verify path. Nothing reads the stored object server-side. `DocumentAnalyzer`
-(`stack/backend/internal/service/document_analyzer.go`) is the job-lifecycle precedent:
-conditional-update lock, injectable `spawn`, detached timeout-bounded context, terminal
-writes on a short separate context, startup recovery. ffmpeg is already installed in
-both backend images (yt-dlp dependency). Live TV and non-analysed imported videos keep
-the live pipeline untouched.
+verify path. `DocumentAnalyzer`
+(`stack/backend/internal/service/document_analyzer.go`) is the job-lifecycle
+precedent: conditional-update lock, injectable `spawn`, detached timeout-bounded
+context, terminal writes on a short separate context, startup recovery. This card is
+the lifecycle wrapper around D2's audio stream - it should not need to know about
+ffmpeg or chunking, only consume D2's public interface. Live TV and non-analysed
+imported videos keep the live pipeline untouched.
 
 **Approach**
 
-New `stack/backend/internal/audioextract` adapter following the `internal/ytdlp` exec
-pattern: ffmpeg decodes the stored object (presigned URL or piped stream from
-`domain.MediaStore`) to 16 kHz s16le mono PCM on stdout. Chunk to ~100 ms frames -
-AssemblyAI closes with 3007 on frames outside 50-1000 ms - and pace submission:
-realtime (factor 1.0) default, `PREANALYSIS_PACING_FACTOR` to go faster only after
-verifying AssemblyAI streaming's documented tolerance for faster-than-realtime input
-against current docs; correctness over speed. `VideoAnalyzer` service mirrors
-`DocumentAnalyzer`: `Start` requires video status `ready`, claims the
-`analysis_status='analysing'` lock (409 on conflict), spawns the run; the run feeds
-`LiveAnalyzer.Run` exactly as the live handler does, tees emitted events, updates
+`VideoAnalyzer` service mirrors `DocumentAnalyzer`: `Start` requires video status
+`ready`, claims the `analysis_status='analysing'` lock (409 on conflict), spawns the
+run; the run opens D2's audio stream for the video and feeds it to `LiveAnalyzer.Run`
+exactly as the live handler does, tees emitted events, updates
 `analysis_progress_ms` periodically, and on flush upserts `video_analyses` (events,
 engine metadata, counters) then flips `complete`; failures flip `failed` with the
 error. `Recover()` marks orphaned `analysing` rows `failed` at startup. Global
@@ -156,23 +233,18 @@ analysis stays readable until the new run completes. Config in
 
 **Implementation todos**
 
-- [ ] `internal/audioextract`: ffmpeg exec adapter -> 16 kHz s16le mono PCM stream,
-      with fake-exec unit tests
-- [ ] Chunking/pacing component (~100 ms frames, configurable factor) with tests on
-      frame-size bounds
-- [ ] `VideoAnalyzer` service: lock claim, spawn, run, progress, terminal writes,
-      `Recover()` wired at startup in `cmd/server/main.go`, concurrency semaphore
+- [ ] `VideoAnalyzer` service: lock claim, spawn, run (consuming D2's audioextract
+      output), progress, terminal writes, `Recover()` wired at startup in
+      `cmd/server/main.go`, concurrency semaphore
 - [ ] Engine metadata + claim counters computed from the teed events at completion
 - [ ] `POST /api/videos/{id}/analyse` handler (RequireAdmin) + route registration
-- [ ] Config: `PREANALYSIS_MAX_CONCURRENT`, `PREANALYSIS_PACING_FACTOR`, run timeout;
-      forwarded in `docker-compose.yml`; documented in the config reference
+- [ ] Config: `PREANALYSIS_MAX_CONCURRENT`, run timeout; forwarded in
+      `docker-compose.yml`; documented in the config reference
 - [ ] Verify SRT/CSV exports and the WS fast-path serve the job's stored analysis
-- [ ] Table-driven tests: lifecycle transitions, recovery, 409/422 paths, pacing bounds
+- [ ] Table-driven tests: lifecycle transitions, recovery, 409/422 paths
 
 **Definition of Done**
 
-- [ ] AssemblyAI streaming pacing guidance verified against current docs and recorded
-      in the PR description
 - [ ] `go test -race ./...` green; new logic covered by table-driven tests
 - [ ] `gofmt`/`gofumpt`, `go vet ./...`, `golangci-lint run ./...` clean
 - [ ] Errors wrapped with `%w`; no dead code; only task files touched
@@ -187,23 +259,21 @@ analysis stays readable until the new run completes. Config in
 
 ---
 
-## D3 - Analysed playback: stored subtitles, claims, and verdict timeline in the player (priority: High, depends_on: D2)
+## D4 - Analysed playback plumbing: stored subtitles and pre-analyse control (priority: High, depends_on: D3)
 
 **Outcome**
 
 Opening a pre-analysed video feels instant and complete: the full transcript is there
 before playback starts and the active line highlights as the video plays, claims and
-verdicts render from the stored result, and a timeline strip under the player shows
-where claims were checked, colored by verdict, with click-to-seek. The operator can
-trigger a pre-analysis right from the player, and library tiles show which videos are
-already analysed. No transcription or fact-checking runs during playback of an
-analysed video.
+verdicts render from the stored result, and no transcription or fact-checking runs
+during playback. The operator can trigger a pre-analysis right from the player, and
+library tiles show which videos are already analysed.
 
 **Context**
 
-Frontend player card of the video pre-analysis epic (design:
+Fourth card of the video pre-analysis epic (design:
 `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`); consumes the read API
-(D1) and the job trigger (D2). The watch screen is
+(D1) and the job trigger (D3). The watch screen is
 `stack/frontend/src/app/app/_components/library-experience.tsx` hosting
 `PlaybackProvider`, `LiveAnalysisProvider`, `VideoPlayer` (react-player, native
 controls) and the live panels. `use-live-analysis.ts` currently always opens the WS on
@@ -211,10 +281,10 @@ play and shifts frame timestamps by the playback position at socket open
 (`prepareFrame`/`baseTime`) - stored frames carry absolute video time, so hydrating
 over the WS would corrupt timestamps on a mid-video open; that is why analysed videos
 hydrate over REST and never open the socket. `LiveStatementList` already highlights the
-active segment from `currentTime` (binary search in `lib/fact-check/segments.ts`).
-There is no existing seek-bar UI; the timeline strip is net-new and must not rebuild
-the native scrubber. Backoffice UI is a separate card; do not touch
-`stack/frontend/src/app/backoffice/*`.
+active segment from `currentTime` (binary search in `lib/fact-check/segments.ts`). The
+claim timeline strip is a separate, later card (D5) - this card is the data plumbing
+and controls only, no new timeline visualization. Backoffice UI is a separate card
+(D6); do not touch `stack/frontend/src/app/backoffice/*`.
 
 **Approach**
 
@@ -223,40 +293,33 @@ On selecting a video with `analysis_status === 'complete'` (from the list payloa
 fetch `GET /api/videos/{id}/analysis` and hydrate the existing live-analysis store by
 running the returned frames through the existing reducers in `lib/live/*` with base
 time 0; skip `useLiveAnalysis` socket + `createMediaElementCapture` entirely for these
-videos. Non-analysed videos keep the live flow byte-for-byte. Timeline: a strip
-component aligned to `duration` under the player, markers/segments positioned by each
-claim's statement span, colored with the existing verdict palette
-(`live-claim-verdict.tsx`): credible and disputed prominent, unverifiable muted; hover
-shows claim text + verdict; click seeks through the playback store; rendered only when
-analysed. Admin-only pre-analyse button (status from the identity already exposed to
-the app shell) when status is `none`/`failed`, calling `POST /api/videos/{id}/analyse`;
-while `analysing`, poll the analysis endpoint every 2 s and show progress; non-admins
-see a status chip only. Library tiles get an "Analysed" badge from the list payload.
-Match the existing app copy conventions for all new strings.
+videos. Non-analysed videos keep the live flow byte-for-byte. Admin-only pre-analyse
+button (status from the identity already exposed to the app shell) when status is
+`none`/`failed`, calling `POST /api/videos/{id}/analyse`; while `analysing`, poll the
+analysis endpoint every 2 s and show progress; non-admins see a status chip only.
+Library tiles get an "Analysed" badge from the list payload. Match the existing app
+copy conventions for all new strings.
 
 **Acceptance criteria**
 
 * A pre-analysed video shows its full transcript immediately; the active subtitle
   highlights in sync with playback, including after seeking; no WebSocket opens and no
   audio capture starts.
-* The timeline strip marks every checked claim at its time span, colored by verdict;
-  clicking a marker seeks the player; hovering identifies the claim.
 * An admin sees and can use the pre-analyse button on a ready, un-analysed video and a
   live progress indicator while it runs; a non-admin cannot trigger analysis.
 * Videos without a stored analysis keep the current live-analysis experience
   unchanged.
+* Library tiles show an "Analysed" badge from the list payload.
 
 **Implementation todos**
 
 - [ ] Analysis fetch + store hydration path (frames -> existing reducers, base time 0)
 - [ ] Gate in the player wiring: analysed -> REST hydration; otherwise live WS
       (unchanged)
-- [ ] Timeline strip component: positioning math, verdict colors, hover, click-to-seek
 - [ ] Pre-analyse button + polling progress chip; admin gating; failed-state retry
 - [ ] "Analysed" badge on library tiles from `analysis_status`
 - [ ] Vitest: hydration equivalence with a WS session fixture, no-socket/no-capture
-      assertion for analysed videos, timeline positioning/coloring/seek, button state
-      machine, badge rendering
+      assertion for analysed videos, button state machine, badge rendering
 
 **Definition of Done**
 
@@ -274,7 +337,73 @@ Match the existing app copy conventions for all new strings.
 
 ---
 
-## D4 - Backoffice: video analysis status and analyse/re-analyse controls (priority: High, depends_on: D2)
+## D5 - Claim timeline strip: verdict-colored playback overview (priority: Medium, depends_on: D4)
+
+**Outcome**
+
+A pre-analysed video shows, at a glance, where in the timeline claims were checked and
+how they resolved: a strip under the player marks each checked claim by time and color
+(credible, disputed, unverifiable), and clicking a marker jumps playback there.
+
+**Context**
+
+Fifth card of the video pre-analysis epic (design:
+`docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`); depends on D4, which
+hydrates the live-analysis store this card reads from. Split out from D4 deliberately:
+this is the one piece of UI in the whole epic with no existing pattern to mirror - the
+player uses native controls and there is no custom seek bar anywhere in the frontend
+today - so it deserves its own focused review and iteration room rather than riding
+along with the more mechanical hydration/button work. Verdict colors already exist in
+`live-claim-verdict.tsx`; reuse that palette rather than inventing a new one.
+
+**Approach**
+
+A client-leaf component rendered under the player, aligned to `duration` (do not
+rebuild the native scrubber - render alongside it). One marker or segment per checked
+claim, positioned by its parent statement's `[start, end]` span, colored by verdict:
+credible and disputed prominent, unverifiable muted. Hover reveals the claim text and
+verdict; click seeks through the playback store. Render only when the video is
+pre-analysed (i.e. only alongside the hydrated store from D4); render nothing when the
+claim list is empty rather than an empty strip. Handle dense marker clusters
+gracefully (this is the epic's "hot moments" signal - visible marker density, not a
+computed heat score) - overlapping markers should remain individually hoverable/
+clickable, not silently collapse.
+
+**Acceptance criteria**
+
+* The timeline strip marks every checked claim at its time span, colored by verdict.
+* Clicking a marker seeks the player to that time; hovering identifies the claim text
+  and verdict.
+* Dense clusters of markers remain individually interactive.
+* The strip does not render for videos without a stored analysis.
+
+**Implementation todos**
+
+- [ ] Timeline strip component: positioning math from claim spans + `duration`
+- [ ] Verdict coloring via the existing palette (`live-claim-verdict.tsx`)
+- [ ] Hover (claim text + verdict) and click-to-seek (playback store)
+- [ ] Dense-cluster handling (overlap layout or stacking, still individually
+      interactive)
+- [ ] Vitest: positioning math, verdict coloring, click-to-seek, empty-claims
+      no-render, dense-cluster interactivity
+
+**Definition of Done**
+
+- [ ] Component/idiom choices verified against the pinned Next.js/React versions
+- [ ] Vitest suite green; new behaviour covered
+- [ ] ESLint clean; TypeScript strict passes
+- [ ] Only task files touched; no secrets committed
+- [ ] PR opened against `dev`, CI green
+
+**Code review (mandatory)**
+
+- [ ] Run a code review on the diff; resolve every correctness finding; address or
+      justify quality findings; re-review after changes. Not Done until the review
+      passes.
+
+---
+
+## D6 - Backoffice: video analysis status and analyse/re-analyse controls (priority: High, depends_on: D3)
 
 **Outcome**
 
@@ -287,13 +416,14 @@ the stored result.
 
 Backoffice card of the video pre-analysis epic (design:
 `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`); consumes the read API
-(D1) and trigger endpoint (D2). The videos section lives in
+(D1) and trigger endpoint (D3). File-disjoint from D4/D5 (the player cards) - runs in
+parallel with them, both depending only on D3. The videos section lives in
 `stack/frontend/src/app/backoffice/_components/backoffice-videos-section.tsx` +
 `backoffice-video-list.tsx` (kind/status badges, two-step delete, 2.5 s polling for
 pending YouTube ingests). The documents reanalyse control
 (`stack/frontend/src/app/documents/_components/reanalyse-control.tsx`) is the trigger
-precedent (409/conflict handling). File-disjoint from the player card: this card
-touches only `stack/frontend/src/app/backoffice/*` and the shared video API client.
+precedent (409/conflict handling). This card touches only
+`stack/frontend/src/app/backoffice/*` and the shared video API client.
 
 **Approach**
 
@@ -339,7 +469,7 @@ where interaction requires it; match existing backoffice copy conventions.
 
 ---
 
-## D5 - Pre-analysis docs and end-to-end verification close-out (priority: Medium, depends_on: D3, D4)
+## D7 - Pre-analysis docs and end-to-end verification close-out (priority: Medium, depends_on: D5, D6)
 
 **Outcome**
 
@@ -352,9 +482,10 @@ explain when live analysis still applies.
 
 Close-out card of the video pre-analysis epic (design:
 `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`); starts once the
-player and backoffice cards are merged or in review. Documentation lives under
-`docs/` (architecture, config reference, local setup); the config reference gained an
-ingestion refresh recently - extend, do not fork, its structure.
+timeline card (D5) and the backoffice card (D6) are merged or in review.
+Documentation lives under `docs/` (architecture, config reference, local setup); the
+config reference gained an ingestion refresh recently - extend, do not fork, its
+structure.
 
 **Acceptance criteria**
 

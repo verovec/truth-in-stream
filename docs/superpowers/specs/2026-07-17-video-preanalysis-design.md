@@ -97,20 +97,33 @@ appears.
   through `AnalysisReplayer`, so they serve pre-analysed content with no change beyond
   the composite wiring.
 
-### Backend: pre-analysis job
+### Backend: audio extraction (the novel, highest-risk piece)
 
-`VideoAnalyzer` service mirroring `DocumentAnalyzer`:
+New `internal/audioextract` adapter, isolated from job-lifecycle concerns so it can be
+built and unit-tested (fake exec) on its own before anything wires a job around it:
+
+- ffmpeg (same exec pattern as `internal/ytdlp`, already in both backend images) decodes
+  the stored object - opened via `domain.MediaStore` - to 16 kHz s16le mono PCM on
+  stdout.
+- A chunker slices that stream to ~100 ms frames: AssemblyAI closes with 3007 on frames
+  outside 50-1000 ms (see `assemblyai-3007-chunk-pacing` precedent from the live path).
+- A pacer submits at realtime by default, configurable via `PREANALYSIS_PACING_FACTOR`;
+  going faster than realtime requires verifying AssemblyAI streaming's documented
+  tolerance for faster-than-realtime input during delivery - correctness first, speed
+  second.
+- Output is a plain reader/channel of paced PCM frames; it does not know about videos,
+  jobs, or Postgres.
+
+### Backend: headless pre-analysis job
+
+`VideoAnalyzer` service mirroring `DocumentAnalyzer`, consuming the audioextract
+component above:
 
 - `Start(videoID)`: video must be `ready`; claim the lock by flipping
   `analysis_status -> analysing` with a conditional UPDATE (409 on conflict), reset
   progress, then `spawn` a goroutine on a detached, timeout-bounded context.
-- The run: presign/open the stored object via `domain.MediaStore`, exec ffmpeg
-  (new `internal/audioextract` adapter, same exec pattern as `internal/ytdlp`) to decode
-  to 16 kHz s16le mono PCM on stdout, chunk to ~100 ms frames (AssemblyAI rejects frames
-  outside 50-1000 ms), pace at realtime by default with a configurable
-  `PREANALYSIS_PACING_FACTOR` (verify AssemblyAI streaming's tolerance for
-  faster-than-realtime submission against current docs during delivery; correctness
-  first, speed second), and feed `LiveAnalyzer.Run` exactly as the live handler does.
+- The run: open the audioextract stream for the video and feed it to `LiveAnalyzer.Run`
+  exactly as the live handler does.
 - Tee all emitted events; update `analysis_progress_ms` periodically; on pipeline flush,
   upsert `video_analyses` (events + engine + counters) and flip `complete`/`analyzed_at`
   /`analysis_runs`; on error flip `failed` with `analysis_error`. Terminal writes happen
@@ -155,16 +168,18 @@ appears.
   analysis endpoint (2 s cadence, like documents). Non-admins see status only.
 - Library tiles show an "Analysed" badge from the list payload.
 
-### Frontend: claim timeline
+### Frontend: claim timeline (net-new UI, its own card)
 
-Net-new UI - no custom seek bar exists (the player uses native controls). Render a
-timeline strip aligned to `duration` directly under the player (do not rebuild the
-scrubber): one marker/segment per checked claim, positioned by its statement's
-`[start,end]`, colored by verdict with the existing verdict palette - credible and
-disputed prominent, unverifiable muted. Hover reveals the claim text and verdict;
-click seeks via the playback store. The strip renders only when the video is
-pre-analysed, from the hydrated store. Dense clusters of markers are the "hot moments"
-signal; no separate heat computation in v1.
+No custom seek bar exists today - the player uses native controls - and this strip is
+the one piece of the epic with no existing pattern to mirror, so it is scoped
+separately from the hydration/button plumbing above. Render a timeline strip aligned to
+`duration` directly under the player (do not rebuild the scrubber): one marker/segment
+per checked claim, positioned by its statement's `[start,end]`, colored by verdict with
+the existing verdict palette - credible and disputed prominent, unverifiable muted.
+Hover reveals the claim text and verdict; click seeks via the playback store. The strip
+renders only when the video is pre-analysed, reading the store the hydration card
+populates. Dense clusters of markers are the "hot moments" signal; no separate heat
+computation in v1.
 
 ### Frontend: backoffice
 
@@ -187,13 +202,13 @@ for completed ones. Reuse the section's existing polling rhythm while any row is
 
 ## Testing
 
-- Go (table-driven, `-race`): lock claim/conflict transitions, recovery of orphaned
-  runs, ffmpeg adapter (fake exec), pacing/chunking bounds, composite replayer
-  precedence (Postgres over Redis over miss), upsert-with-counters, handler status
-  codes, list payload flag.
+- Go (table-driven, `-race`): ffmpeg adapter (fake exec) and pacing/chunking bounds in
+  isolation; lock claim/conflict transitions and recovery of orphaned runs; composite
+  replayer precedence (Postgres over Redis over miss); upsert-with-counters; handler
+  status codes; list payload flag.
 - Frontend (Vitest): REST hydration produces the same store state as the equivalent WS
-  session; no socket/capture opens for analysed videos; timeline positioning, verdict
-  coloring, and click-to-seek; analyse button state machine; backoffice badge/actions.
+  session; no socket/capture opens for analysed videos; analyse button state machine;
+  timeline positioning, verdict coloring, and click-to-seek; backoffice badge/actions.
 - End-to-end check on the dev stack: ingest a short sample, pre-analyse, replay with
   subtitles + timeline, re-analyse from backoffice; verify SRT/CSV exports serve the
   stored analysis.
@@ -212,17 +227,29 @@ for completed ones. Reuse the section's existing polling rhythm while any row is
 
 ## Cards (to create in Linear, label `epic:preanalysis`)
 
-Five cards, one owning agent, sequenced `D1 -> D2 -> {D3, D4} -> D5`. Full card bodies
-live in the epic entry in the roadmap plans. Summary:
+Seven cards, one owning agent, sequenced
+`D1 -> D2 -> D3 -> D4 -> D5, D3 -> D6 (parallel to D4/D5) -> D7`. The audio-extraction
+piece (D2) and the claim timeline (D5) are split out from the job (D3) and the player
+(D4) respectively: D2 is the epic's one genuinely novel, unprecedented capability and
+benefits from being validated in isolation before a job is built around it; D5 is the
+one piece of UI with no existing pattern to mirror and deserves its own focused review
+and iteration room. Neither split is about parallel-merge conflicts (the chain is
+serial either way) - it is about keeping each card's review surface focused. Full card
+bodies live in the epic entry in the roadmap plans. Summary:
 
 - **D1 - Backend: durable analysis storage and read API.** Migration 0019, store +
   sqlc, composite replayer wiring, `GET /api/videos/{id}/analysis`, list flag.
-- **D2 - Backend: headless pre-analysis job.** `internal/audioextract` (ffmpeg),
-  `VideoAnalyzer` (lock, spawn, recover, cap, pacing), `POST /api/videos/{id}/analyse`,
-  export verification. Depends on D1.
-- **D3 - Frontend: analysed playback + claim timeline.** REST hydration, WS/capture
-  suppression, pre-analyse button + progress, timeline strip, library badge. Depends on
-  D2.
-- **D4 - Backoffice: analysis status + analyse/re-analyse controls.** Depends on D2;
-  file-disjoint from D3.
-- **D5 - Docs close-out + end-to-end verification.** Depends on D3 + D4.
+- **D2 - Backend: ffmpeg audio-extraction adapter and pacing.** `internal/audioextract`
+  (ffmpeg decode, chunking, realtime pacing), fake-exec unit tests. No job, no lock, no
+  endpoint yet. Depends on D1 only insofar as it lands in the same tree; no functional
+  dependency, but sequenced after D1 for review flow.
+- **D3 - Backend: headless pre-analysis job.** `VideoAnalyzer` (lock, spawn, recover,
+  concurrency cap) consuming D2's audio stream, `POST /api/videos/{id}/analyse`, export
+  verification. Depends on D1 + D2.
+- **D4 - Frontend: analysed playback plumbing.** REST hydration, WS/capture
+  suppression, pre-analyse button + progress polling, library badge. Depends on D3.
+- **D5 - Frontend: claim timeline strip.** The net-new verdict-colored timeline UI,
+  positioning, hover, click-to-seek. Depends on D4 (reads the store D4 hydrates).
+- **D6 - Backoffice: analysis status + analyse/re-analyse controls.** Depends on D3;
+  file-disjoint from D4/D5, runs in parallel with them.
+- **D7 - Docs close-out + end-to-end verification.** Depends on D5 + D6.
