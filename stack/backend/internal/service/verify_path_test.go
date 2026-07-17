@@ -3,25 +3,35 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 // fakeDecomposer splits a unit into the claims keyed by its text; an unknown
 // unit falls back to the verbatim unit as a single claim, matching the real
-// decomposer's error-degradation contract.
+// decomposer's error-degradation contract. quotes optionally maps a claim text
+// to its verbatim source quote, so span-anchoring tests can drive it.
 type fakeDecomposer struct {
 	byText map[string][]string
+	quotes map[string]string
 }
 
-func (d fakeDecomposer) Decompose(_ context.Context, text, _, _ string) []string {
-	if claims, ok := d.byText[text]; ok {
-		return claims
+func (d fakeDecomposer) Decompose(_ context.Context, text, _, _ string) []DecomposedClaim {
+	texts, ok := d.byText[text]
+	if !ok {
+		texts = []string{text}
 	}
-	return []string{text}
+	claims := make([]DecomposedClaim, len(texts))
+	for i, t := range texts {
+		claims[i] = DecomposedClaim{Text: t, Quote: d.quotes[t]}
+	}
+	return claims
 }
 
 // fakeVerifier returns the verdict keyed by claim text and records every call,
@@ -87,7 +97,11 @@ func verifyPathFixture(t *testing.T, stream SegmentStream, matcher SegmentMatche
 		Matcher:    matcher,
 		Prechecker: allowAllPrechecker{},
 		Logger:     discardLogger(),
-		Verify:     vp,
+		// The fixtures feed up-to-three-sentence units and expect them scored at
+		// once; pin the cap so the wider default does not defer the flush to the
+		// idle window.
+		MaxSentences: 3,
+		Verify:       vp,
 	})
 	if err != nil {
 		t.Fatalf("NewLiveAnalyzer: %v", err)
@@ -562,6 +576,118 @@ func TestVerifyPathNoEvidenceIsUnverifiable(t *testing.T) {
 	}
 	if seen := verifier.seen(); len(seen) != 0 {
 		t.Fatalf("verifier called %v, want no verify call with no evidence", seen)
+	}
+}
+
+func TestVerifyPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
+	t.Parallel()
+	// With the knowledge fallback on, a claim that retrieves no evidence still
+	// reaches the verifier and its knowledge-basis judgment emits, instead of the
+	// blank unverifiable short-circuit - the sparse-corpus behavior.
+	unit := "la dette publique depasse trois mille milliards."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "broadly true"},
+	}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer:        fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:          verifier,
+		KnowledgeFallback: true,
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	last := results[len(results)-1]
+	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
+		t.Fatalf("terminal result = %+v, want a verified verdict", last)
+	}
+	if last.Verdict.Verdict != VerdictCredible || last.Verdict.Basis != BasisKnowledge || last.Verdict.Confidence != 0.55 {
+		t.Fatalf("fallback verdict = %+v, want the verifier's credible/knowledge judgment", last.Verdict)
+	}
+	if seen := verifier.seen(); len(seen) != 1 || seen[0] != unit {
+		t.Fatalf("verifier calls = %v, want exactly the no-evidence claim", seen)
+	}
+}
+
+func TestVerifyPathClaimsEventCarriesQuoteAndSpans(t *testing.T) {
+	t.Parallel()
+	// The decomposer's verbatim quote anchors onto the unit's member segment as
+	// [start, end) rune offsets, so the client can highlight the exact words that
+	// were checked; the coreference-resolved claim text rides alongside.
+	unit := "Le chomage a baisse fortement."
+	claimText := "Le chomage en France a baisse."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{
+			byText: map[string][]string{unit: {claimText}},
+			quotes: map[string]string{claimText: "chomage a baisse"},
+		},
+		Verifier: &fakeVerifier{},
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	claim := claimsEv.Claims[0]
+	if claim.Quote != "chomage a baisse" {
+		t.Errorf("quote = %q, want the decomposer's verbatim quote", claim.Quote)
+	}
+	wantSpans := []domain.ClaimSpan{{SegmentID: claimsEv.ID, Start: 3, End: 19}}
+	if diff := cmp.Diff(wantSpans, claim.Spans); diff != "" {
+		t.Errorf("spans mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// recordingDecomposer records the recent context passed on every call, so a
+// test asserts the previous unit's trailing sentence threads through.
+type recordingDecomposer struct {
+	mu       sync.Mutex
+	contexts []string
+}
+
+func (d *recordingDecomposer) Decompose(_ context.Context, text, _, recentContext string) []DecomposedClaim {
+	d.mu.Lock()
+	d.contexts = append(d.contexts, recentContext)
+	d.mu.Unlock()
+	return []DecomposedClaim{{Text: text}}
+}
+
+func (d *recordingDecomposer) seen() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.contexts...)
+}
+
+func TestVerifyPathPassesPreviousUnitContextToDecomposer(t *testing.T) {
+	t.Parallel()
+	// The first unit decomposes with no context; the second (a new speaker's
+	// reply) receives the previous unit's trailing sentence, attributed to its
+	// speaker, so a cross-unit reference like "c'est faux" resolves.
+	recorder := &recordingDecomposer{}
+	stream := &fakeSegmentStream{transcripts: finalize(
+		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "Le chomage a augmente. C'est un fait.", Speaker: "A"},
+		domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: "C'est faux.", Speaker: "B"},
+	)}
+	a := verifyPathFixture(t, stream, liveMatcher{}, VerifyPathConfig{
+		Decomposer: recorder,
+		Verifier:   &fakeVerifier{},
+	})
+
+	runVerifyPath(t, a)
+
+	contexts := recorder.seen()
+	slices.Sort(contexts)
+	want := []string{"", "A: C'est un fait."}
+	if diff := cmp.Diff(want, contexts); diff != "" {
+		t.Errorf("decomposer contexts mismatch (-want +got):\n%s", diff)
 	}
 }
 

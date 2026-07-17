@@ -55,6 +55,65 @@ describe("LiveStatementList", () => {
     expect(timestamp?.className).toContain("tabular-nums");
   });
 
+  test("marks the exact words a claim was checked against, tinted by its verdict", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
+        selectedStatementId={null}
+        highlightsFor={(segmentId) =>
+          segmentId === "0"
+            ? [
+                {
+                  unitId: "0",
+                  claimId: "0-0",
+                  start: 3,
+                  end: 19,
+                  status: "verified",
+                  verdict: "disputed",
+                },
+              ]
+            : []
+        }
+      />,
+    );
+    const mark = subtitleList().querySelector("mark");
+    expect(mark?.textContent).toBe("chomage a baisse");
+    expect(mark?.getAttribute("data-claim-id")).toBe("0-0");
+    expect(mark?.className).toContain("bg-verdict-disputed");
+    // The row's full text is intact around the mark.
+    expect(subtitleList().textContent).toContain("Le chomage a baisse fortement.");
+  });
+
+  test("a pending highlight renders a neutral wash, an unchecked one renders plain", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Deux affirmations distinctes ici.")]}
+        selectedStatementId={null}
+        highlightsFor={() => [
+          {
+            unitId: "0",
+            claimId: "0-0",
+            start: 0,
+            end: 4,
+            status: "pending",
+          },
+          {
+            unitId: "0",
+            claimId: "0-1",
+            start: 5,
+            end: 17,
+            status: "unchecked",
+          },
+        ]}
+      />,
+    );
+    const marks = subtitleList().querySelectorAll("mark");
+    // Only the pending claim is marked; a shed claim's words render plain.
+    expect(marks).toHaveLength(1);
+    expect(marks[0].textContent).toBe("Deux");
+    expect(marks[0].className).not.toContain("bg-verdict");
+  });
+
   test("renders a statement's atomic claims under it, suppressing the generic marker", () => {
     renderWithPlayback(
       <LiveStatementList

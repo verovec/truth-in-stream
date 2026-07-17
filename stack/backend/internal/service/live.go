@@ -105,8 +105,12 @@ const defaultLiveConcurrency = 4
 const defaultLiveQueueDepth = 32
 
 // defaultMaxSentences bounds an analysis unit to a few sentences so a verdict
-// reads as one tight, coherent claim instead of a paragraph.
-const defaultMaxSentences = 3
+// reads as one tight, coherent claim instead of a paragraph. Four sentences
+// give the decomposer enough surrounding speech to extract claims that a
+// single sentence leaves ambiguous, while a verdict still reads as one
+// thought. The env layer mirrors this default (LIVE_MAX_SENTENCES in
+// config.LoadLive) and the two must stay in sync.
+const defaultMaxSentences = 4
 
 // defaultIdleFlush bounds how long a buffered unit waits for more same-speaker
 // speech before it is scored anyway, so a trailing short turn is checked within
@@ -297,13 +301,17 @@ type unitMember struct {
 }
 
 // pendingUnit is one analysis unit handed to the worker pool: the members to
-// score together and the unit's canonical speaker (the label intra-speaker
-// consistency is scoped to). Speaker travels alongside the members because the
-// unit's normalized speaker is resolved during accumulation and would be lost
-// once the members are detached from their liveUnit.
+// score together, the unit's canonical speaker (the label intra-speaker
+// consistency is scoped to), and the trailing sentence of the previously
+// flushed unit as decomposition context. Speaker travels alongside the members
+// because the unit's normalized speaker is resolved during accumulation and
+// would be lost once the members are detached from their liveUnit; context
+// travels the same way because only the analyze loop knows what was flushed
+// before this unit.
 type pendingUnit struct {
 	speaker string
 	members []unitMember
+	context string
 }
 
 // liveUnit accumulates consecutive same-speaker committed segments into one
@@ -401,6 +409,12 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	var unit liveUnit
 	seq := 0
 	idleHolds := 0
+	// prevContext carries the previously flushed unit's trailing sentence (with
+	// its speaker) into the next unit's decomposition, so a claim opening with a
+	// pronoun or an ellipsis still resolves against what was just said - across
+	// speakers too, since a reply's referent is usually the other speaker's last
+	// sentence. It is session-local state, discarded with this loop.
+	prevContext := ""
 	flush := func() bool {
 		if unit.empty() {
 			return true
@@ -411,7 +425,10 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 		// order of unit.speaker against unit.take() in one literal is unspecified,
 		// so reading it inline can pick up the post-reset empty label.
 		speaker := unit.speaker
-		return a.dispatch(ctx, out, queue, pendingUnit{speaker: speaker, members: unit.take()})
+		members := unit.take()
+		pu := pendingUnit{speaker: speaker, members: members, context: prevContext}
+		prevContext = contextTail(speaker, combinedText(members))
+		return a.dispatch(ctx, out, queue, pu)
 	}
 
 	for {
@@ -775,6 +792,49 @@ func incompleteTrailingFragment(text string) bool {
 		}
 	}
 	return trailingWords > 0 && trailingWords < maxWordsPerSentence
+}
+
+// contextTail renders one flushed unit's trailing sentence as the next unit's
+// decomposition context, prefixed with the speaker label when known so a
+// cross-speaker reply resolves "he/that" against the right person. The tail is
+// bounded (lastSentence caps unpunctuated runs), so the context can never grow
+// the decomposition prompt without limit.
+func contextTail(speaker, text string) string {
+	tail := lastSentence(text)
+	if tail == "" {
+		return ""
+	}
+	if speaker == "" {
+		return tail
+	}
+	return speaker + ": " + tail
+}
+
+// lastSentence returns the final sentence of text: the run following the last
+// sentence terminator that is itself followed by more speech (text ending in a
+// terminator returns its final complete sentence). Unpunctuated speech has no
+// boundary to cut on, so the run is capped at the trailing maxWordsPerSentence
+// words - the same bound sentenceCount treats as one sentence's worth.
+func lastSentence(text string) string {
+	start := 0
+	afterTerminator := false
+	for i, r := range text {
+		switch {
+		case isTerminator(r):
+			afterTerminator = true
+		case unicode.IsSpace(r):
+			// Spaces neither open a new sentence nor cancel a pending boundary.
+		case afterTerminator:
+			start = i
+			afterTerminator = false
+		}
+	}
+	sentence := strings.TrimSpace(text[start:])
+	words := strings.Fields(sentence)
+	if len(words) > maxWordsPerSentence {
+		sentence = strings.Join(words[len(words)-maxWordsPerSentence:], " ")
+	}
+	return sentence
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the

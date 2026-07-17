@@ -135,10 +135,12 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		return
 	}
 
-	if len(evidence) == 0 {
+	if len(evidence) == 0 && !vp.knowledgeFallback {
 		// No routed evidence and no verifier call: the honest "nothing to check
 		// against" outcome is unverifiable/knowledge, mirroring the credibility
-		// path's no-evidence case.
+		// path's no-evidence case. With the knowledge fallback on, the two-axis
+		// verifier judges the claim from general knowledge instead, mirroring
+		// verifyClaim's fallback.
 		verdict := politicalNoEvidenceVerdict()
 		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
@@ -183,7 +185,7 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
 
-	if len(evidence) == 0 {
+	if len(evidence) == 0 && !vp.knowledgeFallback {
 		verdict := politicalNoEvidenceVerdict()
 		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
@@ -251,14 +253,16 @@ func (vp *VerifyPath) applyPoliticalGateBatch(ctx context.Context, claim AtomicC
 
 // upgradePolitical folds a credibility reasoning re-judgment into a weak political
 // two-axis verdict under the terminal-gate acceptance rule. When the re-judgment is
-// accepted (grounded AND at least MinConfidence) and settles a definite literal
-// verdict, it replaces the weak verdict: the reasoner's credibility maps back onto the
-// literal axis (credible -> accurate, disputed -> inaccurate) via
-// literalFromCredibility, the credibility axis is re-derived from that literal through
-// the unchanged credibilityFromLiteral, and the prior verdict's manipulation flags are
-// carried through (the credibility reasoner does not assess framing). Otherwise the
-// prior verdict stands - an unverifiable prior stays unverifiable. It is deterministic
-// and table-testable.
+// accepted and settles a definite literal verdict, it replaces the weak verdict: the
+// reasoner's credibility maps back onto the literal axis (credible -> accurate,
+// disputed -> inaccurate) via literalFromCredibility, the credibility axis is
+// re-derived from that literal through the unchanged credibilityFromLiteral, and the
+// prior verdict's manipulation flags are carried through (the credibility reasoner
+// does not assess framing). An accepted evidence re-judgment must still resolve at
+// least one citation against the routed evidence; an accepted knowledge re-judgment
+// (positive KnowledgeFloor) carries none and is adopted with its knowledge basis, so
+// the UI still shows it as source-less. Otherwise the prior verdict stands - an
+// unverifiable prior stays unverifiable. It is deterministic and table-testable.
 func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerdict, evidence []source.Evidence) *VerifiedVerdict {
 	if !sp.accept(reasoned) {
 		return orig
@@ -270,12 +274,12 @@ func (sp *secondPass) upgradePolitical(orig *VerifiedVerdict, reasoned ClaimVerd
 		return orig
 	}
 	citations := citationsFromEvidence(reasoned.Citations, evidence)
-	if len(citations) == 0 {
+	if reasoned.Basis == BasisEvidence && len(citations) == 0 {
 		return orig
 	}
 	return &VerifiedVerdict{
 		Verdict:    credibilityFromLiteral(literal),
-		Basis:      BasisEvidence,
+		Basis:      reasoned.Basis,
 		Confidence: reasoned.Confidence,
 		Citations:  citations,
 		Rationale:  reasoned.Rationale,

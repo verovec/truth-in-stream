@@ -60,10 +60,24 @@ const (
 
 // AtomicClaim is one self-contained claim a unit decomposed into: its stable
 // per-claim id (shared across that claim's pending/checking/verified events so
-// the client replaces in place) and its coreference-resolved text.
+// the client replaces in place) and its coreference-resolved text. Quote is the
+// verbatim run of source-statement words the claim came from, and Spans locates
+// those words inside the unit's member segments, so the client can highlight
+// the exact words that were checked. Both are empty when the decomposer could
+// not anchor the claim (the claim is still verified, just not highlighted).
 type AtomicClaim struct {
 	ClaimID string
 	Text    string
+	Quote   string
+	Spans   []domain.ClaimSpan
+}
+
+// DecomposedClaim is one claim the decomposer extracted: the self-contained
+// claim text the verifier judges and the verbatim quote of the source words it
+// was extracted from (empty when the model failed to copy a verbatim span).
+type DecomposedClaim struct {
+	Text  string
+	Quote string
 }
 
 // VerifiedVerdict is the retrieve-then-verify path's grounded verdict for one
@@ -97,13 +111,14 @@ type VerifiedVerdict struct {
 	Flags      []string
 }
 
-// ClaimDecomposer splits one checkable unit into atomic, self-contained claims.
-// It is the consumer-side port the retrieve-then-verify path depends on; the
+// ClaimDecomposer splits one checkable unit into atomic, self-contained claims,
+// each paired with the verbatim quote of the unit words it came from. It is the
+// consumer-side port the retrieve-then-verify path depends on; the
 // claimdecomp.Client (via a thin adapter) satisfies it. It never errors: on a
 // model failure the implementation degrades to returning the unit verbatim as a
 // single claim, so the live path never stalls on decomposition.
 type ClaimDecomposer interface {
-	Decompose(ctx context.Context, text, speaker, recentContext string) []string
+	Decompose(ctx context.Context, text, speaker, recentContext string) []DecomposedClaim
 }
 
 // EvidencePassage is one retrieved passage handed to the verifier: its stable
@@ -180,6 +195,13 @@ type VerifyPathConfig struct {
 	CacheThreshold  float64
 	CacheMaxEntries int
 	Logger          *slog.Logger
+	// KnowledgeFallback, when true, sends a claim that retrieved no evidence to
+	// the verifier anyway, so it is judged from the model's general knowledge
+	// (basis knowledge, confidence capped by the verifier) instead of
+	// short-circuiting to a blank unverifiable. It trades one cheap verifier call
+	// per no-evidence claim for real verdicts while the evidence corpus is still
+	// small; off, the legacy no-evidence short-circuit is byte-for-byte unchanged.
+	KnowledgeFallback bool
 	// Political, when non-nil, switches a checkable claim's verify stage onto the
 	// political path (FACTCHECK_POLITICAL on): classify -> route+retrieve -> two-axis
 	// verify, folding into the flag-aware aggregator. The curated fast-path borrow,
@@ -203,18 +225,19 @@ type VerifyPathConfig struct {
 // verifier under a bounded verify pool. It owns the verify pool's semaphore and
 // the short-TTL claim cache; it holds no transport types.
 type VerifyPath struct {
-	decomposer     ClaimDecomposer
-	matcher        SegmentMatcher
-	verifier       ClaimVerifier
-	fastTau        float64
-	verifySem      chan struct{}
-	verifyQueue    int
-	fastDeadline   time.Duration
-	verifyDeadline time.Duration
-	logger         *slog.Logger
-	cache          *semanticCache
-	pol            *PoliticalConfig
-	secondPass     *secondPass
+	decomposer        ClaimDecomposer
+	matcher           SegmentMatcher
+	verifier          ClaimVerifier
+	fastTau           float64
+	verifySem         chan struct{}
+	verifyQueue       int
+	fastDeadline      time.Duration
+	verifyDeadline    time.Duration
+	logger            *slog.Logger
+	cache             *semanticCache
+	pol               *PoliticalConfig
+	secondPass        *secondPass
+	knowledgeFallback bool
 }
 
 // NewVerifyPath builds a VerifyPath, failing when a required collaborator is
@@ -274,18 +297,19 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		cache = newSemanticCache(cfg.CacheTTL, cfg.CacheThreshold, maxEntries)
 	}
 	return &VerifyPath{
-		decomposer:     cfg.Decomposer,
-		matcher:        cfg.Matcher,
-		verifier:       cfg.Verifier,
-		fastTau:        cfg.FastTau,
-		verifySem:      make(chan struct{}, cfg.VerifyConcurrency),
-		verifyQueue:    cfg.VerifyQueueDepth,
-		fastDeadline:   cfg.FastDeadline,
-		verifyDeadline: cfg.VerifyDeadline,
-		logger:         logger,
-		cache:          cache,
-		pol:            cfg.Political,
-		secondPass:     sp,
+		decomposer:        cfg.Decomposer,
+		matcher:           cfg.Matcher,
+		verifier:          cfg.Verifier,
+		fastTau:           cfg.FastTau,
+		verifySem:         make(chan struct{}, cfg.VerifyConcurrency),
+		verifyQueue:       cfg.VerifyQueueDepth,
+		fastDeadline:      cfg.FastDeadline,
+		verifyDeadline:    cfg.VerifyDeadline,
+		logger:            logger,
+		cache:             cache,
+		pol:               cfg.Political,
+		secondPass:        sp,
+		knowledgeFallback: cfg.KnowledgeFallback,
 	}, nil
 }
 
@@ -313,13 +337,15 @@ type BatchUnitResult struct {
 
 // AnalyzeText runs one text unit through the verify path for a batch analyzer:
 // gate -> decompose -> per-claim fast/verify, returning the resolved verdicts
-// without emitting live events, speaker tallies, or consistency. Unlike the live
-// path it never sheds: each claim's verify call blocks on the verify pool until
-// a slot frees (bounded only by ctx), so every claim ends with a real verdict or
-// an error. The gate is supplied by the caller; VerifyPath holds none. It errors
-// only when the gate itself fails - a per-claim retrieval or verify failure is a
-// non-fatal error result, mirroring the live path.
-func (vp *VerifyPath) AnalyzeText(ctx context.Context, gate SegmentPrechecker, text, anchorID string) (BatchUnitResult, error) {
+// without emitting live events, speaker tallies, or consistency. recentContext
+// is the prior text the decomposer resolves references against (the previous
+// document sentence); it is context only and never decomposed itself. Unlike
+// the live path it never sheds: each claim's verify call blocks on the verify
+// pool until a slot frees (bounded only by ctx), so every claim ends with a
+// real verdict or an error. The gate is supplied by the caller; VerifyPath
+// holds none. It errors only when the gate itself fails - a per-claim retrieval
+// or verify failure is a non-fatal error result, mirroring the live path.
+func (vp *VerifyPath) AnalyzeText(ctx context.Context, gate SegmentPrechecker, text, recentContext, anchorID string) (BatchUnitResult, error) {
 	decision, err := gate.Evaluate(ctx, text)
 	if err != nil {
 		return BatchUnitResult{}, fmt.Errorf("service: batch gate: %w", err)
@@ -328,7 +354,7 @@ func (vp *VerifyPath) AnalyzeText(ctx context.Context, gate SegmentPrechecker, t
 		return BatchUnitResult{Checkable: false, SkipReason: decision.Reason}, nil
 	}
 
-	claims := vp.decomposeText(ctx, text, "", anchorID)
+	claims := vp.decomposeText(ctx, text, "", recentContext, anchorID)
 	if len(claims) == 0 {
 		return BatchUnitResult{Checkable: true, SkipReason: domain.SkipReasonNotAClaim}, nil
 	}
@@ -476,24 +502,32 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 // decompose runs the unit through the decomposer on the fast pool and assigns
 // each surviving atomic claim a stable per-unit claim id (the unit's anchor id
 // plus an index), so the client keys a claim's pending/checking/verified events
-// together. The decomposer never errors; an empty result means the unit carried
-// no verifiable claim.
+// together. It passes the unit's recent context (the previous unit's trailing
+// sentence) so the decomposer resolves cross-unit references, and anchors each
+// claim's verbatim quote onto the member segments as highlight spans. The
+// decomposer never errors; an empty result means the unit carried no verifiable
+// claim.
 func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string) []AtomicClaim {
-	return vp.decomposeText(ctx, text, pu.speaker, pu.members[0].id)
+	claims := vp.decomposeText(ctx, text, pu.speaker, pu.context, pu.members[0].id)
+	for i := range claims {
+		claims[i].Spans = claimSpans(pu.members, claims[i].Quote)
+	}
+	return claims
 }
 
 // decomposeText is the transport-free core of decompose: it runs the decomposer
 // on the fast pool and assigns each surviving atomic claim a stable id
-// (anchorID plus an index). The live path passes the unit's anchor id and
-// speaker; the batch analyzer passes a per-sentence anchor and an empty
-// speaker. Behavior is identical to the prior inline body.
-func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, anchorID string) []AtomicClaim {
+// (anchorID plus an index). The live path passes the unit's anchor id, speaker,
+// and recent context; the batch analyzer passes a per-sentence anchor, an empty
+// speaker, and the previous sentence as context. Spans are the caller's
+// concern: only the live path knows the unit's member segments.
+func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, recentContext, anchorID string) []AtomicClaim {
 	fastCtx, cancel := context.WithTimeout(ctx, vp.fastDeadline)
 	defer cancel()
-	texts := vp.decomposer.Decompose(fastCtx, text, speaker, "")
-	claims := make([]AtomicClaim, 0, len(texts))
-	for i, t := range texts {
-		claims = append(claims, AtomicClaim{ClaimID: anchorID + "-" + strconv.Itoa(i), Text: t})
+	decomposed := vp.decomposer.Decompose(fastCtx, text, speaker, recentContext)
+	claims := make([]AtomicClaim, 0, len(decomposed))
+	for i, d := range decomposed {
+		claims = append(claims, AtomicClaim{ClaimID: anchorID + "-" + strconv.Itoa(i), Text: d.Text, Quote: d.Quote})
 	}
 	return claims
 }
@@ -639,11 +673,13 @@ func (vp *VerifyPath) fastMatch(matches []domain.SegmentMatch) (domain.SegmentMa
 
 // verifyClaim runs the verifier under the verify pool. It returns shed=true when
 // the pool and its bounded queue are saturated, so the caller emits the honest
-// unchecked terminal state rather than blocking the unit. With no passages it
-// returns a not_enough_info verdict without a verify call: a verdict with no
-// evidence is meaningless and the verifier would reject it.
+// unchecked terminal state rather than blocking the unit. With no passages the
+// outcome depends on the knowledge fallback: off, it returns a not_enough_info
+// verdict without a verify call; on, the verifier judges the claim from general
+// knowledge anyway (basis knowledge, capped confidence), so a small evidence
+// corpus still yields real verdicts.
 func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, bool, error) {
-	if len(matches) == 0 {
+	if len(matches) == 0 && !vp.knowledgeFallback {
 		// No retrieved evidence and no model call: the honest "nothing to check
 		// against" outcome is unverifiable, not a low-confidence judgment.
 		return &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}, false, nil
@@ -680,9 +716,10 @@ func (vp *VerifyPath) runVerifier(ctx context.Context, claim string, matches []d
 // verifyClaimBlocking is the no-shed counterpart of verifyClaim for a batch job:
 // it blocks on the verify pool until a slot frees (bounded only by ctx) rather
 // than shedding to unchecked, so every claim ends with a real verdict. The
-// no-evidence short-circuit and the verifier body are shared with verifyClaim.
+// no-evidence short-circuit (and its knowledge-fallback bypass) and the
+// verifier body are shared with verifyClaim.
 func (vp *VerifyPath) verifyClaimBlocking(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, error) {
-	if len(matches) == 0 {
+	if len(matches) == 0 && !vp.knowledgeFallback {
 		return &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}, nil
 	}
 	if !vp.acquireVerifySlotBlocking(ctx) {

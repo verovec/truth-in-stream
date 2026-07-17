@@ -11,6 +11,7 @@ import type { SegmentMatch } from "@/lib/fact-check/api";
 import type {
   ClaimResultFrame,
   ClaimsFrame,
+  ClaimSpan,
   ClaimStatus,
   ClaimVerdict,
   LiteralVerdict,
@@ -24,11 +25,16 @@ import type {
 // pending -> checking -> a terminal state (verified, unchecked, or error). The
 // shape is intentionally flat (status is not a discriminant) because a verified
 // row's verdict can be absent on a degenerate frame, so a renderer must guard on
-// the field, not only the status.
+// the field, not only the status. quote and spans are the claim's verbatim
+// source words and their location in the transcript, announced once on the
+// claims frame and carried through every later result so the highlight tracks
+// the claim's lifecycle.
 export type LiveClaim = {
   claimId: string;
   text: string;
   status: ClaimStatus;
+  quote?: string;
+  spans?: ClaimSpan[];
   source?: VerdictSource;
   sourceLabel?: string;
   sourceUrl?: string;
@@ -74,13 +80,20 @@ export function applyClaimsFrame(
     const existing = claims.get(claim.claimId);
     if (existing && existing.status !== "pending") {
       // A result landed before this announcement: keep the verdict, backfill the
-      // text the announcement carries.
-      claims.set(claim.claimId, { ...existing, text: claim.text });
+      // text and the highlight anchor the announcement carries.
+      claims.set(claim.claimId, {
+        ...existing,
+        text: claim.text,
+        quote: claim.quote,
+        spans: claim.spans,
+      });
     } else {
       claims.set(claim.claimId, {
         claimId: claim.claimId,
         text: claim.text,
         status: "pending",
+        quote: claim.quote,
+        spans: claim.spans,
       });
     }
   }
@@ -116,6 +129,10 @@ export function applyClaimResultFrame(
     claimId: frame.claimId,
     text: existing?.text ?? "",
     status: frame.status,
+    // The highlight anchor is announced only on the claims frame; carry it
+    // through every result so the transcript highlight survives the lifecycle.
+    quote: existing?.quote,
+    spans: existing?.spans,
     source: frame.source,
     sourceLabel: frame.sourceLabel,
     sourceUrl: frame.sourceUrl,

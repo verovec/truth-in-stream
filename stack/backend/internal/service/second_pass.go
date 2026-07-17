@@ -35,16 +35,26 @@ type SecondPassConfig struct {
 	TriggerBelow  float64
 	MinConfidence float64
 	Deadline      time.Duration
+	// KnowledgeFloor, when positive, loosens the gate for a sparse evidence
+	// corpus: the reasoner also escalates weak verdicts that retrieved no
+	// passages (judging from general knowledge), and a knowledge-basis
+	// re-judgment that settles a definite verdict at or above this floor is
+	// adopted in place of the weak one - marked basis knowledge, so the UI still
+	// says no direct source backs it. Zero keeps the strict evidence-only gate:
+	// no-passage claims never escalate and only a grounded, cited re-judgment at
+	// MinConfidence can replace a weak verdict.
+	KnowledgeFloor float64
 }
 
 // secondPass is the validated, wired terminal-gate policy. It is nil on the
 // VerifyPath when the feature is off, and every entry point guards on nil, so the
 // disabled path adds no work and no latency.
 type secondPass struct {
-	reverifier    ClaimReverifier
-	triggerBelow  float64
-	minConfidence float64
-	deadline      time.Duration
+	reverifier     ClaimReverifier
+	triggerBelow   float64
+	minConfidence  float64
+	deadline       time.Duration
+	knowledgeFloor float64
 }
 
 // newSecondPass validates and builds the policy from its config. It fails when a
@@ -61,52 +71,71 @@ func newSecondPass(cfg SecondPassConfig) (*secondPass, error) {
 		return nil, fmt.Errorf("service: terminal gate min confidence %v outside [0, 1]", cfg.MinConfidence)
 	case cfg.Deadline <= 0:
 		return nil, fmt.Errorf("service: terminal gate deadline must be positive, got %s", cfg.Deadline)
+	case cfg.KnowledgeFloor < 0 || cfg.KnowledgeFloor > 1:
+		return nil, fmt.Errorf("service: terminal gate knowledge floor %v outside [0, 1]", cfg.KnowledgeFloor)
 	}
 	return &secondPass{
-		reverifier:    cfg.Reverifier,
-		triggerBelow:  cfg.TriggerBelow,
-		minConfidence: cfg.MinConfidence,
-		deadline:      cfg.Deadline,
+		reverifier:     cfg.Reverifier,
+		triggerBelow:   cfg.TriggerBelow,
+		minConfidence:  cfg.MinConfidence,
+		deadline:       cfg.Deadline,
+		knowledgeFloor: cfg.KnowledgeFloor,
 	}, nil
 }
 
 // weak is the gating predicate, the heart of the card's terminal-gate rule: run the
 // deeper reasoner only when the pipeline's best verdict is weak - it is unverifiable,
 // or its confidence sits below the trigger floor. A verdict at or above the floor is
-// already strong and is never escalated. It requires passageCount > 0 because the
-// reasoner grounds its re-judgment in retrieved evidence: with nothing to re-read it
-// can do no better than the honest weak verdict the pipeline already produced, so a
-// no-evidence unverifiable stands. It is a pure function so the gate is table-testable
-// without the model. This inverts the old mid-band, evidence-only qualifier: the gate
-// now fires precisely where the pipeline was least sure, regardless of basis.
+// already strong and is never escalated. With the strict evidence-only gate
+// (knowledgeFloor zero) it requires passageCount > 0, because the reasoner grounds
+// its re-judgment in retrieved evidence and with nothing to re-read it could do no
+// better than the honest weak verdict; with a positive knowledgeFloor a no-passage
+// weak verdict escalates too, so the reasoner can settle it from general knowledge
+// while the evidence corpus is still small. It is a pure function so the gate is
+// table-testable without the model. This inverts the old mid-band, evidence-only
+// qualifier: the gate now fires precisely where the pipeline was least sure,
+// regardless of basis.
 func (sp *secondPass) weak(verdict *VerifiedVerdict, passageCount int) bool {
-	if verdict == nil || passageCount == 0 {
+	if verdict == nil {
+		return false
+	}
+	if passageCount == 0 && sp.knowledgeFloor <= 0 {
 		return false
 	}
 	return verdict.Verdict == VerdictUnverifiable || verdict.Confidence < sp.triggerBelow
 }
 
 // accept reports whether a reasoning re-judgment is strong enough to REPLACE the
-// pipeline's weak verdict: it must be grounded (evidence basis with at least one
-// surviving citation) AND reach the terminal-gate confidence floor. Anything less -
-// an ungrounded re-judgment, or a grounded-but-tentative one - is not adopted: the
-// gate prefers the pipeline's honest weak verdict over a shaky upgrade, and never
-// asserts a confident verdict the deeper model could not itself ground. It is a pure
+// pipeline's weak verdict. A grounded re-judgment (evidence basis with at least one
+// surviving citation) must reach the terminal-gate confidence floor. With a positive
+// knowledgeFloor, a knowledge-basis re-judgment that settles a definite verdict
+// (never unverifiable - that could not improve on the weak prior) is also accepted
+// at or above that floor, kept honest downstream by its knowledge basis and the
+// verifier's knowledge confidence cap. Anything less is not adopted: the gate
+// prefers the pipeline's honest weak verdict over a shaky upgrade. It is a pure
 // function so the acceptance rule is table-testable without the model.
 func (sp *secondPass) accept(reasoned ClaimVerdict) bool {
-	return reasoned.Basis == BasisEvidence &&
+	if reasoned.Basis == BasisEvidence &&
 		len(reasoned.Citations) > 0 &&
-		reasoned.Confidence >= sp.minConfidence
+		reasoned.Confidence >= sp.minConfidence {
+		return true
+	}
+	return sp.knowledgeFloor > 0 &&
+		reasoned.Basis == BasisKnowledge &&
+		reasoned.Verdict != VerdictUnverifiable &&
+		reasoned.Confidence >= sp.knowledgeFloor
 }
 
 // upgrade folds a reasoning re-judgment into the pipeline's weak credibility verdict
 // under the terminal-gate acceptance rule. It is deterministic and table-testable.
-// When the re-judgment is accepted (grounded AND at least MinConfidence) it replaces
-// the weak verdict; otherwise the prior verdict stands - an unverifiable prior stays
-// unverifiable and a low-confidence-but-valid prior is retained rather than traded
-// for an ungrounded or tentative upgrade. This makes the precedence explicit: the
-// gate can only strengthen a weak verdict into a grounded, high-confidence one, never
-// weaken it or replace it with an unsourced guess.
+// When the re-judgment is accepted it replaces the weak verdict; otherwise the prior
+// verdict stands - an unverifiable prior stays unverifiable and a low-confidence-
+// but-valid prior is retained rather than traded for a tentative upgrade. An
+// accepted evidence re-judgment must still resolve at least one citation against the
+// retrieved matches (an unresolvable grounding is no grounding); an accepted
+// knowledge re-judgment carries no citations by construction and is adopted as the
+// capped, source-less judgment it is. The gate can strengthen a weak verdict, never
+// weaken one into an unsourced high-confidence guess.
 func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matches []domain.SegmentMatch) *VerifiedVerdict {
 	if !sp.accept(reasoned) {
 		return orig
@@ -115,7 +144,7 @@ func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matc
 	// A citation-guarded evidence re-judgment whose ids fail to resolve against the
 	// retrieved matches is no longer grounded; do not adopt it - keep the prior verdict
 	// rather than emit an ungrounded high-confidence upgrade.
-	if len(upgraded.Citations) == 0 {
+	if reasoned.Basis == BasisEvidence && len(upgraded.Citations) == 0 {
 		return orig
 	}
 	return upgraded

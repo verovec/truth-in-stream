@@ -149,11 +149,18 @@ type resultFrame struct {
 
 // atomicClaimJSON is one atomic claim on a claims frame: the stable id the
 // client keys per-claim results on, its coreference-resolved text, and its
-// initial pending status.
+// initial pending status. Quote is the verbatim run of statement words the
+// claim was extracted from and Spans locates those words inside the unit's
+// member segments (by subtitle id and [start, end) rune offsets), so the client
+// highlights the exact words that were checked. Both are additive and omitted
+// when the decomposer could not anchor the claim, so an older client or an
+// unanchored claim renders exactly as before.
 type atomicClaimJSON struct {
-	ClaimID string `json:"claim_id"`
-	Text    string `json:"text"`
-	Status  string `json:"status"`
+	ClaimID string             `json:"claim_id"`
+	Text    string             `json:"text"`
+	Status  string             `json:"status"`
+	Quote   string             `json:"quote,omitempty"`
+	Spans   []domain.ClaimSpan `json:"spans,omitempty"`
 }
 
 // claimsFrame is the wire form of a claims event (retrieve-then-verify path): a
@@ -493,7 +500,7 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent,
 	if ev.Kind == service.LiveEventClaims {
 		claims := make([]atomicClaimJSON, len(ev.Claims))
 		for i, c := range ev.Claims {
-			claims[i] = atomicClaimJSON{ClaimID: c.ClaimID, Text: c.Text, Status: string(service.ClaimStatusPending)}
+			claims[i] = atomicClaimJSON{ClaimID: c.ClaimID, Text: c.Text, Status: string(service.ClaimStatusPending), Quote: c.Quote, Spans: c.Spans}
 		}
 		return wsjson.Write(ctx, conn, claimsFrame{
 			Type:   string(ev.Kind),

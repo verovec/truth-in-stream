@@ -207,6 +207,7 @@ describe("LiveSummaryStrip", () => {
       status: "live",
       summary: summary({ checked: 9, contradicts: 2 }),
       claimsFor: () => [],
+      highlightsFor: () => [],
       speakers: [],
     });
 

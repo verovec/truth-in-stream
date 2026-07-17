@@ -98,7 +98,7 @@ func TestVerifyPoolConcurrencyIsTheThroughputCeiling(t *testing.T) {
 				t.Fatalf("NewVerifyPath: %v", err)
 			}
 
-			res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, "unit", "anchor")
+			res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, "unit", "", "anchor")
 			if err != nil {
 				t.Fatalf("AnalyzeText: %v", err)
 			}

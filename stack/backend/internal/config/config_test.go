@@ -1398,7 +1398,7 @@ func TestLoadEmbedWorker(t *testing.T) {
 }
 
 func TestLoadLive(t *testing.T) {
-	defaults := Live{Concurrency: 4, QueueDepth: 32}
+	defaults := Live{Concurrency: 4, QueueDepth: 32, MaxSentences: 4}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1412,8 +1412,8 @@ func TestLoadLive(t *testing.T) {
 		},
 		{
 			name: "overrides applied",
-			env:  map[string]string{"LIVE_CONCURRENCY": "8", "LIVE_QUEUE_DEPTH": "64"},
-			want: Live{Concurrency: 8, QueueDepth: 64},
+			env:  map[string]string{"LIVE_CONCURRENCY": "8", "LIVE_QUEUE_DEPTH": "64", "LIVE_MAX_SENTENCES": "3"},
+			want: Live{Concurrency: 8, QueueDepth: 64, MaxSentences: 3},
 		},
 		{name: "zero concurrency rejected", env: map[string]string{"LIVE_CONCURRENCY": "0"}, wantErr: true},
 		{name: "negative concurrency rejected", env: map[string]string{"LIVE_CONCURRENCY": "-1"}, wantErr: true},
@@ -1421,6 +1421,8 @@ func TestLoadLive(t *testing.T) {
 		{name: "zero queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "0"}, wantErr: true},
 		{name: "negative queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "-4"}, wantErr: true},
 		{name: "non-numeric queue depth rejected", env: map[string]string{"LIVE_QUEUE_DEPTH": "deep"}, wantErr: true},
+		{name: "zero sentence cap rejected", env: map[string]string{"LIVE_MAX_SENTENCES": "0"}, wantErr: true},
+		{name: "non-numeric sentence cap rejected", env: map[string]string{"LIVE_MAX_SENTENCES": "many"}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
