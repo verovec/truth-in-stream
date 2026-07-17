@@ -405,7 +405,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	videoAnalyzer, err := service.NewVideoAnalyzer(pgStore, videoAudioStreamer{extractor: audioExtractor, media: mediaStore}, liveAnalyzer, storedAnalysisPersister, service.VideoAnalyzerConfig{
+	videoAnalyzer, err := service.NewVideoAnalyzer(pgStore, videoAudioStreamer{extractor: audioExtractor, media: internalDownloadPresigner{store: mediaStore}}, liveAnalyzer, storedAnalysisPersister, service.VideoAnalyzerConfig{
 		Timeout:       preanalysisCfg.RunTimeout,
 		MaxConcurrent: preanalysisCfg.MaxConcurrent,
 		Engine:        preanalysisEngine(transcription, preanalysisCfg, verifyPathCfg, politicalCfg, finalGateCfg, matchCfg),
@@ -891,6 +891,21 @@ func buildRouter(political config.Political, votingStore voting.Store, logger *s
 type videoAudioStreamer struct {
 	extractor *audioextract.Extractor
 	media     audioextract.MediaPresigner
+}
+
+// internalDownloadPresigner exposes the media store's internal-endpoint
+// download presign under the audioextract.MediaPresigner shape. The ffmpeg
+// fetch runs inside the backend's own network horizon, where the
+// browser-facing public endpoint may be unreachable (local dev's
+// localhost:9000 is the container's loopback), so the pre-analysis source is
+// signed against the internal endpoint the backend already uses for
+// server-side storage operations.
+type internalDownloadPresigner struct {
+	store *storage.S3Store
+}
+
+func (p internalDownloadPresigner) PresignDownload(ctx context.Context, key string) (domain.PresignedRequest, error) {
+	return p.store.PresignInternalDownload(ctx, key)
 }
 
 func (s videoAudioStreamer) Stream(ctx context.Context, video domain.Video) (service.AudioStream, error) {
