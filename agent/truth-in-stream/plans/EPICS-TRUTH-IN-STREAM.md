@@ -13,8 +13,7 @@ On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `
 are metadata only and do not affect `/pick` or the ready queue.
 
 Status 2026-07-17: Epics A, B, and C are fully delivered (all cards Done). Epic D is
-drafted; its Linear cards are staged in `CARDS-EPIC-PREANALYSIS-PENDING.md` pending
-connector authentication.
+drafted; its Linear cards (VER-216..222) are created in `Todo` and ready to pick.
 
 ---
 
@@ -99,7 +98,7 @@ The two UI cards (VER-213, VER-214) wait for Epic B's VER-206.
 
 ---
 
-## Epic D - Imported-video pre-analysis (7 cards, IDs pending Linear creation)
+## Epic D - Imported-video pre-analysis (VER-216..222, 7 cards)
 
 **Scope for its agent.** One-shot server-side pre-analysis of imported videos persisted in
 Postgres, analysed playback with pre-generated subtitles and a verdict-colored claim
@@ -116,15 +115,15 @@ server-side audio path exists today; no custom seek-bar UI exists today) - the s
 for focused review, not merge-conflict avoidance (the chain is serial regardless). Spec:
 `docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`.
 
-**Cards & internal order** (bodies staged in `CARDS-EPIC-PREANALYSIS-PENDING.md`;
-backfill VER-IDs here at creation):
-- `D1 (storage + read API) -> D2 (ffmpeg audio-extraction adapter) -> D3 (headless job +
-  analyse endpoint) -> D4 (player: REST hydration + button) -> D5 (claim timeline
-  strip)`.
-- `D3 -> D6 (backoffice controls)`, running parallel to `D4`/`D5` (file-disjoint).
-- `D7 (docs + e2e close-out)` depends on `D5 + D6`.
+**Cards & internal order:**
+- `D1 VER-216 (storage + read API) -> D2 VER-217 (ffmpeg audio-extraction adapter) ->
+  D3 VER-218 (headless job + analyse endpoint) -> D4 VER-219 (player: REST hydration +
+  button) -> D5 VER-221 (claim timeline strip)`.
+- `D3 VER-218 -> D6 VER-220 (backoffice controls)`, running parallel to `D4`/`D5`
+  (file-disjoint).
+- `D7 VER-222 (docs + e2e close-out)` depends on `D5 + D6`.
 
-**Entry cards (no deps, start immediately):** D1.
+**Entry cards (no deps, start immediately):** D1 VER-216.
 
 **Owns / touches:** `stack/backend/migrations/0019_*`, `stack/backend/queries/`,
 `stack/backend/internal/{store,service,handler,config}`, new

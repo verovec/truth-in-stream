@@ -91,11 +91,29 @@
 | VER-90 | Speaker-credibility fact-checking (credible/disputed/unverifiable + per-speaker score) | Done | High | |
 | VER-91 | Buffer live transcript to complete-sentence boundaries before fact-checking | Done | High | |
 | VER-92 | Show "Unverifiable" (not "Unclear") for unverifiable verdicts in the live finding bar | Done | Medium | |
+| VER-216 | Durable video analysis storage and read API | Todo | High | |
+| VER-217 | ffmpeg audio-extraction adapter and pacing | Todo | High | VER-216 |
+| VER-218 | Headless server-side pre-analysis job for imported videos | Todo | High | VER-216, VER-217 |
+| VER-219 | Analysed playback plumbing: stored subtitles and pre-analyse control | Todo | High | VER-218 |
+| VER-220 | Backoffice: video analysis status and analyse/re-analyse controls | Todo | High | VER-218 |
+| VER-221 | Claim timeline strip: verdict-colored playback overview | Todo | Medium | VER-219 |
+| VER-222 | Pre-analysis docs and end-to-end verification close-out | Todo | Medium | VER-221, VER-220 |
 
 ## Dependency graph
 
-(no `depends_on` edges among open cards)
+VER-216 -> VER-217
+VER-216 -> VER-218
+VER-217 -> VER-218
+VER-218 -> VER-219
+VER-218 -> VER-220
+VER-219 -> VER-221
+VER-220 -> VER-222
+VER-221 -> VER-222
 
 ## Ready queue
 
-(empty - no `Todo` cards; every card is Done or Duplicate)
+1. VER-216 - Durable video analysis storage and read API (High, no deps; branches off `dev`)
+
+(The rest of Epic D - VER-217..222 - unblocks in dependency order as each predecessor
+reaches Done or In Review. Note: the card list above VER-216 is a stale historical snapshot
+that predates VER-93; it is not maintained by this entry.)
