@@ -494,6 +494,10 @@ export const fr = {
         forbidden: "Action réservée aux administrateurs.",
         failed: "L'analyse n'a pas pu démarrer.",
       },
+      timeline: {
+        ariaLabel: "Chronologie des affirmations vérifiées",
+        marker: "{text} — {verdict}",
+      },
     },
     uploader: {
       prompt: "Déposez une vidéo ici, ou cliquez pour choisir",

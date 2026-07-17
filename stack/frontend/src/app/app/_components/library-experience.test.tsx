@@ -78,6 +78,29 @@ const completeAnalysisBody = {
   frames: STORED_FRAMES,
 };
 
+// The same stored session with its statement decomposed into one checked claim,
+// feeding the claim timeline strip.
+const claimTimelineAnalysisBody = {
+  ...completeAnalysisBody,
+  counters: { total: 1, credible: 0, disputed: 1, unverifiable: 0 },
+  frames: [
+    ...STORED_FRAMES,
+    {
+      type: "claims",
+      id: "s1",
+      claims: [{ claim_id: "c1", text: "the stored claim" }],
+    },
+    {
+      type: "claim_result",
+      id: "s1",
+      claim_id: "c1",
+      status: "verified",
+      source: "verified",
+      verdict: "disputed",
+    },
+  ],
+};
+
 function playableWire(id: string, title: string, kind: string, url: string) {
   return {
     id,
@@ -330,6 +353,73 @@ describe("LibraryExperience", () => {
     expect(String(socketFactory.mock.calls[0][0])).toContain(
       "/api/videos/vid-1/live",
     );
+    // The claim timeline never mounts on the live path: it belongs to stored
+    // analyses only.
+    expect(
+      screen.queryByRole("region", {
+        name: fr.app.analysis.timeline.ariaLabel,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("an analysed video's claim timeline marks the checked claim and a click seeks the player", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-1",
+        playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
+      ),
+      analysisRoute("vid-1", claimTimelineAnalysisBody),
+    ]);
+
+    render(
+      <LibraryExperience
+        loadVideos={async () => [
+          videoRecord({
+            analysisStatus: "complete",
+            analyzedAt: "2026-07-17T09:00:00Z",
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      await screen.findByText("the stored transcript line"),
+    ).toBeInTheDocument();
+    // No strip until the player reports its duration: markers cannot be
+    // positioned against an unknown length.
+    expect(
+      screen.queryByRole("region", {
+        name: fr.app.analysis.timeline.ariaLabel,
+      }),
+    ).not.toBeInTheDocument();
+
+    const media = screen.getByTestId<HTMLVideoElement>("media");
+    Object.defineProperty(media, "currentTime", {
+      value: 0,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(media, "duration", {
+      value: 100,
+      configurable: true,
+      writable: true,
+    });
+    fireEvent.durationChange(media);
+
+    const strip = await screen.findByRole("region", {
+      name: fr.app.analysis.timeline.ariaLabel,
+    });
+    const marker = within(strip).getByRole("button", {
+      name: formatTemplate(fr.app.analysis.timeline.marker, {
+        text: "the stored claim",
+        verdict: fr.app.claims.verdicts.disputed,
+      }),
+    });
+
+    await userEvent.click(marker);
+    // The click travels through the playback store's seek handler to the media
+    // element, landing on the claim's statement start (absolute seconds).
+    expect(media.currentTime).toBe(2);
   });
 
   test("an admin pre-analyses a ready video from the player and watches it complete", async () => {
