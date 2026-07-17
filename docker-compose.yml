@@ -1129,6 +1129,19 @@ services:
       DOCUMENT_MAX_SIZE_BYTES: "${DOCUMENT_MAX_SIZE_BYTES:-}"
       DOCUMENT_MAX_SENTENCES: "${DOCUMENT_MAX_SENTENCES:-}"
       DOCUMENT_ANALYSIS_TIMEOUT: "${DOCUMENT_ANALYSIS_TIMEOUT:-}"
+      # Headless video pre-analysis (POST /api/videos/{id}/analyse). The job
+      # extracts the stored media's audio with the bundled ffmpeg and replays
+      # it through the live pipeline at PREANALYSIS_PACING_FACTOR x realtime
+      # (in (0, 1]; AssemblyAI closes sessions fed faster than realtime).
+      # PREANALYSIS_MAX_CONCURRENT caps simultaneous runs (default 1; queued
+      # starts wait, holding the analysing status at zero progress).
+      # PREANALYSIS_RUN_TIMEOUT bounds one whole run (default 4h; at realtime
+      # pacing it must exceed the longest video to analyse). Empty keeps the
+      # backend defaults. Forwarded explicitly - a variable in .env does
+      # nothing unless compose passes it through.
+      PREANALYSIS_PACING_FACTOR: "${PREANALYSIS_PACING_FACTOR:-}"
+      PREANALYSIS_MAX_CONCURRENT: "${PREANALYSIS_MAX_CONCURRENT:-}"
+      PREANALYSIS_RUN_TIMEOUT: "${PREANALYSIS_RUN_TIMEOUT:-}"
       # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
       # yt-dlp and ffmpeg, so the defaults work as-is. Optional overrides:
       # YOUTUBE_DOWNLOADER_PATH (default "yt-dlp"), YOUTUBE_MAX_DOWNLOAD_BYTES

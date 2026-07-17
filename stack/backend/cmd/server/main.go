@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 
+	"github.com/verovec/truth-in-stream/backend/internal/audioextract"
 	"github.com/verovec/truth-in-stream/backend/internal/auth"
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
@@ -165,6 +166,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	analysisCacheCfg, err := config.LoadAnalysisCache()
+	if err != nil {
+		return err
+	}
+	preanalysisCfg, err := config.LoadPreanalysis()
 	if err != nil {
 		return err
 	}
@@ -387,13 +392,38 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// The headless pre-analysis job replays a stored video's audio through the
+	// same live analyzer a browser session uses (each Run gets fresh per-session
+	// state), paced at realtime by the ffmpeg extractor, and persists the teed
+	// events durably. Startup recovery flips any run a prior crash left
+	// analysing to failed so the operator can re-run it.
+	audioExtractor, err := audioextract.New(audioextract.Config{PacingFactor: preanalysisCfg.PacingFactor})
+	if err != nil {
+		return err
+	}
+	storedAnalysisPersister, err := service.NewStoredAnalysisPersister(pgStore)
+	if err != nil {
+		return err
+	}
+	videoAnalyzer, err := service.NewVideoAnalyzer(pgStore, videoAudioStreamer{extractor: audioExtractor, media: mediaStore}, liveAnalyzer, storedAnalysisPersister, service.VideoAnalyzerConfig{
+		Timeout:       preanalysisCfg.RunTimeout,
+		MaxConcurrent: preanalysisCfg.MaxConcurrent,
+		Engine:        preanalysisEngine(transcription, preanalysisCfg, verifyPathCfg, politicalCfg, finalGateCfg, matchCfg),
+	}, logger)
+	if err != nil {
+		return err
+	}
+	if err := videoAnalyzer.Recover(ctx); err != nil {
+		return err
+	}
+
 	liveOrigins := liveAllowedOrigins(cfg.CORSAllowedOrigin)
 	if cfg.CORSAllowedOrigin != "" && len(liveOrigins) == 0 {
 		logger.Warn("live websocket enforces same-origin: CORS_ALLOWED_ORIGIN has no parseable host",
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -852,6 +882,58 @@ func buildRouter(political config.Political, votingStore voting.Store, logger *s
 		MinResults: political.RouterMinResults,
 		Lang:       political.RouterLang(),
 	})
+}
+
+// videoAudioStreamer adapts the ffmpeg extractor to the pre-analysis job's
+// AudioStreamer port: it presigns the video's stored object against the media
+// store, then starts the paced PCM extraction over the presigned URL, so the
+// job knows nothing about ffmpeg or presigning.
+type videoAudioStreamer struct {
+	extractor *audioextract.Extractor
+	media     audioextract.MediaPresigner
+}
+
+func (s videoAudioStreamer) Stream(ctx context.Context, video domain.Video) (service.AudioStream, error) {
+	src, err := audioextract.PresignedSource(ctx, s.media, video.ObjectKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.extractor.Extract(ctx, src)
+}
+
+// preanalysisEngine assembles the engine fingerprint stamped on every stored
+// pre-analysis: what transcribed, what verified, and the retrieval posture at
+// run time, so the operator can judge whether a stored result predates a
+// relevant configuration change before re-analysing. The verify fields are
+// recorded only when the verify path is active; otherwise the run's verdicts
+// come from the legacy borrow-by-similarity path and the fields stay empty.
+func preanalysisEngine(transcription config.Transcription, pre config.Preanalysis, verifyCfg config.VerifyPath, political config.Political, gate config.FinalGate, match config.Match) service.EngineMetadata {
+	engine := service.EngineMetadata{
+		TranscriberModel: transcription.Model,
+		PacingFactor:     pre.PacingFactor,
+		HybridSearch:     match.HybridSearch,
+	}
+	if !verifyCfg.Active() {
+		return engine
+	}
+	engine.VerifyProvider = resolvedProvider(verifyCfg.Provider)
+	engine.VerifyModel = verifyCfg.Model
+	engine.RetrievalThreshold = verifyCfg.RetrievalThreshold
+	engine.KnowledgeFallback = verifyCfg.KnowledgeFallback
+	engine.Political = political.Active(true)
+	if gate.Active() {
+		engine.SecondPassModel = gate.Model
+	}
+	return engine
+}
+
+// resolvedProvider names the LLM backend an empty LLM_PROVIDER resolves to, so
+// the stored fingerprint records the effective provider, not the raw setting.
+func resolvedProvider(provider string) string {
+	if provider == "" {
+		return string(llm.ProviderDeepSeek)
+	}
+	return provider
 }
 
 // politicalVerifierAdapter adapts the verify client's two-axis VerifyPolitical to
