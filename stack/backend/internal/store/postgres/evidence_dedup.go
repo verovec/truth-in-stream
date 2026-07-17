@@ -19,7 +19,8 @@ import (
 // content_hash column, so an identical re-ingest is an index probe on (source,
 // content_hash) rather than a re-embed of text the store already carries. The
 // sha256 of a text's UTF-8 bytes in Go matches the generated column's
-// sha256(content::bytea), so the fingerprints line up.
+// immutable_sha256 (sha256 over convert_to(content, 'UTF8')), so the
+// fingerprints line up for every content, backslashes included.
 //
 // A missing row, changed content, or a row that exists but is not yet embedded
 // all report false, so the worker embeds exactly when there is fresh work: a new

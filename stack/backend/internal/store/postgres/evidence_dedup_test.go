@@ -75,6 +75,26 @@ func TestContentAlreadyEmbedded(t *testing.T) {
 	}
 }
 
+// TestContentAlreadyEmbeddedBackslashEscapeContent pins the fingerprint to the
+// content's literal bytes. Both backslash sequences here are VALID bytea escape
+// syntax ('\\' and octal '\101'), so a cast-based column hash would silently
+// collapse them to different bytes than the Go-side sha256 of the text and the
+// short-circuit would never fire for such content - an eternal re-embed instead
+// of a crash. The probe must report true once this exact content is embedded.
+func TestContentAlreadyEmbeddedBackslashEscapeContent(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	chunk := embeddedEvidence("insee-emploi", "series-1", unitVec(0))
+	chunk.Content = `un backslash double \\ et un octal \101 dans le texte`
+	if err := store.UpsertEmbeddedChunk(ctx, chunk); err != nil {
+		t.Fatalf("upsert embedded: %v", err)
+	}
+	if ok, err := store.ContentAlreadyEmbedded(ctx, chunk); err != nil || !ok {
+		t.Fatalf("escape-sequence content: ok=%v err=%v, want true/nil", ok, err)
+	}
+}
+
 // TestUpsertEmbeddedChunkDedupedGateOff proves that with the bar at zero the
 // deduped upsert is exactly a plain embedded upsert: the chunk is stored with its
 // vector and is searchable, never flagged.

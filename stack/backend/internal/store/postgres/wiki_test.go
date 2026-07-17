@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"strconv"
 	"testing"
@@ -309,6 +311,36 @@ func TestUpsertChunksEmbeddingInvalidation(t *testing.T) {
 	}
 	if !row.EmbeddingIsNull {
 		t.Error("changed content kept a stale embedding")
+	}
+}
+
+// TestUpsertChunksBackslashContent proves the content fingerprint survives raw
+// wiki text. A text-to-bytea CAST parses the content as a bytea escape literal,
+// so a lone backslash (LaTeX markup on a real frwiki page) would abort the whole
+// insert with 22P02; the generated column must hash the content's UTF-8 bytes
+// instead, and the stored hash must equal the Go-side sha256 the dedup probe
+// sends.
+func TestUpsertChunksBackslashContent(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	content := `Paris
+
+En physique, l'énergie s'écrit E = mc^2 \quad \text{(relativité)}.`
+	if err := store.UpsertChunks(ctx, []domain.EvidenceChunk{wikiChunk(1, 0, content)}); err != nil {
+		t.Fatalf("UpsertChunks with backslash content: %v", err)
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	var stored []byte
+	if err := store.pool.QueryRow(
+		ctx,
+		"SELECT content_hash FROM evidence_chunks WHERE source = 'simplewiki' AND external_id = '1' AND chunk_index = 0",
+	).Scan(&stored); err != nil {
+		t.Fatalf("read content_hash: %v", err)
+	}
+	if !bytes.Equal(stored, sum[:]) {
+		t.Errorf("content_hash = %x, want the sha256 of the UTF-8 content %x", stored, sum)
 	}
 }
 
