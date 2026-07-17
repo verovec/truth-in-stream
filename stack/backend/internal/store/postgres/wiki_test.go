@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -393,9 +394,10 @@ func TestEnsureCorpus(t *testing.T) {
 	if err := store.EnsureSource(ctx, "simplewiki"); err != nil {
 		t.Fatalf("EnsureSource (same corpus): %v", err)
 	}
-	// A different corpus is refused: page ids would collide.
-	if err := store.EnsureSource(ctx, "enwiki"); err == nil {
-		t.Fatal("EnsureSource accepted a second corpus, want error")
+	// A different corpus is refused: page ids would collide. The refusal must
+	// carry the sentinel so optional claimants (the dev seed) can skip.
+	if err := store.EnsureSource(ctx, "enwiki"); !errors.Is(err, domain.ErrEvidenceSourceConflict) {
+		t.Fatalf("EnsureSource second corpus: err = %v, want ErrEvidenceSourceConflict", err)
 	}
 
 	// The claim must not have created a fake checkpoint.

@@ -28,7 +28,7 @@ similarity, so a match is a reason, not a coincidence.
 The app runs in production at **<https://jeminforme.fr>**, behind Keycloak login. The steps below
 bring up the whole stack locally as a fully offline demo.
 
-From a clean clone to the demo playing in the browser is **three commands**. The local dataset
+From a clean clone to the demo playing in the browser is **four commands**. The local dataset
 (curated claims, a Wikipedia evidence subset, demo-video results) seeds **fully offline** from a
 committed embedding cache, so **no API keys are needed to bring the stack up and play the demo**.
 
@@ -38,7 +38,8 @@ make, and a few GB of free disk.
 ```bash
 make doctor      # optional: preflight Docker, Compose v2, make, and the daemon
 make bootstrap   # generate .env: operator email, argon2id password hash, session secret
-make up          # build and start the whole stack
+make up          # build and start the whole stack (never seeds)
+make seed        # offline demo fixtures; skip it to start from an empty database
 ```
 
 Then open the app and sign in through Keycloak with a local dev user (`admin` / `test1234` or
@@ -49,10 +50,13 @@ admin-only area for ingesting videos and documents - and sees the debug toggle:
 - Backend health -> <http://localhost:8080/healthz>
 - Keycloak admin console -> <http://localhost:8081>
 
-`make up` runs, in order: Postgres, a one-shot `migrate`, a one-shot offline `seed`, a local Keycloak
-importing a prepopulated realm, then the backend and frontend. The bundled demo clip plays with the
-fact-check panel populated from seeded results - no provider call. To move on to live analysis, add
-real API keys; see [Configuration](docs/configuration.md).
+`make up` runs, in order: Postgres, a one-shot `migrate`, a local Keycloak importing a prepopulated
+realm, then the backend and frontend. It never seeds: the offline fixtures load only through an
+explicit `make seed` (per-dataset variants exist), so a stack boot cannot disturb a real locally
+built corpus - if the store already holds one, the seed skips its Wikipedia subset with a warning.
+After seeding, the bundled demo clip plays with the fact-check panel populated from seeded results -
+no provider call. To move on to live analysis, add real API keys; see
+[Configuration](docs/configuration.md).
 
 ## How it works
 
