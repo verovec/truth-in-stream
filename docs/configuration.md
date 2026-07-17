@@ -59,7 +59,9 @@ configured fact-check path), and persists the full result durably in Postgres. P
 pre-analysed video then never runs transcription or an LLM again, and the same endpoint re-runs
 the analysis after the evidence corpus has changed. Progress is visible on
 `GET /api/videos/{id}/analysis` while a run is going; a backend restart mid-run flips the video
-`failed` and re-runnable, never stuck `analysing`.
+`failed` and re-runnable, never stuck `analysing`. The full lifecycle, the live-vs-pre-analysed
+decision path, and the end-to-end verification runbook are in
+[Video pre-analysis](video-preanalysis.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -71,6 +73,18 @@ The verdicts a pre-analysis stores are produced by whatever fact-check path is c
 time (the `FACTCHECK_VERIFY_*` and `FACTCHECK_POLITICAL` variables above), and each stored result
 carries an `engine` fingerprint (transcriber model, verifier provider and model, retrieval
 posture, pacing) so the operator can see what produced it before deciding to re-analyse.
+
+Two operational characteristics to know:
+
+- **A pre-analysis shares the live analyzer.** Claim scoring runs in the same bounded worker pool
+  live viewers use, so heavy simultaneous live-viewer load can shed some claim scoring inside a
+  stored result (the affected statements store degraded results, exactly as a live viewer would
+  have seen them in that moment). `PREANALYSIS_MAX_CONCURRENT=1` (the default) mitigates by never
+  adding more than one run's load, and a re-analyse in a quiet period recovers the shed claims.
+- **A rare stale read can briefly mask a retry.** In the backoffice, a catalog poll already in
+  flight when a retry-from-failed trigger fires can report the row as `failed` while the new run
+  is actually live. Re-clicking "Analyse" resolves it: the backend answers 409 (a run is in
+  progress) and the row flips back to `analysing`.
 
 ## PDF documents
 

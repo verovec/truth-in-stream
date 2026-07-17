@@ -2,7 +2,7 @@
 // internal/handler/video_analysis.go): the analysis lifecycle read used for
 // polling and hydration, the admin-only trigger, and the library listing
 // carrying each video's analysis state. This module is the canonical analysis
-// client; the backoffice keeps a local copy this wave and unifies on it later.
+// client, shared by the player surface and the backoffice.
 import { API_BASE, toApiError } from "@/lib/http";
 import { type LiveFrame, parseLiveFrameValue } from "@/lib/live/frames";
 import type { LibraryVideo, VideoKind, VideoStatus } from "@/lib/video/api";
@@ -56,10 +56,13 @@ export type VideoAnalysis = {
 
 // AnalysedLibraryVideo is a library row plus its analysis state from the list
 // payload, so tiles can badge analysed videos and the player can gate analysed
-// playback without a per-video call.
+// playback without a per-video call. durationMs is null for videos ingested
+// without a known duration (raw uploads), which makes the backoffice's
+// analysing progress indeterminate.
 export type AnalysedLibraryVideo = LibraryVideo & {
   analysisStatus: VideoAnalysisStatus;
   analyzedAt: string | null;
+  durationMs: number | null;
 };
 
 type VideoWire = {
@@ -71,6 +74,7 @@ type VideoWire = {
   size_bytes: number;
   created_at: string;
   updated_at: string;
+  duration_ms?: number;
   analysis_status?: string;
   analyzed_at?: string;
 };
@@ -105,6 +109,7 @@ function normalizeAnalysedVideo(wire: VideoWire): AnalysedLibraryVideo {
     updatedAt: wire.updated_at,
     analysisStatus: normalizeAnalysisStatus(wire.analysis_status),
     analyzedAt: wire.analyzed_at ?? null,
+    durationMs: wire.duration_ms ?? null,
   };
 }
 

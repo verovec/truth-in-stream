@@ -35,6 +35,7 @@ describe("listVideosWithAnalysis", () => {
               videoWire({
                 analysis_status: "complete",
                 analyzed_at: "2026-07-17T09:00:00Z",
+                duration_ms: 120_000,
               }),
               videoWire({ id: "vid-2", analysis_status: "analysing" }),
             ],
@@ -51,11 +52,14 @@ describe("listVideosWithAnalysis", () => {
       contentType: "video/mp4",
       analysisStatus: "complete",
       analyzedAt: "2026-07-17T09:00:00Z",
+      durationMs: 120_000,
     });
+    // An omitted duration normalizes to null (raw uploads), not undefined.
     expect(videos[1]).toMatchObject({
       id: "vid-2",
       analysisStatus: "analysing",
       analyzedAt: null,
+      durationMs: null,
     });
   });
 

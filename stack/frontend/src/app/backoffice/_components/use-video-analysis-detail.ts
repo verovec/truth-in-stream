@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getVideoAnalysis,
-  type VideoAnalysisDetail,
+  type VideoAnalysis,
   type VideoAnalysisStatus,
-} from "./analysis-api";
+} from "@/lib/video/analysis";
 
 // useVideoAnalysisDetail supplies one management row's per-id analysis
 // detail: live progress while the row is analysing (polled at the section's
@@ -26,10 +26,10 @@ export function useVideoAnalysisDetail({
   loadAnalysis?: (
     id: string,
     signal?: AbortSignal,
-  ) => Promise<VideoAnalysisDetail>;
+  ) => Promise<VideoAnalysis>;
   pollIntervalMs: number;
-}): VideoAnalysisDetail | null {
-  const [detail, setDetail] = useState<VideoAnalysisDetail | null>(null);
+}): VideoAnalysis | null {
+  const [detail, setDetail] = useState<VideoAnalysis | null>(null);
 
   // A lifecycle change (a re-analyse starting, a run completing) drops the
   // previous run's detail during render - the supported adjust-on-prop-change

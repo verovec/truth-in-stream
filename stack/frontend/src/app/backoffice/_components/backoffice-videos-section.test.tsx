@@ -12,13 +12,16 @@ import { fr } from "@/lib/i18n/dictionaries/fr";
 import { formatTemplate } from "@/lib/i18n/text";
 import { ApiError } from "@/lib/http";
 import type { PutUploader } from "@/lib/video/upload";
-import type { BackofficeVideo, VideoAnalysisDetail } from "./analysis-api";
+import type {
+  AnalysedLibraryVideo,
+  VideoAnalysis,
+} from "@/lib/video/analysis";
 import { BackofficeVideosSection } from "./backoffice-videos-section";
 
 const list = fr.app.backoffice.videos.list;
 const analysis = list.analysis;
 
-function videoRecord(overrides: Partial<BackofficeVideo> = {}): BackofficeVideo {
+function videoRecord(overrides: Partial<AnalysedLibraryVideo> = {}): AnalysedLibraryVideo {
   return {
     id: "vid-1",
     title: "Common Myths",
@@ -36,15 +39,17 @@ function videoRecord(overrides: Partial<BackofficeVideo> = {}): BackofficeVideo 
 }
 
 function analysisDetail(
-  overrides: Partial<VideoAnalysisDetail> = {},
-): VideoAnalysisDetail {
+  overrides: Partial<VideoAnalysis> = {},
+): VideoAnalysis {
   return {
     analysisStatus: "none",
     analysisError: null,
     analyzedAt: null,
     analysisRuns: 0,
     analysisProgressMs: 0,
+    engine: null,
     counters: null,
+    frames: null,
     ...overrides,
   };
 }
@@ -59,7 +64,7 @@ describe("BackofficeVideosSection", () => {
       kind: "upload",
     });
     const loadVideos = vi
-      .fn<() => Promise<BackofficeVideo[]>>()
+      .fn<() => Promise<AnalysedLibraryVideo[]>>()
       .mockResolvedValueOnce([])
       .mockResolvedValue([confirmed]);
     stubBackend([
@@ -135,7 +140,7 @@ describe("BackofficeVideosSection", () => {
       kind: "youtube",
     });
     const loadVideos = vi
-      .fn<() => Promise<BackofficeVideo[]>>()
+      .fn<() => Promise<AnalysedLibraryVideo[]>>()
       .mockResolvedValueOnce([])
       .mockResolvedValue([pending]);
     const submitYoutube = vi.fn(async () => pending);
@@ -188,7 +193,7 @@ describe("BackofficeVideosSection", () => {
     });
     const remove = vi.fn(async () => {});
     const loadVideos = vi
-      .fn<() => Promise<BackofficeVideo[]>>()
+      .fn<() => Promise<AnalysedLibraryVideo[]>>()
       .mockResolvedValueOnce([keep, target])
       .mockResolvedValue([keep]);
 
@@ -255,11 +260,11 @@ describe("BackofficeVideosSection", () => {
     });
     const loadVideos = vi.fn(async () => [analysing]);
     const pollVideos = vi
-      .fn<() => Promise<BackofficeVideo[]>>()
+      .fn<() => Promise<AnalysedLibraryVideo[]>>()
       .mockResolvedValueOnce([analysing])
       .mockResolvedValue([complete]);
     const loadAnalysis = vi
-      .fn<() => Promise<VideoAnalysisDetail>>()
+      .fn<() => Promise<VideoAnalysis>>()
       .mockImplementation(async () =>
         analysisDetail({
           analysisStatus: "analysing",

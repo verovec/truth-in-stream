@@ -7,10 +7,10 @@ import { ApiError } from "@/lib/http";
 import {
   getVideoAnalysis,
   startVideoAnalysis,
-  type BackofficeVideo,
-  type VideoAnalysisDetail,
+  type AnalysedLibraryVideo,
+  type VideoAnalysis,
   type VideoAnalysisStatus,
-} from "./analysis-api";
+} from "@/lib/video/analysis";
 import { useVideoAnalysisDetail } from "./use-video-analysis-detail";
 import {
   VideoKindBadge,
@@ -31,7 +31,7 @@ type StartAnalysis = (id: string, signal?: AbortSignal) => Promise<void>;
 type LoadAnalysis = (
   id: string,
   signal?: AbortSignal,
-) => Promise<VideoAnalysisDetail>;
+) => Promise<VideoAnalysis>;
 
 // BackofficeVideoList is the admin management list: every video, one row each
 // with its title, kind/status/analysis badges, the analyse and re-analyse
@@ -48,7 +48,7 @@ export function BackofficeVideoList({
   loadAnalysis = getVideoAnalysis,
   pollIntervalMs,
 }: {
-  videos: BackofficeVideo[];
+  videos: AnalysedLibraryVideo[];
   remove: (id: string, signal?: AbortSignal) => Promise<void>;
   onDeleted: () => void;
   startAnalysis?: StartAnalysis;
@@ -97,7 +97,7 @@ const quietButtonClass =
 // unknown (raw uploads) or the first progress read has not landed yet; floored
 // and clamped so a run never reads 100 % before it actually completes.
 function progressPercent(
-  detail: VideoAnalysisDetail | null,
+  detail: VideoAnalysis | null,
   durationMs: number | null,
 ): number | null {
   if (detail === null || durationMs === null || durationMs <= 0) {
@@ -135,7 +135,7 @@ function BackofficeVideoRow({
   loadAnalysis,
   pollIntervalMs,
 }: {
-  video: BackofficeVideo;
+  video: AnalysedLibraryVideo;
   remove: (id: string, signal?: AbortSignal) => Promise<void>;
   onDeleted: () => void;
   startAnalysis: StartAnalysis;
@@ -304,8 +304,8 @@ function AnalysisSummary({
   detail,
   locale,
 }: {
-  video: BackofficeVideo;
-  detail: VideoAnalysisDetail | null;
+  video: AnalysedLibraryVideo;
+  detail: VideoAnalysis | null;
   locale: string;
 }) {
   const { t } = useAppI18n();
@@ -357,7 +357,7 @@ function AnalysisActions({
   onAnalysisStarted,
   onFeedback,
 }: {
-  video: BackofficeVideo;
+  video: AnalysedLibraryVideo;
   startAnalysis: StartAnalysis;
   onAnalysisStarted: (id: string) => void;
   onFeedback: (feedback: AnalysisFeedback | null) => void;

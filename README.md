@@ -91,6 +91,14 @@ full transcript and verdicts instantly** with no re-transcription or LLM calls; 
 through to the live pipeline unchanged (see
 [the analysis cache](docs/configuration.md#analysis-cache-instant-replay)).
 
+Library videos can also be **pre-analysed**: an admin triggers one durable server-side run through
+the same live pipeline, and the full result is persisted in Postgres. Playback then never
+transcribes or calls an LLM again - subtitles are on screen from the first frame, highlighted in
+sync with playback, and a claim timeline strip under the player marks every checked claim, colored
+by verdict, with click-to-seek. Re-analysing after the evidence corpus evolves is one click in the
+backoffice; videos that are not pre-analysed keep the live flow (see
+[video pre-analysis](docs/video-preanalysis.md)).
+
 Fact-checking also extends beyond live streams to documents. An admin uploads a PDF (a press
 article, report, or official publication) from the **backoffice**; the same retrieve-then-verify
 pipeline analyses its sentences once and persists the verdicts, so any authenticated user can read
@@ -137,6 +145,7 @@ Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observabilit
 | Fact-check evidence sources (connector inventory, licences, guardrails) | [`docs/fact-check-sources.md`](docs/fact-check-sources.md) |
 | Live TV capture (on-demand cloud recorder, channels, retention, legal posture) | [`docs/tv-live.md`](docs/tv-live.md) |
 | PDF fact-check (upload in the backoffice -> analyse -> read on the Documents surface with in-PDF highlights) | [`docs/pdf-fact-check.md`](docs/pdf-fact-check.md) |
+| Video pre-analysis (durable one-shot fact-check, analysed playback, claim timeline, e2e runbook) | [`docs/video-preanalysis.md`](docs/video-preanalysis.md) |
 | Backoffice (admin-only ingestion area, access model) | [`docs/backoffice.md`](docs/backoffice.md) |
 | Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |
 | Always-on rules and engineering standards | [`CLAUDE.md`](CLAUDE.md) |
