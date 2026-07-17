@@ -47,6 +47,12 @@ func TestLocateQuote(t *testing.T) {
 			want:  []runeRange{{start: 3, end: 19}, {start: 35, end: 51}},
 		},
 		{
+			name:  "a mixed-case repetition is anchored alongside the exact one",
+			text:  "Le chomage a baisse. Je repete: LE CHOMAGE A BAISSE.",
+			quote: "chomage a baisse",
+			want:  []runeRange{{start: 3, end: 19}, {start: 35, end: 51}},
+		},
+		{
 			name:  "absent quote yields nothing",
 			text:  "Le chomage a baisse.",
 			quote: "les impots montent",

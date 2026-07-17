@@ -149,7 +149,7 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		return
 	}
 
-	verdict, shed, err := vp.verifyPolitical(ctx, claim.Text, evidence)
+	verdict, degraded, shed, err := vp.verifyPolitical(ctx, claim.Text, evidence)
 	if shed {
 		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
 		return
@@ -161,7 +161,11 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	// A degraded verdict (the knowledge fallback hit saturation or a flaky
+	// verifier) is emitted but never cached; see scoreClaim for the rationale.
+	if !degraded {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	}
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -191,7 +195,7 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 	}
 
-	verdict, err := vp.verifyPoliticalBlocking(ctx, claim.Text, evidence)
+	verdict, degraded, err := vp.verifyPoliticalBlocking(ctx, claim.Text, evidence)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "batch political verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
@@ -199,7 +203,11 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 		return BatchClaimResult{Claim: claim, Status: ClaimStatusError}
 	}
 	verdict = vp.applyPoliticalGateBatch(ctx, claim, verdict, evidence)
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	// A degraded verdict is a transient artifact and is never cached; see
+	// scoreClaim for the rationale.
+	if !degraded {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	}
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 }
 
@@ -325,25 +333,25 @@ func (vp *VerifyPath) routeRetrieve(ctx context.Context, claim string, ct claimt
 // carrying their source provenance. A no-evidence claim (reachable only under the
 // knowledge fallback) is strictly best-effort: under saturation or a verifier
 // failure it degrades to the instant no-evidence verdict the fallback-off path
-// would have emitted, never to unchecked or error.
-func (vp *VerifyPath) verifyPolitical(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, bool, error) {
+// would have emitted, never to unchecked or error - and a degraded verdict is
+// reported as such so the caller never caches the transient artifact.
+func (vp *VerifyPath) verifyPolitical(ctx context.Context, claim string, evidence []source.Evidence) (verdict *VerifiedVerdict, degraded, shed bool, err error) {
 	if !vp.acquireVerifySlot(ctx) {
 		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
+			return nil, false, false, ctx.Err()
 		}
 		if len(evidence) == 0 {
-			return politicalNoEvidenceVerdict(), false, nil
+			return politicalNoEvidenceVerdict(), true, false, nil
 		}
-		return nil, true, nil
+		return nil, false, true, nil
 	}
 	defer func() { <-vp.verifySem }()
 
-	verdict, err := vp.runPoliticalVerifier(ctx, claim, evidence)
-	if err != nil && len(evidence) == 0 && ctx.Err() == nil {
-		vp.logger.WarnContext(ctx, "knowledge fallback political verify failed, degrading to no-evidence verdict", slog.Any("err", err))
-		return politicalNoEvidenceVerdict(), false, nil
+	verdict, err = vp.runPoliticalVerifier(ctx, claim, evidence)
+	if vp.degradeNoEvidence(ctx, err, len(evidence)) {
+		return politicalNoEvidenceVerdict(), true, false, nil
 	}
-	return verdict, false, err
+	return verdict, false, false, err
 }
 
 // runPoliticalVerifier runs the two-axis verifier against routed evidence under
@@ -365,18 +373,18 @@ func (vp *VerifyPath) runPoliticalVerifier(ctx context.Context, claim string, ev
 // verifyPoliticalBlocking is the no-shed counterpart of verifyPolitical for a
 // batch job: it blocks on the verify pool until a slot frees (bounded only by
 // ctx) rather than shedding, so every routed claim ends with a two-axis verdict.
-// It shares verifyPolitical's degrade-on-failure floor for no-evidence claims.
-func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string, evidence []source.Evidence) (*VerifiedVerdict, error) {
+// It shares verifyPolitical's degrade-on-failure floor (degraded verdicts are
+// never cached) for no-evidence claims.
+func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string, evidence []source.Evidence) (verdict *VerifiedVerdict, degraded bool, err error) {
 	if !vp.acquireVerifySlotBlocking(ctx) {
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 	defer func() { <-vp.verifySem }()
-	verdict, err := vp.runPoliticalVerifier(ctx, claim, evidence)
-	if err != nil && len(evidence) == 0 && ctx.Err() == nil {
-		vp.logger.WarnContext(ctx, "knowledge fallback political verify failed, degrading to no-evidence verdict", slog.Any("err", err))
-		return politicalNoEvidenceVerdict(), nil
+	verdict, err = vp.runPoliticalVerifier(ctx, claim, evidence)
+	if vp.degradeNoEvidence(ctx, err, len(evidence)) {
+		return politicalNoEvidenceVerdict(), true, nil
 	}
-	return verdict, err
+	return verdict, false, err
 }
 
 // politicalVerdictFromResult builds the wire verdict from the two-axis judgment.

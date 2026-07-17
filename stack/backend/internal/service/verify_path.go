@@ -279,8 +279,18 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 	}
 	var sp *secondPass
 	if cfg.SecondPass != nil {
+		spCfg := *cfg.SecondPass
+		if !cfg.KnowledgeFallback {
+			// The gate's knowledge floor exists to serve the knowledge fallback:
+			// with the fallback off, leaving it set would still escalate every
+			// zero-passage claim to the reasoner and adopt knowledge re-judgments -
+			// resurrecting, from the costlier model, exactly the behavior the
+			// operator turned off. Zeroing it here keeps the two knobs one coherent
+			// switch for every constructor, not just the env wiring.
+			spCfg.KnowledgeFloor = 0
+		}
 		var err error
-		if sp, err = newSecondPass(*cfg.SecondPass); err != nil {
+		if sp, err = newSecondPass(spCfg); err != nil {
 			return nil, err
 		}
 	}
@@ -422,7 +432,7 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 		return vp.resolvePoliticalClaimBatch(ctx, claim, ret)
 	}
 
-	verdict, err := vp.verifyClaimBlocking(ctx, claim.Text, ret.matches)
+	verdict, degraded, err := vp.verifyClaimBlocking(ctx, claim.Text, ret.matches)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "batch verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
@@ -433,7 +443,11 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 	// so a document verdict matches what live would show for the same sentence.
 	// It is a no-op when the feature is off or the verdict does not qualify.
 	verdict = vp.applyReverifyBatch(ctx, claim, verdict, ret)
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	// A degraded verdict is a transient artifact and is never cached; see
+	// scoreClaim for the rationale.
+	if !degraded {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	}
 	return BatchClaimResult{Claim: claim, Status: ClaimStatusVerified, Source: SourceVerified, Verdict: verdict}
 }
 
@@ -615,7 +629,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusChecking}) {
 		return
 	}
-	verdict, shed, err := vp.verifyClaim(ctx, claim.Text, ret.matches)
+	verdict, degraded, shed, err := vp.verifyClaim(ctx, claim.Text, ret.matches)
 	if shed {
 		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
 		return
@@ -627,7 +641,12 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
 		return
 	}
-	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	// A degraded verdict (the knowledge fallback hit saturation or a flaky
+	// verifier) is emitted but never cached: it is a transient artifact, and a
+	// cached copy would replay a wrong terminal verdict for the whole window.
+	if !degraded {
+		vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
+	}
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
@@ -680,40 +699,32 @@ func (vp *VerifyPath) fastMatch(matches []domain.SegmentMatch) (domain.SegmentMa
 // corpus still yields real verdicts. The fallback is strictly best-effort: when
 // the pool is saturated or the verifier fails, a no-evidence claim degrades to
 // the same instant unverifiable it would have gotten with the fallback off,
-// never to unchecked or error - the fallback can improve on legacy, not worsen it.
-func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, bool, error) {
-	if len(matches) == 0 {
-		if !vp.knowledgeFallback {
-			// No retrieved evidence and no model call: the honest "nothing to check
-			// against" outcome is unverifiable, not a low-confidence judgment.
-			return noEvidenceVerdict(), false, nil
-		}
-		if !vp.acquireVerifySlot(ctx) {
-			if ctx.Err() != nil {
-				return nil, false, ctx.Err()
-			}
-			return noEvidenceVerdict(), false, nil
-		}
-		defer func() { <-vp.verifySem }()
-		verdict, err := vp.runVerifier(ctx, claim, matches)
-		if err != nil {
-			if ctx.Err() == nil {
-				vp.logger.WarnContext(ctx, "knowledge fallback verify failed, degrading to no-evidence verdict", slog.Any("err", err))
-			}
-			return noEvidenceVerdict(), false, nil
-		}
-		return verdict, false, nil
+// never to unchecked or error - the fallback can improve on legacy, not worsen
+// it. A degraded verdict is reported as such so the caller emits it WITHOUT
+// caching: it is a transient artifact of capacity or a flaky call, and caching
+// it would replay a wrong terminal verdict for the whole cache window.
+func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []domain.SegmentMatch) (verdict *VerifiedVerdict, degraded, shed bool, err error) {
+	if len(matches) == 0 && !vp.knowledgeFallback {
+		// No retrieved evidence and no model call: the honest "nothing to check
+		// against" outcome is unverifiable, not a low-confidence judgment.
+		return noEvidenceVerdict(), false, false, nil
 	}
 	if !vp.acquireVerifySlot(ctx) {
 		if ctx.Err() != nil {
-			return nil, false, ctx.Err()
+			return nil, false, false, ctx.Err()
 		}
-		return nil, true, nil
+		if len(matches) == 0 {
+			return noEvidenceVerdict(), true, false, nil
+		}
+		return nil, false, true, nil
 	}
 	defer func() { <-vp.verifySem }()
 
-	verdict, err := vp.runVerifier(ctx, claim, matches)
-	return verdict, false, err
+	verdict, err = vp.runVerifier(ctx, claim, matches)
+	if vp.degradeNoEvidence(ctx, err, len(matches)) {
+		return noEvidenceVerdict(), true, false, nil
+	}
+	return verdict, false, false, err
 }
 
 // noEvidenceVerdict is the legacy instant outcome for a claim that retrieved
@@ -721,6 +732,20 @@ func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []d
 // the floor the knowledge fallback degrades to under saturation or failure.
 func noEvidenceVerdict() *VerifiedVerdict {
 	return &VerifiedVerdict{Verdict: VerdictUnverifiable, Basis: BasisKnowledge, Confidence: 0}
+}
+
+// degradeNoEvidence is the shared rule for turning a failed knowledge-fallback
+// verify into the instant no-evidence outcome: only a genuine verifier failure
+// (err set, ctx still live - a cancellation must propagate, not fabricate a
+// verdict) on a claim that had no evidence qualifies. It logs the degradation,
+// so the four call sites (credibility/political x live/batch) stay one line and
+// cannot drift apart again.
+func (vp *VerifyPath) degradeNoEvidence(ctx context.Context, err error, evidenceCount int) bool {
+	if err == nil || evidenceCount != 0 || ctx.Err() != nil {
+		return false
+	}
+	vp.logger.WarnContext(ctx, "knowledge fallback verify failed, degrading to no-evidence verdict", slog.Any("err", err))
+	return true
 }
 
 // runVerifier runs the credibility verifier against retrieved evidence under an
@@ -744,21 +769,21 @@ func (vp *VerifyPath) runVerifier(ctx context.Context, claim string, matches []d
 // it blocks on the verify pool until a slot frees (bounded only by ctx) rather
 // than shedding to unchecked, so every claim ends with a real verdict. The
 // no-evidence short-circuit, its knowledge-fallback bypass, and the fallback's
-// degrade-on-failure floor are shared with verifyClaim.
-func (vp *VerifyPath) verifyClaimBlocking(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, error) {
+// degrade-on-failure floor (degraded verdicts are never cached) are shared with
+// verifyClaim.
+func (vp *VerifyPath) verifyClaimBlocking(ctx context.Context, claim string, matches []domain.SegmentMatch) (verdict *VerifiedVerdict, degraded bool, err error) {
 	if len(matches) == 0 && !vp.knowledgeFallback {
-		return noEvidenceVerdict(), nil
+		return noEvidenceVerdict(), false, nil
 	}
 	if !vp.acquireVerifySlotBlocking(ctx) {
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 	defer func() { <-vp.verifySem }()
-	verdict, err := vp.runVerifier(ctx, claim, matches)
-	if err != nil && len(matches) == 0 && ctx.Err() == nil {
-		vp.logger.WarnContext(ctx, "knowledge fallback verify failed, degrading to no-evidence verdict", slog.Any("err", err))
-		return noEvidenceVerdict(), nil
+	verdict, err = vp.runVerifier(ctx, claim, matches)
+	if vp.degradeNoEvidence(ctx, err, len(matches)) {
+		return noEvidenceVerdict(), true, nil
 	}
-	return verdict, err
+	return verdict, false, err
 }
 
 // acquireVerifySlot takes a verify-pool slot, waiting up to the bounded queue's

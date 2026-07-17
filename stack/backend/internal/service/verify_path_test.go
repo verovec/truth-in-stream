@@ -639,9 +639,12 @@ func TestKnowledgeFallbackDegradesInsteadOfShedding(t *testing.T) {
 		vp.verifySem <- struct{}{}
 		defer func() { <-vp.verifySem }()
 
-		verdict, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
+		verdict, degraded, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
 		if err != nil || shed {
 			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
+		}
+		if !degraded {
+			t.Error("degraded = false, want the transient outcome flagged so it is never cached")
 		}
 		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge || verdict.Confidence != 0 {
 			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
@@ -665,14 +668,129 @@ func TestKnowledgeFallbackDegradesInsteadOfShedding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewVerifyPath: %v", err)
 		}
-		verdict, shed, err := vp.verifyClaim(t.Context(), claim, nil)
+		verdict, degraded, shed, err := vp.verifyClaim(t.Context(), claim, nil)
 		if err != nil || shed {
 			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
+		}
+		if !degraded {
+			t.Error("degraded = false, want the transient outcome flagged so it is never cached")
 		}
 		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge {
 			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
 		}
 	})
+
+	t.Run("context cancellation propagates instead of fabricating a verdict", func(t *testing.T) {
+		t.Parallel()
+		claim := "no evidence claim"
+		vp, err := NewVerifyPath(VerifyPathConfig{
+			Decomposer:        fakeDecomposer{},
+			Matcher:           liveMatcher{},
+			Verifier:          &fakeVerifier{err: map[string]error{claim: context.Canceled}},
+			FastTau:           0.85,
+			VerifyConcurrency: 1,
+			FastDeadline:      time.Second,
+			VerifyDeadline:    time.Second,
+			KnowledgeFallback: true,
+			Logger:            discardLogger(),
+		})
+		if err != nil {
+			t.Fatalf("NewVerifyPath: %v", err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		verdict, degraded, _, err := vp.verifyClaim(ctx, claim, nil)
+		if err == nil {
+			t.Fatal("err = nil, want the cancellation propagated rather than a fabricated verdict")
+		}
+		if verdict != nil || degraded {
+			t.Errorf("got verdict %+v (degraded %v), want none on a canceled context", verdict, degraded)
+		}
+	})
+}
+
+func TestKnowledgeFallbackDegradedVerdictIsNotCached(t *testing.T) {
+	t.Parallel()
+	// A transient degrade (flaky verifier) must not seed the semantic cache: the
+	// next occurrence of the same claim must reach the verifier again and get a
+	// real knowledge judgment, not a replay of the degraded unverifiable.
+	claim := "la dette publique depasse trois mille milliards."
+	embedding := []float32{1, 0, 0}
+	verifier := &fakeVerifier{
+		byClaim: map[string]ClaimVerdict{claim: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55}},
+		err:     map[string]error{claim: errors.New("transient boom")},
+	}
+	vp, err := NewVerifyPath(VerifyPathConfig{
+		Decomposer:        fakeDecomposer{},
+		Matcher:           liveMatcher{embedding: map[string][]float32{claim: embedding}},
+		Verifier:          verifier,
+		FastTau:           0.85,
+		VerifyConcurrency: 1,
+		FastDeadline:      time.Second,
+		VerifyDeadline:    time.Second,
+		CacheTTL:          time.Minute,
+		CacheThreshold:    0.9,
+		KnowledgeFallback: true,
+		Logger:            discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+
+	atomic := AtomicClaim{ClaimID: "0-0", Text: claim}
+	first := vp.resolveClaimBatch(t.Context(), atomic)
+	if first.Status != ClaimStatusVerified || first.Verdict == nil || first.Verdict.Verdict != VerdictUnverifiable {
+		t.Fatalf("first pass = %+v, want the degraded unverifiable", first)
+	}
+
+	// The verifier recovers; the repeat must reach it (no cache replay) and
+	// return the real knowledge judgment.
+	delete(verifier.err, claim)
+	second := vp.resolveClaimBatch(t.Context(), atomic)
+	if second.Verdict == nil || second.Verdict.Verdict != VerdictCredible || second.Verdict.Confidence != 0.55 {
+		t.Fatalf("second pass = %+v, want the verifier's fresh credible/knowledge judgment, not a cached degrade", second)
+	}
+}
+
+func TestNewVerifyPathZeroesKnowledgeFloorWhenFallbackOff(t *testing.T) {
+	t.Parallel()
+	spCfg := &SecondPassConfig{
+		Reverifier:     &fakeReverifier{},
+		TriggerBelow:   0.8,
+		MinConfidence:  0.9,
+		Deadline:       time.Second,
+		KnowledgeFloor: 0.5,
+	}
+	base := VerifyPathConfig{
+		Decomposer:        fakeDecomposer{},
+		Matcher:           liveMatcher{},
+		Verifier:          &fakeVerifier{},
+		FastTau:           0.85,
+		VerifyConcurrency: 1,
+		FastDeadline:      time.Second,
+		VerifyDeadline:    time.Second,
+		SecondPass:        spCfg,
+	}
+
+	off := base
+	off.KnowledgeFallback = false
+	vp, err := NewVerifyPath(off)
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+	if vp.secondPass.knowledgeFloor != 0 {
+		t.Errorf("knowledge floor = %v with the fallback off, want 0 (the strict contract restored end to end)", vp.secondPass.knowledgeFloor)
+	}
+
+	on := base
+	on.KnowledgeFallback = true
+	vp, err = NewVerifyPath(on)
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+	if vp.secondPass.knowledgeFloor != 0.5 {
+		t.Errorf("knowledge floor = %v with the fallback on, want the configured 0.5", vp.secondPass.knowledgeFloor)
+	}
 }
 
 func TestVerifyPathClaimsEventCarriesQuoteAndSpans(t *testing.T) {
