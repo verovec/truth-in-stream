@@ -8,9 +8,12 @@ two epics in parallel - they are what keep the branches from colliding at merge.
 Source of truth for card ordering stays `ROADMAP-TRUTH-IN-STREAM.md` (the per-card ready
 queue). This file is the coarser epic-level view. Keep both in sync when cards change.
 
-On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `epic:tv`)
-applied to all its cards - group-by-label to see the three swimlanes. Labels are metadata
-only and do not affect `/pick` or the ready queue.
+On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `epic:tv`,
+`epic:preanalysis`) applied to all its cards - group-by-label to see the swimlanes. Labels
+are metadata only and do not affect `/pick` or the ready queue.
+
+Status 2026-07-17: Epics A, B, and C are fully delivered (all cards Done). Epic D is
+drafted; its Linear cards (VER-216..222) are created in `Todo` and ready to pick.
 
 ---
 
@@ -92,6 +95,52 @@ The two UI cards (VER-213, VER-214) wait for Epic B's VER-206.
 `stack/terraform/*` (capture host, VER-215).
 
 **Parallelism:** starts now on backend (210/211/212); UI cards gated on Epic B; VER-215 after 212.
+
+---
+
+## Epic D - Imported-video pre-analysis (VER-216..222, 7 cards)
+
+**Scope for its agent.** One-shot server-side pre-analysis of imported videos persisted in
+Postgres, analysed playback with pre-generated subtitles and a verdict-colored claim
+timeline, backoffice analyse/re-analyse controls, and the docs close-out.
+
+**Context.** Makes the 24 h Redis replay snapshot durable behind the same
+`AnalysisRecorder`/`AnalysisReplayer` seam, adds the first server-side audio path
+(ffmpeg from object storage into the existing AssemblyAI + verify pipeline, realtime
+pacing), and mirrors the documents feature's `analysis_status` job lifecycle. Live TV and
+non-analysed videos keep the live pipeline untouched; analysed videos never re-analyse
+live. The ffmpeg/pacing piece (D2) and the claim-timeline UI (D5) are split out from
+their neighbors because they are the epic's two genuinely unprecedented pieces (no
+server-side audio path exists today; no custom seek-bar UI exists today) - the split is
+for focused review, not merge-conflict avoidance (the chain is serial regardless). Spec:
+`docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`.
+
+**Cards & internal order:**
+- `D1 VER-216 (storage + read API) -> D2 VER-217 (ffmpeg audio-extraction adapter) ->
+  D3 VER-218 (headless job + analyse endpoint) -> D4 VER-219 (player: REST hydration +
+  button) -> D5 VER-221 (claim timeline strip)`.
+- `D3 VER-218 -> D6 VER-220 (backoffice controls)`, running parallel to `D4`/`D5`
+  (file-disjoint).
+- `D7 VER-222 (docs + e2e close-out)` depends on `D5 + D6`.
+
+**Entry cards (no deps, start immediately):** D1 VER-216.
+
+**Owns / touches:** `stack/backend/migrations/0019_*`, `stack/backend/queries/`,
+`stack/backend/internal/{store,service,handler,config}`, new
+`stack/backend/internal/audioextract`, `stack/backend/cmd/server/main.go`,
+`docker-compose.yml` (env forwarding), `stack/frontend/src/app/app/_components/*`,
+`stack/frontend/src/components/playback/*`, `stack/frontend/src/lib/live/*` (REST
+hydration), `stack/frontend/src/lib/video/api.ts`,
+`stack/frontend/src/app/backoffice/_components/backoffice-video*`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A, B, and C are delivered. If a future epic
+runs beside D, the backend route registry `stack/backend/internal/handler/handler.go`
+and `docker-compose.yml` stay append-only with a rebase rule (same doctrine as the B x C
+hot files below).
+
+**Parallelism:** can start as soon as its cards exist in Linear; no other epic is
+currently open. Within the epic: D1 -> D2 -> D3 serial, then D4 -> D5 beside D6 (player
+vs backoffice files), D7 last.
 
 ---
 
