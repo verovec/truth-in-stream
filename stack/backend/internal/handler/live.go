@@ -46,22 +46,25 @@ type AnalysisRecorder interface {
 	Persist(ctx context.Context, videoID string, events []service.LiveEvent) error
 }
 
-// AnalysisReplayer is the read side of the analysis cache the handler consults at
-// session open: it returns a finite video's complete cached analysis so the
-// handler can re-emit it instead of running transcription and the LLMs. found is
-// false on a miss, a disabled cache, an unsupported snapshot version, a corrupt
-// payload, or a backend error - every degraded case collapses to a single
-// fall-through to the live pipeline, and the returned error is reserved for a
-// fault the caller should not absorb (the implementation logs and degrades, so in
-// practice it is always nil). Satisfied by *service.SnapshotReader; the handler
-// owns neither the cache contract nor the snapshot wire format. A nil replayer
-// disables the cache-hit path entirely, so the live route works unchanged when
-// replay is not wired.
+// AnalysisReplayer is the read side of the stored analyses the handler
+// consults at session open: it returns a finite video's complete analysis so
+// the handler can re-emit it instead of running transcription and the LLMs.
+// found is false on a miss, a disabled store, an unsupported snapshot version,
+// a corrupt payload, or a backend error - every degraded case collapses to a
+// single fall-through to the live pipeline, and the returned error is reserved
+// for a fault the caller should not absorb (the implementations log and
+// degrade, so in practice it is always nil). Satisfied by
+// *service.CompositeReplayer (durable Postgres pre-analyses first, then the
+// Redis replay cache) and by either tier alone; the handler owns neither the
+// storage contracts nor the snapshot wire format. A nil replayer disables the
+// replay path entirely, so the live route works unchanged when replay is not
+// wired.
 //
-// Only a finite video that previously ran to clean completion ever has a cached
-// snapshot (the recorder persists on no other path), so a live stream never hits
-// here and the "finite videos only" constraint is satisfied by the cache's
-// contents rather than a separate video-kind check.
+// Only a finite video whose analysis ran to clean completion ever has a stored
+// snapshot (the live recorder and the pre-analysis job persist on no other
+// path), so a live stream never hits here and the "finite videos only"
+// constraint is satisfied by the stores' contents rather than a separate
+// video-kind check.
 type AnalysisReplayer interface {
 	Snapshot(ctx context.Context, videoID string) (events []service.LiveEvent, found bool, err error)
 }
@@ -462,25 +465,41 @@ func replayEvents(ctx context.Context, conn *websocket.Conn, events []service.Li
 	}
 }
 
-// writeEvent writes one event under a bounded deadline, shaping it by kind.
+// writeEvent writes one event under a bounded deadline, shaping it by kind. A
+// malformed event that shapes to no frame is skipped without a write.
 func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent, debugFactCheck bool) error {
+	frame := toLiveFrame(ev, debugFactCheck)
+	if frame == nil {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, liveWriteTimeout)
 	defer cancel()
+	return wsjson.Write(ctx, conn, frame)
+}
+
+// toLiveFrame shapes one live event into its wire frame, the single home of
+// the event-to-frame mapping: the live socket writes each frame as its own
+// JSON message and the stored-analysis read API returns the same frames as an
+// array, so a REST-hydrated session is byte-for-byte the live one at the
+// frame level. It returns nil for a malformed event (a tally or consistency
+// event missing its payload), which every caller skips. The heterogeneous
+// frame structs meet here at the JSON boundary, hence the any return.
+func toLiveFrame(ev service.LiveEvent, debugFactCheck bool) any {
 	if ev.Kind == service.LiveEventInterim {
-		return wsjson.Write(ctx, conn, interimFrame{
+		return interimFrame{
 			Type: string(ev.Kind),
 			Text: ev.Segment.Text,
-		})
+		}
 	}
 	if ev.Kind == service.LiveEventSubtitle {
-		return wsjson.Write(ctx, conn, subtitleFrame{
+		return subtitleFrame{
 			Type:    string(ev.Kind),
 			ID:      ev.ID,
 			Start:   ev.Segment.Start.Seconds(),
 			End:     ev.Segment.End.Seconds(),
 			Text:    ev.Segment.Text,
 			Speaker: ev.Segment.Speaker,
-		})
+		}
 	}
 	if ev.Kind == service.LiveEventSpeakerTally {
 		// The service always sets SpeakerTally for this kind; the guard keeps a
@@ -488,31 +507,31 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent,
 		if ev.SpeakerTally == nil {
 			return nil
 		}
-		return wsjson.Write(ctx, conn, speakerTallyFrame{
+		return speakerTallyFrame{
 			Type:              string(ev.Kind),
 			Speaker:           ev.SpeakerTally.Speaker,
 			Credible:          ev.SpeakerTally.Credible,
 			Disputed:          ev.SpeakerTally.Disputed,
 			Unverifiable:      ev.SpeakerTally.Unverifiable,
 			MisleadingFraming: ev.SpeakerTally.MisleadingFraming,
-		})
+		}
 	}
 	if ev.Kind == service.LiveEventClaims {
 		claims := make([]atomicClaimJSON, len(ev.Claims))
 		for i, c := range ev.Claims {
 			claims[i] = atomicClaimJSON{ClaimID: c.ClaimID, Text: c.Text, Status: string(service.ClaimStatusPending), Quote: c.Quote, Spans: c.Spans}
 		}
-		return wsjson.Write(ctx, conn, claimsFrame{
+		return claimsFrame{
 			Type:   string(ev.Kind),
 			ID:     ev.ID,
 			Claims: claims,
-		})
+		}
 	}
 	// A result event carrying a claim id is a per-claim verdict on the
 	// retrieve-then-verify path; it shapes differently from the legacy per-segment
 	// result, keyed on claim_id so the client replaces the claim's row in place.
 	if ev.Kind == service.LiveEventResult && ev.ClaimID != "" {
-		return wsjson.Write(ctx, conn, toClaimResultFrame(ev, debugFactCheck))
+		return toClaimResultFrame(ev, debugFactCheck)
 	}
 	if ev.Kind == service.LiveEventConsistency {
 		// The service always sets Consistency for this kind; the guard keeps a
@@ -521,21 +540,21 @@ func writeEvent(ctx context.Context, conn *websocket.Conn, ev service.LiveEvent,
 		if ev.Consistency == nil {
 			return nil
 		}
-		return wsjson.Write(ctx, conn, consistencyFrame{
+		return consistencyFrame{
 			Type:        string(ev.Kind),
 			ID:          ev.ID,
 			EarlierID:   ev.Consistency.EarlierID,
 			EarlierText: ev.Consistency.EarlierText,
 			Speaker:     ev.Consistency.Speaker,
 			Rationale:   ev.Consistency.Rationale,
-		})
+		}
 	}
-	return wsjson.Write(ctx, conn, resultFrame{
+	return resultFrame{
 		Type:        string(ev.Kind),
 		ID:          ev.ID,
 		segmentJSON: toSegmentJSON(domain.SegmentResult{Segment: ev.Segment, Matches: ev.Matches, SkipReason: ev.SkipReason, Confidence: ev.Confidence}),
 		Error:       ev.Err,
-	})
+	}
 }
 
 // toClaimResultFrame shapes one per-claim result event into its wire frame. The

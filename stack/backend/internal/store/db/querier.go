@@ -26,6 +26,10 @@ type Querier interface {
 	// Terminal success: mark the run complete, stamp the completion time, and count
 	// the run.
 	CompleteDocumentAnalysis(ctx context.Context, id uuid.UUID) error
+	// Terminal success: mark the run complete, stamp the completion time, and
+	// count the run. Paired with UpsertVideoAnalysis in one transaction so the
+	// status flip and the stored result are atomic.
+	CompleteVideoAnalysisStatus(ctx context.Context, id uuid.UUID) (Video, error)
 	CountEvidenceChunksForDocument(ctx context.Context, arg CountEvidenceChunksForDocumentParams) (int64, error)
 	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
 	// corpora: every statistical source (separate sources that share this table) is
@@ -69,12 +73,17 @@ type Querier interface {
 	// Terminal failure: record the reason and flip the run to failed so the admin
 	// can reanalyse.
 	FailDocumentAnalysis(ctx context.Context, arg FailDocumentAnalysisParams) error
+	// Terminal failure: record the reason and flip the run to failed so the
+	// operator can re-analyse. A previously stored analysis is untouched and
+	// stays readable.
+	FailVideoAnalysis(ctx context.Context, arg FailVideoAnalysisParams) error
 	GetDocument(ctx context.Context, id uuid.UUID) (Document, error)
 	GetEvidenceChunk(ctx context.Context, arg GetEvidenceChunkParams) (GetEvidenceChunkRow, error)
 	GetEvidenceSyncState(ctx context.Context, source string) (EvidenceSyncState, error)
 	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
 	GetTVChannel(ctx context.Context, id uuid.UUID) (TvChannel, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
+	GetVideoAnalysis(ctx context.Context, videoID uuid.UUID) (VideoAnalysis, error)
 	// Resolve a video by its storage object key. The key is UNIQUE, so this is the
 	// idempotency probe for a deterministic-key writer: a repeated request for the
 	// same recording finds the existing row instead of colliding on the constraint.
@@ -141,6 +150,15 @@ type Querier interface {
 	// reprocessed, so a run that fails partway keeps the previous run's verdicts for
 	// the sentences it never reached instead of destroying them all up front.
 	LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error)
+	// Claim a ready video for a fresh analysis run: flip it to analysing (the
+	// lock), zero the progress position, and clear any prior error - all in one
+	// guarded update. The guard admits a video that is ready and not already
+	// analysing (so a none/complete/failed analysis re-runs, a concurrent run is
+	// excluded). No row returned means the store resolves why (unknown, not
+	// ready, or already analysing) and maps it to the right error. The previous
+	// stored analysis is NOT wiped here: it stays readable until the new run
+	// completes and overwrites it.
+	LockVideoForAnalysis(ctx context.Context, id uuid.UUID) (Video, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an
 	// exact match on the recorded scrutin date; a caller resolves the scrutin date
@@ -149,6 +167,9 @@ type Querier interface {
 	// Startup recovery: any document left analysing when the process died is flipped
 	// to failed with a clear reason. Returns the recovered ids for logging.
 	RecoverInterruptedAnalyses(ctx context.Context) ([]uuid.UUID, error)
+	// Startup recovery: any video left analysing when the process died is flipped
+	// to failed with a clear reason. Returns the recovered ids for logging.
+	RecoverInterruptedVideoAnalyses(ctx context.Context) ([]uuid.UUID, error)
 	// Atomically claim a failed ingest for retry: flip it back to pending only if it
 	// is currently failed, so two concurrent re-submissions cannot both re-download.
 	// The guard returns no row (and thus no claim) when the record is not failed.
@@ -211,6 +232,9 @@ type Querier interface {
 	// Delta sync writes embeddings straight into the live table: at delta volume the
 	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
 	SetEvidenceChunkEmbedding(ctx context.Context, arg []SetEvidenceChunkEmbeddingParams) *SetEvidenceChunkEmbeddingBatchResults
+	// Advance the run's audio position. Progress is database state, so it
+	// survives a refresh and a restart.
+	SetVideoAnalysisProgress(ctx context.Context, arg SetVideoAnalysisProgressParams) error
 	// A failed ingest: record the reason and flip the record to failed.
 	SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error)
 	// A completed ingest: record the probed title, size, and duration, clear any
@@ -273,6 +297,10 @@ type Querier interface {
 	// overwritten so reseeding never re-arms a channel the operator turned off (or
 	// disarmed archiving on); the first insert seeds them from the params.
 	UpsertTVChannelBySlug(ctx context.Context, arg UpsertTVChannelBySlugParams) (TvChannel, error)
+	// Persist a completed run's full event stream, one row per video: a
+	// re-analysis overwrites the previous result atomically (the run counter on
+	// videos, not rows here, is the history).
+	UpsertVideoAnalysis(ctx context.Context, arg UpsertVideoAnalysisParams) (VideoAnalysis, error)
 	// Scrutins ingest writes one recorded position per person per scrutin. Re-running
 	// the ingest rewrites the same row, so a bulk re-run is idempotent.
 	UpsertVotingRecord(ctx context.Context, arg UpsertVotingRecordParams) error

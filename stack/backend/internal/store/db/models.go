@@ -114,21 +114,39 @@ type TvChannel struct {
 }
 
 type Video struct {
-	ID          uuid.UUID
-	Title       string
-	ObjectKey   string
-	ContentType string
-	SizeBytes   int64
-	Status      string
-	Kind        string
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	SourceUrl   pgtype.Text
-	SourceID    pgtype.Text
-	DurationMs  int64
-	Error       pgtype.Text
-	ChannelID   uuid.NullUUID
-	RecordedAt  pgtype.Timestamptz
+	ID                 uuid.UUID
+	Title              string
+	ObjectKey          string
+	ContentType        string
+	SizeBytes          int64
+	Status             string
+	Kind               string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	SourceUrl          pgtype.Text
+	SourceID           pgtype.Text
+	DurationMs         int64
+	Error              pgtype.Text
+	ChannelID          uuid.NullUUID
+	RecordedAt         pgtype.Timestamptz
+	AnalysisStatus     string
+	AnalysisError      string
+	AnalyzedAt         pgtype.Timestamptz
+	AnalysisRuns       int32
+	AnalysisProgressMs int64
+}
+
+type VideoAnalysis struct {
+	VideoID            uuid.UUID
+	SnapshotVersion    int32
+	Events             []byte
+	Engine             []byte
+	ClaimsTotal        int32
+	ClaimsCredible     int32
+	ClaimsDisputed     int32
+	ClaimsUnverifiable int32
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
 }
 
 type VotingRecord struct {
