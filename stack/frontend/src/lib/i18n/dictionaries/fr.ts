@@ -143,6 +143,32 @@ export const fr = {
           deleting: "Suppression…",
           deleteError: "La suppression a échoué : {message}",
           deleteErrorFallback: "La suppression a échoué.",
+          analysis: {
+            badge: {
+              analysing: "Analyse en cours",
+              analysingPct: "Analyse {pct} %",
+              complete: "Analysée",
+              failed: "Analyse échouée",
+            },
+            analysedOn: "Analysée le {date}",
+            counts:
+              "{total} affirmations · {credible} crédibles · {disputed} contestées · {unverifiable} invérifiables",
+            failedError: "L'analyse a échoué : {message}",
+            failedFallback: "L'analyse a échoué.",
+            analyse: "Analyser",
+            retry: "Relancer l'analyse",
+            reanalyse: "Réanalyser",
+            confirm:
+              "Réanalyser cette vidéo ? Le résultat enregistré sera remplacé.",
+            confirmYes: "Confirmer",
+            confirmNo: "Annuler",
+            starting: "Lancement…",
+            errors: {
+              conflict: "Une analyse est déjà en cours pour cette vidéo.",
+              notReady: "Cette vidéo n'est pas prête à être analysée.",
+              failed: "L'analyse n'a pas pu démarrer.",
+            },
+          },
         },
       },
       documents: {
