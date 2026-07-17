@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import type { VideoAnalysisTrack } from "@/hooks/use-video-analysis";
 import type { Role } from "@/lib/auth/token";
@@ -99,7 +100,7 @@ export function AnalysisControl({
   );
 }
 
-function ControlRow({ children }: { children: React.ReactNode }) {
+function ControlRow({ children }: { children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-2">{children}</div>
   );
