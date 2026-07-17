@@ -22,12 +22,26 @@ CREATE OR REPLACE FUNCTION immutable_sha256(text)
     SET search_path = pg_catalog
     AS $$ SELECT pg_catalog.sha256(pg_catalog.convert_to($1, 'UTF8')) $$;
 
--- Regenerate the column under the fixed expression. Dropping the column drops
--- its index; the ADD rewrites the table and recomputes every existing row's
--- hash (convert_to is total, so the rewrite cannot fail on any content). The
--- index is recreated under its original name because the staging-swap code
--- recreates it by that name.
-ALTER TABLE evidence_chunks DROP COLUMN content_hash;
+-- The bulk-rebuild artifacts copy the generated column wholesale (staging is
+-- created with LIKE evidence_chunks INCLUDING GENERATED and later renamed over
+-- the live table at swap), so a staging table created under 0018 would
+-- reinstate the broken expression the next time a bulk run resumes and swaps
+-- it in. Both tables are transient - staging is a rebuild/resume target the
+-- next bulk run recreates from the fixed live table, _old is leftover from an
+-- interrupted swap - so drop them rather than repair them.
+DROP TABLE IF EXISTS evidence_chunks_staging;
+DROP TABLE IF EXISTS evidence_chunks_old;
+
+-- Regenerate the column under the fixed expression. IF EXISTS keeps the deploy
+-- unwedged on a database where the broken column was already dropped by hand
+-- (0018's own down migration is the natural emergency unblock for the 22P02
+-- crash). The ADD rewrites the table and rebuilds every index on it (the HNSW
+-- and GIN indexes included) under ACCESS EXCLUSIVE; the recompute itself is
+-- total (convert_to cannot fail on any content), but on a corpus of production
+-- scale apply this in a maintenance window - or reset the corpus first, since
+-- bulk ingest rebuilds it anyway. The index is recreated under its original
+-- name because the staging-swap code recreates it by that name.
+ALTER TABLE evidence_chunks DROP COLUMN IF EXISTS content_hash;
 ALTER TABLE evidence_chunks
     ADD COLUMN content_hash bytea
     GENERATED ALWAYS AS (immutable_sha256(content)) STORED;
