@@ -38,6 +38,10 @@ linters:
         # design (documents.analysis_status = 'analysing'): API and DB
         # vocabulary, not prose to be re-spelled.
         - analysing
+        # The pre-analysis trigger route fixed by the video pre-analysis design
+        # (POST /api/videos/{id}/analyse, mirroring the documents reanalyse
+        # route): API vocabulary, not prose to be re-spelled.
+        - analyse
         # Official French name of the OECD (OCDE = "Organisation de coopération
         # et de développement économiques") stamped verbatim on OECD evidence
         # citations; a proper noun, not an English misspelling.

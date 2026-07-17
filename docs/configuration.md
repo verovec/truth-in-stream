@@ -25,6 +25,9 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `DOCUMENT_MAX_SIZE_BYTES` | no (default 30 MB) | Upload-size cap for a PDF ingested from the backoffice; must be a positive integer. See [PDF documents](#pdf-documents) |
 | `DOCUMENT_MAX_SENTENCES` | no (default `1500`) | Cap on how many sentences one document may submit for analysis; must be a positive integer |
 | `DOCUMENT_ANALYSIS_TIMEOUT` | no (default `30m`) | Bounds one document analysis run; must be a positive Go duration |
+| `PREANALYSIS_PACING_FACTOR` | no (default `1.0`) | Multiple of realtime at which a video pre-analysis submits extracted audio; must be in `(0, 1]`. See [Video pre-analysis](#video-pre-analysis) |
+| `PREANALYSIS_MAX_CONCURRENT` | no (default `1`) | Global cap on simultaneous pre-analysis runs; must be a positive integer |
+| `PREANALYSIS_RUN_TIMEOUT` | no (default `4h`) | Bounds one whole pre-analysis run; must be a positive Go duration exceeding the longest video to analyse at the configured pacing |
 
 ## Analysis cache (instant replay)
 
@@ -46,6 +49,28 @@ everything at once, with no AssemblyAI transcription and no LLM calls.
 
 In production the cache is backed by ElastiCache Valkey; see
 [Infrastructure -> Analysis cache](infrastructure.md#analysis-cache).
+
+## Video pre-analysis
+
+An admin can pre-analyse a ready imported video once, server-side
+(`POST /api/videos/{id}/analyse`, 202 on accept): a background job extracts the stored media's
+audio with ffmpeg, streams it through the exact live pipeline (AssemblyAI streaming plus the
+configured fact-check path), and persists the full result durably in Postgres. Playback of a
+pre-analysed video then never runs transcription or an LLM again, and the same endpoint re-runs
+the analysis after the evidence corpus has changed. Progress is visible on
+`GET /api/videos/{id}/analysis` while a run is going; a backend restart mid-run flips the video
+`failed` and re-runnable, never stuck `analysing`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PREANALYSIS_PACING_FACTOR` | `1.0` | Multiple of realtime at which extracted audio is submitted. Must be in `(0, 1]`: AssemblyAI's streaming API closes a session fed faster than realtime, so a run takes about as long as the video. Values below 1.0 slow submission for debugging |
+| `PREANALYSIS_MAX_CONCURRENT` | `1` | Global cap on simultaneous runs; a queued start holds the `analysing` status at zero progress until a slot frees. Positive integer |
+| `PREANALYSIS_RUN_TIMEOUT` | `4h` | Bounds one whole run; a run that overruns is failed and stays re-runnable. Must exceed the longest video to analyse at the configured pacing. Positive Go duration |
+
+The verdicts a pre-analysis stores are produced by whatever fact-check path is configured at run
+time (the `FACTCHECK_VERIFY_*` and `FACTCHECK_POLITICAL` variables above), and each stored result
+carries an `engine` fingerprint (transcriber model, verifier provider and model, retrieval
+posture, pacing) so the operator can see what produced it before deciding to re-analyse.
 
 ## PDF documents
 

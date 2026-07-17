@@ -300,3 +300,86 @@ func TestVideoJSONCarriesAnalysisFields(t *testing.T) {
 		t.Error("never-analyzed item should omit analyzed_at")
 	}
 }
+
+// fakeVideoAnalysisStarter is a handler.VideoAnalysisStarter stand-in. err,
+// when set, makes Start fail; lastID records the forwarded video id.
+type fakeVideoAnalysisStarter struct {
+	err    error
+	lastID string
+}
+
+func (f *fakeVideoAnalysisStarter) Start(_ context.Context, id string) error {
+	f.lastID = id
+	return f.err
+}
+
+var _ VideoAnalysisStarter = (*fakeVideoAnalysisStarter)(nil)
+
+// TestAnalyseVideoHandlerStatusCodes pins the trigger contract: 202 on accept
+// (first run and re-run alike), 404 unknown, 422 while the upload is not
+// ready, 409 while a run holds the analysing lock, 500 otherwise.
+func TestAnalyseVideoHandlerStatusCodes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		starter  *fakeVideoAnalysisStarter
+		wantCode int
+	}{
+		{name: "accepted", starter: &fakeVideoAnalysisStarter{}, wantCode: http.StatusAccepted},
+		{name: "unknown video", starter: &fakeVideoAnalysisStarter{err: domain.ErrVideoNotFound}, wantCode: http.StatusNotFound},
+		{name: "not ready", starter: &fakeVideoAnalysisStarter{err: domain.ErrVideoNotReady}, wantCode: http.StatusUnprocessableEntity},
+		{name: "already analysing", starter: &fakeVideoAnalysisStarter{err: domain.ErrVideoAnalysisInProgress}, wantCode: http.StatusConflict},
+		{name: "wrapped conflict", starter: &fakeVideoAnalysisStarter{err: errors.Join(errors.New("ctx"), domain.ErrVideoAnalysisInProgress)}, wantCode: http.StatusConflict},
+		{name: "internal", starter: &fakeVideoAnalysisStarter{err: errors.New("boom")}, wantCode: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/videos/v1/analyse", nil)
+			req.SetPathValue("id", "v1")
+			analyseVideoHandler(tc.starter)(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.starter.lastID != "v1" {
+				t.Errorf("starter saw id %q, want v1", tc.starter.lastID)
+			}
+		})
+	}
+}
+
+// TestAnalyseVideoRouteRoleGating proves the trigger is a backoffice
+// operation: an admin gets 202, a guest 403 before the starter runs, an
+// anonymous caller 401 - while the analysis read stays open to any
+// authenticated caller. It runs through NewMux so the real identity and admin
+// gates are exercised.
+func TestAnalyseVideoRouteRoleGating(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		method, path string
+		bearer       string
+		wantCode     int
+	}{
+		{name: "analyse as admin", method: http.MethodPost, path: "/api/videos/v1/analyse", bearer: testAdminToken, wantCode: http.StatusAccepted},
+		{name: "analyse as guest", method: http.MethodPost, path: "/api/videos/v1/analyse", bearer: testGuestToken, wantCode: http.StatusForbidden},
+		{name: "analyse anonymous", method: http.MethodPost, path: "/api/videos/v1/analyse", wantCode: http.StatusUnauthorized},
+		{name: "analysis read as guest", method: http.MethodGet, path: "/api/videos/v1/analysis", bearer: testGuestToken, wantCode: http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newTestServer(nil)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil)
+			if tc.bearer != "" {
+				bearer(req, tc.bearer)
+			}
+			srv.ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("%s %s = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.wantCode, rec.Body.String())
+			}
+		})
+	}
+}

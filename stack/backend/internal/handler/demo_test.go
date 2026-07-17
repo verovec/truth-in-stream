@@ -15,7 +15,7 @@ import (
 func newDemoServer(dir string) http.Handler {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	return NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, dir, globalTestAuth, logger)
+	return NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, dir, globalTestAuth, logger)
 }
 
 // demoRequest carries a verified Keycloak Bearer token; demo media is
