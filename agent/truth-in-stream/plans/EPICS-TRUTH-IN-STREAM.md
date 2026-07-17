@@ -12,8 +12,9 @@ On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `
 `epic:preanalysis`) applied to all its cards - group-by-label to see the swimlanes. Labels
 are metadata only and do not affect `/pick` or the ready queue.
 
-Status 2026-07-17: Epics A, B, and C are fully delivered (all cards Done). Epic D is
-drafted; its Linear cards (VER-216..222) are created in `Todo` and ready to pick.
+Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Epic D
+(VER-216..222) merged to `dev` via PRs #251-#255, #258, #259 (+ deflake #256) on
+2026-07-17; docs in `docs/video-preanalysis.md`.
 
 ---
 
