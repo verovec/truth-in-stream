@@ -15,7 +15,7 @@ import (
 const createVideo = `-- name: CreateVideo :one
 INSERT INTO videos (title, object_key, content_type, size_bytes, status, kind, channel_id, recorded_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type CreateVideoParams struct {
@@ -57,6 +57,11 @@ func (q *Queries) CreateVideo(ctx context.Context, arg CreateVideoParams) (Video
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -65,7 +70,7 @@ const createYouTubeVideo = `-- name: CreateYouTubeVideo :one
 INSERT INTO videos (title, object_key, content_type, size_bytes, status, kind, source_url, source_id, duration_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (source_id) DO NOTHING
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type CreateYouTubeVideoParams struct {
@@ -112,6 +117,11 @@ func (q *Queries) CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideo
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -132,7 +142,7 @@ func (q *Queries) DeleteVideo(ctx context.Context, id uuid.UUID) (int64, error) 
 }
 
 const getVideo = `-- name: GetVideo :one
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE id = $1
 `
@@ -156,12 +166,17 @@ func (q *Queries) GetVideo(ctx context.Context, id uuid.UUID) (Video, error) {
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
 
 const getVideoByObjectKey = `-- name: GetVideoByObjectKey :one
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE object_key = $1
 `
@@ -188,12 +203,17 @@ func (q *Queries) GetVideoByObjectKey(ctx context.Context, objectKey string) (Vi
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
 
 const getVideoBySourceID = `-- name: GetVideoBySourceID :one
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE source_id = $1
 `
@@ -217,12 +237,17 @@ func (q *Queries) GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) 
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
 
 const listTVRecordingsBefore = `-- name: ListTVRecordingsBefore :many
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE kind = 'tv' AND recorded_at IS NOT NULL AND recorded_at < $1
 ORDER BY recorded_at
@@ -256,6 +281,11 @@ func (q *Queries) ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.
 			&i.Error,
 			&i.ChannelID,
 			&i.RecordedAt,
+			&i.AnalysisStatus,
+			&i.AnalysisError,
+			&i.AnalyzedAt,
+			&i.AnalysisRuns,
+			&i.AnalysisProgressMs,
 		); err != nil {
 			return nil, err
 		}
@@ -268,7 +298,7 @@ func (q *Queries) ListTVRecordingsBefore(ctx context.Context, recordedAt pgtype.
 }
 
 const listTVRecordingsByChannel = `-- name: ListTVRecordingsByChannel :many
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE kind = 'tv' AND channel_id = $1 AND status = 'ready' AND recorded_at IS NOT NULL
 ORDER BY recorded_at DESC
@@ -303,6 +333,11 @@ func (q *Queries) ListTVRecordingsByChannel(ctx context.Context, channelID uuid.
 			&i.Error,
 			&i.ChannelID,
 			&i.RecordedAt,
+			&i.AnalysisStatus,
+			&i.AnalysisError,
+			&i.AnalyzedAt,
+			&i.AnalysisRuns,
+			&i.AnalysisProgressMs,
 		); err != nil {
 			return nil, err
 		}
@@ -315,7 +350,7 @@ func (q *Queries) ListTVRecordingsByChannel(ctx context.Context, channelID uuid.
 }
 
 const listVideos = `-- name: ListVideos :many
-SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+SELECT id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 FROM videos
 WHERE kind <> 'tv'
 ORDER BY created_at DESC, id
@@ -349,6 +384,11 @@ func (q *Queries) ListVideos(ctx context.Context) ([]Video, error) {
 			&i.Error,
 			&i.ChannelID,
 			&i.RecordedAt,
+			&i.AnalysisStatus,
+			&i.AnalysisError,
+			&i.AnalyzedAt,
+			&i.AnalysisRuns,
+			&i.AnalysisProgressMs,
 		); err != nil {
 			return nil, err
 		}
@@ -364,7 +404,7 @@ const retryFailedVideo = `-- name: RetryFailedVideo :one
 UPDATE videos
 SET status = 'pending', error = NULL, updated_at = now()
 WHERE id = $1 AND status = 'failed'
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 // Atomically claim a failed ingest for retry: flip it back to pending only if it
@@ -389,6 +429,11 @@ func (q *Queries) RetryFailedVideo(ctx context.Context, id uuid.UUID) (Video, er
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -397,7 +442,7 @@ const setVideoFailed = `-- name: SetVideoFailed :one
 UPDATE videos
 SET status = 'failed', error = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type SetVideoFailedParams struct {
@@ -425,6 +470,11 @@ func (q *Queries) SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) 
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -433,7 +483,7 @@ const setVideoReady = `-- name: SetVideoReady :one
 UPDATE videos
 SET status = 'ready', title = $2, size_bytes = $3, duration_ms = $4, error = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type SetVideoReadyParams struct {
@@ -469,6 +519,11 @@ func (q *Queries) SetVideoReady(ctx context.Context, arg SetVideoReadyParams) (V
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -477,7 +532,7 @@ const setVideoStatus = `-- name: SetVideoStatus :one
 UPDATE videos
 SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type SetVideoStatusParams struct {
@@ -504,6 +559,11 @@ func (q *Queries) SetVideoStatus(ctx context.Context, arg SetVideoStatusParams) 
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }
@@ -518,7 +578,7 @@ ON CONFLICT (object_key) DO UPDATE
         status       = EXCLUDED.status,
         kind         = EXCLUDED.kind,
         updated_at   = now()
-RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at
+RETURNING id, title, object_key, content_type, size_bytes, status, kind, created_at, updated_at, source_url, source_id, duration_ms, error, channel_id, recorded_at, analysis_status, analysis_error, analyzed_at, analysis_runs, analysis_progress_ms
 `
 
 type UpsertSampleVideoParams struct {
@@ -559,6 +619,11 @@ func (q *Queries) UpsertSampleVideo(ctx context.Context, arg UpsertSampleVideoPa
 		&i.Error,
 		&i.ChannelID,
 		&i.RecordedAt,
+		&i.AnalysisStatus,
+		&i.AnalysisError,
+		&i.AnalyzedAt,
+		&i.AnalysisRuns,
+		&i.AnalysisProgressMs,
 	)
 	return i, err
 }

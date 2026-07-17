@@ -25,7 +25,7 @@ import (
 // served under /demo/ so the browser can play and live-analyze the bundled
 // sample. The only public route is /healthz for load balancer checks; the legacy
 // login and logout routes exist only when the legacy flag is on.
-func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, tvRecordings TVRecordingService, tvHub TVHub, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, videoAnalyses VideoAnalysisService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, tvRecordings TVRecordingService, tvHub TVHub, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). Ingestion is a
 	// backoffice operation: the mutating routes (upload, YouTube import, confirm,
@@ -38,6 +38,10 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	api.Handle("DELETE /api/videos/{id}", middleware.RequireAdmin(deleteVideoHandler(videos)))
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
+	// Durable pre-analysis read: lifecycle state plus, when complete, the
+	// stored frame list. A consumption read like the record itself, so it
+	// serves any authenticated caller. See video_analysis.go.
+	api.HandleFunc("GET /api/videos/{id}/analysis", getVideoAnalysisHandler(videoAnalyses, debugFactCheck))
 	// PDF document records and uploads (id is the record UUID). Reads serve any
 	// authenticated user; creating and deleting documents is admin-only, so the
 	// mutating routes carry the RequireAdmin gate. See documents.go.

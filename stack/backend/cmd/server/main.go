@@ -210,6 +210,19 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The durable tier of the replay path: a deliberate pre-analysis persisted
+	// in Postgres outlives the cache TTL and wins over it, while the Redis tier
+	// keeps serving live-view replays for videos with no stored analysis. The
+	// recorder stays Redis-only above, so a lossy browser view never overwrites
+	// a stored pre-analysis.
+	storedAnalysisReader, err := service.NewStoredAnalysisReader(pgStore, pgStore, logger)
+	if err != nil {
+		return err
+	}
+	analysisReplayer, err := service.NewCompositeReplayer(logger, storedAnalysisReader, snapshotReader)
+	if err != nil {
+		return err
+	}
 
 	mediaStore, err := storage.New(ctx, storage.Config{
 		Endpoint:       storageCfg.Endpoint,
@@ -380,7 +393,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}

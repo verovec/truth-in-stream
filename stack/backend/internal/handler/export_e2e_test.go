@@ -76,7 +76,7 @@ func TestExportEndToEndOverRedis(t *testing.T) {
 
 	videos := &fakeVideoService{playable: service.PlayableVideo{Video: domain.Video{ID: cachedVideo, Title: "Débat 2026"}}}
 	health := service.NewHealthChecker(fakePinger{})
-	srv := httptest.NewServer(NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, persister, reader, nil, false, nil, "", globalTestAuth, logger))
+	srv := httptest.NewServer(NewMux(health, videos, &fakeVideoAnalysisService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, persister, reader, nil, false, nil, "", globalTestAuth, logger))
 	t.Cleanup(srv.Close)
 
 	get := func(t *testing.T, path, token string) *http.Response {
@@ -157,8 +157,8 @@ func TestExportEndToEndOverRedis(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", resp.StatusCode)
 		}
-		if !strings.Contains(strings.ToLower(string(mustRead(t, resp.Body))), "re-run") {
-			t.Fatal("404 body should tell the operator to re-run analysis")
+		if !strings.Contains(strings.ToLower(string(mustRead(t, resp.Body))), "run an analysis") {
+			t.Fatal("404 body should tell the operator to run an analysis")
 		}
 	})
 }
