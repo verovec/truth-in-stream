@@ -7,7 +7,6 @@ import { formatTemplate } from "@/lib/i18n/text";
 import {
   deleteVideo,
   type LibraryVideo,
-  listVideos,
   submitYoutubeUrl,
 } from "@/lib/video/api";
 import type { PutUploader } from "@/lib/video/upload";
@@ -15,29 +14,58 @@ import { GALLERY_GRID_CLASS } from "@/app/app/_components/video-gallery";
 import { UploadTile } from "@/app/app/_components/upload-tile";
 import { VideoUploader } from "@/app/app/_components/video-uploader";
 import { YoutubeUrlForm } from "@/app/app/_components/youtube-url-form";
+import {
+  getVideoAnalysis,
+  listBackofficeVideos,
+  startVideoAnalysis,
+  type BackofficeVideo,
+  type VideoAnalysisDetail,
+} from "./analysis-api";
 import { BackofficeVideoList } from "./backoffice-video-list";
 
-// DEFAULT_YOUTUBE_POLL_MS is how often the section re-checks the backend while a
-// YouTube row is still downloading. The transition is server-driven with no
-// client step, so it can only be observed by polling.
-const DEFAULT_YOUTUBE_POLL_MS = 2500;
+// DEFAULT_POLL_MS is how often the section re-checks the backend while a
+// server-driven transition is pending: a YouTube row still downloading, or a
+// pre-analysis run in flight. Neither has a client step, so both can only be
+// observed by polling.
+const DEFAULT_POLL_MS = 2500;
 
-// mergePendingYoutube advances pending YouTube rows to whatever the freshly
-// listed catalog reports, in place, leaving every other row untouched. It
-// returns the previous array unchanged when nothing moved so a poll that
-// observes no transition does not trigger a re-render.
-function mergePendingYoutube(
-  prev: LibraryVideo[],
-  listed: LibraryVideo[],
-): LibraryVideo[] {
+// mergePolled advances rows to whatever the freshly listed catalog reports
+// where a server-driven transition can occur - pending YouTube downloads and
+// the analysis lifecycle - leaving every other row untouched. It returns the
+// previous array unchanged when nothing moved so a poll that observes no
+// transition does not trigger a re-render.
+//
+// Two analysis reports are rejected as stale reads from a response that raced
+// the analyse trigger: an analysing row never regresses to "none" (the
+// backend only moves analysing to complete or failed), and a "complete"
+// carrying the analyzedAt the row already had is the pre-trigger stored
+// result, not a new completion (a genuine one always re-dates it). Taking
+// either would stop the polling loop with a live run invisible.
+function mergePolled(
+  prev: BackofficeVideo[],
+  listed: BackofficeVideo[],
+): BackofficeVideo[] {
   const byId = new Map(listed.map((video) => [video.id, video]));
   let changed = false;
   const next = prev.map((video) => {
-    if (video.kind !== "youtube" || video.status !== "pending") {
+    const fresh = byId.get(video.id);
+    if (!fresh) {
       return video;
     }
-    const fresh = byId.get(video.id);
-    if (fresh && fresh.status !== video.status) {
+    const youtubeAdvanced =
+      video.kind === "youtube" &&
+      video.status === "pending" &&
+      fresh.status !== video.status;
+    const staleAnalysis =
+      video.analysisStatus === "analysing" &&
+      (fresh.analysisStatus === "none" ||
+        (fresh.analysisStatus === "complete" &&
+          fresh.analyzedAt === video.analyzedAt));
+    const analysisMoved =
+      !staleAnalysis &&
+      (fresh.analysisStatus !== video.analysisStatus ||
+        fresh.analyzedAt !== video.analyzedAt);
+    if (youtubeAdvanced || analysisMoved) {
       changed = true;
       return fresh;
     }
@@ -53,28 +81,39 @@ type ListState =
 
 // BackofficeVideosSection is the admin-only ingestion surface: the file uploader,
 // the YouTube-link form, in-flight upload tiles, and a management list of every
-// video with a delete control. The consumption app (/app) only lists and plays;
-// all ingestion lives here. The catalog is re-listed from the backend (the source
-// of truth) after each mutation - confirm, ingest, and delete all persist before
-// their callback fires, so a re-list reflects them without optimistic merging.
-// loadVideos, pollVideos, remove, submitYoutube, uploader, and pollIntervalMs are
-// injection seams so tests can drive each path deterministically.
+// video with its analysis state and controls plus a delete control. The
+// consumption app (/app) only lists and plays; all ingestion lives here. The
+// catalog is re-listed from the backend (the source of truth) after each
+// mutation - confirm, ingest, and delete all persist before their callback
+// fires, so a re-list reflects them without optimistic merging. The one
+// exception is the analyse trigger: its 202 races the next list, so the row is
+// flipped to analysing locally, which is what the backend just recorded.
+// loadVideos, pollVideos, remove, submitYoutube, startAnalysis, loadAnalysis,
+// uploader, and pollIntervalMs are injection seams so tests can drive each
+// path deterministically.
 export function BackofficeVideosSection({
-  loadVideos = listVideos,
-  pollVideos = listVideos,
+  loadVideos = listBackofficeVideos,
+  pollVideos = listBackofficeVideos,
   remove = deleteVideo,
   submitYoutube = submitYoutubeUrl,
+  startAnalysis = startVideoAnalysis,
+  loadAnalysis = getVideoAnalysis,
   uploader,
-  pollIntervalMs = DEFAULT_YOUTUBE_POLL_MS,
+  pollIntervalMs = DEFAULT_POLL_MS,
 }: {
-  loadVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
-  pollVideos?: (signal?: AbortSignal) => Promise<LibraryVideo[]>;
+  loadVideos?: (signal?: AbortSignal) => Promise<BackofficeVideo[]>;
+  pollVideos?: (signal?: AbortSignal) => Promise<BackofficeVideo[]>;
   remove?: (id: string, signal?: AbortSignal) => Promise<void>;
   submitYoutube?: (url: string, signal?: AbortSignal) => Promise<LibraryVideo>;
+  startAnalysis?: (id: string, signal?: AbortSignal) => Promise<void>;
+  loadAnalysis?: (
+    id: string,
+    signal?: AbortSignal,
+  ) => Promise<VideoAnalysisDetail>;
   uploader?: PutUploader;
   pollIntervalMs?: number;
 } = {}) {
-  const [videos, setVideos] = useState<LibraryVideo[]>([]);
+  const [videos, setVideos] = useState<BackofficeVideo[]>([]);
   const [listState, setListState] = useState<ListState>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -135,15 +174,17 @@ export function BackofficeVideosSection({
     setReloadToken((token) => token + 1);
   }, []);
 
-  // While any YouTube row is still downloading, re-list the catalog on an
-  // interval and advance those rows in place; stop once none remain pending. The
-  // controller aborts the in-flight request on unmount or when the last pending
-  // row resolves.
-  const hasPendingYoutube = videos.some(
-    (video) => video.kind === "youtube" && video.status === "pending",
+  // While any YouTube row is still downloading or any analysis run is in
+  // flight, re-list the catalog on an interval and advance those rows in
+  // place; stop once nothing is pending. The controller aborts the in-flight
+  // request on unmount or when the last pending row resolves.
+  const hasPendingTransition = videos.some(
+    (video) =>
+      (video.kind === "youtube" && video.status === "pending") ||
+      video.analysisStatus === "analysing",
   );
   useEffect(() => {
-    if (!hasPendingYoutube) {
+    if (!hasPendingTransition) {
       return;
     }
     const controller = new AbortController();
@@ -154,7 +195,7 @@ export function BackofficeVideosSection({
           if (controller.signal.aborted) {
             return;
           }
-          setVideos((prev) => mergePendingYoutube(prev, listed));
+          setVideos((prev) => mergePolled(prev, listed));
         })
         .catch(() => {
           // A transient poll failure is ignored; the next tick retries while a
@@ -166,7 +207,22 @@ export function BackofficeVideosSection({
       controller.abort();
       clearInterval(handle);
     };
-  }, [hasPendingYoutube, pollIntervalMs]);
+  }, [hasPendingTransition, pollIntervalMs]);
+
+  // markAnalysing reflects an accepted analyse trigger (or a 409 that proved a
+  // run is already live) without waiting for the next list: the flip is what
+  // the backend recorded before answering, and it is what arms the polling
+  // that will observe the run's real progress and completion.
+  const markAnalysing = useCallback((id: string) => {
+    setVideos((prev) => {
+      const next = prev.map((video) =>
+        video.id === id && video.analysisStatus !== "analysing"
+          ? { ...video, analysisStatus: "analysing" as const }
+          : video,
+      );
+      return next.some((video, i) => video !== prev[i]) ? next : prev;
+    });
+  }, []);
 
   const { t } = useAppI18n();
   const inFlight = jobs.filter((job) => job.state.status !== "ready");
@@ -194,6 +250,10 @@ export function BackofficeVideosSection({
           videos={videos}
           remove={remove}
           onDeleted={refresh}
+          startAnalysis={startAnalysis}
+          onAnalysisStarted={markAnalysing}
+          loadAnalysis={loadAnalysis}
+          pollIntervalMs={pollIntervalMs}
         />
       </div>
     </div>
@@ -203,9 +263,16 @@ export function BackofficeVideosSection({
 type ManagementListProps = {
   listState: ListState;
   onRetry: () => void;
-  videos: LibraryVideo[];
+  videos: BackofficeVideo[];
   remove: (id: string, signal?: AbortSignal) => Promise<void>;
   onDeleted: () => void;
+  startAnalysis: (id: string, signal?: AbortSignal) => Promise<void>;
+  onAnalysisStarted: (id: string) => void;
+  loadAnalysis: (
+    id: string,
+    signal?: AbortSignal,
+  ) => Promise<VideoAnalysisDetail>;
+  pollIntervalMs: number;
 };
 
 function ManagementList({
@@ -214,6 +281,10 @@ function ManagementList({
   videos,
   remove,
   onDeleted,
+  startAnalysis,
+  onAnalysisStarted,
+  loadAnalysis,
+  pollIntervalMs,
 }: ManagementListProps) {
   const { t } = useAppI18n();
   if (listState.status === "loading") {
@@ -240,7 +311,15 @@ function ManagementList({
     );
   }
   return (
-    <BackofficeVideoList videos={videos} remove={remove} onDeleted={onDeleted} />
+    <BackofficeVideoList
+      videos={videos}
+      remove={remove}
+      onDeleted={onDeleted}
+      startAnalysis={startAnalysis}
+      onAnalysisStarted={onAnalysisStarted}
+      loadAnalysis={loadAnalysis}
+      pollIntervalMs={pollIntervalMs}
+    />
   );
 }
 
