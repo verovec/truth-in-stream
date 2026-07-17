@@ -52,7 +52,7 @@ func writeScript(t *testing.T, body string) string {
 // written fake-ffmpeg script's descriptor at exec time (Go issue 22315). Only
 // the start is retried; a test asserting a start failure calls Extract
 // directly.
-func startExtract(t *testing.T, e *Extractor, ctx context.Context, src Source) *Stream {
+func startExtract(ctx context.Context, t *testing.T, e *Extractor, src Source) *Stream {
 	t.Helper()
 	for attempt := 0; ; attempt++ {
 		s, err := e.Extract(ctx, src)
@@ -123,7 +123,7 @@ func TestExtractHappyPathFramesAndPacing(t *testing.T) {
 	script := writeScript(t, "head -c 8000 /dev/zero")
 	e, clk := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	frames := collectFrames(t, s)
 	if s.Err() != nil {
 		t.Fatalf("Err = %v, want nil", s.Err())
@@ -160,7 +160,7 @@ func TestExtractSlowerFactorStretchesPacing(t *testing.T) {
 	script := writeScript(t, "head -c 9600 /dev/zero")
 	e, clk := newTestExtractor(t, script, 0.5)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	if got := len(collectFrames(t, s)); got != 3 {
 		t.Fatalf("got %d frames, want 3", got)
 	}
@@ -182,7 +182,7 @@ func TestExtractDropsSubMinimumTail(t *testing.T) {
 	script := writeScript(t, "head -c 4000 /dev/zero")
 	e, _ := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	frames := collectFrames(t, s)
 	if s.Err() != nil {
 		t.Fatalf("Err = %v, want nil", s.Err())
@@ -199,7 +199,7 @@ func TestExtractTrimsOddTrailingByte(t *testing.T) {
 	script := writeScript(t, "head -c 1601 /dev/zero")
 	e, _ := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	frames := collectFrames(t, s)
 	if s.Err() != nil {
 		t.Fatalf("Err = %v, want nil", s.Err())
@@ -214,7 +214,7 @@ func TestExtractEmptyOutputCompletesWithNoFrames(t *testing.T) {
 	script := writeScript(t, "exit 0")
 	e, _ := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	if frames := collectFrames(t, s); len(frames) != 0 {
 		t.Fatalf("got %d frames, want none", len(frames))
 	}
@@ -228,7 +228,7 @@ func TestExtractFFmpegFailureSurfacesTypedError(t *testing.T) {
 	script := writeScript(t, `echo "in.mp4: Invalid data found when processing input" >&2; exit 1`)
 	e, _ := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	if frames := collectFrames(t, s); len(frames) != 0 {
 		t.Fatalf("got %d frames from a failed run", len(frames))
 	}
@@ -251,7 +251,7 @@ func TestExtractFailureMidStreamDeliversFramesThenError(t *testing.T) {
 	script := writeScript(t, `head -c 3200 /dev/zero; echo "demux error" >&2; exit 1`)
 	e, _ := newTestExtractor(t, script, 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: "in.mp4"})
+	s := startExtract(t.Context(), t, e, Source{Input: "in.mp4"})
 	frames := collectFrames(t, s)
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames, want the one emitted before the failure", len(frames))
@@ -302,7 +302,7 @@ func TestExtractContextCancelStopsStream(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	s := startExtract(t, e, ctx, Source{Input: "in.mp4"})
+	s := startExtract(ctx, t, e, Source{Input: "in.mp4"})
 
 	select {
 	case _, ok := <-s.Frames():
@@ -472,7 +472,7 @@ func TestExtractRealFFmpeg(t *testing.T) {
 	}
 	e, _ := newTestExtractor(t, "", 1.0)
 
-	s := startExtract(t, e, t.Context(), Source{Input: path})
+	s := startExtract(t.Context(), t, e, Source{Input: path})
 	frames := collectFrames(t, s)
 	if s.Err() != nil {
 		t.Fatalf("Err = %v, want nil", s.Err())
