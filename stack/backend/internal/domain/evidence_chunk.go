@@ -1,9 +1,18 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrEvidenceSourceConflict reports that the store already holds a different
+// encyclopedic corpus. The corpus is single-source per database (the delta
+// sync's change-fraction denominator and page-id keys depend on it), so a
+// claimant for another source must not proceed. Callers whose corpus work is
+// optional (the dev seed) detect this with errors.Is and skip; the wiki sync
+// itself treats it as fatal.
+var ErrEvidenceSourceConflict = errors.New("evidence corpus already claimed by another source")
 
 // EvidenceChunkKind classifies a chunk by the region of its source document it
 // was extracted from. Ingestion extracts only lead sections today, so almost

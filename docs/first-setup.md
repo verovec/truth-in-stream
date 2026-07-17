@@ -223,8 +223,8 @@ political fast path, `political_claims`); `wiki_chunks` holds evidence used to
 verify matched claims and never changes coverage. So the order of value is:
 schema (migrations) -> curated claims (seed) -> evidence corpora (Wikipedia,
 official statistics) -> structured lookups (parliamentary voting records). Locally,
-`make up` already migrates and seeds all curated datasets offline from the
-committed embedding cache.
+`make up` migrates; `make seed` loads all curated datasets offline from the
+committed embedding cache (seeding is explicit, never part of the boot).
 
 ### Choose a path
 
@@ -272,7 +272,8 @@ and the underlying commands accept `--stop-after` to do it automatically. Detail
 ### Local path: build locally, push to prod
 
 ```sh
-make up                                                   # postgres + migrations + offline seed
+make up                                                   # postgres + migrations (no seed)
+make seed                                                 # optional: offline curated fixtures
 make fleet-up                                             # broker + embedding worker fleet
 make wiki-populate                                        # bulk Wikipedia corpus build (Voyage key)
 make stats-ingest                                         # Eurostat + INSEE + interior ministry passages

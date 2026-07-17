@@ -68,7 +68,7 @@ func (s *Store) EnsureSource(ctx context.Context, source string) error {
 		case err != nil:
 			return fmt.Errorf("check source: %w", err)
 		default:
-			return fmt.Errorf("store already holds source %q; the encyclopedic corpus is single-source, use a fresh database for %q", other, source)
+			return fmt.Errorf("store already holds source %q; the encyclopedic corpus is single-source, use a fresh database for %q: %w", other, source, domain.ErrEvidenceSourceConflict)
 		}
 		if err := q.ClaimEvidenceSource(ctx, source); err != nil {
 			return fmt.Errorf("claim source: %w", err)

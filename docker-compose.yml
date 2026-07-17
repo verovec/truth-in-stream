@@ -48,8 +48,13 @@ services:
   # the only path that uses EMBEDDING_API_KEY. Sample media is fetched once from SAMPLE_VIDEO_URL
   # (default a public test clip) and cached under seed/media-cache (bind-mounted,
   # so it survives reseeds); an unreachable host with no cache seeds the records
-  # without media rather than failing. The backend waits for this so the stores
-  # and gallery are populated before the first request - no restart needed.
+  # without media rather than failing. Nothing depends on this service: seeding
+  # is explicit (`make seed`, or the per-dataset targets) so a stack boot never
+  # touches the operator's data - a real encyclopedic corpus (frwiki) claims the
+  # single-source store, and an auto-seed racing it used to fail `make up`
+  # outright. CI runs it explicitly in the login smoke job. If the store already
+  # holds a real corpus, the wiki fixture is skipped with a warning and the
+  # other datasets still seed.
   seed:
     build:
       context: ./stack/backend
@@ -1137,8 +1142,6 @@ services:
       postgres:
         condition: service_healthy
       migrate:
-        condition: service_completed_successfully
-      seed:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully

@@ -179,8 +179,9 @@ jobs:
       - run: python -m unittest handler_test -v
         working-directory: stack/terraform/modules/observability/forwarder
   # Local Keycloak login smoke test. Boots the docker-compose stack (Postgres,
-  # the offline seed, backend, frontend, and the local Keycloak importing
-  # realm.json) and runs the build-tagged keycloak_smoke Go test from the host
+  # backend, frontend, and the local Keycloak importing realm.json), runs the
+  # offline seed explicitly (nothing auto-seeds anymore), and runs the
+  # build-tagged keycloak_smoke Go test from the host
   # against the published ports. It proves the three legs of local sign-in
   # against a running stack - admin password grant at the token endpoint, the
   # backend accepting that bearer on a representative /api route, and the
@@ -213,10 +214,14 @@ jobs:
           } > .env
       - name: Boot the stack
         # --wait blocks until every started service (and its depends_on chain:
-        # postgres, migrate, seed, minio, redis) is healthy or has completed, so
-        # the readiness loop below only ever waits on application warm-up, not on
-        # the seed one-shot still running.
+        # postgres, migrate, minio, redis) is healthy or has completed, so the
+        # readiness loop below only ever waits on application warm-up.
         run: docker compose up -d --build --wait backend frontend keycloak
+      - name: Seed the offline fixtures
+        # Seeding is explicit (nothing depends_on it since the stack must boot
+        # unseeded next to a real corpus), so CI runs it here - this is the job
+        # that proves the offline seed still works end to end.
+        run: docker compose run --rm seed
       - name: Wait for Keycloak, backend, and frontend
         run: |
           probe() {

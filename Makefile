@@ -105,7 +105,7 @@ bootstrap: ## Generate .env on a fresh checkout (operator email, argon2id hash, 
 	BOOTSTRAP_EMAIL="$$email" BOOTSTRAP_PASSWORD="$$password" \
 	  $(GO) -C stack/backend run ./cmd/bootstrap -root "$(CURDIR)"
 
-up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend, and local Keycloak (imports stack/keycloak/realm.json on :8081)
+up: ## Bring up the full stack: Postgres+pgvector, migrate, backend, frontend, and local Keycloak (imports stack/keycloak/realm.json on :8081). Never seeds; run `make seed` for the offline fixtures
 	@sh scripts/doctor.sh --quiet
 	$(COMPOSE) up --build
 
@@ -115,16 +115,15 @@ keycloak: ## Bring up only the local Keycloak IdP on :8081, importing stack/keyc
 down: ## Stop the stack, keeping the Postgres volume
 	$(COMPOSE) down --remove-orphans
 
-reset: ## Soft reset: drop the schema, re-migrate, and reseed (container stays up)
+reset: ## Soft reset: drop the schema and re-migrate to an empty database (container stays up); run `make seed` for the offline fixtures
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" drop -f
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up
-	$(COMPOSE) run --rm seed
-	@echo "reset complete: schema rebuilt and dataset reseeded"
+	@echo "reset complete: schema rebuilt empty; run 'make seed' for the offline fixtures"
 
-reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch
+reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch; run `make seed` for the offline fixtures
 	$(COMPOSE) down -v --remove-orphans
 	$(COMPOSE) up --build
-	@echo "hard reset complete: fresh volume, migrated and seeded"
+	@echo "hard reset complete: fresh volume, migrated empty; run 'make seed' for the offline fixtures"
 
 backup: ## Snapshot the database to a timestamped dump under backups/ and upload it to S3 (set DB_BACKUP_BUCKET); preserves embeddings so a reset needs no re-embed
 	./scripts/db-backup.sh
