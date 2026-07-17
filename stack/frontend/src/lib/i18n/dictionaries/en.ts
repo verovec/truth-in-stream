@@ -511,6 +511,10 @@ export const en: Dictionary = {
         forbidden: "This action is restricted to administrators.",
         failed: "The analysis could not start.",
       },
+      timeline: {
+        ariaLabel: "Timeline of checked claims",
+        marker: "{text} — {verdict}",
+      },
     },
     uploader: {
       prompt: "Drag a video here, or click to choose",

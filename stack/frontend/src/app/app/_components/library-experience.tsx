@@ -20,6 +20,7 @@ import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
 import { formatTemplate } from "@/lib/i18n/text";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import { AnalysisControl } from "./analysis-control";
+import { ClaimTimelineStrip } from "./claim-timeline-strip";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { LiveSpeakerCredibility } from "./live-speaker-credibility";
 import { LiveSummaryStrip } from "./live-summary-strip";
@@ -251,6 +252,11 @@ export function LibraryExperience({
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="flex flex-col gap-4">
               <PlayerStage active={active} />
+              {/* The claim timeline mounts only alongside the hydrated stored
+                  analysis (the same condition that mounts the analysed driver),
+                  so a live or never-analysed video can never grow a strip from
+                  the frames a live session streams into the shared store. */}
+              {track.frames !== null ? <ClaimTimelineStrip /> : null}
               <AnalysisControl role={role} video={selectedVideo} track={track} />
               <ExportControls role={role} videoId={activeVideoId} />
               <section className="flex flex-col gap-3">
