@@ -247,6 +247,19 @@ describe("parseLiveFrame", () => {
     expect(frame).not.toHaveProperty("segmentIds");
   });
 
+  test("drops a member id list carrying a duplicated id", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", "u1", "u0"],
+      }),
+    );
+    expect(frame).not.toBeNull();
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
   test("a claims frame without segment ids keeps the legacy shape", () => {
     const frame = parseLiveFrame(
       JSON.stringify({

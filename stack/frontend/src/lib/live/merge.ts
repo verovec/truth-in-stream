@@ -43,8 +43,19 @@ export function mergeUnitStatements(
     if (ids.length < 2 || !byId.has(unitId)) {
       continue;
     }
-    const present = ids.flatMap((id) => byId.get(id) ?? []);
-    if (present.length < 2) {
+    // A duplicated id inside one unit's list contributes once; a statement a
+    // previously announced unit already claimed keeps that unit's whole group
+    // unmerged (first announcement wins) - either way no statement's text can
+    // render twice.
+    const seen = new Set<string>();
+    const present = ids.flatMap((id) => {
+      if (seen.has(id)) {
+        return [];
+      }
+      seen.add(id);
+      return byId.get(id) ?? [];
+    });
+    if (present.length < 2 || present.some((s) => memberToUnit.has(s.id))) {
       continue;
     }
     for (const s of present) {
@@ -80,6 +91,11 @@ export function mergeUnitStatements(
       end: Math.max(...present.map((member) => member.end)),
       text: parts.map((part) => part.text).join(" "),
       parts,
+      // A contradiction flag can attach to any member, not only the anchor;
+      // the merged row surfaces the first one so merging never hides it.
+      inconsistency:
+        anchor.inconsistency ??
+        present.find((member) => member.inconsistency)?.inconsistency,
     });
   }
   return merged;
