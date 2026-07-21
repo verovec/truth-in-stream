@@ -169,10 +169,15 @@ type atomicClaimJSON struct {
 // claimsFrame is the wire form of a claims event (retrieve-then-verify path): a
 // unit's atomic claims, each pending a verdict. It shares the unit's correlation
 // id so the client groups the claims under the statement they decomposed from.
+// SegmentIDs lists the unit's member subtitle ids in order so the client can
+// merge the whole group into one displayed statement; it is additive and
+// omitted when empty, so an older client renders per-statement exactly as
+// before.
 type claimsFrame struct {
-	Type   string            `json:"type"`
-	ID     string            `json:"id"`
-	Claims []atomicClaimJSON `json:"claims"`
+	Type       string            `json:"type"`
+	ID         string            `json:"id"`
+	Claims     []atomicClaimJSON `json:"claims"`
+	SegmentIDs []string          `json:"segment_ids,omitempty"`
 }
 
 // claimResultType is the wire discriminator for a per-claim result on the
@@ -522,9 +527,10 @@ func toLiveFrame(ev service.LiveEvent, debugFactCheck bool) any {
 			claims[i] = atomicClaimJSON{ClaimID: c.ClaimID, Text: c.Text, Status: string(service.ClaimStatusPending), Quote: c.Quote, Spans: c.Spans}
 		}
 		return claimsFrame{
-			Type:   string(ev.Kind),
-			ID:     ev.ID,
-			Claims: claims,
+			Type:       string(ev.Kind),
+			ID:         ev.ID,
+			Claims:     claims,
+			SegmentIDs: ev.SegmentIDs,
 		}
 	}
 	// A result event carrying a claim id is a per-claim verdict on the

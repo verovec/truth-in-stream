@@ -195,6 +195,9 @@ func TestAnalyzeTextNoEvidence(t *testing.T) {
 	if c.Status != ClaimStatusVerified || c.Verdict == nil || c.Verdict.Verdict != VerdictUnverifiable || c.Verdict.Basis != BasisKnowledge {
 		t.Errorf("claim = %+v / %+v, want verified unverifiable/knowledge", c, c.Verdict)
 	}
+	if c.Verdict != nil && c.Verdict.Rationale != noSourceRationale {
+		t.Errorf("rationale = %q, want the fixed French no-source rationale", c.Verdict.Rationale)
+	}
 	if len(verifier.seen()) != 0 {
 		t.Errorf("no-evidence claim still called the verifier: %v", verifier.seen())
 	}
@@ -298,6 +301,9 @@ func TestAnalyzeTextPoliticalNoEvidence(t *testing.T) {
 	c := res.Claims[0]
 	if c.Status != ClaimStatusVerified || c.Verdict == nil || c.Verdict.Verdict != VerdictUnverifiable {
 		t.Errorf("claim = %+v / %+v, want verified unverifiable", c, c.Verdict)
+	}
+	if c.Verdict != nil && c.Verdict.Rationale != noSourceRationale {
+		t.Errorf("rationale = %q, want the fixed French no-source rationale", c.Verdict.Rationale)
 	}
 	if len(verifier.seen()) != 0 {
 		t.Errorf("no-evidence political claim still called the verifier: %v", verifier.seen())

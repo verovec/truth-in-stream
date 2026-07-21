@@ -149,7 +149,7 @@ func completedAnalysisView(analyzedAt time.Time) service.VideoAnalysisView {
 		},
 		Events: []service.LiveEvent{
 			{Kind: service.LiveEventSubtitle, ID: "s1", Segment: domain.Segment{Start: 2 * time.Second, End: 4 * time.Second, Text: "bonjour", Speaker: "A"}},
-			{Kind: service.LiveEventClaims, ID: "s1", Claims: []service.AtomicClaim{{ClaimID: "c1", Text: "claim one"}}},
+			{Kind: service.LiveEventClaims, ID: "s1", SegmentIDs: []string{"s1"}, Claims: []service.AtomicClaim{{ClaimID: "c1", Text: "claim one"}}},
 			{Kind: service.LiveEventResult, ID: "s1", ClaimID: "c1", ClaimStatus: service.ClaimStatusVerified, Verdict: &service.VerifiedVerdict{Verdict: service.VerdictCredible, Confidence: 0.8}},
 			// A malformed tally event must be skipped, exactly as the socket
 			// writer skips it, not rendered as a zero-valued frame.

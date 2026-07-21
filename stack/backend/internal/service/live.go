@@ -81,6 +81,10 @@ type LiveEvent struct {
 	Err         string
 	Consistency *ConsistencyFlag
 	Claims      []AtomicClaim
+	// SegmentIDs lists the unit's member subtitle ids, in order, on a
+	// LiveEventClaims event, so a client can render the whole group as one
+	// statement. It is additive and empty on every other kind.
+	SegmentIDs  []string
 	ClaimID     string
 	ClaimStatus ClaimStatus
 	Source      VerdictSource
@@ -409,11 +413,12 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	var unit liveUnit
 	seq := 0
 	idleHolds := 0
-	// prevContext carries the previously flushed unit's trailing sentence (with
-	// its speaker) into the next unit's decomposition, so a claim opening with a
-	// pronoun or an ellipsis still resolves against what was just said - across
-	// speakers too, since a reply's referent is usually the other speaker's last
-	// sentence. It is session-local state, discarded with this loop.
+	// prevContext carries the previously flushed unit's full text (with its
+	// speaker, bounded by maxContextWords) into the next unit's decomposition,
+	// so a claim opening with a pronoun or an ellipsis still resolves against
+	// anything in the group that was just said - across speakers too, since a
+	// reply's referent is usually the other speaker's last turn. It is
+	// session-local state, discarded with this loop.
 	prevContext := ""
 	flush := func() bool {
 		if unit.empty() {
@@ -798,47 +803,30 @@ func incompleteTrailingFragment(text string) bool {
 	return trailingWords > 0 && trailingWords < maxWordsPerSentence
 }
 
-// contextTail renders one flushed unit's trailing sentence as the next unit's
+// maxContextWords bounds the decomposition context handed to the next unit: a
+// full unit of defaultMaxSentences sentences fits comfortably, while an
+// unpunctuated run can never grow the prompt without limit. The most recent
+// words are kept, since a reference usually points at what was said last.
+const maxContextWords = 120
+
+// contextTail renders one flushed unit's full text as the next unit's
 // decomposition context, prefixed with the speaker label when known so a
-// cross-speaker reply resolves "he/that" against the right person. The tail is
-// bounded (lastSentence caps unpunctuated runs), so the context can never grow
-// the decomposition prompt without limit.
+// cross-speaker reply resolves "he/that" against the right person. The whole
+// previous group rides along - not just its last sentence - so a reference to
+// anything said in it still resolves; the tail is bounded at maxContextWords
+// (keeping the most recent words).
 func contextTail(speaker, text string) string {
-	tail := lastSentence(text)
-	if tail == "" {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
 		return ""
 	}
+	if words := strings.Fields(trimmed); len(words) > maxContextWords {
+		trimmed = strings.Join(words[len(words)-maxContextWords:], " ")
+	}
 	if speaker == "" {
-		return tail
+		return trimmed
 	}
-	return speaker + ": " + tail
-}
-
-// lastSentence returns the final sentence of text: the run following the last
-// sentence terminator that is itself followed by more speech (text ending in a
-// terminator returns its final complete sentence). Unpunctuated speech has no
-// boundary to cut on, so the run is capped at the trailing maxWordsPerSentence
-// words - the same bound sentenceCount treats as one sentence's worth.
-func lastSentence(text string) string {
-	start := 0
-	afterTerminator := false
-	for i, r := range text {
-		switch {
-		case isTerminator(r):
-			afterTerminator = true
-		case unicode.IsSpace(r):
-			// Spaces neither open a new sentence nor cancel a pending boundary.
-		case afterTerminator:
-			start = i
-			afterTerminator = false
-		}
-	}
-	sentence := strings.TrimSpace(text[start:])
-	words := strings.Fields(sentence)
-	if len(words) > maxWordsPerSentence {
-		sentence = strings.Join(words[len(words)-maxWordsPerSentence:], " ")
-	}
-	return sentence
+	return speaker + ": " + trimmed
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the
