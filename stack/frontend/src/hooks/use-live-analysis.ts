@@ -48,11 +48,11 @@ import {
   applyFrame,
   clearAnalysing,
   emptyStatements,
-  type LiveStatement,
   listStatements,
   type StatementsState,
 } from "@/lib/live/statements";
 import { type LiveSummary, summarizeStatements } from "@/lib/live/summary";
+import { type DisplayStatement, mergeUnitStatements } from "@/lib/live/merge";
 import { liveSocketUrl } from "@/lib/live/url";
 import type { LiveSocket } from "@/lib/live/ports";
 
@@ -62,7 +62,10 @@ export type UseLiveAnalysisOptions = {
 };
 
 export type LiveAnalysis = {
-  statements: LiveStatement[];
+  // statements are the transcript rows in start order; a multi-statement unit
+  // that produced claims arrives pre-merged into one row carrying parts (see
+  // mergeUnitStatements), so every consumer renders the group as one statement.
+  statements: DisplayStatement[];
   caption: string;
   status: LiveStatus;
   summary: LiveSummary;
@@ -413,8 +416,14 @@ export function useLiveAnalysis(
   }, [paused]);
 
   // Memoize the ordered list so a caption-only update (every interim word) does
-  // not produce a new array reference and re-render the memoized statement list.
-  const orderedStatements = useMemo(() => listStatements(statements), [statements]);
+  // not produce a new array reference and re-render the memoized statement
+  // list. Multi-statement units that produced claims are merged into one row
+  // (the claims frame announced their membership), so the transcript shows the
+  // group as one statement.
+  const orderedStatements = useMemo(
+    () => mergeUnitStatements(listStatements(statements), claims.members),
+    [statements, claims.members],
+  );
 
   // The running summary is a pure projection of the same statements and claims,
   // memoized on them so an interim caption (which touches neither) does not

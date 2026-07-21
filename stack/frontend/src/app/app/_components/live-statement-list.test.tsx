@@ -84,6 +84,78 @@ describe("LiveStatementList", () => {
     expect(subtitleList().textContent).toContain("Le chomage a baisse fortement.");
   });
 
+  test("a verified-unverifiable highlight keeps the neutral wash, underlined", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
+        selectedStatementId={null}
+        highlightsFor={(segmentId) =>
+          segmentId === "0"
+            ? [
+                {
+                  unitId: "0",
+                  claimId: "0-0",
+                  start: 3,
+                  end: 19,
+                  status: "verified",
+                  verdict: "unverifiable",
+                },
+              ]
+            : []
+        }
+      />,
+    );
+    const mark = subtitleList().querySelector("mark");
+    expect(mark?.textContent).toBe("chomage a baisse");
+    // No source settled the claim: the mark stays neutral (no verdict colour),
+    // its underline distinguishing it from a still-pending claim.
+    expect(mark?.className).not.toContain("bg-verdict");
+    expect(mark?.className).toContain("bg-ink/8");
+    expect(mark?.className).toContain("underline");
+  });
+
+  test("a merged unit renders one row with per-member highlights", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          {
+            ...analysing("0", 0, "Le budget monte. Il monte de dix pour cent."),
+            speaker: "A",
+            end: 6,
+            parts: [
+              { id: "0", text: "Le budget monte." },
+              { id: "1", text: "Il monte de dix pour cent." },
+            ],
+          },
+        ]}
+        selectedStatementId={null}
+        highlightsFor={(segmentId) =>
+          segmentId === "1"
+            ? [
+                {
+                  unitId: "0",
+                  claimId: "0-0",
+                  start: 12,
+                  end: 25,
+                  status: "verified",
+                  verdict: "credible",
+                },
+              ]
+            : []
+        }
+      />,
+    );
+    const items = subtitleList().querySelectorAll("li");
+    expect(items).toHaveLength(1);
+    // Both members' texts read as one statement.
+    expect(items[0].textContent).toContain("Le budget monte.");
+    expect(items[0].textContent).toContain("Il monte de dix pour cent.");
+    // The second member's span still anchors by its own segment offsets.
+    const mark = items[0].querySelector("mark");
+    expect(mark?.textContent).toBe("dix pour cent");
+    expect(mark?.className).toContain("bg-verdict-credible");
+  });
+
   test("a pending highlight renders a neutral wash, an unchecked one renders plain", () => {
     renderWithPlayback(
       <LiveStatementList

@@ -138,10 +138,15 @@ export type AtomicClaim = {
 // (retrieve-then-verify path). id is the unit's correlation id, shared with the
 // unit's subtitle so the client groups the claims under the statement they came
 // from; each claim carries its own claim_id the per-claim results key on.
+// segmentIds lists the unit's member subtitle ids in order when the unit was
+// built from several statements, so the transcript can merge the whole group
+// into one displayed statement; absent on an older backend or a single-member
+// unit, leaving per-statement rendering unchanged.
 export type ClaimsFrame = {
   type: "claims";
   id: string;
   claims: AtomicClaim[];
+  segmentIds?: string[];
 };
 
 // ClaimResultFrame is one per-claim result on the retrieve-then-verify path. id
@@ -397,7 +402,22 @@ export function parseLiveFrameValue(value: unknown): LiveFrame | null {
       }
       claims.push(claim);
     }
-    return { type: "claims", id: value.id, claims };
+    const frame: ClaimsFrame = { type: "claims", id: value.id, claims };
+    if (Array.isArray(value.segment_ids)) {
+      // A malformed entry drops the whole list rather than merging a partial
+      // group: a group missing a member would render a statement's text twice
+      // (once merged, once standalone) or lose it entirely.
+      const segmentIds = value.segment_ids.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      if (
+        segmentIds.length > 0 &&
+        segmentIds.length === value.segment_ids.length
+      ) {
+        frame.segmentIds = segmentIds;
+      }
+    }
+    return frame;
   }
 
   if (value.type === "claim_result") {

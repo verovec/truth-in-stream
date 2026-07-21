@@ -220,6 +220,44 @@ describe("parseLiveFrame", () => {
     });
   });
 
+  test("carries the unit's member segment ids", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", "u1"],
+      }),
+    );
+    expect(frame).toMatchObject({ segmentIds: ["u0", "u1"] });
+  });
+
+  test("drops a member id list carrying a malformed entry", () => {
+    // A partial group would render a statement twice or lose it; the whole
+    // list is dropped so the unit falls back to per-statement rendering.
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", 7],
+      }),
+    );
+    expect(frame).not.toBeNull();
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
+  test("a claims frame without segment ids keeps the legacy shape", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+      }),
+    );
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
   test("carries a claim's verbatim quote and highlight spans", () => {
     const frame = parseLiveFrame(
       JSON.stringify({
