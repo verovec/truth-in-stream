@@ -89,6 +89,55 @@ describe("mergeUnitStatements", () => {
     });
   });
 
+  test("overlapping units never render a statement twice: first announced wins", () => {
+    const statements = [
+      analysing("0", 1, 2, "Zero.", "A"),
+      analysing("1", 2, 3, "One.", "A"),
+      analysing("2", 3, 4, "Two.", "A"),
+    ];
+    const members = new Map([
+      ["0", ["0", "1"]],
+      ["1", ["1", "2"]],
+    ]);
+
+    const merged = mergeUnitStatements(statements, members);
+
+    expect(merged.map((s) => s.id)).toEqual(["0", "2"]);
+    expect(merged[0].text).toBe("Zero. One.");
+    expect(merged[1]).toBe(statements[2]);
+  });
+
+  test("a duplicated member id contributes its statement once", () => {
+    const statements = [
+      analysing("0", 1, 2, "Zero.", "A"),
+      analysing("1", 2, 3, "One.", "A"),
+    ];
+    const members = new Map([["0", ["0", "0", "1"]]]);
+
+    const merged = mergeUnitStatements(statements, members);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].text).toBe("Zero. One.");
+    expect(merged[0].parts?.map((p) => p.id)).toEqual(["0", "1"]);
+  });
+
+  test("a non-anchor member's inconsistency flag survives the merge", () => {
+    const flagged: LiveStatement = {
+      ...analysing("1", 2, 3, "One.", "A"),
+      inconsistency: { earlierId: "9", earlierText: "earlier words" },
+    };
+    const statements = [analysing("0", 1, 2, "Zero.", "A"), flagged];
+    const members = new Map([["0", ["0", "1"]]]);
+
+    const merged = mergeUnitStatements(statements, members);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].inconsistency).toEqual({
+      earlierId: "9",
+      earlierText: "earlier words",
+    });
+  });
+
   test("two merged units and interleaved plain statements keep list order", () => {
     const statements = [
       analysing("0", 1, 2, "A un.", "A"),

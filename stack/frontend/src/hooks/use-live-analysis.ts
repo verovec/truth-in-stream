@@ -135,14 +135,17 @@ function prepareFrame(
     return { ...frame, id, earlierId: `${sessionSeq}:${frame.earlierId}` };
   }
   if (frame.type === "claims") {
-    // A claims frame carries the unit's correlation id and, per claim, the
-    // segment ids its highlight spans anchor to; all of them are namespaced so
-    // they key to this session's statements after a reconnect. claim_id is
-    // per-unit and needs no session prefix - it is only ever read within a unit
-    // already namespaced by id.
+    // A claims frame carries the unit's correlation id, the unit's member
+    // segment ids, and, per claim, the segment ids its highlight spans anchor
+    // to; all of them are namespaced so they key to this session's statements
+    // after a reconnect. claim_id is per-unit and needs no session prefix - it
+    // is only ever read within a unit already namespaced by id.
     return {
       ...frame,
       id,
+      segmentIds: frame.segmentIds?.map(
+        (segmentId) => `${sessionSeq}:${segmentId}`,
+      ),
       claims: frame.claims.map((claim) =>
         claim.spans
           ? {

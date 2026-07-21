@@ -404,15 +404,18 @@ export function parseLiveFrameValue(value: unknown): LiveFrame | null {
     }
     const frame: ClaimsFrame = { type: "claims", id: value.id, claims };
     if (Array.isArray(value.segment_ids)) {
-      // A malformed entry drops the whole list rather than merging a partial
-      // group: a group missing a member would render a statement's text twice
-      // (once merged, once standalone) or lose it entirely.
+      // A malformed or duplicated entry drops the whole list rather than
+      // merging a partial group: a group missing a member would render a
+      // statement's text twice (once merged, once standalone) or lose it
+      // entirely, and a duplicated member would double its text inside the
+      // merged row.
       const segmentIds = value.segment_ids.filter(
         (id): id is string => typeof id === "string" && id.length > 0,
       );
       if (
         segmentIds.length > 0 &&
-        segmentIds.length === value.segment_ids.length
+        segmentIds.length === value.segment_ids.length &&
+        new Set(segmentIds).size === segmentIds.length
       ) {
         frame.segmentIds = segmentIds;
       }

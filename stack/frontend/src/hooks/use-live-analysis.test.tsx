@@ -290,6 +290,49 @@ describe("useLiveAnalysis", () => {
     });
   });
 
+  test("a claims frame's member segment ids merge the unit into one statement", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() =>
+      h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "Le budget monte.")),
+    );
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        subtitleFrame("1", 2, "Il monte de dix pour cent."),
+      ),
+    );
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        JSON.stringify({
+          type: "claims",
+          id: "0",
+          segment_ids: ["0", "1"],
+          claims: [
+            {
+              claim_id: "0-0",
+              text: "Le budget monte de dix pour cent.",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+    );
+
+    // The member ids are namespaced like every other correlation id, so the
+    // merge resolves them against this session's statements.
+    const statements = h.analysis().statements;
+    expect(statements.map((s) => s.id)).toEqual(["1:0"]);
+    expect(statements[0]).toMatchObject({
+      text: "Le budget monte. Il monte de dix pour cent.",
+      parts: [
+        { id: "1:0", text: "Le budget monte." },
+        { id: "1:1", text: "Il monte de dix pour cent." },
+      ],
+    });
+    expect(h.analysis().claimsFor("1:0")).toHaveLength(1);
+  });
+
   test("claim highlight spans namespace their segment ids to the session", () => {
     const h = harness();
     play(h.store());
