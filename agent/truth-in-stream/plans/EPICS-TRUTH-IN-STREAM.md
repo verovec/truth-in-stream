@@ -145,6 +145,41 @@ vs backoffice files), D7 last.
 
 ---
 
+## Epic E - Claim detection quality (E1..E3, 3 cards, Linear ids pending re-auth)
+
+**Scope for its agent.** Tighten the verify-path detection loop: no-source claims always land
+unverifiable with French-only rationales, the decomposer reads the full previous sentence group
+as context and quotes only the claim core, and the live view merges a claim-bearing unit into
+one statement with claim-core-only highlights.
+
+**Context.** All three cards reshape the retrieve-then-verify path delivered by VER-83..92 and
+refined by the claims-window work (PR #246). The knowledge fallback (`FACTCHECK_KNOWLEDGE_FALLBACK`)
+is retired: a verdict may only be credible/disputed when at least one validated citation backs it.
+The claims frame gains an additive `segment_ids` field so the frontend can merge a unit's member
+statements. Linear was unreachable at authoring time (API key 401); the full card bodies live in
+`LINEAR-LEDGER-CLAIM-QUALITY.md` beside this file for replay, label `epic:claim-quality`.
+
+**Cards & internal order:**
+- `E1 (no-source unverifiable + French rationales) -> E2 (previous-group context + minimal
+  quotes + segment_ids) -> E3 (frontend merged statements + claim-core highlights)`.
+- The chain is serial: E1 and E2 both edit `internal/service/verify_path.go`; E3 consumes E2's
+  wire field.
+
+**Entry cards (no deps, start immediately):** E1.
+
+**Owns / touches:** `stack/backend/internal/verify/`, `stack/backend/internal/service/{verify_path,
+political_path,live,document_analyzer,claimspan,video_analyzer}.go`, `stack/backend/internal/claimdecomp/`,
+`stack/backend/internal/config/config.go`, `stack/backend/cmd/server/main.go`,
+`stack/backend/internal/handler/live.go`, `stack/frontend/src/lib/live/*`,
+`stack/frontend/src/app/app/_components/live-statement-list.tsx`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A..D are delivered.
+
+**Parallelism:** the epic itself can run now; internally strictly serial (E1 -> E2 -> E3,
+delivered merge-then-next on `dev`).
+
+---
+
 ## Cross-epic dependencies
 
 Only two hard cross-epic blocks exist, both from B into C:

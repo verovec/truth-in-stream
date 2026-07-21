@@ -98,6 +98,9 @@
 | VER-220 | Backoffice: video analysis status and analyse/re-analyse controls | Done | High | VER-218 |
 | VER-221 | Claim timeline strip: verdict-colored playback overview | Done | Medium | VER-219 |
 | VER-222 | Pre-analysis docs and end-to-end verification close-out | Done | Medium | VER-221, VER-220 |
+| E1 | No-source claims are unverifiable and every rationale is French | Todo | High | |
+| E2 | Claim extraction reads the previous group and quotes only the claim core | Todo | High | E1 |
+| E3 | Live view merges a claim unit into one statement with claim-core highlights | Todo | High | E2 |
 
 ## Dependency graph
 
@@ -108,11 +111,15 @@ VER-218 -> VER-219
 VER-218 -> VER-220
 VER-219 -> VER-221
 VER-220 -> VER-222
-VER-221 -> VER-222
+E1 -> E2
+E2 -> E3
 
 ## Ready queue
 
-(empty - Epic D delivered in full on 2026-07-17; no `Todo` cards. Note: the card list
-above VER-216 is a stale historical snapshot that predates VER-93; it is not maintained
-by this entry. Linear card states still need the deferred sync once the connector is
-re-authenticated.)
+1. E1 (entry card of Epic E - claim detection quality)
+
+(E1..E3 are provisional ids: Linear was unreachable at creation (API key 401); replay the
+bodies in `LINEAR-LEDGER-CLAIM-QUALITY.md` once the connector re-authenticates and replace
+E1..E3 with the real VER numbers. Note: the card list above VER-216 is a stale historical
+snapshot that predates VER-93; it is not maintained by this entry. Linear card states still
+need the deferred sync once the connector is re-authenticated.)
