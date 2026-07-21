@@ -15,6 +15,7 @@ import {
 } from "./claims";
 import type { LiveFrame } from "./frames";
 import { claimHighlights, NO_HIGHLIGHTS } from "./highlight";
+import { mergeUnitStatements } from "./merge";
 import {
   applySpeakerTallyFrame,
   emptySpeakers,
@@ -74,7 +75,10 @@ export function foldAnalysisFrames(
  * in flight in a stored session.
  */
 export function analysedSnapshot(state: HydratedAnalysisState): LiveAnalysis {
-  const statements = listStatements(state.statements);
+  const statements = mergeUnitStatements(
+    listStatements(state.statements),
+    state.claims.members,
+  );
   const highlightIndex = claimHighlights(state.claims);
   return {
     statements,

@@ -190,6 +190,35 @@ describe("hydrateAnalysis", () => {
     expect(snapshot.speakers).toHaveLength(1);
   });
 
+  test("merges a stored multi-statement unit into one displayed statement", () => {
+    const frames = [
+      { type: "subtitle", id: "s1", start: 5, end: 8, text: "Le budget monte.", speaker: "A" },
+      { type: "subtitle", id: "s2", start: 8, end: 11, text: "Il monte de dix pour cent.", speaker: "A" },
+      {
+        type: "claims",
+        id: "s1",
+        segment_ids: ["s1", "s2"],
+        claims: [{ claim_id: "c1", text: "Le budget monte de dix pour cent.", status: "pending" }],
+      },
+    ]
+      .map(parseLiveFrameValue)
+      .filter((f): f is LiveFrame => f !== null);
+
+    const snapshot = hydrateAnalysis(frames);
+
+    expect(snapshot.statements.map((s) => s.id)).toEqual(["s1"]);
+    expect(snapshot.statements[0]).toMatchObject({
+      start: 5,
+      end: 11,
+      text: "Le budget monte. Il monte de dix pour cent.",
+      parts: [
+        { id: "s1", text: "Le budget monte." },
+        { id: "s2", text: "Il monte de dix pour cent." },
+      ],
+    });
+    expect(snapshot.claimsFor("s1")).toHaveLength(1);
+  });
+
   test("produces the same analysis state as the live WebSocket session it was recorded from", () => {
     const live = liveHarness();
     const hydrated = hydrateAnalysis(sessionFrames());

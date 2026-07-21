@@ -10,6 +10,7 @@ import {
   type ClaimHighlight,
   segmentTextParts,
 } from "@/lib/live/highlight";
+import type { DisplayStatement } from "@/lib/live/merge";
 import { isScored, type LiveStatement } from "@/lib/live/statements";
 import { formatTime } from "@/lib/playback/format-time";
 import { useAppI18n, type AppDictionary } from "@/components/i18n/app-i18n";
@@ -41,7 +42,7 @@ export const LiveStatementList = memo(function LiveStatementList({
   highlightsFor,
   onSelect,
 }: {
-  statements: LiveStatement[];
+  statements: DisplayStatement[];
   selectedStatementId: string | null;
   // Bumped by the parent on every fact-check selection so re-selecting the same
   // entry scrolls its origin back into view even when the id is unchanged.
@@ -196,10 +197,26 @@ export const LiveStatementList = memo(function LiveStatementList({
                   </span>
                 </span>
                 <span className="text-[0.9375rem] leading-6 break-words text-ink dark:text-paper">
-                  <HighlightedStatementText
-                    text={statement.text}
-                    highlights={highlightsFor?.(statement.id) ?? []}
-                  />
+                  {/* A merged unit renders each member's text through its own
+                      highlight lookup, so span offsets stay valid against the
+                      original per-segment text while the group reads as one
+                      statement. */}
+                  {statement.parts ? (
+                    statement.parts.map((part, partIndex) => (
+                      <span key={part.id}>
+                        {partIndex > 0 ? " " : null}
+                        <HighlightedStatementText
+                          text={part.text}
+                          highlights={highlightsFor?.(part.id) ?? []}
+                        />
+                      </span>
+                    ))
+                  ) : (
+                    <HighlightedStatementText
+                      text={statement.text}
+                      highlights={highlightsFor?.(statement.id) ?? []}
+                    />
+                  )}
                 </span>
               </button>
               {/* On the retrieve-then-verify path the unit fans into atomic
@@ -228,15 +245,19 @@ export const LiveStatementList = memo(function LiveStatementList({
 
 // HIGHLIGHT_CLASSES maps a highlight's lifecycle to its mark tint: a soft
 // neutral wash while the claim is pending/checking, the verdict tint once
-// verified. An unchecked or errored claim renders no mark - a highlight asserts
-// "these words were checked", which those terminals cannot honestly claim.
+// verified. Only credible (green) and disputed (red) carry colour; an
+// unverifiable claim keeps the neutral wash - no source settled it, so the mark
+// says "checked" without asserting a direction - distinguished from a still-
+// pending claim by its underline. An unchecked or errored claim renders no
+// mark - a highlight asserts "these words were checked", which those terminals
+// cannot honestly claim.
 const HIGHLIGHT_VERDICT_CLASSES: Record<string, string> = {
   credible:
     "bg-verdict-credible/15 underline decoration-2 underline-offset-2 decoration-verdict-credible/60",
   disputed:
     "bg-verdict-disputed/15 underline decoration-2 underline-offset-2 decoration-verdict-disputed/60",
   unverifiable:
-    "bg-verdict-unverifiable/15 underline decoration-2 underline-offset-2 decoration-verdict-unverifiable/60",
+    "bg-ink/8 underline decoration-2 underline-offset-2 decoration-ink/25 dark:bg-paper/10 dark:decoration-paper/30",
 };
 
 // highlightClass resolves one highlight's mark styling from its claim's live

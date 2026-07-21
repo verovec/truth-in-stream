@@ -52,14 +52,19 @@ export type LiveClaim = {
 // ClaimsState keys a unit's claims by claim_id under the unit's correlation id.
 // order preserves the announced claim order (a claim_result may arrive before
 // its claims frame on a reconnect replay, so order is appended to lazily) so the
-// list renders deterministically regardless of arrival order.
+// list renders deterministically regardless of arrival order. members records
+// each unit's ordered member subtitle ids when the claims frame announced them
+// (a unit built from several statements), so the transcript can merge the group
+// into one displayed statement; a unit absent from members renders per
+// statement, exactly the legacy shape.
 export type ClaimsState = {
   byUnit: ReadonlyMap<string, ReadonlyMap<string, LiveClaim>>;
   order: ReadonlyMap<string, readonly string[]>;
+  members: ReadonlyMap<string, readonly string[]>;
 };
 
 export function emptyClaims(): ClaimsState {
-  return { byUnit: new Map(), order: new Map() };
+  return { byUnit: new Map(), order: new Map(), members: new Map() };
 }
 
 // applyClaimsFrame announces a unit's atomic claims, each pending a verdict. A
@@ -99,7 +104,12 @@ export function applyClaimsFrame(
   }
   byUnit.set(frame.id, claims);
   order.set(frame.id, claimOrder);
-  return { byUnit, order };
+  if (frame.segmentIds && frame.segmentIds.length > 0) {
+    const members = new Map(state.members);
+    members.set(frame.id, frame.segmentIds);
+    return { byUnit, order, members };
+  }
+  return { byUnit, order, members: state.members };
 }
 
 // applyClaimResultFrame replaces one claim's row in place, keyed on claim_id. A
@@ -153,7 +163,7 @@ export function applyClaimResultFrame(
     const prior = order.get(frame.id) ?? [];
     order.set(frame.id, [...prior, frame.claimId]);
   }
-  return { byUnit, order };
+  return { byUnit, order, members: state.members };
 }
 
 // isTerminalClaimStatus is the single definition of claim terminality the
@@ -205,6 +215,7 @@ export function dropUnits(
 ): ClaimsState {
   const byUnit = new Map<string, ReadonlyMap<string, LiveClaim>>();
   const order = new Map<string, readonly string[]>();
+  const members = new Map<string, readonly string[]>();
   for (const [unitId, claims] of state.byUnit) {
     if (keep.has(unitId)) {
       byUnit.set(unitId, claims);
@@ -212,7 +223,11 @@ export function dropUnits(
       if (o) {
         order.set(unitId, o);
       }
+      const m = state.members.get(unitId);
+      if (m) {
+        members.set(unitId, m);
+      }
     }
   }
-  return { byUnit, order };
+  return { byUnit, order, members };
 }

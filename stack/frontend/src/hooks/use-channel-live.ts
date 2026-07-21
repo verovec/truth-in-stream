@@ -25,6 +25,7 @@ import {
   listStatements,
   type StatementsState,
 } from "@/lib/live/statements";
+import { mergeUnitStatements } from "@/lib/live/merge";
 import { summarizeStatements } from "@/lib/live/summary";
 import { channelLiveSocketUrl } from "@/lib/live/url";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
@@ -188,8 +189,8 @@ export function useChannelLive(
   }, [channelId]);
 
   const orderedStatements = useMemo(
-    () => listStatements(statements),
-    [statements],
+    () => mergeUnitStatements(listStatements(statements), claims.members),
+    [statements, claims.members],
   );
 
   const summary = useMemo(
