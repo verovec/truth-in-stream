@@ -306,8 +306,8 @@ type unitMember struct {
 
 // pendingUnit is one analysis unit handed to the worker pool: the members to
 // score together, the unit's canonical speaker (the label intra-speaker
-// consistency is scoped to), and the trailing sentence of the previously
-// flushed unit as decomposition context. Speaker travels alongside the members
+// consistency is scoped to), and the previously flushed unit's full text
+// (bounded by contextTail) as decomposition context. Speaker travels alongside the members
 // because the unit's normalized speaker is resolved during accumulation and
 // would be lost once the members are detached from their liveUnit; context
 // travels the same way because only the analyze loop knows what was flushed

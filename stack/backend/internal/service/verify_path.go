@@ -514,7 +514,7 @@ func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string
 // on the fast pool and assigns each surviving atomic claim a stable id
 // (anchorID plus an index). The live path passes the unit's anchor id, speaker,
 // and recent context; the batch analyzer passes a per-sentence anchor, an empty
-// speaker, and the previous sentence as context. Spans are the caller's
+// speaker, and the preceding sentence group as context. Spans are the caller's
 // concern: only the live path knows the unit's member segments.
 func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, recentContext, anchorID string) []AtomicClaim {
 	fastCtx, cancel := context.WithTimeout(ctx, vp.fastDeadline)

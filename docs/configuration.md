@@ -260,7 +260,7 @@ gate) share one provider; the terminal reasoning gate is decoupled. Keys are sec
 | `FACTCHECK_VERIFY_CACHE_TTL` | `30s` | Semantic-claim-cache window (0 disables); a paraphrase above the threshold replays the cached verdict |
 | `FACTCHECK_VERIFY_CACHE_THRESHOLD` | `0.95` | Cosine bar for a cache hit |
 | `FACTCHECK_VERIFY_CACHE_MAX_ENTRIES` | `1024` | In-process cache size, oldest evicted first |
-| `LIVE_MAX_SENTENCES` | `4` | Sentences accumulated into one live analysis unit before it is scored (the decomposer's window); the previous unit's trailing sentence is always passed as decomposition context |
+| `LIVE_MAX_SENTENCES` | `4` | Sentences accumulated into one live analysis unit before it is scored (the decomposer's window); the previous unit's full text (bounded to its most recent 120 words) is always passed as decomposition context |
 
 A claim that retrieves no evidence is always classified `unverifiable` with a fixed French
 rationale, without a verifier call; a verdict is only ever `credible` or `disputed` when at
