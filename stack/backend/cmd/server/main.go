@@ -756,7 +756,6 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 		CacheThreshold:    cfg.CacheThreshold,
 		CacheMaxEntries:   cfg.CacheMaxEntries,
 		Logger:            logger,
-		KnowledgeFallback: cfg.KnowledgeFallback,
 		Political:         pol,
 		SecondPass:        secondPassCfg,
 	})
@@ -790,14 +789,11 @@ func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.Secon
 	if err != nil {
 		return nil, err
 	}
-	// FACTCHECK_KNOWLEDGE_FALLBACK=false zeroes this floor inside NewVerifyPath,
-	// where both knobs meet, so the coherence rule holds for every constructor.
 	return &service.SecondPassConfig{
-		Reverifier:     reverifierAdapter{reverifier},
-		TriggerBelow:   cfg.TriggerBelow,
-		MinConfidence:  cfg.MinConfidence,
-		Deadline:       cfg.Deadline,
-		KnowledgeFloor: cfg.KnowledgeFloor,
+		Reverifier:    reverifierAdapter{reverifier},
+		TriggerBelow:  cfg.TriggerBelow,
+		MinConfidence: cfg.MinConfidence,
+		Deadline:      cfg.Deadline,
 	}, nil
 }
 
@@ -934,7 +930,6 @@ func preanalysisEngine(transcription config.Transcription, pre config.Preanalysi
 	engine.VerifyProvider = resolvedProvider(verifyCfg.Provider)
 	engine.VerifyModel = verifyCfg.Model
 	engine.RetrievalThreshold = verifyCfg.RetrievalThreshold
-	engine.KnowledgeFallback = verifyCfg.KnowledgeFallback
 	engine.Political = political.Active(true)
 	if gate.Active() {
 		engine.SecondPassModel = gate.Model

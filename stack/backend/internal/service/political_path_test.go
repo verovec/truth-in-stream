@@ -552,28 +552,32 @@ func TestPoliticalPathRoutingFailureWithNoEvidenceIsUnverifiable(t *testing.T) {
 	if last.Verdict.Literal != LiteralUnverifiable {
 		t.Fatalf("no-evidence literal = %q, want unverifiable", last.Verdict.Literal)
 	}
+	if last.Verdict.Rationale != noSourceRationale {
+		t.Fatalf("no-evidence rationale = %q, want the fixed French no-source rationale", last.Verdict.Rationale)
+	}
 	if seen := verifier.seen(); len(seen) != 0 {
 		t.Fatalf("verifier called %v, want none with no evidence", seen)
 	}
 }
 
-func TestPoliticalPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
+func TestPoliticalPathKnowledgeBasisVerdictIsDemoted(t *testing.T) {
 	t.Parallel()
-	// With the knowledge fallback on, a claim that routes no evidence still
-	// reaches the two-axis verifier and its knowledge-basis judgment emits,
-	// mirroring the credibility path's sparse-corpus behavior.
+	// Evidence was routed but the two-axis verifier grounded its judgment in none
+	// of it (basis knowledge, no surviving citation): both axes demote to
+	// unverifiable - accurate and inaccurate are reserved for verdicts a real
+	// source backs - while the rationale and the orthogonal manipulation flags are
+	// kept.
 	unit := "le budget de la defense a double en dix ans."
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
 	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
-	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{}} // empty, no error
+	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{unit: {srcEvidence(source.KindWebSearch, "h", "passage")}}}
 	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
-		unit: {Literal: LiteralAccurate, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "conforme aux ordres de grandeur connus"},
+		unit: {Literal: LiteralAccurate, Basis: BasisKnowledge, Confidence: 0.55, Flags: []string{"missing-context"}, Rationale: "conforme aux ordres de grandeur connus"},
 	}}
 
 	a := politicalFixture(t, stream, matcher, VerifyPathConfig{
-		Decomposer:        fakeDecomposer{byText: map[string][]string{unit: {unit}}},
-		Verifier:          &fakeVerifier{},
-		KnowledgeFallback: true,
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   &fakeVerifier{},
 	}, PoliticalConfig{Classifier: fakeClassifier{}, Retriever: router, Verifier: verifier})
 
 	events := runVerifyPath(t, a)
@@ -586,11 +590,20 @@ func TestPoliticalPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
 	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
 		t.Fatalf("terminal = %+v, want a verified verdict", last)
 	}
-	if last.Verdict.Literal != LiteralAccurate || last.Verdict.Basis != BasisKnowledge {
-		t.Fatalf("fallback verdict = %+v, want the verifier's accurate/knowledge judgment", last.Verdict)
+	if last.Verdict.Literal != LiteralUnverifiable || last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("demoted verdict = %+v, want unverifiable on both axes", last.Verdict)
+	}
+	if last.Verdict.Rationale != "conforme aux ordres de grandeur connus" {
+		t.Fatalf("demoted rationale = %q, want the model's rationale kept", last.Verdict.Rationale)
+	}
+	if len(last.Verdict.Flags) != 1 || last.Verdict.Flags[0] != "missing-context" {
+		t.Fatalf("demoted flags = %v, want the framing axis carried through", last.Verdict.Flags)
+	}
+	if len(last.Verdict.Citations) != 0 {
+		t.Fatalf("demoted citations = %+v, want none (the unverifiable invariant)", last.Verdict.Citations)
 	}
 	if seen := verifier.seen(); len(seen) != 1 || seen[0] != unit {
-		t.Fatalf("verifier calls = %v, want exactly the no-evidence claim", seen)
+		t.Fatalf("verifier calls = %v, want exactly the routed claim", seen)
 	}
 }
 

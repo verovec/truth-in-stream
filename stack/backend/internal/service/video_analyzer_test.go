@@ -676,7 +676,6 @@ func TestEngineMetadataJSONShape(t *testing.T) {
 		VerifyProvider:     "deepseek",
 		VerifyModel:        "deepseek-chat",
 		RetrievalThreshold: 0.45,
-		KnowledgeFallback:  true,
 		Political:          true,
 		SecondPassModel:    "deepseek-reasoner",
 		HybridSearch:       true,
@@ -685,7 +684,7 @@ func TestEngineMetadataJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	want := `{"transcriber_model":"u3-rt-pro","pacing_factor":1,"verify_provider":"deepseek","verify_model":"deepseek-chat","retrieval_threshold":0.45,"knowledge_fallback":true,"political":true,"second_pass_model":"deepseek-reasoner","hybrid_search":true}`
+	want := `{"transcriber_model":"u3-rt-pro","pacing_factor":1,"verify_provider":"deepseek","verify_model":"deepseek-chat","retrieval_threshold":0.45,"political":true,"second_pass_model":"deepseek-reasoner","hybrid_search":true}`
 	if string(got) != want {
 		t.Errorf("engine json = %s, want %s", got, want)
 	}

@@ -91,7 +91,9 @@ const knowledgeConfidenceCap = 0.6
 // verifier, not a chat. The model judges against the supplied evidence first and
 // falls back to general knowledge only when no passage bears on the claim, marking
 // those verdicts basis knowledge. The citation requirement for evidence verdicts
-// is stated to the model and then enforced deterministically after the call.
+// is stated to the model and then enforced deterministically after the call. The
+// rationale is always written in French, whatever the locale: it is the
+// viewer-facing explanation and the product surface is French.
 const systemPrompt = "You judge whether a single factual claim is credible, disputed, or unverifiable, to help a viewer decide whether to trust the speaker. " +
 	"Each evidence passage is labeled with an evidence_id. First judge against the supplied evidence: " +
 	"if a passage directly affirms the claim, return \"credible\" with basis \"evidence\"; " +
@@ -103,17 +105,17 @@ const systemPrompt = "You judge whether a single factual claim is credible, disp
 	"and \"unverifiable\" when the claim is genuinely indeterminate or is a private, anecdotal, or subjective statement that no general knowledge can settle. " +
 	"A basis \"knowledge\" verdict must keep its confidence modest, since it is not grounded in the supplied evidence. " +
 	"Do not treat a passage as bearing on the claim merely because it shares a topic. " +
+	"Write the rationale in French, in one sentence: the viewer-facing explanation is always French, whatever language the claim is in. " +
 	"Record your verdict with the record_verdict tool."
 
 // systemPromptFR is the French counterpart of systemPrompt, used in the French/EU
-// political fact-checking mode so the viewer-facing rationale comes back in French
-// instead of English. It is a faithful translation that keeps the literal tool
-// tokens (the credible/disputed/unverifiable verdicts and the evidence/knowledge
-// bases) in English, since those round-trip as the tool's enum values, and it adds
-// an explicit instruction to write the rationale in French - mirroring the political
-// verifier (political.go), the other viewer-facing rationale producer. It is
-// selected by domain.LocaleFrench; every other locale keeps the English prompt, so
-// English behavior is unchanged when French mode is off.
+// political fact-checking mode so the model reasons in the claim's language. It is
+// a faithful translation that keeps the literal tool tokens (the
+// credible/disputed/unverifiable verdicts and the evidence/knowledge bases) in
+// English, since those round-trip as the tool's enum values. Both prompts instruct
+// the model to write the rationale in French - the viewer-facing explanation is
+// French in every locale, mirroring the political verifier (political.go). It is
+// selected by domain.LocaleFrench; every other locale keeps the English prompt.
 const systemPromptFR = "Tu juges si une seule affirmation factuelle est crédible, contestée ou invérifiable, afin d'aider un spectateur à décider s'il peut faire confiance au locuteur. " +
 	"Chaque passage de preuve porte un evidence_id. Juge d'abord contre les preuves fournies : " +
 	"si un passage affirme directement l'affirmation, renvoie \"credible\" avec la base \"evidence\" ; " +
@@ -212,12 +214,13 @@ func New(cfg Config, opts ...llm.Option) (*Client, error) {
 // It forces a single record_verdict tool call so the result is always validated
 // structured data, then runs the deterministic citation guard (ValidateCitations)
 // so a fabricated or unsupported grounding can never prop up an evidence verdict.
-// With no passages supplied (the caller's knowledge fallback for a sparse evidence
-// corpus) the prompt says so and the model judges from general knowledge alone; the
-// citation guard then demotes any claimed evidence basis, so a no-passage verdict
-// can only ever be knowledge-basis with capped confidence. It errors when the
-// transport, the forced tool call, or decoding fails - the caller absorbs the error
-// rather than emitting an ungrounded verdict.
+// With no passages supplied the prompt says so and the model judges from general
+// knowledge alone; the citation guard then demotes any claimed evidence basis, so
+// a no-passage verdict can only ever be knowledge-basis with capped confidence
+// (the verify path itself never sends a zero-passage claim - it short-circuits to
+// unverifiable - so this is a property of the adapter, not a service path). It
+// errors when the transport, the forced tool call, or decoding fails - the caller
+// absorbs the error rather than emitting an ungrounded verdict.
 func (c *Client) Verify(ctx context.Context, claim string, passages []Passage) (Result, error) {
 	res, err := llm.Classify[Result](ctx, c.llm, c.verdictRequest(claim, passages, maxTokens))
 	if err != nil {

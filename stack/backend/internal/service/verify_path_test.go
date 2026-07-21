@@ -574,26 +574,31 @@ func TestVerifyPathNoEvidenceIsUnverifiable(t *testing.T) {
 	if last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
 		t.Fatalf("no-evidence verdict = %q/%q, want unverifiable/knowledge", last.Verdict.Verdict, last.Verdict.Basis)
 	}
+	if last.Verdict.Rationale != noSourceRationale {
+		t.Fatalf("no-evidence rationale = %q, want the fixed French no-source rationale", last.Verdict.Rationale)
+	}
 	if seen := verifier.seen(); len(seen) != 0 {
 		t.Fatalf("verifier called %v, want no verify call with no evidence", seen)
 	}
 }
 
-func TestVerifyPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
+func TestVerifyPathKnowledgeBasisVerdictIsDemoted(t *testing.T) {
 	t.Parallel()
-	// With the knowledge fallback on, a claim that retrieves no evidence still
-	// reaches the verifier and its knowledge-basis judgment emits, instead of the
-	// blank unverifiable short-circuit - the sparse-corpus behavior.
+	// Evidence was retrieved but the verifier grounded its judgment in none of it
+	// (basis knowledge, no surviving citation): the emitted verdict is demoted to
+	// unverifiable - credible and disputed are reserved for verdicts a real source
+	// backs - while the model's rationale is kept for the viewer.
 	unit := "la dette publique depasse trois mille milliards."
 	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
-	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+		unit: {{Kind: domain.MatchKindEvidence, Claim: "la dette atteint un niveau record", Similarity: 0.7, EvidenceID: "evidence:7:0"}},
+	}}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
-		unit: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "broadly true"},
+		unit: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "globalement vrai selon les connaissances generales"},
 	}}
 	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
-		Decomposer:        fakeDecomposer{byText: map[string][]string{unit: {unit}}},
-		Verifier:          verifier,
-		KnowledgeFallback: true,
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   verifier,
 	})
 
 	events := runVerifyPath(t, a)
@@ -606,190 +611,142 @@ func TestVerifyPathKnowledgeFallbackJudgesNoEvidenceClaim(t *testing.T) {
 	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
 		t.Fatalf("terminal result = %+v, want a verified verdict", last)
 	}
-	if last.Verdict.Verdict != VerdictCredible || last.Verdict.Basis != BasisKnowledge || last.Verdict.Confidence != 0.55 {
-		t.Fatalf("fallback verdict = %+v, want the verifier's credible/knowledge judgment", last.Verdict)
+	if last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("demoted verdict = %q/%q, want unverifiable/knowledge", last.Verdict.Verdict, last.Verdict.Basis)
+	}
+	if last.Verdict.Rationale != "globalement vrai selon les connaissances generales" {
+		t.Fatalf("demoted rationale = %q, want the model's rationale kept", last.Verdict.Rationale)
+	}
+	if len(last.Verdict.Citations) != 0 {
+		t.Fatalf("demoted citations = %+v, want none (the unverifiable invariant)", last.Verdict.Citations)
 	}
 	if seen := verifier.seen(); len(seen) != 1 || seen[0] != unit {
-		t.Fatalf("verifier calls = %v, want exactly the no-evidence claim", seen)
+		t.Fatalf("verifier calls = %v, want exactly the evidence-bearing claim", seen)
 	}
 }
 
-func TestKnowledgeFallbackDegradesInsteadOfShedding(t *testing.T) {
+func TestVerifyClaimNoEvidenceShortCircuitsBeforePool(t *testing.T) {
 	t.Parallel()
-	// The fallback is best-effort: a no-evidence claim facing a saturated pool
-	// or a failing verifier degrades to the instant legacy unverifiable, never
-	// to unchecked or error - fallback-on can improve on legacy, not worsen it.
-	t.Run("saturated pool yields the legacy no-evidence verdict", func(t *testing.T) {
-		t.Parallel()
-		vp, err := NewVerifyPath(VerifyPathConfig{
-			Decomposer:        fakeDecomposer{},
-			Matcher:           liveMatcher{},
-			Verifier:          &fakeVerifier{},
-			FastTau:           0.85,
-			VerifyConcurrency: 1,
-			VerifyQueueDepth:  0,
-			FastDeadline:      time.Second,
-			VerifyDeadline:    50 * time.Millisecond,
-			KnowledgeFallback: true,
-		})
-		if err != nil {
-			t.Fatalf("NewVerifyPath: %v", err)
-		}
-		// Occupy the pool's only slot so the fallback cannot acquire one.
-		vp.verifySem <- struct{}{}
-		defer func() { <-vp.verifySem }()
-
-		verdict, degraded, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
-		if err != nil || shed {
-			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
-		}
-		if !degraded {
-			t.Error("degraded = false, want the transient outcome flagged so it is never cached")
-		}
-		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge || verdict.Confidence != 0 {
-			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
-		}
-	})
-
-	t.Run("verifier failure yields the legacy no-evidence verdict", func(t *testing.T) {
-		t.Parallel()
-		claim := "no evidence claim"
-		vp, err := NewVerifyPath(VerifyPathConfig{
-			Decomposer:        fakeDecomposer{},
-			Matcher:           liveMatcher{},
-			Verifier:          &fakeVerifier{err: map[string]error{claim: errors.New("verifier boom")}},
-			FastTau:           0.85,
-			VerifyConcurrency: 1,
-			FastDeadline:      time.Second,
-			VerifyDeadline:    time.Second,
-			KnowledgeFallback: true,
-			Logger:            discardLogger(),
-		})
-		if err != nil {
-			t.Fatalf("NewVerifyPath: %v", err)
-		}
-		verdict, degraded, shed, err := vp.verifyClaim(t.Context(), claim, nil)
-		if err != nil || shed {
-			t.Fatalf("verifyClaim = shed %v, err %v; want the degraded verdict", shed, err)
-		}
-		if !degraded {
-			t.Error("degraded = false, want the transient outcome flagged so it is never cached")
-		}
-		if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge {
-			t.Errorf("degraded verdict = %+v, want the legacy no-evidence unverifiable", verdict)
-		}
-	})
-
-	t.Run("context cancellation propagates instead of fabricating a verdict", func(t *testing.T) {
-		t.Parallel()
-		claim := "no evidence claim"
-		vp, err := NewVerifyPath(VerifyPathConfig{
-			Decomposer:        fakeDecomposer{},
-			Matcher:           liveMatcher{},
-			Verifier:          &fakeVerifier{err: map[string]error{claim: context.Canceled}},
-			FastTau:           0.85,
-			VerifyConcurrency: 1,
-			FastDeadline:      time.Second,
-			VerifyDeadline:    time.Second,
-			KnowledgeFallback: true,
-			Logger:            discardLogger(),
-		})
-		if err != nil {
-			t.Fatalf("NewVerifyPath: %v", err)
-		}
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		verdict, degraded, _, err := vp.verifyClaim(ctx, claim, nil)
-		if err == nil {
-			t.Fatal("err = nil, want the cancellation propagated rather than a fabricated verdict")
-		}
-		if verdict != nil || degraded {
-			t.Errorf("got verdict %+v (degraded %v), want none on a canceled context", verdict, degraded)
-		}
-	})
-}
-
-func TestKnowledgeFallbackDegradedVerdictIsNotCached(t *testing.T) {
-	t.Parallel()
-	// A transient degrade (flaky verifier) must not seed the semantic cache: the
-	// next occurrence of the same claim must reach the verifier again and get a
-	// real knowledge judgment, not a replay of the degraded unverifiable.
-	claim := "la dette publique depasse trois mille milliards."
-	embedding := []float32{1, 0, 0}
-	verifier := &fakeVerifier{
-		byClaim: map[string]ClaimVerdict{claim: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55}},
-		err:     map[string]error{claim: errors.New("transient boom")},
-	}
+	// The no-evidence short-circuit precedes slot acquisition: even a fully
+	// occupied pool returns the instant unverifiable verdict rather than shedding,
+	// and the verifier is never called.
+	verifier := &fakeVerifier{}
 	vp, err := NewVerifyPath(VerifyPathConfig{
 		Decomposer:        fakeDecomposer{},
-		Matcher:           liveMatcher{embedding: map[string][]float32{claim: embedding}},
+		Matcher:           liveMatcher{},
+		Verifier:          verifier,
+		FastTau:           0.85,
+		VerifyConcurrency: 1,
+		VerifyQueueDepth:  0,
+		FastDeadline:      time.Second,
+		VerifyDeadline:    50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+	// Occupy the pool's only slot: the short-circuit must not need one.
+	vp.verifySem <- struct{}{}
+	defer func() { <-vp.verifySem }()
+
+	verdict, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
+	if err != nil || shed {
+		t.Fatalf("verifyClaim = shed %v, err %v; want the instant no-evidence verdict", shed, err)
+	}
+	if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge || verdict.Confidence != 0 {
+		t.Errorf("no-evidence verdict = %+v, want unverifiable/knowledge at zero confidence", verdict)
+	}
+	if verdict.Rationale != noSourceRationale {
+		t.Errorf("no-evidence rationale = %q, want the fixed French no-source rationale", verdict.Rationale)
+	}
+	if seen := verifier.seen(); len(seen) != 0 {
+		t.Errorf("verifier called %v, want no call with no evidence", seen)
+	}
+}
+
+func TestVerdictFromResultDemotesUngroundedVerdicts(t *testing.T) {
+	t.Parallel()
+	match := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "passage", Similarity: 0.7, EvidenceID: "evidence:1:0"}
+	cases := []struct {
+		name        string
+		res         ClaimVerdict
+		matches     []domain.SegmentMatch
+		wantVerdict string
+		wantBasis   string
+		wantCited   int
+	}{
+		{
+			name:        "knowledge basis is demoted to unverifiable",
+			res:         ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "avis general"},
+			matches:     []domain.SegmentMatch{match},
+			wantVerdict: VerdictUnverifiable,
+			wantBasis:   BasisKnowledge,
+		},
+		{
+			name:        "evidence basis with unresolvable citations is demoted",
+			res:         ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:404:0", QuotedSpan: "x"}}, Rationale: "fonde sur une source disparue"},
+			matches:     []domain.SegmentMatch{match},
+			wantVerdict: VerdictUnverifiable,
+			wantBasis:   BasisKnowledge,
+		},
+		{
+			name:        "grounded evidence verdict is kept",
+			res:         ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:1:0", QuotedSpan: "passage"}}, Rationale: "contredit par la source"},
+			matches:     []domain.SegmentMatch{match},
+			wantVerdict: VerdictDisputed,
+			wantBasis:   BasisEvidence,
+			wantCited:   1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := verdictFromResult(tc.res, tc.matches)
+			if got.Verdict != tc.wantVerdict || got.Basis != tc.wantBasis {
+				t.Fatalf("verdict = %q/%q, want %q/%q", got.Verdict, got.Basis, tc.wantVerdict, tc.wantBasis)
+			}
+			if len(got.Citations) != tc.wantCited {
+				t.Fatalf("citations = %d, want %d", len(got.Citations), tc.wantCited)
+			}
+			if got.Rationale != tc.res.Rationale {
+				t.Fatalf("rationale = %q, want the model's rationale kept", got.Rationale)
+			}
+		})
+	}
+}
+
+func TestBatchNoEvidenceClaimIsUnverifiable(t *testing.T) {
+	t.Parallel()
+	// The batch path shares the no-evidence short-circuit: a claim that retrieves
+	// nothing resolves verified/unverifiable with the fixed French no-source
+	// rationale and the verifier is never called.
+	claim := "la dette publique depasse trois mille milliards."
+	verifier := &fakeVerifier{}
+	vp, err := NewVerifyPath(VerifyPathConfig{
+		Decomposer:        fakeDecomposer{},
+		Matcher:           liveMatcher{},
 		Verifier:          verifier,
 		FastTau:           0.85,
 		VerifyConcurrency: 1,
 		FastDeadline:      time.Second,
 		VerifyDeadline:    time.Second,
-		CacheTTL:          time.Minute,
-		CacheThreshold:    0.9,
-		KnowledgeFallback: true,
 		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewVerifyPath: %v", err)
 	}
 
-	atomic := AtomicClaim{ClaimID: "0-0", Text: claim}
-	first := vp.resolveClaimBatch(t.Context(), atomic)
-	if first.Status != ClaimStatusVerified || first.Verdict == nil || first.Verdict.Verdict != VerdictUnverifiable {
-		t.Fatalf("first pass = %+v, want the degraded unverifiable", first)
+	got := vp.resolveClaimBatch(t.Context(), AtomicClaim{ClaimID: "0-0", Text: claim})
+	if got.Status != ClaimStatusVerified || got.Verdict == nil {
+		t.Fatalf("batch result = %+v, want a verified verdict", got)
 	}
-
-	// The verifier recovers; the repeat must reach it (no cache replay) and
-	// return the real knowledge judgment.
-	delete(verifier.err, claim)
-	second := vp.resolveClaimBatch(t.Context(), atomic)
-	if second.Verdict == nil || second.Verdict.Verdict != VerdictCredible || second.Verdict.Confidence != 0.55 {
-		t.Fatalf("second pass = %+v, want the verifier's fresh credible/knowledge judgment, not a cached degrade", second)
+	if got.Verdict.Verdict != VerdictUnverifiable || got.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("batch no-evidence verdict = %+v, want unverifiable/knowledge", got.Verdict)
 	}
-}
-
-func TestNewVerifyPathZeroesKnowledgeFloorWhenFallbackOff(t *testing.T) {
-	t.Parallel()
-	spCfg := &SecondPassConfig{
-		Reverifier:     &fakeReverifier{},
-		TriggerBelow:   0.8,
-		MinConfidence:  0.9,
-		Deadline:       time.Second,
-		KnowledgeFloor: 0.5,
+	if got.Verdict.Rationale != noSourceRationale {
+		t.Fatalf("batch no-evidence rationale = %q, want the fixed French no-source rationale", got.Verdict.Rationale)
 	}
-	base := VerifyPathConfig{
-		Decomposer:        fakeDecomposer{},
-		Matcher:           liveMatcher{},
-		Verifier:          &fakeVerifier{},
-		FastTau:           0.85,
-		VerifyConcurrency: 1,
-		FastDeadline:      time.Second,
-		VerifyDeadline:    time.Second,
-		SecondPass:        spCfg,
-	}
-
-	off := base
-	off.KnowledgeFallback = false
-	vp, err := NewVerifyPath(off)
-	if err != nil {
-		t.Fatalf("NewVerifyPath: %v", err)
-	}
-	if vp.secondPass.knowledgeFloor != 0 {
-		t.Errorf("knowledge floor = %v with the fallback off, want 0 (the strict contract restored end to end)", vp.secondPass.knowledgeFloor)
-	}
-
-	on := base
-	on.KnowledgeFallback = true
-	vp, err = NewVerifyPath(on)
-	if err != nil {
-		t.Fatalf("NewVerifyPath: %v", err)
-	}
-	if vp.secondPass.knowledgeFloor != 0.5 {
-		t.Errorf("knowledge floor = %v with the fallback on, want the configured 0.5", vp.secondPass.knowledgeFloor)
+	if seen := verifier.seen(); len(seen) != 0 {
+		t.Fatalf("verifier called %v, want no call with no evidence", seen)
 	}
 }
 

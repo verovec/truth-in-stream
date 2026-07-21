@@ -234,7 +234,11 @@ func TestAnalyzeTextPoliticalTwoAxis(t *testing.T) {
 	classifier := fakeClassifier{}
 	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{text: evidence}}
 	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
-		text: {Literal: string(domain.LiteralInaccurate), Basis: BasisEvidence, Flags: []string{"missing-context"}, Confidence: 0.8, Rationale: "les chiffres different"},
+		text: {
+			Literal: string(domain.LiteralInaccurate), Basis: BasisEvidence, Flags: []string{"missing-context"},
+			Confidence: 0.8, Rationale: "les chiffres different",
+			Citations: []EvidenceCitation{{EvidenceID: evidence[0].ID.String(), QuotedSpan: "defense +12%"}},
+		},
 	}}
 	vp := newBatchVerifyPath(t, VerifyPathConfig{
 		Decomposer: fakeDecomposer{byText: map[string][]string{text: {text}}},

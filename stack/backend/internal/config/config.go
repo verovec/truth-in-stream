@@ -1005,22 +1005,6 @@ const (
 	// deeper model is both grounded and near-certain, and otherwise leaves the honest
 	// weak verdict in place. FACTCHECK_FINAL_GATE_MIN_CONFIDENCE overrides it.
 	defaultFinalGateMinConfidence = 0.90
-	// defaultFinalGateKnowledgeFloor is the confidence at or above which the
-	// terminal gate adopts a knowledge-basis re-judgment (one the reasoner could
-	// not ground in a retrieved passage) in place of a weak verdict, and the
-	// switch that lets the gate escalate claims that retrieved no passages at
-	// all. It exists for a sparse evidence corpus, where demanding grounded
-	// citations leaves almost every claim unverifiable; it sits at the midpoint
-	// of the verifier's knowledge confidence cap (0.6) so only a decided
-	// knowledge judgment is adopted. 0 restores the strict evidence-only gate.
-	// FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR overrides it.
-	defaultFinalGateKnowledgeFloor = 0.5
-	// defaultVerifyKnowledgeFallback sends a claim that retrieved no evidence to
-	// the verifier anyway, judged from general knowledge with capped confidence,
-	// instead of short-circuiting to a blank unverifiable. On by default while
-	// the evidence corpus is small; FACTCHECK_KNOWLEDGE_FALLBACK=false restores
-	// the legacy short-circuit.
-	defaultVerifyKnowledgeFallback = true
 )
 
 // VerifyPath holds the retrieve-then-verify configuration. The path is wired only
@@ -1054,12 +1038,6 @@ type VerifyPath struct {
 	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
 	// discarded before the verifier ever sees it.
 	RetrievalThreshold float64
-	// KnowledgeFallback sends a claim that retrieved no evidence to the verifier
-	// anyway, judged from general knowledge (basis knowledge, capped confidence),
-	// instead of short-circuiting to a blank unverifiable - real verdicts while
-	// the evidence corpus is still small, at one cheap verifier call per
-	// no-evidence claim.
-	KnowledgeFallback bool
 }
 
 // Active reports whether the retrieve-then-verify path should be wired: it is
@@ -1087,7 +1065,6 @@ func LoadVerifyPath() (VerifyPath, error) {
 		CacheThreshold:     defaultVerifyCacheThreshold,
 		CacheMaxEntries:    defaultVerifyCacheMaxEntries,
 		RetrievalThreshold: defaultVerifyRetrievalThreshold,
-		KnowledgeFallback:  defaultVerifyKnowledgeFallback,
 	}
 	llmSel, err := loadLLMSelection()
 	if err != nil {
@@ -1128,9 +1105,6 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	if v.CacheMaxEntries, err = intEnv("FACTCHECK_VERIFY_CACHE_MAX_ENTRIES", v.CacheMaxEntries, 1, math.MaxInt32); err != nil {
-		return VerifyPath{}, err
-	}
-	if v.KnowledgeFallback, err = boolEnvDefault("FACTCHECK_KNOWLEDGE_FALLBACK", v.KnowledgeFallback); err != nil {
 		return VerifyPath{}, err
 	}
 	return v, nil
@@ -1216,10 +1190,6 @@ type FinalGate struct {
 	TriggerBelow  float64
 	MinConfidence float64
 	Deadline      time.Duration
-	// KnowledgeFloor is the confidence at or above which the gate adopts a
-	// knowledge-basis re-judgment, and the switch that lets no-passage claims
-	// escalate to the reasoner at all; 0 restores the strict evidence-only gate.
-	KnowledgeFloor float64
 }
 
 // Active reports whether the terminal gate should be wired: it is enabled and has the
@@ -1240,14 +1210,13 @@ func (g FinalGate) Active() bool {
 // never logged.
 func LoadFinalGate(sp SecondPass) (FinalGate, error) {
 	g := FinalGate{
-		LLMSelection:   sp.LLMSelection,
-		Enabled:        sp.Enabled,
-		APIKey:         sp.APIKey,
-		Model:          sp.Model,
-		TriggerBelow:   sp.BandHi,
-		MinConfidence:  defaultFinalGateMinConfidence,
-		Deadline:       sp.Deadline,
-		KnowledgeFloor: defaultFinalGateKnowledgeFloor,
+		LLMSelection:  sp.LLMSelection,
+		Enabled:       sp.Enabled,
+		APIKey:        sp.APIKey,
+		Model:         sp.Model,
+		TriggerBelow:  sp.BandHi,
+		MinConfidence: defaultFinalGateMinConfidence,
+		Deadline:      sp.Deadline,
 	}
 	var err error
 
@@ -1307,12 +1276,6 @@ func LoadFinalGate(sp SecondPass) (FinalGate, error) {
 	}
 	if g.Deadline, err = positiveDurationEnv("FACTCHECK_FINAL_GATE_DEADLINE", g.Deadline); err != nil {
 		return FinalGate{}, err
-	}
-	if g.KnowledgeFloor, err = floatEnv("FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR", g.KnowledgeFloor); err != nil {
-		return FinalGate{}, err
-	}
-	if g.KnowledgeFloor < 0 || g.KnowledgeFloor > 1 {
-		return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR %v is outside [0, 1]", g.KnowledgeFloor)
 	}
 	return g, nil
 }
