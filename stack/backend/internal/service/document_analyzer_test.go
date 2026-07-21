@@ -222,7 +222,8 @@ func TestDocumentAnalyzerStartPropagatesLockErrors(t *testing.T) {
 }
 
 // contextRecordingBatchVerifier records the recent context passed per sentence,
-// so a test asserts each sentence decomposes with its predecessor as context.
+// so a test asserts each sentence decomposes with the preceding group of
+// sentences as context.
 type contextRecordingBatchVerifier struct {
 	mu       sync.Mutex
 	contexts []string
@@ -235,12 +236,18 @@ func (f *contextRecordingBatchVerifier) AnalyzeText(_ context.Context, _ Segment
 	return BatchUnitResult{Checkable: false, SkipReason: domain.SkipReasonNotAClaim}, nil
 }
 
-func TestDocumentAnalyzerPassesPreviousSentenceAsContext(t *testing.T) {
+func TestDocumentAnalyzerPassesPrecedingSentencesAsContext(t *testing.T) {
 	t.Parallel()
+	// Six sentences: each decomposes with the group of preceding sentences as
+	// context, and the window slides once it holds batchContextSentences, so the
+	// sixth sentence sees sentences two through five but not the first.
 	store := &fakeAnalyzerStore{sentences: []domain.DocumentSentence{
 		{Seq: 0, Page: 1, Text: "Premiere phrase.", Occurrence: 1},
 		{Seq: 1, Page: 1, Text: "Elle est fausse.", Occurrence: 1},
 		{Seq: 2, Page: 1, Text: "Troisieme phrase.", Occurrence: 1},
+		{Seq: 3, Page: 1, Text: "Quatrieme phrase.", Occurrence: 1},
+		{Seq: 4, Page: 1, Text: "Cinquieme phrase.", Occurrence: 1},
+		{Seq: 5, Page: 1, Text: "Sixieme phrase.", Occurrence: 1},
 	}}
 	verify := &contextRecordingBatchVerifier{}
 	a := syncAnalyzer(t, store, verify)
@@ -249,11 +256,18 @@ func TestDocumentAnalyzerPassesPreviousSentenceAsContext(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	want := []string{"", "Premiere phrase.", "Elle est fausse."}
+	want := []string{
+		"",
+		"Premiere phrase.",
+		"Premiere phrase. Elle est fausse.",
+		"Premiere phrase. Elle est fausse. Troisieme phrase.",
+		"Premiere phrase. Elle est fausse. Troisieme phrase. Quatrieme phrase.",
+		"Elle est fausse. Troisieme phrase. Quatrieme phrase. Cinquieme phrase.",
+	}
 	verify.mu.Lock()
 	defer verify.mu.Unlock()
 	if !slices.Equal(verify.contexts, want) {
-		t.Errorf("contexts = %q, want each sentence preceded by its predecessor %q", verify.contexts, want)
+		t.Errorf("contexts = %q, want the sliding preceding group %q", verify.contexts, want)
 	}
 }
 

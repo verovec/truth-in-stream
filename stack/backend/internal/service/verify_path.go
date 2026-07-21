@@ -329,8 +329,8 @@ type BatchUnitResult struct {
 // AnalyzeText runs one text unit through the verify path for a batch analyzer:
 // gate -> decompose -> per-claim fast/verify, returning the resolved verdicts
 // without emitting live events, speaker tallies, or consistency. recentContext
-// is the prior text the decomposer resolves references against (the previous
-// document sentence); it is context only and never decomposed itself. Unlike
+// is the prior text the decomposer resolves references against (the preceding
+// group of document sentences); it is context only and never decomposed itself. Unlike
 // the live path it never sheds: each claim's verify call blocks on the verify
 // pool until a slot frees (bounded only by ctx), so every claim ends with a
 // real verdict or an error. The gate is supplied by the caller; VerifyPath
@@ -471,7 +471,11 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 
 	unitID := members[0].id
 	unitSeg := members[0].seg
-	if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventClaims, ID: unitID, Segment: unitSeg, Claims: claims}) {
+	segmentIDs := make([]string, len(members))
+	for i, m := range members {
+		segmentIDs[i] = m.id
+	}
+	if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventClaims, ID: unitID, Segment: unitSeg, Claims: claims, SegmentIDs: segmentIDs}) {
 		return
 	}
 
@@ -493,11 +497,11 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 // decompose runs the unit through the decomposer on the fast pool and assigns
 // each surviving atomic claim a stable per-unit claim id (the unit's anchor id
 // plus an index), so the client keys a claim's pending/checking/verified events
-// together. It passes the unit's recent context (the previous unit's trailing
-// sentence) so the decomposer resolves cross-unit references, and anchors each
-// claim's verbatim quote onto the member segments as highlight spans. The
-// decomposer never errors; an empty result means the unit carried no verifiable
-// claim.
+// together. It passes the unit's recent context (the previous unit's full
+// speaker-labeled text, bounded) so the decomposer resolves cross-unit
+// references, and anchors each claim's verbatim quote onto the member segments
+// as highlight spans. The decomposer never errors; an empty result means the
+// unit carried no verifiable claim.
 func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string) []AtomicClaim {
 	claims := vp.decomposeText(ctx, text, pu.speaker, pu.context, pu.members[0].id)
 	for i := range claims {
@@ -510,7 +514,7 @@ func (vp *VerifyPath) decompose(ctx context.Context, pu pendingUnit, text string
 // on the fast pool and assigns each surviving atomic claim a stable id
 // (anchorID plus an index). The live path passes the unit's anchor id, speaker,
 // and recent context; the batch analyzer passes a per-sentence anchor, an empty
-// speaker, and the previous sentence as context. Spans are the caller's
+// speaker, and the preceding sentence group as context. Spans are the caller's
 // concern: only the live path knows the unit's member segments.
 func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, recentContext, anchorID string) []AtomicClaim {
 	fastCtx, cancel := context.WithTimeout(ctx, vp.fastDeadline)
@@ -863,11 +867,13 @@ func verdictFromResult(res ClaimVerdict, matches []domain.SegmentMatch) *Verifie
 		}
 	}
 	if res.Basis != BasisEvidence || len(citations) == 0 {
+		// Confidence is zeroed like noEvidenceVerdict's: it measured the model's
+		// certainty in a judgment no source backs, and rendering it next to
+		// "unverifiable" would read as a confident verdict.
 		return &VerifiedVerdict{
-			Verdict:    VerdictUnverifiable,
-			Basis:      BasisKnowledge,
-			Confidence: res.Confidence,
-			Rationale:  res.Rationale,
+			Verdict:   VerdictUnverifiable,
+			Basis:     BasisKnowledge,
+			Rationale: res.Rationale,
 		}
 	}
 	return &VerifiedVerdict{

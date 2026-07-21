@@ -55,8 +55,10 @@ const systemPrompt = "You split one spoken statement into its atomic factual cla
 	"The recent context is background for resolving references only - never extract a claim from it. " +
 	"Emit one claim per distinct verifiable assertion. " +
 	"For each claim also record its quote: the shortest contiguous run of the statement's exact words " +
-	"that expresses the claim, copied verbatim from the statement - never from the recent context, " +
-	"never paraphrased, never reworded. " +
+	"that carries the claim's core - the decisive figure, date, name, or predicate being checked - " +
+	"copied verbatim from the statement, never from the recent context, never paraphrased, never reworded. " +
+	"Keep the quote tight: a handful of words, not the whole sentence, unless every word of the sentence " +
+	"is load-bearing for the claim. " +
 	"Drop anything that is not a verifiable public factual assertion - opinions, hedges, questions, " +
 	"greetings, small talk, and sentence fragments are omitted entirely. " +
 	"If the statement contains no verifiable factual claim, return an empty list. " +
@@ -77,8 +79,11 @@ const systemPromptFR = "Tu decomposes un seul enonce parle en ses affirmations f
 	"Le contexte recent sert uniquement a resoudre les references - n'en extrais jamais une affirmation. " +
 	"Emets une affirmation pour chaque assertion verifiable. " +
 	"Pour chaque affirmation, enregistre aussi son quote : le plus court passage contigu des mots exacts " +
-	"de l'enonce qui exprime l'affirmation, copie mot pour mot depuis l'enonce - jamais depuis le contexte " +
-	"recent, jamais paraphrase, jamais reformule. " +
+	"de l'enonce qui porte le coeur de l'affirmation - le chiffre, la date, le nom ou le fait decisif " +
+	"qui est verifie - copie mot pour mot depuis l'enonce, jamais depuis le contexte recent, jamais " +
+	"paraphrase, jamais reformule. " +
+	"Garde le quote serre : quelques mots, pas la phrase entiere, sauf si chaque mot de la phrase " +
+	"est indispensable a l'affirmation. " +
 	"Ecris chaque affirmation en francais. " +
 	"Ecarte tout ce qui n'est pas une assertion factuelle publique verifiable - les opinions, les formules prudentes, les questions, " +
 	"les salutations, les conversations anodines et les fragments de phrase sont entierement omis. " +

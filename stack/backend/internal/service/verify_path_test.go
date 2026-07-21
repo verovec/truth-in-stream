@@ -667,12 +667,13 @@ func TestVerdictFromResultDemotesUngroundedVerdicts(t *testing.T) {
 	t.Parallel()
 	match := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "passage", Similarity: 0.7, EvidenceID: "evidence:1:0"}
 	cases := []struct {
-		name        string
-		res         ClaimVerdict
-		matches     []domain.SegmentMatch
-		wantVerdict string
-		wantBasis   string
-		wantCited   int
+		name           string
+		res            ClaimVerdict
+		matches        []domain.SegmentMatch
+		wantVerdict    string
+		wantBasis      string
+		wantCited      int
+		wantConfidence float64
 	}{
 		{
 			name:        "knowledge basis is demoted to unverifiable",
@@ -689,12 +690,13 @@ func TestVerdictFromResultDemotesUngroundedVerdicts(t *testing.T) {
 			wantBasis:   BasisKnowledge,
 		},
 		{
-			name:        "grounded evidence verdict is kept",
-			res:         ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:1:0", QuotedSpan: "passage"}}, Rationale: "contredit par la source"},
-			matches:     []domain.SegmentMatch{match},
-			wantVerdict: VerdictDisputed,
-			wantBasis:   BasisEvidence,
-			wantCited:   1,
+			name:           "grounded evidence verdict is kept",
+			res:            ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:1:0", QuotedSpan: "passage"}}, Rationale: "contredit par la source"},
+			matches:        []domain.SegmentMatch{match},
+			wantVerdict:    VerdictDisputed,
+			wantBasis:      BasisEvidence,
+			wantCited:      1,
+			wantConfidence: 0.9,
 		},
 	}
 	for _, tc := range cases {
@@ -709,6 +711,9 @@ func TestVerdictFromResultDemotesUngroundedVerdicts(t *testing.T) {
 			}
 			if got.Rationale != tc.res.Rationale {
 				t.Fatalf("rationale = %q, want the model's rationale kept", got.Rationale)
+			}
+			if got.Confidence != tc.wantConfidence {
+				t.Fatalf("confidence = %v, want %v (a demoted verdict renders no confident percentage)", got.Confidence, tc.wantConfidence)
 			}
 		})
 	}
@@ -782,8 +787,38 @@ func TestVerifyPathClaimsEventCarriesQuoteAndSpans(t *testing.T) {
 	}
 }
 
+func TestVerifyPathClaimsEventCarriesSegmentIDs(t *testing.T) {
+	t.Parallel()
+	// A unit built from several same-speaker segments announces its claims with
+	// the ordered member subtitle ids, so a client can merge the whole group
+	// into one displayed statement.
+	s1 := "Le budget monte."
+	s2 := "Il monte de dix pour cent."
+	unit := s1 + " " + s2
+	stream := &fakeSegmentStream{transcripts: finalize(
+		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: s1, Speaker: "A"},
+		domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: s2, Speaker: "A"},
+	)}
+	a := verifyPathFixture(t, stream, liveMatcher{}, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   &fakeVerifier{},
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil {
+		t.Fatal("no claims event emitted")
+	}
+	if diff := cmp.Diff([]string{"0", "1"}, claimsEv.SegmentIDs); diff != "" {
+		t.Errorf("segment ids mismatch (-want +got):\n%s", diff)
+	}
+	if claimsEv.ID != "0" {
+		t.Errorf("claims event ID = %q, want the unit anchor (first member)", claimsEv.ID)
+	}
+}
+
 // recordingDecomposer records the recent context passed on every call, so a
-// test asserts the previous unit's trailing sentence threads through.
+// test asserts the previous unit's full text threads through.
 type recordingDecomposer struct {
 	mu       sync.Mutex
 	contexts []string
@@ -805,8 +840,9 @@ func (d *recordingDecomposer) seen() []string {
 func TestVerifyPathPassesPreviousUnitContextToDecomposer(t *testing.T) {
 	t.Parallel()
 	// The first unit decomposes with no context; the second (a new speaker's
-	// reply) receives the previous unit's trailing sentence, attributed to its
-	// speaker, so a cross-unit reference like "c'est faux" resolves.
+	// reply) receives the previous unit's full text, attributed to its speaker,
+	// so a cross-unit reference like "c'est faux" resolves against anything in
+	// the group that was just said, not only its last sentence.
 	recorder := &recordingDecomposer{}
 	stream := &fakeSegmentStream{transcripts: finalize(
 		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "Le chomage a augmente. C'est un fait.", Speaker: "A"},
@@ -821,7 +857,7 @@ func TestVerifyPathPassesPreviousUnitContextToDecomposer(t *testing.T) {
 
 	contexts := recorder.seen()
 	slices.Sort(contexts)
-	want := []string{"", "A: C'est un fait."}
+	want := []string{"", "A: Le chomage a augmente. C'est un fait."}
 	if diff := cmp.Diff(want, contexts); diff != "" {
 		t.Errorf("decomposer contexts mismatch (-want +got):\n%s", diff)
 	}

@@ -307,6 +307,19 @@ func TestDecomposeRealisticUnit(t *testing.T) {
 	}
 }
 
+// TestPromptsDemandTightQuotes pins the quote-minimality contract: both prompts
+// instruct the model to quote only the claim's core rather than whole sentences,
+// so highlights cover the checked words, not the full statement.
+func TestPromptsDemandTightQuotes(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(systemPrompt, "Keep the quote tight") {
+		t.Error("English prompt lacks the tight-quote instruction")
+	}
+	if !strings.Contains(systemPromptFR, "Garde le quote serre") {
+		t.Error("French prompt lacks the tight-quote instruction")
+	}
+}
+
 func TestDecomposePromptLanguage(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

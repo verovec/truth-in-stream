@@ -593,6 +593,9 @@ func TestPoliticalPathKnowledgeBasisVerdictIsDemoted(t *testing.T) {
 	if last.Verdict.Literal != LiteralUnverifiable || last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
 		t.Fatalf("demoted verdict = %+v, want unverifiable on both axes", last.Verdict)
 	}
+	if last.Verdict.Confidence != 0 {
+		t.Fatalf("demoted confidence = %v, want 0 (a demoted verdict renders no confident percentage)", last.Verdict.Confidence)
+	}
 	if last.Verdict.Rationale != "conforme aux ordres de grandeur connus" {
 		t.Fatalf("demoted rationale = %q, want the model's rationale kept", last.Verdict.Rationale)
 	}

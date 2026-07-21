@@ -415,43 +415,20 @@ func TestLiveAnalyzerSplitsSameSpeakerRunAtSentenceCap(t *testing.T) {
 	}
 }
 
-func TestLastSentence(t *testing.T) {
-	t.Parallel()
-	long := strings.Repeat("mot ", 30) + "fin"
-	tests := []struct {
-		name string
-		text string
-		want string
-	}{
-		{"final sentence after a terminator", "Un point. Deux points.", "Deux points."},
-		{"single sentence returned whole", "Une seule phrase.", "Une seule phrase."},
-		{"no terminator returns the run", "une suite sans ponctuation", "une suite sans ponctuation"},
-		{"question and exclamation terminate", "Un. Deux? Trois!", "Trois!"},
-		{"empty text", "", ""},
-		{"whitespace only", "   ", ""},
-		{"unpunctuated run capped at a sentence's worth of words", long, strings.Join(strings.Fields(long)[31-maxWordsPerSentence:], " ")},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := lastSentence(tc.text); got != tc.want {
-				t.Errorf("lastSentence(%q) = %q, want %q", tc.text, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestContextTail(t *testing.T) {
 	t.Parallel()
+	long := strings.Repeat("mot ", maxContextWords+10) + "fin"
 	tests := []struct {
 		name    string
 		speaker string
 		text    string
 		want    string
 	}{
-		{"speaker attributed", "A", "Un point. Deux points.", "A: Deux points."},
+		{"full unit kept with speaker prefix", "A", "Un point. Deux points.", "A: Un point. Deux points."},
+		{"multi-sentence unit rides whole", "B", "Le budget monte. Il monte de dix pour cent. Depuis 2020.", "B: Le budget monte. Il monte de dix pour cent. Depuis 2020."},
 		{"unknown speaker unprefixed", "", "Deux points.", "Deux points."},
 		{"empty text yields no context", "A", "  ", ""},
+		{"overlong run keeps the trailing cap of words", "", long, strings.Join(strings.Fields(long)[len(strings.Fields(long))-maxContextWords:], " ")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

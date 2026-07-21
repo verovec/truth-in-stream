@@ -375,13 +375,14 @@ func (vp *VerifyPath) verifyPoliticalBlocking(ctx context.Context, claim string,
 func politicalVerdictFromResult(res PoliticalVerdict, evidence []source.Evidence) *VerifiedVerdict {
 	citations := citationsFromEvidence(res.Citations, evidence)
 	if res.Basis != BasisEvidence || len(citations) == 0 {
+		// Confidence is zeroed like the no-evidence verdict's; see
+		// verdictFromResult for the rationale.
 		return &VerifiedVerdict{
-			Verdict:    VerdictUnverifiable,
-			Basis:      BasisKnowledge,
-			Confidence: res.Confidence,
-			Rationale:  res.Rationale,
-			Literal:    LiteralUnverifiable,
-			Flags:      res.Flags,
+			Verdict:   VerdictUnverifiable,
+			Basis:     BasisKnowledge,
+			Rationale: res.Rationale,
+			Literal:   LiteralUnverifiable,
+			Flags:     res.Flags,
 		}
 	}
 	return &VerifiedVerdict{

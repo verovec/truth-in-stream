@@ -101,6 +101,7 @@ type wireFrame struct {
 		Quote   string             `json:"quote"`
 		Spans   []domain.ClaimSpan `json:"spans"`
 	} `json:"claims"`
+	SegmentIDs  []string `json:"segment_ids"`
 	ClaimID     string   `json:"claim_id"`
 	Status      string   `json:"status"`
 	Source      string   `json:"source"`
@@ -740,7 +741,7 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
 	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
 	fake := &recordingLive{events: []service.LiveEvent{
-		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{
+		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, SegmentIDs: []string{"0", "1"}, Claims: []service.AtomicClaim{{
 			ClaimID: "0-0",
 			Text:    "the moon is made of cheese.",
 			Quote:   "moon is made of cheese",
@@ -782,6 +783,9 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	}
 	if len(claims.Claims[0].Spans) != 1 || claims.Claims[0].Spans[0] != (domain.ClaimSpan{SegmentID: "0", Start: 4, End: 26}) {
 		t.Errorf("claim spans = %+v, want the highlight span round-tripped", claims.Claims[0].Spans)
+	}
+	if len(claims.SegmentIDs) != 2 || claims.SegmentIDs[0] != "0" || claims.SegmentIDs[1] != "1" {
+		t.Errorf("claims segment_ids = %v, want the unit's ordered member ids round-tripped", claims.SegmentIDs)
 	}
 
 	checking := readFrame(ctx, t, conn)
