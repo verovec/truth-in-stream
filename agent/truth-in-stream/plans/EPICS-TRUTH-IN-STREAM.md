@@ -145,7 +145,7 @@ vs backoffice files), D7 last.
 
 ---
 
-## Epic E - Claim detection quality (E1..E3, 3 cards, Linear ids pending re-auth)
+## Epic E - Claim detection quality (E1..E3, 3 cards, Linear ids pending re-auth) - DELIVERED 2026-07-21 (PRs #261-#263 to dev)
 
 **Scope for its agent.** Tighten the verify-path detection loop: no-source claims always land
 unverifiable with French-only rationales, the decomposer reads the full previous sentence group

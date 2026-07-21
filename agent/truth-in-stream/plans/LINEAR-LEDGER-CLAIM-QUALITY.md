@@ -1,10 +1,13 @@
 # Linear ledger - Epic E: claim detection quality
 
+DELIVERED 2026-07-21: E1 = PR #261, E2 = PR #262, E3 = PR #263, all merged to dev with
+green CI and passing reviews.
+
 Linear was unreachable when this epic was authored (2026-07-21, LINEAR_API_KEY returns 401).
 Replay once the connector re-authenticates: create the label `epic:claim-quality`, create the
-three cards below directly in Todo state, priority High, team Veroveit, project Truth in
-Stream, apply the label, then add blocks relations E1 -> E2 -> E3 and replace E1..E3 in the
-plan files with the real VER numbers. States at delivery time are tracked in the roadmap.
+three cards below directly in Done state (they are delivered), priority High, team Veroveit,
+project Truth in Stream, apply the label, add blocks relations E1 -> E2 -> E3, link each PR
+in a comment, and replace E1..E3 in the plan files with the real VER numbers.
 
 ---
 
