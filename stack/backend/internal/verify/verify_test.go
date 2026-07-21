@@ -214,11 +214,24 @@ func TestVerifyForcesStructuredToolCall(t *testing.T) {
 	}
 }
 
-// TestVerifyPromptLocale asserts the credibility verifier reasons and writes its
-// rationale in the locale's language: the French locale sends the French system
-// prompt so the viewer-facing rationale comes back in French, while the default
-// locale keeps the English prompt unchanged. Only the system prompt language
-// changes; the forced record_verdict tool call is identical across locales.
+// TestVerifyRationaleAlwaysFrench pins the product rule that the viewer-facing
+// rationale is French in every locale: both system prompts carry the explicit
+// French-rationale instruction, whatever language they reason in.
+func TestVerifyRationaleAlwaysFrench(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(systemPrompt, "Write the rationale in French") {
+		t.Error("English system prompt lacks the French-rationale instruction")
+	}
+	if !strings.Contains(systemPromptFR, "Rédige le rationale en français") {
+		t.Error("French system prompt lacks the French-rationale instruction")
+	}
+}
+
+// TestVerifyPromptLocale asserts the credibility verifier reasons in the locale's
+// language: the French locale sends the French system prompt, while the default
+// locale keeps the English prompt (which itself instructs a French rationale).
+// Only the system prompt language changes; the forced record_verdict tool call is
+// identical across locales.
 func TestVerifyPromptLocale(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

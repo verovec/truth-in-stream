@@ -1003,11 +1003,6 @@ services:
       FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
       FACTCHECK_VERIFY_CACHE_THRESHOLD: "${FACTCHECK_VERIFY_CACHE_THRESHOLD:-}"
       FACTCHECK_VERIFY_CACHE_MAX_ENTRIES: "${FACTCHECK_VERIFY_CACHE_MAX_ENTRIES:-}"
-      # Knowledge fallback for a sparse evidence corpus (default true): a claim
-      # that retrieves no evidence is still judged by the verifier from general
-      # knowledge (basis knowledge, capped confidence) instead of short-circuiting
-      # to a blank unverifiable. Set false to restore the strict short-circuit.
-      FACTCHECK_KNOWLEDGE_FALLBACK: "${FACTCHECK_KNOWLEDGE_FALLBACK:-}"
       # Terminal reasoning gate (VER-192): when the verify path's best verdict for a
       # claim is weak - unverifiable, or confidence below the trigger floor - a stronger
       # reasoning model re-judges the same retrieved evidence one last time and upgrades
@@ -1025,13 +1020,6 @@ services:
       # (0.8) escalates verdicts below that confidence, FACTCHECK_FINAL_GATE_MIN_CONFIDENCE
       # (0.90) is the grounded confidence to adopt a re-judgment, and
       # FACTCHECK_FINAL_GATE_DEADLINE (12s) bounds one reverify call.
-      # FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR (0.5) loosens the gate for a sparse
-      # corpus: an indeterminate or sub-floor no-passage verdict escalates too,
-      # and a knowledge-basis re-judgment settling a definite verdict at or
-      # above the floor is adopted - only for claims that retrieved no passages
-      # at all, so an uncited opinion never displaces an evidence-grounded
-      # verdict. Inert when FACTCHECK_KNOWLEDGE_FALLBACK=false; 0 restores the
-      # strict evidence-only gate.
       FACTCHECK_SECOND_PASS: "${FACTCHECK_SECOND_PASS:-}"
       FACTCHECK_SECOND_PASS_API_KEY: "${FACTCHECK_SECOND_PASS_API_KEY:-}"
       FACTCHECK_SECOND_PASS_MODEL: "${FACTCHECK_SECOND_PASS_MODEL:-}"
@@ -1045,7 +1033,6 @@ services:
       FACTCHECK_FINAL_GATE_TRIGGER_BELOW: "${FACTCHECK_FINAL_GATE_TRIGGER_BELOW:-}"
       FACTCHECK_FINAL_GATE_MIN_CONFIDENCE: "${FACTCHECK_FINAL_GATE_MIN_CONFIDENCE:-}"
       FACTCHECK_FINAL_GATE_DEADLINE: "${FACTCHECK_FINAL_GATE_DEADLINE:-}"
-      FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR: "${FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR:-}"
       # French/EU political fact-checking mode. Off by default; when true the live
       # transcription biases toward French (language_code=fr) and the gate and
       # claim decomposition prompt and reason in French. When it is on AND the

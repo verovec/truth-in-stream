@@ -260,8 +260,12 @@ gate) share one provider; the terminal reasoning gate is decoupled. Keys are sec
 | `FACTCHECK_VERIFY_CACHE_TTL` | `30s` | Semantic-claim-cache window (0 disables); a paraphrase above the threshold replays the cached verdict |
 | `FACTCHECK_VERIFY_CACHE_THRESHOLD` | `0.95` | Cosine bar for a cache hit |
 | `FACTCHECK_VERIFY_CACHE_MAX_ENTRIES` | `1024` | In-process cache size, oldest evicted first |
-| `FACTCHECK_KNOWLEDGE_FALLBACK` | `true` | A claim that retrieves no evidence is still judged by the verifier from general knowledge (basis `knowledge`, confidence capped) instead of short-circuiting to a blank unverifiable; under pool saturation or a verifier failure it degrades back to that instant unverifiable, never to unchecked. `false` restores the strict short-circuit everywhere, including the terminal gate's knowledge floor |
 | `LIVE_MAX_SENTENCES` | `4` | Sentences accumulated into one live analysis unit before it is scored (the decomposer's window); the previous unit's trailing sentence is always passed as decomposition context |
+
+A claim that retrieves no evidence is always classified `unverifiable` with a fixed French
+rationale, without a verifier call; a verdict is only ever `credible` or `disputed` when at
+least one validated citation into retrieved evidence backs it. Verdict rationales are written
+in French in every locale.
 
 ### Terminal reasoning gate (VER-192, off by default)
 
@@ -280,7 +284,9 @@ equivalent.
 | `FACTCHECK_FINAL_GATE_TRIGGER_BELOW` | `0.8` | Escalate a verdict below this confidence |
 | `FACTCHECK_FINAL_GATE_MIN_CONFIDENCE` | `0.90` | Grounded confidence required to adopt the re-judgment |
 | `FACTCHECK_FINAL_GATE_DEADLINE` | `12s` | One reverify call bound |
-| `FACTCHECK_FINAL_GATE_KNOWLEDGE_FLOOR` | `0.5` | Sparse-corpus loosening: an indeterminate or sub-floor no-passage verdict escalates too, and a knowledge-basis re-judgment settling a definite verdict at/above this floor is adopted - only for claims with no passages at all, so an uncited opinion can never displace an evidence-grounded verdict. Inert when `FACTCHECK_KNOWLEDGE_FALLBACK=false`; `0` restores the strict evidence-only gate |
+
+The gate is strictly evidence-only: a claim that retrieved no passages never escalates, and
+only a grounded, cited re-judgment at the min-confidence floor can replace a weak verdict.
 
 The French/EU political two-axis mode (`FACTCHECK_POLITICAL`) and its source packs
 (`WEBSEARCH_API_KEY`, `PRESS_API_KEY`, stats-pack tuning) are documented inline in `.env.example`;

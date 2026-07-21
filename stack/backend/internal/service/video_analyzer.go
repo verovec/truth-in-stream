@@ -76,7 +76,6 @@ type EngineMetadata struct {
 	VerifyProvider     string  `json:"verify_provider,omitempty"`
 	VerifyModel        string  `json:"verify_model,omitempty"`
 	RetrievalThreshold float64 `json:"retrieval_threshold,omitempty"`
-	KnowledgeFallback  bool    `json:"knowledge_fallback,omitempty"`
 	Political          bool    `json:"political,omitempty"`
 	SecondPassModel    string  `json:"second_pass_model,omitempty"`
 	HybridSearch       bool    `json:"hybrid_search,omitempty"`

@@ -1960,6 +1960,16 @@ func TestLoadVerifyPathDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestLoadVerifyPathIgnoresRetiredKnowledgeFallback(t *testing.T) {
+	// The knowledge fallback is retired: a no-evidence claim is always
+	// unverifiable, so the env var is no longer read and even a garbage value
+	// cannot fail the load.
+	t.Setenv("FACTCHECK_KNOWLEDGE_FALLBACK", "not-a-bool")
+	if _, err := LoadVerifyPath(); err != nil {
+		t.Fatalf("LoadVerifyPath with retired env set: %v", err)
+	}
+}
+
 func TestLoadVerifyPathReadsGeminiSelection(t *testing.T) {
 	t.Setenv("LLM_PROVIDER", "gemini")
 	t.Setenv("GEMINI_API_KEY", "g-test")
