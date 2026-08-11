@@ -64,8 +64,8 @@ export function LiveFactCheckPanel({
     (snapshot) => snapshot?.status ?? "idle",
   );
   // claimsFor keeps a stable identity across interim/statement-only updates (it
-  // changes only when the claims store changes), so the memoized statement list
-  // re-renders only when a claim actually progresses.
+  // changes only when the claims store changes), so the fact-check derivation
+  // below recomputes only when a claim actually progresses.
   const claimsFor = useLiveAnalysisSelector(
     (snapshot) => snapshot?.claimsFor ?? NO_CLAIMS,
   );
@@ -149,19 +149,19 @@ export function LiveFactCheckPanel({
           className="flex min-h-0 flex-col gap-2 overflow-hidden"
         >
           <RegionHeading>{t.panel.subtitles}</RegionHeading>
-          {/* The interim caption is the live utterance, newer than any committed
-              statement, so it sits at the top above the newest-first list. */}
-          <LiveCaption text={caption} />
           {statements.length > 0 && (
             <LiveStatementList
               statements={statements}
               selectedStatementId={selection?.id ?? null}
               selectionTick={selection?.tick ?? 0}
-              claimsFor={claimsFor}
               highlightsFor={highlightsFor}
               onSelect={selectStatement}
             />
           )}
+          {/* The interim caption is the live utterance, newer than any committed
+              statement, so it sits at the bottom below the newest text in the
+              transcript's reading order. */}
+          <LiveCaption text={caption} />
           {statements.length === 0 && !caption && <EmptyHint status={status} />}
         </section>
 
@@ -215,8 +215,8 @@ function RegionHeading({ children }: { children: string }) {
 }
 
 // LiveCaption shows the current utterance as it is spoken, before it commits to
-// a statement, so the transcript is visible word by word. It sits at the top of
-// the subtitle region, above the newest committed statement, and renders nothing
+// a statement, so the transcript is visible word by word. It sits at the bottom
+// of the subtitle region, below the newest committed text, and renders nothing
 // between utterances.
 function LiveCaption({ text }: { text: string }) {
   if (!text) {
@@ -225,7 +225,7 @@ function LiveCaption({ text }: { text: string }) {
   return (
     <p
       aria-live="polite"
-      className="flex items-start gap-2 border-b border-dashed border-black/10 pb-2 text-sm italic leading-5 text-ink/50 dark:border-white/10 dark:text-paper/50"
+      className="flex items-start gap-2 border-t border-dashed border-black/10 pt-2 text-sm italic leading-5 text-ink/50 dark:border-white/10 dark:text-paper/50"
     >
       <span
         aria-hidden="true"

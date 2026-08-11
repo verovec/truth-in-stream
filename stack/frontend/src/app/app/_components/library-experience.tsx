@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
+import { TranscriptDisplayProvider } from "@/components/live/transcript-display";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { VideoPlayer } from "@/components/playback/video-player";
 import { useVideoAnalysis } from "@/hooks/use-video-analysis";
@@ -246,44 +247,48 @@ export function LibraryExperience({
         socketFactory={socketFactory}
         captureFactory={captureFactory}
       >
-        <div className="flex flex-col gap-4">
-          <LiveSummaryStrip />
-          <LiveSpeakerCredibility />
-          <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="flex flex-col gap-4">
-              <PlayerStage active={active} />
-              {/* The claim timeline mounts only alongside the hydrated stored
-                  analysis (the same condition that mounts the analysed driver),
-                  so a live or never-analysed video can never grow a strip from
-                  the frames a live session streams into the shared store. */}
-              {track.frames !== null ? <ClaimTimelineStrip /> : null}
-              <AnalysisControl role={role} video={selectedVideo} track={track} />
-              <ExportControls role={role} videoId={activeVideoId} />
-              <section className="flex flex-col gap-3">
-                {nowPlayingTitle ? (
-                  <h2 className="font-display text-xl font-semibold tracking-tight text-ink dark:text-paper">
-                    {nowPlayingTitle}
+        {/* The transcript display preference (the strip's unverified toggle)
+            is shared by the strip and the transcript, so it wraps both. */}
+        <TranscriptDisplayProvider>
+          <div className="flex flex-col gap-4">
+            <LiveSummaryStrip />
+            <LiveSpeakerCredibility />
+            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+              <div className="flex flex-col gap-4">
+                <PlayerStage active={active} />
+                {/* The claim timeline mounts only alongside the hydrated stored
+                    analysis (the same condition that mounts the analysed driver),
+                    so a live or never-analysed video can never grow a strip from
+                    the frames a live session streams into the shared store. */}
+                {track.frames !== null ? <ClaimTimelineStrip /> : null}
+                <AnalysisControl role={role} video={selectedVideo} track={track} />
+                <ExportControls role={role} videoId={activeVideoId} />
+                <section className="flex flex-col gap-3">
+                  {nowPlayingTitle ? (
+                    <h2 className="font-display text-xl font-semibold tracking-tight text-ink dark:text-paper">
+                      {nowPlayingTitle}
+                    </h2>
+                  ) : null}
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+                    {t.library.heading}
                   </h2>
-                ) : null}
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
-                  {t.library.heading}
-                </h2>
-                <LibrarySection
-                  listState={listState}
-                  onRetry={retryLibrary}
-                  videos={videos}
-                  selectedId={selectedId}
-                  onSelect={(video) => setSelectedId(video.id)}
-                />
-              </section>
+                  <LibrarySection
+                    listState={listState}
+                    onRetry={retryLibrary}
+                    videos={videos}
+                    selectedId={selectedId}
+                    onSelect={(video) => setSelectedId(video.id)}
+                  />
+                </section>
+              </div>
+              {active.status === "ready" ? (
+                <LiveFactCheckPanel key={active.playable.id} />
+              ) : (
+                <FactCheckPlaceholder />
+              )}
             </div>
-            {active.status === "ready" ? (
-              <LiveFactCheckPanel key={active.playable.id} />
-            ) : (
-              <FactCheckPlaceholder />
-            )}
           </div>
-        </div>
+        </TranscriptDisplayProvider>
       </LiveAnalysisProvider>
     </PlaybackProvider>
   );

@@ -5,6 +5,7 @@ import { LiveSpeakerCredibility } from "@/app/app/_components/live-speaker-credi
 import { LiveSummaryStrip } from "@/app/app/_components/live-summary-strip";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import { ChannelLiveProvider } from "@/components/live/channel-live-provider";
+import { TranscriptDisplayProvider } from "@/components/live/transcript-display";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveSocketFactory } from "@/lib/live/ports";
@@ -71,23 +72,27 @@ function LiveChannelStage({
           independently, so a frame re-renders only the panels, never the embed
           or the recordings strip. */}
       <ChannelLiveProvider channelId={channel.id} socketFactory={socketFactory}>
-        <div className="flex flex-col gap-4">
-          <LiveSummaryStrip />
-          <LiveSpeakerCredibility />
-          <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="flex flex-col gap-3">
-              {channel.sourceKind === "youtube" ? (
-                <YoutubeEmbed sourceRef={channel.sourceRef} title={channel.name} />
-              ) : (
-                <HlsSourceNote />
-              )}
-              <p className="text-xs text-ink/50 dark:text-paper/50">
-                {t.tv.channel.analysisDelay}
-              </p>
+        {/* The transcript display preference (the strip's unverified toggle)
+            is shared by the strip and the transcript, so it wraps both. */}
+        <TranscriptDisplayProvider>
+          <div className="flex flex-col gap-4">
+            <LiveSummaryStrip />
+            <LiveSpeakerCredibility />
+            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+              <div className="flex flex-col gap-3">
+                {channel.sourceKind === "youtube" ? (
+                  <YoutubeEmbed sourceRef={channel.sourceRef} title={channel.name} />
+                ) : (
+                  <HlsSourceNote />
+                )}
+                <p className="text-xs text-ink/50 dark:text-paper/50">
+                  {t.tv.channel.analysisDelay}
+                </p>
+              </div>
+              <LiveFactCheckPanel showClock={false} />
             </div>
-            <LiveFactCheckPanel showClock={false} />
           </div>
-        </div>
+        </TranscriptDisplayProvider>
       </ChannelLiveProvider>
     </PlaybackProvider>
   );
