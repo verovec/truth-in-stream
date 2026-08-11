@@ -10,8 +10,15 @@
 import type { LiveStatement } from "./statements";
 
 // StatementPart is one member statement's contribution to a merged row: its
-// original subtitle id (the key highlight spans anchor on) and its text.
-export type StatementPart = { id: string; text: string };
+// original subtitle id (the key highlight spans anchor on), its text, and its
+// own time range so the flowing transcript can track the playback position at
+// sentence granularity inside a merged unit.
+export type StatementPart = {
+  id: string;
+  text: string;
+  start: number;
+  end: number;
+};
 
 // DisplayStatement is what the transcript renders: a plain statement, or a
 // merged unit carrying parts - the ordered member texts whose per-segment
@@ -84,6 +91,8 @@ export function mergeUnitStatements(
     const parts = present.map((member) => ({
       id: member.id,
       text: member.text,
+      start: member.start,
+      end: member.end,
     }));
     merged.push({
       ...anchor,

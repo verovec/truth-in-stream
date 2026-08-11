@@ -1,7 +1,12 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
+import {
+  TranscriptDisplayProvider,
+  useTranscriptDisplay,
+} from "@/components/live/transcript-display";
 import {
   applyClaimResultFrame,
   applyClaimsFrame,
@@ -65,9 +70,7 @@ describe("SummaryStripView", () => {
           checked: 5,
           corroborates: 3,
           contradicts: 1,
-          unclear: 1,
           unverifiable: 2,
-          evidence: 2,
           skipped: 4,
         })}
         status="live"
@@ -81,15 +84,59 @@ describe("SummaryStripView", () => {
     expect(
       screen.getByLabelText(statLabel("contradicts", 1)),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(statLabel("unclear", 1))).toBeInTheDocument();
-    // The verify path's unverifiable verdict reads "Invérifiables", matching the
-    // per-claim list, instead of being folded into the curated "Incertaines" count.
+    // The verify path's unverifiable verdict reads "Invérifiables", matching
+    // the per-claim list; it renders as the unverified toggle.
     expect(
-      screen.getByLabelText(statLabel("unverifiable", 2)),
+      screen.getByRole("button", {
+        name: new RegExp(`^${stats.unverifiable}: 2`),
+      }),
     ).toBeInTheDocument();
-    // Supporting evidence is distinguishable from claim verdicts.
-    expect(screen.getByLabelText(statLabel("evidence", 2))).toBeInTheDocument();
     expect(screen.getByLabelText(statLabel("skipped", 4))).toBeInTheDocument();
+  });
+
+  test("shows no legacy unclear or evidence stat", () => {
+    render(
+      <SummaryStripView
+        summary={summary({ checked: 5, corroborates: 3 })}
+        status="live"
+      />,
+    );
+    // The displayed verdict vocabulary is exactly corroborated, contradicted,
+    // and unverified; the curated-era buckets are gone.
+    expect(screen.queryByText("Incertaines")).not.toBeInTheDocument();
+    expect(screen.queryByText("Preuves")).not.toBeInTheDocument();
+  });
+
+  test("the unverified count toggles the transcript's unverified highlights", async () => {
+    function ShowUnverifiedProbe() {
+      const { showUnverified } = useTranscriptDisplay();
+      return <output>{showUnverified ? "shown" : "hidden"}</output>;
+    }
+    render(
+      <TranscriptDisplayProvider>
+        <SummaryStripView
+          summary={summary({ checked: 1, unverifiable: 2 })}
+          status="live"
+        />
+        <ShowUnverifiedProbe />
+      </TranscriptDisplayProvider>,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: new RegExp(`^${stats.unverifiable}: 2`),
+    });
+    // Off by default: the transcript hides unverified marks and the button
+    // reads unpressed.
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("hidden")).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("shown")).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("hidden")).toBeInTheDocument();
   });
 
   test("marks the counts as a polite live region for assistive tech", () => {
@@ -156,12 +203,12 @@ describe("SummaryStripView", () => {
 });
 
 describe("verify-path unverifiable verdict end to end", () => {
-  test("a parsed unverifiable claim_result surfaces as an Unverifiable count, not Unclear", () => {
+  test("a parsed unverifiable claim_result surfaces as the Unverified count", () => {
     // Drive the operator-visible path the way a live stream does: a real
     // claim_result frame off the wire, through the claim reducers and the
     // summary projection, into the rendered strip. The verify path's
-    // unverifiable verdict must read "Unverifiable" in the strip, matching the
-    // per-claim list, and must not inflate the curated "Unclear" count.
+    // unverifiable verdict must read "Invérifiables" in the strip, matching the
+    // per-claim list.
     const claimsFrame = parseLiveFrame(
       JSON.stringify({
         type: "claims",
@@ -193,9 +240,12 @@ describe("verify-path unverifiable verdict end to end", () => {
     render(<SummaryStripView summary={summary} status="live" />);
 
     expect(
-      screen.getByLabelText(statLabel("unverifiable", 1)),
+      screen.getByRole("button", {
+        name: new RegExp(`^${stats.unverifiable}: 1`),
+      }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(statLabel("unclear", 0))).toBeInTheDocument();
+    // The curated-era Unclear bucket no longer exists to inflate.
+    expect(screen.queryByText("Incertaines")).not.toBeInTheDocument();
   });
 });
 

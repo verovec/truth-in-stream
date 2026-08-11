@@ -96,7 +96,7 @@ describe("LiveFactCheckPanel", () => {
     ).toBeGreaterThan(50);
   });
 
-  test("places the interim caption at the top of the subtitles region", () => {
+  test("places the interim caption at the bottom of the subtitles region", () => {
     renderPanel({
       statements: [checked(0, "an already committed statement")],
       caption: "and this is still being spoken",
@@ -107,10 +107,11 @@ describe("LiveFactCheckPanel", () => {
     const transcript = within(subtitles).getByRole("list", {
       name: fr.app.subtitles.transcriptAria,
     });
-    // The live utterance is the newest speech, so it sits above the committed
-    // statements rather than at the bottom of the region.
+    // The transcript reads chronologically with the newest text last, so the
+    // live utterance - the newest speech of all - sits below the committed
+    // statements, at the reading edge.
     expect(
-      caption.compareDocumentPosition(transcript) &
+      transcript.compareDocumentPosition(caption) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

@@ -30,9 +30,11 @@ describe("mergeUnitStatements", () => {
       end: 3,
       speaker: "A",
       text: "Le budget monte. Il monte de dix pour cent.",
+      // Each part keeps its member's own time range so the flowing transcript
+      // tracks playback at sentence granularity inside the merged unit.
       parts: [
-        { id: "0", text: "Le budget monte." },
-        { id: "1", text: "Il monte de dix pour cent." },
+        { id: "0", text: "Le budget monte.", start: 1, end: 2 },
+        { id: "1", text: "Il monte de dix pour cent.", start: 2, end: 3 },
       ],
     });
     expect(merged[1]).toBe(statements[2]);
@@ -83,8 +85,8 @@ describe("mergeUnitStatements", () => {
       end: 4,
       text: "Un. Trois.",
       parts: [
-        { id: "0", text: "Un." },
-        { id: "2", text: "Trois." },
+        { id: "0", text: "Un.", start: 1, end: 2 },
+        { id: "2", text: "Trois.", start: 3, end: 4 },
       ],
     });
   });
