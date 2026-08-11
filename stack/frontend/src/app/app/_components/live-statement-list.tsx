@@ -94,6 +94,20 @@ export const LiveStatementList = memo(function LiveStatementList({
   // re-render.
   const pinnedRef = useRef(true);
 
+  // registerSentence is stable (the refs map lives in a ref) so a sentence's
+  // memoized ref callback never changes identity and React does not detach and
+  // reattach every mounted sentence's ref on each list re-render - the
+  // transcript grows unbounded over a live session, so that churn would be
+  // O(transcript) per update.
+  const registerSentence = useCallback((id: string, el: HTMLElement | null) => {
+    const refs = sentenceRefs.current;
+    if (el) {
+      refs.set(id, el);
+    } else {
+      refs.delete(id);
+    }
+  }, []);
+
   // scrollSentenceIntoView reveals a sentence on demand (a selected fact-check,
   // an inconsistency jump-to-earlier), scrolling only the subtitle list - never
   // the page. The native Element.scrollIntoView walks every scrollable ancestor
@@ -188,14 +202,7 @@ export const LiveStatementList = memo(function LiveStatementList({
           highlightsFor={highlightsFor}
           onSelect={onSelect}
           onJumpToEarlier={scrollSentenceIntoView}
-          registerSentence={(id, el) => {
-            const refs = sentenceRefs.current;
-            if (el) {
-              refs.set(id, el);
-            } else {
-              refs.delete(id);
-            }
-          }}
+          registerSentence={registerSentence}
         />
       ))}
     </ol>
@@ -300,10 +307,17 @@ function SentenceSpan({
   onSelect?: (statementId: string) => void;
   registerSentence: (id: string, el: HTMLElement | null) => void;
 }) {
+  // Memoized on the stable registerSentence and the sentence id so the ref
+  // callback keeps its identity across re-renders: React then leaves the
+  // attached ref alone instead of detaching and reattaching it.
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerSentence(sentence.id, el),
+    [registerSentence, sentence.id],
+  );
   return (
     <button
       type="button"
-      ref={(el) => registerSentence(sentence.id, el)}
+      ref={ref}
       onClick={() => onSelect?.(sentence.statementId)}
       aria-current={active ? "true" : undefined}
       className={`inline rounded-sm text-left align-baseline box-decoration-clone transition-colors hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-bleu-flag dark:hover:bg-white/5 dark:focus-visible:outline-paper/60 ${
