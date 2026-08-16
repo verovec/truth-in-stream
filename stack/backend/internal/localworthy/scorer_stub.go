@@ -8,7 +8,7 @@ import "context"
 // exists so callers compile identically with and without the build tag.
 type Scorer struct{}
 
-// New reports the scorer unavailable in a build without the localworthy tag.
+// New reports the scorer unavailable in a build without the localinference tag.
 // The caller's fail-open wiring treats this exactly like a missing model
 // artifact and keeps the existing cascade.
 func New(Config) (*Scorer, error) {
