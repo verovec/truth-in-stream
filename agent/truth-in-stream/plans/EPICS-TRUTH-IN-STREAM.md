@@ -16,11 +16,7 @@ Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Ep
 (VER-216..222) merged to `dev` via PRs #251-#255, #258, #259 (+ deflake #256) on
 2026-07-17; docs in `docs/video-preanalysis.md`.
 
-Status 2026-08-16: Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first
-verdicts, VER-224..230) created in Linear; the same day an epic run delivered
-VER-224 (PR #268), VER-226 (PR #269), VER-227 (PR #270), and VER-229 (PRs #271+#272)
-to `dev`, all Done. VER-225 needs a local-inference training environment (Docker,
-seeded ClaimReview corpus) and stays `Todo`; VER-228 and VER-230 wait behind it.
+Status 2026-08-16 (end of day): Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first verdicts) COMPLETE: all seven cards Done via one epic run - VER-224 (PR #268), VER-226 (PR #269, live recall@1 93.3%->100%), VER-227 (PR #270), VER-229 (PRs #271+#272), VER-225 (PR #273, corpus ingested locally 12->4,743 claims, gate agreement 99.4%), VER-228 (PR #274, 53.9% verdicts decided locally at 100% decided accuracy), VER-230 (PR #275, vector-first defaults on, measured 83% fewer generative calls at identical accuracy, 0.65 calls/claim budget enforced in CI). Defaults are now vector-first; docs/vector-first-defaults.md records the reconciled set.
 
 ---
 

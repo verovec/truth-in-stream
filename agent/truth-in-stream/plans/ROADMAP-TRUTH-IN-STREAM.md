@@ -102,12 +102,12 @@
 | E2 | Claim extraction reads the previous group and quotes only the claim core | Done | High | E1 |
 | E3 | Live view merges a claim unit into one statement with claim-core highlights | Done | High | E2 |
 | VER-224 | French-language deterministic precheck gate rejects non-claims before any model call | Done | High | |
-| VER-225 | Local check-worthiness classifier with calibrated grey zone replaces the LLM gate for clear cases | Todo | High | |
+| VER-225 | Local check-worthiness classifier with calibrated grey zone replaces the LLM gate for clear cases | Done | High | |
 | VER-226 | Cross-encoder reranking between hybrid fusion and the evidence cut | Done | Medium | |
 | VER-227 | Evidence publication dates: typed published_at with recency-aware retrieval and verdicts | Done | Medium | |
-| VER-228 | NLI stance scorer resolves clear verdicts from retrieved evidence before any LLM call | Todo | High | VER-225 |
+| VER-228 | NLI stance scorer resolves clear verdicts from retrieved evidence before any LLM call | Done | High | VER-225 |
 | VER-229 | Per-claim pipeline telemetry table for threshold calibration and classifier training | Done | Medium | VER-227 |
-| VER-230 | Vector-first defaults: enable the verify path with local gates and hold an LLM-call budget | Todo | Medium | VER-228, VER-226 |
+| VER-230 | Vector-first defaults: enable the verify path with local gates and hold an LLM-call budget | Done | Medium | VER-228, VER-226 |
 
 ## Dependency graph
 
@@ -127,15 +127,8 @@ VER-226 -> VER-230
 
 ## Ready queue
 
-Epic F (vector-first verdicts): VER-224, VER-226, VER-227, VER-229 delivered to `dev`
-2026-08-16 (PRs #268-#272). Remaining ready queue:
-
-1. VER-225 - Local check-worthiness classifier (High; needs a training environment
-   with Docker and the seeded ClaimReview corpus - not deliverable from a corpus-less
-   session)
-
-VER-228 (after VER-225) and VER-230 (after VER-228; VER-226 already Done) unblock as
-VER-225 progresses.
+Epic F (vector-first verdicts) COMPLETE 2026-08-16: all seven cards delivered to `dev`
+in one epic run (PRs #268-#275). The ready queue is empty.
 
 (Historical note kept from the Epic E close-out: E1..E3 were delivered 2026-07-21 as PRs
 #261-#263 under provisional ids while Linear was unreachable; bodies in

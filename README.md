@@ -20,8 +20,12 @@ claim is checked, the conversation has moved on. **truth-in-stream** closes that
 live stream, pulls out the checkable claims as they are spoken, finds supporting or contradicting
 evidence, and streams an evidence-grounded verdict back to the viewer in near real time.
 
-Verdicts are **derived from retrieved evidence by an LLM verifier** rather than borrowed by
-similarity, so a match is a reason, not a coincidence.
+Verdicts are **derived from retrieved evidence** rather than borrowed by similarity, so a match
+is a reason, not a coincidence. Since the vector-first defaults
+([`docs/vector-first-defaults.md`](docs/vector-first-defaults.md)), local models decide the clear
+cases - a French check-worthiness classifier gates statements and an NLI stance scorer settles
+claims the evidence plainly supports or contradicts - and the LLM verifier is the tie-breaker for
+the calibrated grey zones, at an 83 percent lower generative-call rate for identical accuracy.
 
 ## Quick start
 
@@ -69,13 +73,14 @@ A live stream (or an imported video) flows through a single streaming pipeline:
   Speech-to-text          AssemblyAI Universal-3 Pro, diarized realtime WebSocket
      |
      v
-  Claim detection         pull check-worthy statements out of the transcript
-     |
+  Claim detection         a local French classifier gates check-worthy statements;
+     |                    the generative gate judges only its uncertainty band
      v
-  Semantic retrieval      Voyage embeddings -> pgvector search over a curated
-     |                    claim corpus + Wikipedia evidence
+  Semantic retrieval      Voyage embeddings -> pgvector hybrid search + reranking
+     |                    over a curated claim corpus + Wikipedia evidence
      v
-  LLM verification        a verifier derives a verdict from the retrieved evidence
+  Verdict                 an NLI stance scorer decides clear support/contradiction
+     |                    locally; the LLM verifier judges the ambiguous rest
      |
      v
   Verdict, streamed       shown in the fact-check panel, synced to playback
