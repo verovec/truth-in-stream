@@ -27,6 +27,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
+	"github.com/verovec/truth-in-stream/backend/internal/localworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
 	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
@@ -92,6 +93,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	checkWorthinessCfg, err := config.LoadCheckWorthiness()
+	if err != nil {
+		return err
+	}
+	checkWorthinessLocalCfg, err := config.LoadCheckWorthinessLocal()
 	if err != nil {
 		return err
 	}
@@ -318,9 +323,9 @@ func run(logger *slog.Logger) error {
 	// legacy two-stage gate (claim + coverage) is used, unchanged.
 	var prechecker service.SegmentPrechecker
 	if verifyPathCfg.Active() {
-		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, locale, logger)
+		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, checkWorthinessLocalCfg, locale, logger)
 	} else {
-		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, locale, embedder, pgStore, pgStore, logger)
+		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, checkWorthinessLocalCfg, locale, embedder, pgStore, pgStore, logger)
 	}
 	if err != nil {
 		return err
@@ -632,11 +637,11 @@ func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, ev
 // survivors reach the model, which skips casual or personal declaratives a
 // word-list cannot. An unconfigured or keyless model leaves the heuristic alone,
 // exactly the prior behavior.
-func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
+	classifier, err := buildClaimClassifier(cfg, cw, local, locale, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -653,19 +658,44 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale doma
 }
 
 // buildClaimClassifier returns the gate's stage-one classifier: the
-// deterministic heuristic alone when the model is inactive, or the heuristic
-// wrapped in a model cascade when the check-worthiness model is configured. The
-// API key is never logged.
-func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, error) {
+// deterministic heuristic alone when no model stage is active, the heuristic
+// wrapped in a model cascade when the check-worthiness model is configured,
+// and the three-stage banded cascade when the local scorer is also active, so
+// the generative model is consulted only inside the local classifier's
+// uncertainty band. A local scorer that fails to load (missing artifact,
+// binary built without the localworthy tag) degrades to the two-stage wiring
+// with a warning, never failing the boot. API keys are never logged.
+func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, error) {
 	heuristic := service.NewHeuristicClassifier(cfg.MinWords, locale)
-	if !cw.Active() {
+	var model service.CheckWorthinessClassifier
+	if cw.Active() {
+		client, err := checkworthy.New(checkworthy.Config{Provider: llm.ProviderName(cw.Provider), APIKey: cw.APIKey, GeminiAPIKey: cw.GeminiAPIKey, DeepSeekAPIKey: cw.DeepSeekAPIKey, Model: cw.Model, Locale: locale})
+		if err != nil {
+			return nil, err
+		}
+		logger.Info("model check-worthiness classifier enabled", slog.String("model", cw.Model))
+		model = client
+	}
+	if local.Active() {
+		scorer, err := localworthy.New(localworthy.Config{
+			ModelPath:     local.ModelPath,
+			TokenizerPath: local.TokenizerPath,
+			LibraryPath:   local.LibraryPath,
+			Timeout:       local.Timeout,
+		})
+		if err != nil {
+			logger.Warn("local check-worthiness scorer unavailable; keeping the model cascade", slog.String("error", err.Error()))
+		} else {
+			logger.Info("local check-worthiness classifier enabled",
+				slog.String("model_path", local.ModelPath),
+				slog.Float64("band_low", local.BandLow),
+				slog.Float64("band_high", local.BandHigh))
+			return service.NewBandedCascadeClassifier(heuristic, scorer, model, local.BandLow, local.BandHigh, logger), nil
+		}
+	}
+	if model == nil {
 		return heuristic, nil
 	}
-	model, err := checkworthy.New(checkworthy.Config{Provider: llm.ProviderName(cw.Provider), APIKey: cw.APIKey, GeminiAPIKey: cw.GeminiAPIKey, DeepSeekAPIKey: cw.DeepSeekAPIKey, Model: cw.Model, Locale: locale})
-	if err != nil {
-		return nil, err
-	}
-	logger.Info("model check-worthiness classifier enabled", slog.String("model", cw.Model))
 	return service.NewCascadeClassifier(heuristic, model, logger), nil
 }
 
@@ -706,11 +736,11 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 // heuristic-plus-model cascade), with no coverage stage. Whether evidence exists
 // is discovered by the verify path's retrieval, not pre-judged here, so a novel
 // but checkable claim is no longer dropped as not_covered.
-func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, logger *slog.Logger) (service.SegmentPrechecker, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
+	classifier, err := buildClaimClassifier(cfg, cw, local, locale, logger)
 	if err != nil {
 		return nil, err
 	}

@@ -18,6 +18,9 @@ type Baseline struct {
 	About     string            `json:"_about"`
 	Verdict   VerdictBaseline   `json:"verdict"`
 	Retrieval RetrievalBaseline `json:"retrieval"`
+	// Gate is the local check-worthiness gate floor (VER-225). It is additive
+	// and optional: a baseline without the key skips the gate check.
+	Gate *GateBaseline `json:"gate,omitempty"`
 }
 
 // VerdictBaseline is the two-axis accuracy floor: the minimum fraction of cases
@@ -57,6 +60,17 @@ func LoadBaseline(path string) (Baseline, error) {
 	} {
 		if v < 0 || v > 1 {
 			return Baseline{}, fmt.Errorf("eval: baseline %s %.4f is outside [0, 1]", name, v)
+		}
+	}
+	if b.Gate != nil {
+		for name, v := range map[string]float64{
+			"gate.min_cascade_accuracy":           b.Gate.MinCascadeAccuracy,
+			"gate.min_outside_band_llm_agreement": b.Gate.MinOutsideBandLLMAgreement,
+			"gate.max_llm_call_rate":              b.Gate.MaxLLMCallRate,
+		} {
+			if v < 0 || v > 1 {
+				return Baseline{}, fmt.Errorf("eval: baseline %s %.4f is outside [0, 1]", name, v)
+			}
 		}
 	}
 	for cat, v := range b.Retrieval.Categories {
