@@ -11,13 +11,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/eval"
+	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 )
 
 func main() {
@@ -35,6 +38,7 @@ func run(args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	goldenPath := fs.String("golden", filepath.Join("internal", "eval", "testdata", "golden.json"), "path to the golden set")
 	baselinePath := fs.String("baseline", filepath.Join("internal", "eval", "testdata", "baseline.json"), "path to the committed baseline")
+	rerankOn := fs.Bool("rerank", false, "also score the live Voyage reranker over the same cases (needs RERANK_API_KEY or EMBEDDING_API_KEY; informational, not a gate)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -63,5 +67,43 @@ func run(args []string, out io.Writer) error {
 	if _, err := io.WriteString(out, report); err != nil {
 		return err
 	}
+	if *rerankOn {
+		return runRerankComparison(g, rep, out)
+	}
 	return nil
+}
+
+// runRerankComparison scores the live Voyage reranker over the same golden
+// cases and prints its report beside the oracle's. It is informational - the
+// committed gate stays the offline oracle - but it fails loud on a missing key
+// or an API error, because a silent fallback would present oracle numbers as
+// reranker numbers.
+func runRerankComparison(g eval.Golden, oracle eval.RetrievalReport, out io.Writer) error {
+	key := os.Getenv("RERANK_API_KEY")
+	if key == "" {
+		key = os.Getenv("EMBEDDING_API_KEY")
+	}
+	if key == "" {
+		return fmt.Errorf("rerank comparison needs RERANK_API_KEY or EMBEDDING_API_KEY")
+	}
+	model := os.Getenv("MATCH_RERANK_MODEL")
+	if model == "" {
+		model = rerank.DefaultModel
+	}
+	client, err := rerank.New(rerank.Config{APIKey: key, Model: model})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	reranked, err := eval.RunRetrievalReranked(ctx, g, client)
+	if err != nil {
+		return err
+	}
+	comparison := fmt.Sprintf("\nreranker (%s) over the same cases:\n\n%s\n\ndelta overall: R@1 %+.1f pts, R@3 %+.1f pts\n",
+		model, reranked.Format(),
+		(reranked.OverallAt1-oracle.OverallAt1)*100,
+		(reranked.OverallAt3-oracle.OverallAt3)*100)
+	_, err = io.WriteString(out, comparison)
+	return err
 }

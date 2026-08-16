@@ -907,6 +907,18 @@ services:
       MATCH_HYBRID_SEARCH: "${MATCH_HYBRID_SEARCH:-}"
       MATCH_LEXICAL_TOP_K: "${MATCH_LEXICAL_TOP_K:-}"
       MATCH_RRF_K: "${MATCH_RRF_K:-}"
+      # Retrieval reranking (VER-226). Off by default; when on (and keyed, the
+      # key falling back to EMBEDDING_API_KEY) the fused candidate pool widens to
+      # MATCH_RERANK_CANDIDATES (20) and the Voyage reranker picks which
+      # candidates survive the cut, fail-open on any error or timeout
+      # (MATCH_RERANK_TIMEOUT, 800ms; MATCH_RERANK_MODEL, rerank-2.5). Forwarded
+      # explicitly - a variable in .env does nothing unless compose passes it
+      # through.
+      MATCH_RERANK: "${MATCH_RERANK:-}"
+      MATCH_RERANK_MODEL: "${MATCH_RERANK_MODEL:-}"
+      MATCH_RERANK_CANDIDATES: "${MATCH_RERANK_CANDIDATES:-}"
+      MATCH_RERANK_TIMEOUT: "${MATCH_RERANK_TIMEOUT:-}"
+      RERANK_API_KEY: "${RERANK_API_KEY:-}"
       # Retrieval tuning (VER-202). Per-corpus matcher knobs; empty keeps the
       # backend defaults. Threshold and top-k are already per corpus (curated
       # claims vs wiki evidence); the ef_search knobs raise one corpus's HNSW

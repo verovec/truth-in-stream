@@ -14,6 +14,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
+	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 )
 
 // DefaultEmbeddingModel is the voyage model used for both ingest and query
@@ -557,6 +558,15 @@ const (
 	// config bound is [0, maxHNSWEfSearch]. Kept as a local constant so config
 	// stays free of a store-package dependency.
 	maxHNSWEfSearch = 1000
+	// Retrieval reranking (VER-226) is off by default. The candidate pool of 20
+	// per corpus matches the lexical over-fetch above, and the timeout keeps the
+	// rerank call well inside the verify fast-deadline so a slow rerank degrades
+	// to the fused order instead of stalling a verdict. The model default lives
+	// in the rerank package (rerank.DefaultModel).
+	defaultRerankCandidates = 20
+	defaultRerankTimeout    = 800 * time.Millisecond
+	// maxRerankCandidates is the rerank API's per-request document ceiling.
+	maxRerankCandidates = 1000
 )
 
 // Match holds the segment matching configuration across the curated claims and
@@ -662,6 +672,52 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	return m, nil
+}
+
+// Rerank configures the optional cross-encoder rerank stage of retrieval
+// (MATCH_RERANK): the fused candidate pool is re-scored by the Voyage rerank
+// API and relevance decides which candidates survive the final cut. The key
+// falls back to EMBEDDING_API_KEY because both call the same Voyage account;
+// RERANK_API_KEY overrides it when the accounts differ. Following the
+// enabled-and-keyed Active convention, an enabled-but-keyless stage degrades
+// to the fused order rather than failing boot.
+type Rerank struct {
+	Enabled    bool
+	Model      string
+	APIKey     string
+	Candidates int
+	Timeout    time.Duration
+}
+
+// Active reports whether reranking should be wired: enabled with a usable key.
+func (r Rerank) Active() bool {
+	return r.Enabled && r.APIKey != ""
+}
+
+// LoadRerank reads the rerank configuration from the environment, applying
+// defaults and failing fast on a candidate pool outside the API's per-request
+// ceiling or a non-positive timeout.
+func LoadRerank() (Rerank, error) {
+	r := Rerank{
+		Model:      getenv("MATCH_RERANK_MODEL", rerank.DefaultModel),
+		Candidates: defaultRerankCandidates,
+		Timeout:    defaultRerankTimeout,
+	}
+	var err error
+	if r.Enabled, err = boolEnvDefault("MATCH_RERANK", false); err != nil {
+		return Rerank{}, err
+	}
+	if r.Candidates, err = intEnv("MATCH_RERANK_CANDIDATES", r.Candidates, 1, maxRerankCandidates); err != nil {
+		return Rerank{}, err
+	}
+	if r.Timeout, err = positiveDurationEnv("MATCH_RERANK_TIMEOUT", r.Timeout); err != nil {
+		return Rerank{}, err
+	}
+	r.APIKey = os.Getenv("RERANK_API_KEY")
+	if r.APIKey == "" {
+		r.APIKey = os.Getenv("EMBEDDING_API_KEY")
+	}
+	return r, nil
 }
 
 // Debug-search defaults: 10 neighbors is enough to eyeball corpus coverage

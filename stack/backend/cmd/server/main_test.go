@@ -61,7 +61,7 @@ func validMatchCfg() config.Match {
 func TestBuildVerifyMatcherInactiveReturnsFallback(t *testing.T) {
 	t.Parallel()
 	fallback := stubSegmentMatcher{}
-	got, err := buildVerifyMatcher(config.VerifyPath{}, validMatchCfg(), nil, nil, fallback)
+	got, err := buildVerifyMatcher(config.VerifyPath{}, validMatchCfg(), config.Rerank{}, nil, nil, fallback, nil)
 	if err != nil {
 		t.Fatalf("buildVerifyMatcher: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestBuildVerifyMatcherActiveBuildsDedicatedMatcher(t *testing.T) {
 	t.Parallel()
 	fallback := stubSegmentMatcher{}
 	cfg := config.VerifyPath{Enabled: true, APIKey: "sk-test", RetrievalThreshold: 0.45}
-	got, err := buildVerifyMatcher(cfg, validMatchCfg(), nil, nil, fallback)
+	got, err := buildVerifyMatcher(cfg, validMatchCfg(), config.Rerank{}, nil, nil, fallback, nil)
 	if err != nil {
 		t.Fatalf("buildVerifyMatcher: %v", err)
 	}
