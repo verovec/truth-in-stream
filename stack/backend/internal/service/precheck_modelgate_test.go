@@ -58,7 +58,7 @@ func modelGate(t *testing.T, verdict bool) *Gate {
 	if err != nil {
 		t.Fatalf("checkworthy.New: %v", err)
 	}
-	cascade := NewCascadeClassifier(NewHeuristicClassifier(defaultTestMinWords), model, discardLogger())
+	cascade := NewCascadeClassifier(NewHeuristicClassifier(defaultTestMinWords, domain.LocaleEnglish), model, discardLogger())
 	return NewGate(cascade, stubCoverage{covered: true})
 }
 
@@ -100,7 +100,7 @@ func TestGateModelPassesPublicClaim(t *testing.T) {
 // and no model server is contacted.
 func TestGateHeuristicOnlyUnchangedWhenModelUnconfigured(t *testing.T) {
 	t.Parallel()
-	g := NewGate(NewHeuristicClassifier(defaultTestMinWords), stubCoverage{covered: true})
+	g := NewGate(NewHeuristicClassifier(defaultTestMinWords, domain.LocaleEnglish), stubCoverage{covered: true})
 
 	skip, err := g.Evaluate(t.Context(), "What is the capital of France?")
 	if err != nil {
