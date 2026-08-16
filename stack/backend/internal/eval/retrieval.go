@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"sort"
@@ -284,6 +285,21 @@ func (r RetrievalReport) Recall(category string) (CategoryRecall, bool) {
 // (empty category) are skipped. Categories are reported in RetrievalCategories
 // order; a category with no case is omitted from the breakdown.
 func RunRetrieval(g Golden) RetrievalReport {
+	rep, err := runRetrieval(g, func(c Case) ([]string, error) {
+		return RankPassages(c.Statement, c.Passages), nil
+	})
+	if err != nil {
+		// The oracle ranker cannot fail; the error path exists for pluggable
+		// rankers (RunRetrievalReranked).
+		panic(err)
+	}
+	return rep
+}
+
+// runRetrieval aggregates recall@1/@3 over the golden retrieval cases with the
+// ranking delegated to rank, so the offline oracle and a live reranker are
+// scored by identical bookkeeping and their reports compare one to one.
+func runRetrieval(g Golden, rank func(Case) ([]string, error)) (RetrievalReport, error) {
 	type acc struct {
 		cases  int
 		sumAt1 float64
@@ -296,7 +312,10 @@ func RunRetrieval(g Golden) RetrievalReport {
 		if c.Category == "" || len(c.Relevant) == 0 {
 			continue
 		}
-		ranked := RankPassages(c.Statement, c.Passages)
+		ranked, err := rank(c)
+		if err != nil {
+			return RetrievalReport{}, fmt.Errorf("eval: rank case %s: %w", c.ID, err)
+		}
 		at1 := recallAtK(c.Relevant, ranked, 1)
 		at3 := recallAtK(c.Relevant, ranked, 3)
 		total++
@@ -329,7 +348,7 @@ func RunRetrieval(g Golden) RetrievalReport {
 			RecallAt3: a.sumAt3 / float64(a.cases),
 		})
 	}
-	return rep
+	return rep, nil
 }
 
 // Format renders the retrieval report as a short, stable multi-line summary for

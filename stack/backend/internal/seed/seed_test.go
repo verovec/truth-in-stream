@@ -19,9 +19,11 @@ type conflictedWikiStore struct{}
 func (conflictedWikiStore) EnsureSource(context.Context, string) error {
 	return fmt.Errorf("postgres: ensure evidence source: %w", domain.ErrEvidenceSourceConflict)
 }
+
 func (conflictedWikiStore) UpsertChunks(context.Context, []domain.EvidenceChunk) error {
 	return errors.New("unreachable: claim was refused")
 }
+
 func (conflictedWikiStore) SetChunkEmbeddings(context.Context, []domain.EvidenceChunk) error {
 	return errors.New("unreachable: claim was refused")
 }

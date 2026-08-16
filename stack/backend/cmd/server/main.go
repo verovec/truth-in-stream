@@ -28,6 +28,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
+	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/source"
 	"github.com/verovec/truth-in-stream/backend/internal/source/press"
@@ -67,6 +68,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	matchCfg, err := config.LoadMatch()
+	if err != nil {
+		return err
+	}
+	rerankCfg, err := config.LoadRerank()
 	if err != nil {
 		return err
 	}
@@ -275,6 +280,10 @@ func run(logger *slog.Logger) error {
 	health := service.NewHealthChecker(pgStore)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
+	matcherOpts, err := buildMatcherOpts(rerankCfg, logger)
+	if err != nil {
+		return err
+	}
 	matcher, err := service.NewMatcher(embedder, pgStore, pgStore, service.MatcherConfig{
 		TopK:                  matchCfg.TopK,
 		ScoreThreshold:        matchCfg.ScoreThreshold,
@@ -291,7 +300,9 @@ func run(logger *slog.Logger) error {
 		RRFK:                  matchCfg.RRFK,
 		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
 		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
-	})
+		RerankCandidates:      rerankCfg.Candidates,
+		RerankTimeout:         rerankCfg.Timeout,
+	}, matcherOpts...)
 	if err != nil {
 		return err
 	}
@@ -321,7 +332,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
-	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, embedder, pgStore, segmentMatcher)
+	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, rerankCfg, embedder, pgStore, segmentMatcher, matcherOpts)
 	if err != nil {
 		return err
 	}
@@ -636,6 +647,22 @@ func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale
 	return service.NewCascadeClassifier(heuristic, model, logger), nil
 }
 
+// buildMatcherOpts wires the optional retrieval reranker: the Voyage rerank
+// client behind the matcher's Reranker port when the stage is enabled and
+// keyed, or no option at all, leaving retrieval byte-identical to before. The
+// API key is never logged.
+func buildMatcherOpts(cfg config.Rerank, logger *slog.Logger) ([]service.MatcherOption, error) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	client, err := rerank.New(rerank.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	if err != nil {
+		return nil, fmt.Errorf("build reranker: %w", err)
+	}
+	logger.Info("retrieval reranking enabled", slog.String("model", cfg.Model))
+	return []service.MatcherOption{service.WithReranker(client, logger)}, nil
+}
+
 // buildStanceClassifier wires the intra-speaker consistency stance check, or
 // returns a nil classifier (interface, not a typed nil) when the feature is not
 // active, so the live analyzer leaves consistency off and behaves exactly as
@@ -684,7 +711,7 @@ type evidenceStore interface {
 // nothing and every claim short-circuits to a no-evidence not_enough_info). When
 // the path is inactive it returns the supplied fallback unchanged - buildVerifyPath
 // ignores it - so the extra matcher exists only when it is used.
-func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder service.QueryEmbedder, store evidenceStore, fallback service.SegmentMatcher) (service.SegmentMatcher, error) {
+func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, rerankCfg config.Rerank, embedder service.QueryEmbedder, store evidenceStore, fallback service.SegmentMatcher, opts []service.MatcherOption) (service.SegmentMatcher, error) {
 	if !cfg.Active() {
 		return fallback, nil
 	}
@@ -704,7 +731,9 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 		RRFK:                  matchCfg.RRFK,
 		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
 		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
-	})
+		RerankCandidates:      rerankCfg.Candidates,
+		RerankTimeout:         rerankCfg.Timeout,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)
 	}

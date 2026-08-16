@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -48,6 +49,31 @@ type HybridClaimSearcher interface {
 // evidence store, the evidence-corpus companion to HybridClaimSearcher.
 type HybridEvidenceSearcher interface {
 	SearchEvidenceHybrid(ctx context.Context, text string, query []float32, topK, lexicalK, rrfK, efSearch int, sources []string) ([]domain.EvidenceHit, error)
+}
+
+// Reranker is the optional cross-encoder relevance stage of retrieval: given
+// the query and the candidate passages, it returns the passage indexes in
+// relevance order, best first. It decides which widened-pool candidates survive
+// the final cut; it never changes scores or the final cosine ordering, the same
+// division of labor the hybrid RRF fusion follows. It is a port so the Voyage
+// client, a self-hosted model, or a test fake wire in interchangeably.
+type Reranker interface {
+	Rank(ctx context.Context, query string, documents []string) ([]int, error)
+}
+
+// MatcherOption customizes an optional Matcher capability at construction.
+type MatcherOption func(*Matcher)
+
+// WithReranker enables rerank selection: retrieval widens each corpus's
+// candidate pool to RerankCandidates and the reranker picks which candidates
+// survive the MaxResults cut. The stage is fail-open - any reranker error,
+// timeout, or malformed order keeps the fused cosine selection - and the
+// logger records those fallbacks so a silently degraded reranker is visible.
+func WithReranker(r Reranker, logger *slog.Logger) MatcherOption {
+	return func(m *Matcher) {
+		m.reranker = r
+		m.logger = logger
+	}
 }
 
 // ErrEmptySegment is returned when a segment contains no text to match.
@@ -120,6 +146,15 @@ type MatcherConfig struct {
 	// latency for recall independently per corpus. Both must be non-negative.
 	ClaimsEfSearch   int
 	EvidenceEfSearch int
+
+	// RerankCandidates widens each corpus's retrieval to this many candidates
+	// when a Reranker is wired (WithReranker), so the reranker has a pool to
+	// select from; corpus thresholds still apply, so widening never admits a
+	// below-threshold passage. RerankTimeout bounds the rerank call inside the
+	// segment's own timeout; on expiry the fused order stands. Both are ignored
+	// (and unvalidated) without a reranker.
+	RerankCandidates int
+	RerankTimeout    time.Duration
 }
 
 func (c MatcherConfig) validate() error {
@@ -173,21 +208,35 @@ type Matcher struct {
 	evidence EvidenceSearcher
 	cfg      MatcherConfig
 	embedSem chan struct{}
+	reranker Reranker
+	logger   *slog.Logger
 }
 
 // NewMatcher builds a Matcher over the given embedder and corpora, failing on a
 // configuration that would make matching meaningless.
-func NewMatcher(embedder QueryEmbedder, claims ClaimSearcher, evidence EvidenceSearcher, cfg MatcherConfig) (*Matcher, error) {
+func NewMatcher(embedder QueryEmbedder, claims ClaimSearcher, evidence EvidenceSearcher, cfg MatcherConfig, opts ...MatcherOption) (*Matcher, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Matcher{
+	m := &Matcher{
 		embedder: embedder,
 		claims:   claims,
 		evidence: evidence,
 		cfg:      cfg,
 		embedSem: make(chan struct{}, cfg.EmbedConcurrency),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	if m.reranker != nil {
+		switch {
+		case cfg.RerankCandidates < 1 || cfg.RerankCandidates > math.MaxInt32:
+			return nil, fmt.Errorf("service: matcher rerank candidates must be in [1, %d], got %d", math.MaxInt32, cfg.RerankCandidates)
+		case cfg.RerankTimeout <= 0:
+			return nil, fmt.Errorf("service: matcher rerank timeout must be positive, got %s", cfg.RerankTimeout)
+		}
+	}
+	return m, nil
 }
 
 // MatchSegment embeds segment text once, searches both corpora, and returns the
@@ -252,10 +301,80 @@ func (m *Matcher) matchSegmentVec(ctx context.Context, segment string, query []f
 	sort.SliceStable(matches, func(i, j int) bool {
 		return matches[i].Score > matches[j].Score
 	})
+	reranked := m.reranker != nil
+	matches = m.rerankSelect(ctx, segment, matches)
 	if len(matches) > m.cfg.MaxResults {
 		matches = matches[:m.cfg.MaxResults]
 	}
+	if reranked {
+		// Rerank selection may have reordered the survivors; the returned
+		// contract stays cosine-descending (the same rule hybrid fusion follows:
+		// the extra signal picks who survives, cosine similarity orders them),
+		// so downstream consumers of score order are untouched.
+		sort.SliceStable(matches, func(i, j int) bool {
+			return matches[i].Score > matches[j].Score
+		})
+	}
 	return matches, query, nil
+}
+
+// rerankSelect reorders the fused candidates by cross-encoder relevance so the
+// MaxResults cut keeps the most relevant passages instead of the raw nearest.
+// Without a reranker, or when the pool already fits the cut, it is a no-op. It
+// is fail-open by design: an error, a timeout, or a malformed order logs and
+// keeps the fused cosine order, so reranking can never lose a verdict.
+func (m *Matcher) rerankSelect(ctx context.Context, segment string, matches []Match) []Match {
+	if m.reranker == nil || len(matches) <= m.cfg.MaxResults {
+		return matches
+	}
+	docs := make([]string, len(matches))
+	for i, match := range matches {
+		docs[i] = match.Text
+	}
+	rctx, cancel := context.WithTimeout(ctx, m.cfg.RerankTimeout)
+	defer cancel()
+	order, err := m.reranker.Rank(rctx, segment, docs)
+	if err != nil {
+		m.rerankWarn("rerank failed; keeping fused order", err)
+		return matches
+	}
+	if !validPermutation(order, len(matches)) {
+		m.rerankWarn("rerank order invalid; keeping fused order", nil)
+		return matches
+	}
+	reranked := make([]Match, len(matches))
+	for rank, idx := range order {
+		reranked[rank] = matches[idx]
+	}
+	return reranked
+}
+
+func (m *Matcher) rerankWarn(msg string, err error) {
+	if m.logger == nil {
+		return
+	}
+	if err != nil {
+		m.logger.Warn(msg, slog.String("error", err.Error()))
+		return
+	}
+	m.logger.Warn(msg)
+}
+
+// validPermutation reports whether order is a full permutation of [0, n): the
+// only shape that can reorder the candidate slice without dropping or
+// duplicating a passage.
+func validPermutation(order []int, n int) bool {
+	if len(order) != n {
+		return false
+	}
+	seen := make([]bool, n)
+	for _, idx := range order {
+		if idx < 0 || idx >= n || seen[idx] {
+			return false
+		}
+		seen[idx] = true
+	}
+	return true
 }
 
 // Confidence aggregates a matched cluster into the statement's corroboration
@@ -354,22 +473,34 @@ func (m *Matcher) evidenceMatches(ctx context.Context, segment string, query []f
 // search otherwise. The fallback keeps hybrid additive - a store or fake without
 // the capability is transparently vector-only.
 func (m *Matcher) searchClaims(ctx context.Context, segment string, query []float32) ([]domain.ClaimMatch, error) {
+	topK := m.widenedK(m.cfg.TopK)
 	if m.cfg.HybridSearch {
 		if hs, ok := m.claims.(HybridClaimSearcher); ok {
-			return hs.SearchHybrid(ctx, segment, query, m.cfg.TopK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.ClaimsEfSearch)
+			return hs.SearchHybrid(ctx, segment, query, topK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.ClaimsEfSearch)
 		}
 	}
-	return m.claims.Search(ctx, query, m.cfg.TopK, m.cfg.ClaimsEfSearch)
+	return m.claims.Search(ctx, query, topK, m.cfg.ClaimsEfSearch)
 }
 
 // searchEvidence is searchClaims over the evidence corpus.
 func (m *Matcher) searchEvidence(ctx context.Context, segment string, query []float32) ([]domain.EvidenceHit, error) {
+	topK := m.widenedK(m.cfg.EvidenceTopK)
 	if m.cfg.HybridSearch {
 		if hs, ok := m.evidence.(HybridEvidenceSearcher); ok {
-			return hs.SearchEvidenceHybrid(ctx, segment, query, m.cfg.EvidenceTopK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.EvidenceEfSearch, nil)
+			return hs.SearchEvidenceHybrid(ctx, segment, query, topK, m.cfg.LexicalTopK, m.cfg.RRFK, m.cfg.EvidenceEfSearch, nil)
 		}
 	}
-	return m.evidence.SearchEvidence(ctx, query, m.cfg.EvidenceTopK, m.cfg.EvidenceEfSearch, nil)
+	return m.evidence.SearchEvidence(ctx, query, topK, m.cfg.EvidenceEfSearch, nil)
+}
+
+// widenedK raises a corpus's candidate count to the rerank pool size when a
+// reranker is wired, so relevance has real candidates to choose among. Without
+// a reranker the configured k stands, keeping the rerank-off path byte-identical.
+func (m *Matcher) widenedK(k int) int {
+	if m.reranker == nil || m.cfg.RerankCandidates <= k {
+		return k
+	}
+	return m.cfg.RerankCandidates
 }
 
 // embedSegment embeds one segment as a retrieval query under the shared
