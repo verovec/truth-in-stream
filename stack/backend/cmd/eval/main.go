@@ -41,6 +41,7 @@ func run(args []string, out io.Writer) error {
 	gatePath := fs.String("gate", filepath.Join("internal", "eval", "testdata", "gate_golden.json"), "path to the check-worthiness gate fixture (required when the baseline carries a gate section)")
 	nliPath := fs.String("nli", filepath.Join("internal", "eval", "testdata", "nli_golden.json"), "path to the nli stance fixture (required when the baseline carries an nli section)")
 	rerankOn := fs.Bool("rerank", false, "also score the live Voyage reranker over the same cases (needs RERANK_API_KEY or EMBEDDING_API_KEY; informational, not a gate)")
+	compareDefaults := fs.Bool("compare-defaults", false, "run the decision stages over the committed fixtures with live models under the legacy and vector-first configurations (needs DEEPSEEK_API_KEY, a localinference build, and the local model artifacts; informational, not a gate; ignored when -rerank is also set)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -79,8 +80,16 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 	}
+	if base.Budget != nil {
+		if err := runBudgetCheck(base, *gatePath, *nliPath, out); err != nil {
+			return err
+		}
+	}
 	if *rerankOn {
 		return runRerankComparison(g, rep, out)
+	}
+	if *compareDefaults {
+		return runDefaultsComparison(*gatePath, *nliPath, out)
 	}
 	return nil
 }
@@ -129,6 +138,33 @@ func runNLICheck(base eval.Baseline, nliPath string, out io.Writer) error {
 		return fmt.Errorf("nli stance gate failed with %d missed bound(s)", len(failures))
 	}
 	report += "\n\nPASS: nli stance stage meets every committed floor\n"
+	_, err = io.WriteString(out, report)
+	return err
+}
+
+// runBudgetCheck composes the predicted generative calls per checked claim
+// from the two committed fixtures and gates the total against the committed
+// ceiling, so cost regressions fail CI like accuracy regressions.
+func runBudgetCheck(base eval.Baseline, gatePath, nliPath string, out io.Writer) error {
+	gate, err := eval.LoadGateGolden(gatePath)
+	if err != nil {
+		return err
+	}
+	stance, err := eval.LoadNLIGolden(nliPath)
+	if err != nil {
+		return err
+	}
+	rep := eval.RunBudget(gate, stance, base.Budget.SecondPassTriggerBelow)
+	report := "\n" + rep.Format()
+	failures := base.CheckBudget(rep)
+	if len(failures) > 0 {
+		report += fmt.Sprintf("\n\nFAIL: generative-call budget exceeded:%s\n", eval.FormatGateFailures(failures))
+		if _, err := io.WriteString(out, report); err != nil {
+			return err
+		}
+		return fmt.Errorf("generative-call budget failed with %d exceeded ceiling(s)", len(failures))
+	}
+	report += "\n\nPASS: generative-call budget within the committed ceiling\n"
 	_, err = io.WriteString(out, report)
 	return err
 }

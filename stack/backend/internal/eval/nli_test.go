@@ -19,7 +19,7 @@ func writeNLIFixture(t *testing.T, content string) string {
 func TestLoadNLIGoldenValidates(t *testing.T) {
 	t.Parallel()
 	valid := `{"temperature":1.86,"entail_threshold":0.7,"contradict_threshold":0.9,"min_agree":1,
-		"cases":[{"id":"a","claim":"c","label":"support","passage_ids":["p1"],"probs":[[0.9,0.05,0.05]]}]}`
+		"cases":[{"id":"a","claim":"c","label":"support","passages":[{"id":"p1","text":"premise"}],"probs":[[0.9,0.05,0.05]]}]}`
 
 	tests := []struct {
 		name    string
@@ -30,21 +30,21 @@ func TestLoadNLIGoldenValidates(t *testing.T) {
 		{name: "no cases", content: `{"entail_threshold":0.7,"contradict_threshold":0.9,"min_agree":1,"cases":[]}`, wantErr: true},
 		{name: "unknown label", content: strings.Replace(valid, `"support"`, `"maybe"`, 1), wantErr: true},
 		{name: "probability out of range", content: strings.Replace(valid, "0.9,0.05,0.05", "1.9,0.05,0.05", 1), wantErr: true},
-		{name: "misaligned prob rows", content: strings.Replace(valid, `"passage_ids":["p1"]`, `"passage_ids":["p1","p2"]`, 1), wantErr: true},
+		{name: "misaligned prob rows", content: strings.Replace(valid, `"passages":[{"id":"p1","text":"premise"}]`, `"passages":[{"id":"p1","text":"a"},{"id":"p2","text":"b"}]`, 1), wantErr: true},
 		{name: "two-wide prob row", content: strings.Replace(valid, "[[0.9,0.05,0.05]]", "[[0.9,0.1]]", 1), wantErr: true},
 		{name: "zero min agree", content: strings.Replace(valid, `"min_agree":1`, `"min_agree":0`, 1), wantErr: true},
 		{name: "inverted thresholds ok but out of range rejected", content: strings.Replace(valid, `"entail_threshold":0.7`, `"entail_threshold":1.7`, 1), wantErr: true},
 		{
 			name: "dangling negation link",
 			content: `{"entail_threshold":0.7,"contradict_threshold":0.9,"min_agree":1,
-				"cases":[{"id":"a","claim":"c","label":"support","negation_of":"ghost","passage_ids":["p1"],"probs":[[0.9,0.05,0.05]]}]}`,
+				"cases":[{"id":"a","claim":"c","label":"support","negation_of":"ghost","passages":[{"id":"p1","text":"premise"}],"probs":[[0.9,0.05,0.05]]}]}`,
 			wantErr: true,
 		},
 		{
 			name: "duplicate id",
 			content: `{"entail_threshold":0.7,"contradict_threshold":0.9,"min_agree":1,"cases":[
-				{"id":"a","claim":"c","label":"support","passage_ids":["p1"],"probs":[[0.9,0.05,0.05]]},
-				{"id":"a","claim":"c2","label":"refute","passage_ids":["p2"],"probs":[[0.05,0.05,0.9]]}]}`,
+				{"id":"a","claim":"c","label":"support","passages":[{"id":"p1","text":"premise"}],"probs":[[0.9,0.05,0.05]]},
+				{"id":"a","claim":"c2","label":"refute","passages":[{"id":"p2","text":"premise"}],"probs":[[0.05,0.05,0.9]]}]}`,
 			wantErr: true,
 		},
 	}
@@ -68,13 +68,13 @@ func nliFixture() NLIGolden {
 		ContradictThreshold: 0.9,
 		MinAgree:            1,
 		Cases: []NLICase{
-			{ID: "s1", Label: "support", PassageIDs: []string{"p"}, Probs: [][]float64{{0.9, 0.05, 0.05}}},
-			{ID: "r1", Label: "refute", PassageIDs: []string{"p"}, Probs: [][]float64{{0.02, 0.03, 0.95}}},
-			{ID: "wrong", Label: "support", PassageIDs: []string{"p"}, Probs: [][]float64{{0.02, 0.03, 0.95}}},
-			{ID: "esc-mixed", Label: "support", PassageIDs: []string{"a", "b"}, Probs: [][]float64{{0.9, 0.05, 0.05}, {0.02, 0.03, 0.95}}},
-			{ID: "esc-neutral", Label: "neutral", PassageIDs: []string{"p"}, Probs: [][]float64{{0.1, 0.85, 0.05}}},
-			{ID: "neg-a", Label: "support", PassageIDs: []string{"p"}, Probs: [][]float64{{0.92, 0.04, 0.04}}},
-			{ID: "neg-b", Label: "refute", NegationOf: "neg-a", PassageIDs: []string{"p"}, Probs: [][]float64{{0.91, 0.05, 0.04}}},
+			{ID: "s1", Label: "support", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.9, 0.05, 0.05}}},
+			{ID: "r1", Label: "refute", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.02, 0.03, 0.95}}},
+			{ID: "wrong", Label: "support", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.02, 0.03, 0.95}}},
+			{ID: "esc-mixed", Label: "support", Passages: []NLIPassage{{ID: "a", Text: "premise a"}, {ID: "b", Text: "premise b"}}, Probs: [][]float64{{0.9, 0.05, 0.05}, {0.02, 0.03, 0.95}}},
+			{ID: "esc-neutral", Label: "neutral", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.1, 0.85, 0.05}}},
+			{ID: "neg-a", Label: "support", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.92, 0.04, 0.04}}},
+			{ID: "neg-b", Label: "refute", NegationOf: "neg-a", Passages: []NLIPassage{{ID: "p", Text: "premise p"}}, Probs: [][]float64{{0.91, 0.05, 0.04}}},
 		},
 	}
 }

@@ -47,6 +47,9 @@ func TestRunPassesOnCommittedBaseline(t *testing.T) {
 	if !strings.Contains(got, "nli stance stage meets every committed floor") {
 		t.Errorf("output missing nli stance PASS:\n%s", got)
 	}
+	if !strings.Contains(got, "generative-call budget within the committed ceiling") {
+		t.Errorf("output missing budget PASS:\n%s", got)
+	}
 }
 
 // TestRunFailsOnRaisedFloor proves the command's non-zero exit path: a baseline
