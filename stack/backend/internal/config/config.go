@@ -3144,3 +3144,66 @@ func requireEnv(key string) (string, error) {
 	}
 	return v, nil
 }
+
+// CheckWorthinessLocal configures the locally-served check-worthiness
+// classifier (VER-225): a fine-tuned French encoder scoring statements on CPU
+// so the generative gate is consulted only inside the uncertainty band. The
+// model and tokenizer artifacts are distributed outside git and located by
+// path; a missing artifact, a load failure, or a binary built without the
+// localworthy build tag all degrade to the existing heuristic-plus-model
+// cascade at boot, never blocking a session.
+type CheckWorthinessLocal struct {
+	Enabled       bool
+	ModelPath     string
+	TokenizerPath string
+	LibraryPath   string
+	BandLow       float64
+	BandHigh      float64
+	Timeout       time.Duration
+}
+
+// Active reports whether the local scorer should be wired: enabled with both
+// artifacts configured. Artifact existence is proven by the boot-time health
+// check, not here, so a bad path degrades with a warning instead of failing
+// the boot.
+func (c CheckWorthinessLocal) Active() bool {
+	return c.Enabled && c.ModelPath != "" && c.TokenizerPath != ""
+}
+
+// Default band bounds ship from the calibration run on the golden gate set:
+// below low rejects locally, at or above high accepts locally, in between
+// routes to the generative gate.
+const (
+	defaultCheckWorthinessLocalBandLow  = 0.35
+	defaultCheckWorthinessLocalBandHigh = 0.75
+	defaultCheckWorthinessLocalTimeout  = 300 * time.Millisecond
+)
+
+// LoadCheckWorthinessLocal reads the CHECKWORTHINESS_LOCAL_* block.
+func LoadCheckWorthinessLocal() (CheckWorthinessLocal, error) {
+	c := CheckWorthinessLocal{
+		ModelPath:     os.Getenv("CHECKWORTHINESS_LOCAL_MODEL_PATH"),
+		TokenizerPath: os.Getenv("CHECKWORTHINESS_LOCAL_TOKENIZER_PATH"),
+		LibraryPath:   os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY"),
+	}
+	var err error
+	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_LOCAL_ENABLED", false); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if c.BandLow, err = floatEnv("CHECKWORTHINESS_LOCAL_BAND_LOW", defaultCheckWorthinessLocalBandLow); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if c.BandHigh, err = floatEnv("CHECKWORTHINESS_LOCAL_BAND_HIGH", defaultCheckWorthinessLocalBandHigh); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if !(c.BandLow >= 0 && c.BandLow <= 1) || !(c.BandHigh >= 0 && c.BandHigh <= 1) {
+		return CheckWorthinessLocal{}, fmt.Errorf("config: CHECKWORTHINESS_LOCAL band bounds must be probabilities in [0, 1], got low %v high %v", c.BandLow, c.BandHigh)
+	}
+	if c.BandLow > c.BandHigh {
+		return CheckWorthinessLocal{}, fmt.Errorf("config: CHECKWORTHINESS_LOCAL_BAND_LOW %v must not exceed CHECKWORTHINESS_LOCAL_BAND_HIGH %v", c.BandLow, c.BandHigh)
+	}
+	if c.Timeout, err = positiveDurationEnv("CHECKWORTHINESS_LOCAL_TIMEOUT", defaultCheckWorthinessLocalTimeout); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	return c, nil
+}

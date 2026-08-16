@@ -38,6 +38,7 @@ func run(args []string, out io.Writer) error {
 	fs.SetOutput(out)
 	goldenPath := fs.String("golden", filepath.Join("internal", "eval", "testdata", "golden.json"), "path to the golden set")
 	baselinePath := fs.String("baseline", filepath.Join("internal", "eval", "testdata", "baseline.json"), "path to the committed baseline")
+	gatePath := fs.String("gate", filepath.Join("internal", "eval", "testdata", "gate_golden.json"), "path to the check-worthiness gate fixture (required when the baseline carries a gate section)")
 	rerankOn := fs.Bool("rerank", false, "also score the live Voyage reranker over the same cases (needs RERANK_API_KEY or EMBEDDING_API_KEY; informational, not a gate)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -67,10 +68,39 @@ func run(args []string, out io.Writer) error {
 	if _, err := io.WriteString(out, report); err != nil {
 		return err
 	}
+	if base.Gate != nil {
+		if err := runGateCheck(base, *gatePath, out); err != nil {
+			return err
+		}
+	}
 	if *rerankOn {
 		return runRerankComparison(g, rep, out)
 	}
 	return nil
+}
+
+// runGateCheck replays the recorded check-worthiness gate fixture against the
+// baseline's gate floors: cascade accuracy, outside-band agreement with the
+// generative gate, and the model call rate. Everything is recomputed from the
+// committed fixture, so the check is fully offline.
+func runGateCheck(base eval.Baseline, gatePath string, out io.Writer) error {
+	gg, err := eval.LoadGateGolden(gatePath)
+	if err != nil {
+		return err
+	}
+	rep := eval.RunGate(gg)
+	report := "\n" + rep.Format()
+	failures := base.CheckGate(rep)
+	if len(failures) > 0 {
+		report += fmt.Sprintf("\n\nFAIL: check-worthiness gate outside baseline bounds:%s\n", eval.FormatGateFailures(failures))
+		if _, err := io.WriteString(out, report); err != nil {
+			return err
+		}
+		return fmt.Errorf("check-worthiness gate failed with %d missed floor(s)", len(failures))
+	}
+	report += "\n\nPASS: check-worthiness gate meets every committed floor\n"
+	_, err = io.WriteString(out, report)
+	return err
 }
 
 // runRerankComparison scores the live Voyage reranker over the same golden

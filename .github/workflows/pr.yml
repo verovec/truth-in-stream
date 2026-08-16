@@ -178,6 +178,19 @@ jobs:
         with: { python-version: '3.13' }
       - run: python -m unittest handler_test -v
         working-directory: stack/terraform/modules/observability/forwarder
+  # Check-worthiness training pipeline (VER-225): unit-tests the pure logic
+  # (dataset contract, dedup, golden shielding, calibration math) without
+  # torch, a database, or the network, so the reproducible-pipeline guarantees
+  # are gated on every PR while the heavy training deps stay local-only.
+  checkworthy-gate-test:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: python -m unittest discover -s tests -v
+        working-directory: stack/ml/checkworthy
   # Local Keycloak login smoke test. Boots the docker-compose stack (Postgres,
   # backend, frontend, and the local Keycloak importing realm.json), runs the
   # offline seed explicitly (nothing auto-seeds anymore), and runs the

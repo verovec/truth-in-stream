@@ -15,13 +15,20 @@ func repoTestdata(t *testing.T) (golden, baseline string) {
 	return filepath.Join(base, "golden.json"), filepath.Join(base, "baseline.json")
 }
 
+// repoGateFixture resolves the committed check-worthiness gate fixture the same
+// way.
+func repoGateFixture(t *testing.T) string {
+	t.Helper()
+	return filepath.Join("..", "..", "internal", "eval", "testdata", "gate_golden.json")
+}
+
 // TestRunPassesOnCommittedBaseline is the end-to-end check: the eval command runs
 // green over the committed golden set and baseline, printing the per-category
 // report and a PASS line.
 func TestRunPassesOnCommittedBaseline(t *testing.T) {
 	golden, baseline := repoTestdata(t)
 	var out strings.Builder
-	if err := run([]string{"-golden", golden, "-baseline", baseline}, &out); err != nil {
+	if err := run([]string{"-golden", golden, "-baseline", baseline, "-gate", repoGateFixture(t)}, &out); err != nil {
 		t.Fatalf("run over committed data failed: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -32,6 +39,9 @@ func TestRunPassesOnCommittedBaseline(t *testing.T) {
 		if !strings.Contains(got, cat) {
 			t.Errorf("output missing category %q:\n%s", cat, got)
 		}
+	}
+	if !strings.Contains(got, "check-worthiness gate meets every committed floor") {
+		t.Errorf("output missing check-worthiness gate PASS:\n%s", got)
 	}
 }
 

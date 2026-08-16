@@ -2780,3 +2780,80 @@ func TestLoadCrawlAlerts(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCheckWorthinessLocal(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		got, err := LoadCheckWorthinessLocal()
+		if err != nil {
+			t.Fatalf("LoadCheckWorthinessLocal: %v", err)
+		}
+		want := CheckWorthinessLocal{BandLow: 0.35, BandHigh: 0.75, Timeout: 300 * time.Millisecond}
+		if got != want {
+			t.Errorf("LoadCheckWorthinessLocal() = %+v, want %+v", got, want)
+		}
+		if got.Active() {
+			t.Error("Active() = true with no artifacts configured")
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("CHECKWORTHINESS_LOCAL_ENABLED", "true")
+		t.Setenv("CHECKWORTHINESS_LOCAL_MODEL_PATH", "/models/gate.onnx")
+		t.Setenv("CHECKWORTHINESS_LOCAL_TOKENIZER_PATH", "/models/tokenizer.json")
+		t.Setenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY", "/usr/lib/libonnxruntime.so")
+		t.Setenv("CHECKWORTHINESS_LOCAL_BAND_LOW", "0.2")
+		t.Setenv("CHECKWORTHINESS_LOCAL_BAND_HIGH", "0.8")
+		t.Setenv("CHECKWORTHINESS_LOCAL_TIMEOUT", "150ms")
+		got, err := LoadCheckWorthinessLocal()
+		if err != nil {
+			t.Fatalf("LoadCheckWorthinessLocal: %v", err)
+		}
+		want := CheckWorthinessLocal{
+			Enabled:       true,
+			ModelPath:     "/models/gate.onnx",
+			TokenizerPath: "/models/tokenizer.json",
+			LibraryPath:   "/usr/lib/libonnxruntime.so",
+			BandLow:       0.2,
+			BandHigh:      0.8,
+			Timeout:       150 * time.Millisecond,
+		}
+		if got != want {
+			t.Errorf("LoadCheckWorthinessLocal() = %+v, want %+v", got, want)
+		}
+		if !got.Active() {
+			t.Error("Active() = false with artifacts configured and enabled")
+		}
+	})
+	t.Run("enabled without artifacts stays inactive", func(t *testing.T) {
+		t.Setenv("CHECKWORTHINESS_LOCAL_ENABLED", "true")
+		got, err := LoadCheckWorthinessLocal()
+		if err != nil {
+			t.Fatalf("LoadCheckWorthinessLocal: %v", err)
+		}
+		if got.Active() {
+			t.Error("Active() = true with no artifact paths")
+		}
+	})
+	t.Run("rejects invalid values", func(t *testing.T) {
+		for _, tc := range []struct{ key, value string }{
+			{"CHECKWORTHINESS_LOCAL_BAND_LOW", "-0.1"},
+			{"CHECKWORTHINESS_LOCAL_BAND_HIGH", "1.5"},
+			{"CHECKWORTHINESS_LOCAL_BAND_LOW", "nan"},
+			{"CHECKWORTHINESS_LOCAL_TIMEOUT", "0"},
+			{"CHECKWORTHINESS_LOCAL_TIMEOUT", "-1s"},
+			{"CHECKWORTHINESS_LOCAL_ENABLED", "maybe"},
+		} {
+			t.Setenv(tc.key, tc.value)
+			if _, err := LoadCheckWorthinessLocal(); err == nil {
+				t.Errorf("LoadCheckWorthinessLocal with %s=%s returned nil error", tc.key, tc.value)
+			}
+			t.Setenv(tc.key, "")
+		}
+	})
+	t.Run("rejects an inverted band", func(t *testing.T) {
+		t.Setenv("CHECKWORTHINESS_LOCAL_BAND_LOW", "0.8")
+		t.Setenv("CHECKWORTHINESS_LOCAL_BAND_HIGH", "0.2")
+		if _, err := LoadCheckWorthinessLocal(); err == nil {
+			t.Error("LoadCheckWorthinessLocal with an inverted band returned nil error")
+		}
+	})
+}
