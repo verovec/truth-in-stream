@@ -3,6 +3,7 @@ package parliament
 import (
 	"html"
 	"strings"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -29,7 +30,7 @@ type record struct {
 // fingerprints the title+content so any change re-publishes the record while an
 // unchanged one is skipped. content must be non-empty (an attribution line at
 // minimum) so every record emits at least one valid chunk.
-func buildEvidenceRecord(source, externalID, title, url, content string, meta map[string]any) record {
+func buildEvidenceRecord(source, externalID, title, url, content string, publishedAt *time.Time, meta map[string]any) record {
 	texts := splitChunks(content, maxChunkRunes)
 	jobs := make([]connector.EvidenceJob, 0, len(texts))
 	for i, text := range texts {
@@ -38,14 +39,15 @@ func buildEvidenceRecord(source, externalID, title, url, content string, meta ma
 			kind = domain.EvidenceKindLead
 		}
 		jobs = append(jobs, connector.EvidenceJob{
-			Source:     source,
-			ExternalID: externalID,
-			ChunkIndex: i,
-			Title:      title,
-			URL:        url,
-			Content:    text,
-			Kind:       string(kind),
-			Metadata:   meta,
+			Source:      source,
+			ExternalID:  externalID,
+			ChunkIndex:  i,
+			Title:       title,
+			URL:         url,
+			Content:     text,
+			Kind:        string(kind),
+			Metadata:    meta,
+			PublishedAt: publishedAt,
 		})
 	}
 	return record{externalID: externalID, fingerprint: fingerprint(title, content), jobs: jobs}
@@ -117,4 +119,34 @@ func splitChunks(text string, maxRunes int) []string {
 		runes = runes[cut:]
 	}
 	return chunks
+}
+
+// documentDate reads a parliamentary feed date whose first ten characters are
+// an ISO YYYY-MM-DD day; anything else (the French prose seance labels) stays
+// nil so an unparseable date is never guessed into the typed column.
+func documentDate(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if len(s) < 10 {
+		return nil
+	}
+	t, err := time.Parse("2006-01-02", s[:10])
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+// seanceDate reads the compact numeric dateSeance stamp (YYYYMMDD followed by
+// time digits) the comptes-rendus metadata carries; the human prose
+// dateSeanceJour is not machine-dated, so the compact form is the typed date.
+func seanceDate(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if len(s) < 8 {
+		return nil
+	}
+	t, err := time.Parse("20060102", s[:8])
+	if err != nil {
+		return nil
+	}
+	return &t
 }

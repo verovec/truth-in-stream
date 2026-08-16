@@ -53,7 +53,7 @@ func parseSenatQuestionsCSV(source string, raw []byte) ([]record, error) {
 		content := renderSenatQuestion(row, get)
 		title := senatQuestionTitle(row, get)
 		url := get(row, "URL Question")
-		records = append(records, buildEvidenceRecord(source, ref, title, url, content, senatQuestionMetadata(row, get)))
+		records = append(records, buildEvidenceRecord(source, ref, title, url, content, documentDate(get(row, "Date de publication JO")), senatQuestionMetadata(row, get)))
 	}
 	return records, nil
 }

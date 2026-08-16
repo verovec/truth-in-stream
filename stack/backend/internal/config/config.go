@@ -590,6 +590,10 @@ type Match struct {
 	// values threaded into each corpus's retrieval; 0 keeps the session default.
 	ClaimsEfSearch   int
 	EvidenceEfSearch int
+	// RecencyHalfLife, when positive, decays a dated evidence hit's
+	// corroboration weight by half per half-life of age; 0 (the default) keeps
+	// scoring untouched. Undated evidence is never decayed.
+	RecencyHalfLife time.Duration
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
@@ -669,6 +673,9 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	if m.EvidenceEfSearch, err = intEnv("MATCH_EVIDENCE_EF_SEARCH", m.EvidenceEfSearch, 0, maxHNSWEfSearch); err != nil {
+		return Match{}, err
+	}
+	if m.RecencyHalfLife, err = durationEnvAllowZero("MATCH_RECENCY_HALF_LIFE", 0); err != nil {
 		return Match{}, err
 	}
 	return m, nil
@@ -1404,6 +1411,11 @@ type Political struct {
 	// path borrows a curated two-axis claim (literal verdict + manipulation flags +
 	// real source) without an LLM call. It is a cosine similarity in [-1, 1].
 	CuratedTau float64
+	// CuratedMaxAge, when positive, stops the fast-path borrowing a curated
+	// verdict checked longer ago than this; the claim runs the normal
+	// route+verify path instead. 0 (the default) disables the guard, keeping
+	// today's behavior until the age policy is deliberately turned on.
+	CuratedMaxAge time.Duration
 }
 
 // Active reports whether the political verify path should be wired: the political
@@ -1454,7 +1466,11 @@ func LoadPolitical() (Political, error) {
 	if err != nil {
 		return Political{}, err
 	}
-	return Political{Enabled: enabled, RouterMinResults: minResults, CuratedTau: curatedTau}, nil
+	curatedMaxAge, err := durationEnvAllowZero("FACTCHECK_POLITICAL_CURATED_MAX_AGE", 0)
+	if err != nil {
+		return Political{}, err
+	}
+	return Political{Enabled: enabled, RouterMinResults: minResults, CuratedTau: curatedTau, CuratedMaxAge: curatedMaxAge}, nil
 }
 
 // CrawlAlerts holds the ingestion-fleet Slack alerting configuration. WebhookURL

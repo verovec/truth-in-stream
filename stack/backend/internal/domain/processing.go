@@ -90,6 +90,9 @@ type SegmentMatch struct {
 	Article      *Article  `json:"article,omitempty"`
 	Contribution float64   `json:"contribution"`
 	EvidenceID   string    `json:"evidence_id,omitempty"`
+	// PublishedAt is the matched passage's publication date when the corpus
+	// knows one; additive on the wire so old snapshots decode unchanged.
+	PublishedAt *time.Time `json:"published_at,omitempty"`
 }
 
 // UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim so a

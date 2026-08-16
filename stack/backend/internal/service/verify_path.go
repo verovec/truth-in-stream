@@ -126,6 +126,10 @@ type ClaimDecomposer interface {
 type EvidencePassage struct {
 	ID   string
 	Text string
+	// Date is the passage's publication date as a YYYY-MM-DD label, empty for
+	// undated sources; the verifier surfaces it so temporal judgments ground on
+	// data instead of intuition.
+	Date string
 }
 
 // EvidenceCitation is one grounding the verifier returned: the evidence id it
@@ -838,7 +842,7 @@ func passagesFromMatches(matches []domain.SegmentMatch) []EvidencePassage {
 		if m.EvidenceID == "" {
 			continue
 		}
-		passages = append(passages, EvidencePassage{ID: m.EvidenceID, Text: m.Claim})
+		passages = append(passages, EvidencePassage{ID: m.EvidenceID, Text: m.Claim, Date: passageDate(m.PublishedAt)})
 	}
 	return passages
 }
@@ -1121,4 +1125,13 @@ func (vp *VerifyPath) cachePut(embedding []float32, claim string, source Verdict
 		return
 	}
 	vp.cache.put(cacheEntry{source: source, verdict: verdict, embedding: embedding, negated: hasNegation(claim)})
+}
+
+// passageDate formats a passage's publication date as the YYYY-MM-DD label the
+// verifier prompt shows, empty when the source is undated.
+func passageDate(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02")
 }

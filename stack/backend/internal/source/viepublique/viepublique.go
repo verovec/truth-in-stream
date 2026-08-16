@@ -117,7 +117,7 @@ func buildRecord(source string, d discours) evidencesrc.Record {
 	if title == "" {
 		title = "Discours public " + d.ID
 	}
-	return evidencesrc.BuildRecord(source, d.ID, title, d.URL, render(d), metadata(d))
+	return evidencesrc.BuildRecord(source, d.ID, title, d.URL, render(d), evidencesrc.ParseDate(d.Prononciation), metadata(d))
 }
 
 // render builds the compact attributed French passage from the metadata.

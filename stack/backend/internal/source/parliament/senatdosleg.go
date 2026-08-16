@@ -65,7 +65,7 @@ func extractSenatDosleg(source, archivePath string) ([]record, error) {
 	records := make([]record, 0, len(rows))
 	for _, r := range rows {
 		records = append(records, buildEvidenceRecord(
-			source, r.loicod, doslegTitle(r), doslegURL(r), renderDosleg(r, typeLabels), doslegMetadata(r, typeLabels),
+			source, r.loicod, doslegTitle(r), doslegURL(r), renderDosleg(r, typeLabels), documentDate(r.date), doslegMetadata(r, typeLabels),
 		))
 	}
 	return records, nil

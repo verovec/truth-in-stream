@@ -64,6 +64,11 @@ type EvidenceChunk struct {
 	Kind       EvidenceChunkKind
 	Embedding  []float32
 	Metadata   map[string]any
+	// PublishedAt is the passage's real-world publication (or document) date,
+	// nil when the source is genuinely undated (encyclopedic content). It is a
+	// typed column, not a metadata key, because retrieval filters and orders on
+	// it; ingestion sets it only from a date the source exposes, never a guess.
+	PublishedAt *time.Time
 }
 
 // EvidenceHit is a retrieval hit from the evidence corpus: a chunk's source
@@ -84,6 +89,9 @@ type EvidenceHit struct {
 	Kind       EvidenceChunkKind
 	Section    string
 	Distance   float32
+	// PublishedAt mirrors the chunk's publication date so downstream judging
+	// can label a passage with when it was true; nil for undated sources.
+	PublishedAt *time.Time
 }
 
 // EvidenceTrim marks the chunks of a document that a sync run did not

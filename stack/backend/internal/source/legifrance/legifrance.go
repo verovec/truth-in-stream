@@ -20,7 +20,7 @@ const articleURLTemplate = "https://www.legifrance.gouv.fr/codes/article_lc/"
 func buildRecord(art Article, label string) evidencesrc.Record {
 	title := articleTitle(art, label)
 	url := articleURLTemplate + art.ID
-	return evidencesrc.BuildRecord(Source, art.ID, title, url, render(art, label), metadata(art, label))
+	return evidencesrc.BuildRecord(Source, art.ID, title, url, render(art, label), evidencesrc.ParseDate(art.DateDebut), metadata(art, label))
 }
 
 // articleTitle names the passage for citation display.

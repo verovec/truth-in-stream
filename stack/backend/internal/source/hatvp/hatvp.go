@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/source/evidencesrc"
 )
@@ -226,7 +227,7 @@ func parseDeclaration(data []byte) (declaration, error) {
 func buildRecord(row indexRow, decl declaration) evidencesrc.Record {
 	title := declarationTitle(row, decl)
 	url := absoluteDossierURL(row.URLDossier)
-	return evidencesrc.BuildRecord(Source, row.OpenDataFile, title, url, render(row, decl), metadata(row, decl))
+	return evidencesrc.BuildRecord(Source, row.OpenDataFile, title, url, render(row, decl), publicationDate(row, decl), metadata(row, decl))
 }
 
 // declarationTitle names the passage for citation display.
@@ -438,4 +439,20 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// publicationDate resolves the declaration's typed publication date: the index
+// publication date first, then the deposit dates (index ISO, XML French
+// DD/MM/YYYY HH:MM:SS layout). A declaration exposing none stays undated.
+func publicationDate(row indexRow, decl declaration) *time.Time {
+	if t := evidencesrc.ParseDate(row.DatePublication); t != nil {
+		return t
+	}
+	if t := evidencesrc.ParseDate(row.DateDepot); t != nil {
+		return t
+	}
+	if t, err := time.Parse("02/01/2006 15:04:05", strings.TrimSpace(decl.DateDepot)); err == nil {
+		return &t
+	}
+	return nil
 }

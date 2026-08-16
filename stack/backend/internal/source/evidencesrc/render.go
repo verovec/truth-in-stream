@@ -3,6 +3,7 @@ package evidencesrc
 import (
 	"html"
 	"strings"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/connector"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -28,7 +29,7 @@ type Record struct {
 // fingerprints the title+content so any change re-publishes the record while an
 // unchanged one is skipped. content must be non-empty (an attribution line at
 // minimum) so every record emits at least one valid chunk.
-func BuildRecord(source, externalID, title, url, content string, meta map[string]any) Record {
+func BuildRecord(source, externalID, title, url, content string, publishedAt *time.Time, meta map[string]any) Record {
 	texts := SplitChunks(content, MaxChunkRunes)
 	jobs := make([]connector.EvidenceJob, 0, len(texts))
 	for i, text := range texts {
@@ -37,14 +38,15 @@ func BuildRecord(source, externalID, title, url, content string, meta map[string
 			kind = domain.EvidenceKindLead
 		}
 		jobs = append(jobs, connector.EvidenceJob{
-			Source:     source,
-			ExternalID: externalID,
-			ChunkIndex: i,
-			Title:      title,
-			URL:        url,
-			Content:    text,
-			Kind:       string(kind),
-			Metadata:   meta,
+			Source:      source,
+			ExternalID:  externalID,
+			ChunkIndex:  i,
+			Title:       title,
+			URL:         url,
+			Content:     text,
+			Kind:        string(kind),
+			Metadata:    meta,
+			PublishedAt: publishedAt,
 		})
 	}
 	return Record{ExternalID: externalID, Fingerprint: Fingerprint(title, content), Jobs: jobs}
@@ -116,4 +118,20 @@ func SplitChunks(text string, maxRunes int) []string {
 		runes = runes[cut:]
 	}
 	return chunks
+}
+
+// ParseDate reads a source date whose first ten characters are an ISO
+// YYYY-MM-DD day (the layout every ISO-dated feed here uses, with or without a
+// trailing time part) into the typed publication date. Anything else returns
+// nil: a date the source did not expose stays null rather than guessed.
+func ParseDate(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if len(s) < 10 {
+		return nil
+	}
+	t, err := time.Parse("2006-01-02", s[:10])
+	if err != nil {
+		return nil
+	}
+	return &t
 }

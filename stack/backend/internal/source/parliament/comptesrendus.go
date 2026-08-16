@@ -65,7 +65,7 @@ func parseCompteRendu(source string, data []byte) ([]record, error) {
 	title := comptesRendusTitle(meta)
 	url := fmt.Sprintf(compteRenduURLTemplate, meta.UID)
 	content := renderCompteRendu(meta, interventions)
-	rec := buildEvidenceRecord(source, meta.UID, title, url, content, comptesRendusMetadata(meta, len(interventions)))
+	rec := buildEvidenceRecord(source, meta.UID, title, url, content, seanceDate(meta.Metadonnees.DateSeance), comptesRendusMetadata(meta, len(interventions)))
 	return []record{rec}, nil
 }
 

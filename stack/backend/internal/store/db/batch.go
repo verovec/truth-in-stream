@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
 )
 
@@ -385,14 +386,15 @@ func (b *UpsertClaimBatchResults) Close() error {
 }
 
 const upsertEvidenceChunk = `-- name: UpsertEvidenceChunk :batchexec
-INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, published_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (source, external_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         content = EXCLUDED.content,
         kind = EXCLUDED.kind,
         metadata = evidence_chunks.metadata || EXCLUDED.metadata,
+        published_at = EXCLUDED.published_at,
         embedding = CASE
             WHEN evidence_chunks.content = EXCLUDED.content THEN evidence_chunks.embedding
             ELSE NULL
@@ -407,14 +409,15 @@ type UpsertEvidenceChunkBatchResults struct {
 }
 
 type UpsertEvidenceChunkParams struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Metadata   []byte
+	Source      string
+	ExternalID  string
+	ChunkIndex  int32
+	Title       string
+	Url         string
+	Content     string
+	Kind        string
+	Metadata    []byte
+	PublishedAt pgtype.Timestamptz
 }
 
 // Ingest never writes embeddings; the CASE keeps an existing embedding only
@@ -438,6 +441,7 @@ func (q *Queries) UpsertEvidenceChunk(ctx context.Context, arg []UpsertEvidenceC
 			a.Content,
 			a.Kind,
 			a.Metadata,
+			a.PublishedAt,
 		}
 		batch.Queue(upsertEvidenceChunk, vals...)
 	}

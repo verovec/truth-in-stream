@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/claimtype"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -98,6 +99,11 @@ type PoliticalConfig struct {
 	// CuratedTau is the cosine similarity at or above which a curated near-match is
 	// borrowed. A cosine similarity in [-1, 1].
 	CuratedTau float64
+	// CuratedMaxAge, when positive, refuses to borrow a curated verdict checked
+	// longer ago than this; the claim falls through to route+verify instead of
+	// reusing a stale check. 0 disables the guard. A curated row with no
+	// checked_at is undated, not stale, and stays borrowable.
+	CuratedMaxAge time.Duration
 }
 
 // political reports whether the political path is wired.
@@ -446,6 +452,9 @@ func (vp *VerifyPath) politicalFastMatch(ctx context.Context, embedding []float3
 	}
 	best := matches[0]
 	if similarityFromDistance(best.Distance) < vp.pol.CuratedTau {
+		return nil, false
+	}
+	if vp.pol.CuratedMaxAge > 0 && !best.CheckedAt.IsZero() && time.Since(best.CheckedAt) > vp.pol.CuratedMaxAge {
 		return nil, false
 	}
 	return politicalCuratedVerdict(best), true

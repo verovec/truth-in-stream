@@ -200,7 +200,7 @@ func appendUnique(out []source.Evidence, seen map[string]struct{}, evidence []so
 func EvidencePassagesFrom(evidence []source.Evidence) []EvidencePassage {
 	passages := make([]EvidencePassage, 0, len(evidence))
 	for _, e := range evidence {
-		passages = append(passages, EvidencePassage{ID: e.ID.String(), Text: e.Passage})
+		passages = append(passages, EvidencePassage{ID: e.ID.String(), Text: e.Passage, Date: e.Source.Date})
 	}
 	return passages
 }

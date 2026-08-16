@@ -223,7 +223,7 @@ func (s *Store) SearchEvidenceHybrid(ctx context.Context, text string, query []f
 
 	vecHits := make([]domain.EvidenceHit, 0, len(vecRows))
 	for _, r := range vecRows {
-		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.Distance)
+		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.PublishedAt, r.Distance)
 		if err != nil {
 			return nil, fmt.Errorf("postgres: search evidence hybrid: %w", err)
 		}
@@ -231,7 +231,7 @@ func (s *Store) SearchEvidenceHybrid(ctx context.Context, text string, query []f
 	}
 	lexHits := make([]domain.EvidenceHit, 0, len(lexRows))
 	for _, r := range lexRows {
-		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.Distance)
+		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.PublishedAt, r.Distance)
 		if err != nil {
 			return nil, fmt.Errorf("postgres: search evidence hybrid: %w", err)
 		}
