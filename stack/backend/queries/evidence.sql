@@ -8,14 +8,15 @@
 -- the old schema kept importance in a dedicated column the upsert never touched,
 -- and UnembeddedLive reads that importance to embed the most important content
 -- first.
-INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, published_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (source, external_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         content = EXCLUDED.content,
         kind = EXCLUDED.kind,
         metadata = evidence_chunks.metadata || EXCLUDED.metadata,
+        published_at = EXCLUDED.published_at,
         embedding = CASE
             WHEN evidence_chunks.content = EXCLUDED.content THEN evidence_chunks.embedding
             ELSE NULL
@@ -27,14 +28,15 @@ ON CONFLICT (source, external_id, chunk_index) DO UPDATE
 -- self-contained message, then upserts the whole row in one statement so a chunk
 -- is never visible to search without its matching vector. The embedding is always
 -- the freshly computed one, so a re-crawl rewrites the same vector idempotently.
-INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, embedding, synced_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, published_at, embedding, synced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
 ON CONFLICT (source, external_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         content = EXCLUDED.content,
         kind = EXCLUDED.kind,
         metadata = evidence_chunks.metadata || EXCLUDED.metadata,
+        published_at = EXCLUDED.published_at,
         embedding = EXCLUDED.embedding,
         synced_at = now();
 
@@ -86,7 +88,7 @@ WHERE source = $2 AND external_id = $3 AND chunk_index = $4;
 -- unfiltered caller pays nothing, while a scoped caller runs under
 -- hnsw.iterative_scan (set by the tuned search path) so the WHERE does not
 -- under-return.
-SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata, published_at,
        (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
 FROM evidence_chunks
 WHERE embedding IS NOT NULL
@@ -224,7 +226,7 @@ reranked AS (
     ORDER BY distance
     LIMIT sqlc.arg(result_limit)
 )
-SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind, e.metadata,
+SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind, e.metadata, e.published_at,
        r.distance
 FROM reranked r
 JOIN evidence_chunks e USING (source, external_id, chunk_index)
@@ -239,7 +241,7 @@ ORDER BY r.distance;
 -- chunk - which has no vector similarity to fuse - is never a lexical-only match.
 -- The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
 -- natural key for a stable ranking.
-SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata, published_at,
        (embedding <=> sqlc.arg(query_embedding))::float8 AS distance
 FROM evidence_chunks, websearch_to_tsquery('french', immutable_unaccent(sqlc.arg(query_text)::text)) AS q
 WHERE search_vector @@ q

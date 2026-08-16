@@ -105,6 +105,9 @@ type Match struct {
 	WikiKind   domain.EvidenceChunkKind
 	EvidenceID string
 	Score      float64
+	// PublishedAt is the evidence passage's publication date when the corpus
+	// knows one, nil for undated sources and curated claims.
+	PublishedAt *time.Time
 }
 
 // MatcherConfig bounds a Matcher. TopK and ScoreThreshold govern the curated
@@ -155,6 +158,11 @@ type MatcherConfig struct {
 	// (and unvalidated) without a reranker.
 	RerankCandidates int
 	RerankTimeout    time.Duration
+
+	// RecencyHalfLife, when positive, decays a dated evidence hit's
+	// corroboration weight by half per half-life of age. 0 (the default) keeps
+	// scoring untouched; undated evidence is never decayed either way.
+	RecencyHalfLife time.Duration
 }
 
 func (c MatcherConfig) validate() error {
@@ -187,6 +195,8 @@ func (c MatcherConfig) validate() error {
 		return fmt.Errorf("service: matcher claims ef_search must be non-negative, got %d", c.ClaimsEfSearch)
 	case c.EvidenceEfSearch < 0:
 		return fmt.Errorf("service: matcher evidence ef_search must be non-negative, got %d", c.EvidenceEfSearch)
+	case c.RecencyHalfLife < 0:
+		return fmt.Errorf("service: matcher recency half-life must be non-negative, got %s", c.RecencyHalfLife)
 	}
 	return nil
 }
@@ -382,11 +392,7 @@ func validPermutation(order []int, n int) bool {
 // is pure over the supplied matches - the cluster MatchSegment already returned -
 // and runs no further retrieval.
 func (m *Matcher) Confidence(matches []Match) domain.Confidence {
-	return computeConfidence(matches, confidenceParams{
-		clusterSize: m.cfg.ConfidenceClusterSize,
-		leadWeight:  m.cfg.ConfidenceLeadWeight,
-		bodyWeight:  m.cfg.ConfidenceBodyWeight,
-	})
+	return computeConfidence(matches, m.confidenceParams())
 }
 
 // Contributions returns, in match order, the stance-bearing weight each match
@@ -396,11 +402,19 @@ func (m *Matcher) Confidence(matches []Match) domain.Confidence {
 // down to the evidence that produced it. The result has one entry per input
 // match.
 func (m *Matcher) Contributions(matches []Match) []float64 {
-	return matchContributions(matches, confidenceParams{
-		clusterSize: m.cfg.ConfidenceClusterSize,
-		leadWeight:  m.cfg.ConfidenceLeadWeight,
-		bodyWeight:  m.cfg.ConfidenceBodyWeight,
-	})
+	return matchContributions(matches, m.confidenceParams())
+}
+
+// confidenceParams snapshots the matcher's scoring parameters with the current
+// time, so Confidence and Contributions computed together see one clock.
+func (m *Matcher) confidenceParams() confidenceParams {
+	return confidenceParams{
+		clusterSize:     m.cfg.ConfidenceClusterSize,
+		leadWeight:      m.cfg.ConfidenceLeadWeight,
+		bodyWeight:      m.cfg.ConfidenceBodyWeight,
+		recencyHalfLife: m.cfg.RecencyHalfLife,
+		now:             time.Now(),
+	}
 }
 
 // claimMatches retrieves and threshold-filters curated claim hits. It runs the
@@ -452,10 +466,11 @@ func (m *Matcher) evidenceMatches(ctx context.Context, segment string, query []f
 			break
 		}
 		matches = append(matches, Match{
-			Kind:     domain.MatchKindEvidence,
-			Text:     h.Content,
-			Article:  domain.Article{Title: h.Title, URL: h.URL},
-			WikiKind: h.Kind,
+			Kind:        domain.MatchKindEvidence,
+			Text:        h.Content,
+			Article:     domain.Article{Title: h.Title, URL: h.URL},
+			WikiKind:    h.Kind,
+			PublishedAt: h.PublishedAt,
 			// The source coordinate is (source, external_id): external_id is unique
 			// only within a source, so composing on external_id alone would collide
 			// two sources that share a page-id space (a wiki corpus and its crawl),

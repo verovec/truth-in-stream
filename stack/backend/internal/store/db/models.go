@@ -78,6 +78,7 @@ type EvidenceChunk struct {
 	SyncedAt     pgtype.Timestamptz
 	SearchVector interface{}
 	ContentHash  []byte
+	PublishedAt  pgtype.Timestamptz
 }
 
 type EvidenceSyncState struct {

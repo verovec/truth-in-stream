@@ -302,6 +302,7 @@ func run(logger *slog.Logger) error {
 		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
 		RerankCandidates:      rerankCfg.Candidates,
 		RerankTimeout:         rerankCfg.Timeout,
+		RecencyHalfLife:       matchCfg.RecencyHalfLife,
 	}, matcherOpts...)
 	if err != nil {
 		return err
@@ -733,6 +734,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, rerankCfg 
 		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
 		RerankCandidates:      rerankCfg.Candidates,
 		RerankTimeout:         rerankCfg.Timeout,
+		RecencyHalfLife:       matchCfg.RecencyHalfLife,
 	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)
@@ -850,11 +852,12 @@ func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Politica
 		return nil, err
 	}
 	return &service.PoliticalConfig{
-		Classifier:   classifier,
-		Retriever:    router,
-		Verifier:     politicalVerifierAdapter{politicalVerifier},
-		CuratedStore: curatedClaims,
-		CuratedTau:   political.CuratedTau,
+		Classifier:    classifier,
+		Retriever:     router,
+		Verifier:      politicalVerifierAdapter{politicalVerifier},
+		CuratedStore:  curatedClaims,
+		CuratedTau:    political.CuratedTau,
+		CuratedMaxAge: political.CuratedMaxAge,
 	}, nil
 }
 
@@ -986,7 +989,7 @@ type politicalVerifierAdapter struct {
 func (v politicalVerifierAdapter) VerifyPolitical(ctx context.Context, claim string, passages []service.EvidencePassage) (service.PoliticalVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.VerifyPolitical(ctx, claim, in)
 	if err != nil {
@@ -1031,7 +1034,7 @@ type verifierAdapter struct {
 func (v verifierAdapter) Verify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.Verify(ctx, claim, in)
 	if err != nil {
@@ -1063,7 +1066,7 @@ type reverifierAdapter struct {
 func (v reverifierAdapter) Reverify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.Reverify(ctx, claim, in)
 	if err != nil {

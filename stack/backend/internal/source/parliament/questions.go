@@ -91,7 +91,7 @@ func parseQuestion(source string, data []byte) ([]record, error) {
 
 	title := questionTitle(inner)
 	url := fmt.Sprintf(questionURLTemplate, inner.UID)
-	return []record{buildEvidenceRecord(source, inner.UID, title, url, renderQuestion(inner), questionMetadata(inner))}, nil
+	return []record{buildEvidenceRecord(source, inner.UID, title, url, renderQuestion(inner), documentDate(inner.TextesQuestion.TexteQuestion.InfoJO.DateJO), questionMetadata(inner))}, nil
 }
 
 // questionTitle names the chunk for citation display.

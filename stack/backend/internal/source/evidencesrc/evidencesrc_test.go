@@ -94,7 +94,7 @@ func TestPlainTextStripsHTML(t *testing.T) {
 
 func TestBuildRecordKeysAndKinds(t *testing.T) {
 	t.Parallel()
-	rec := BuildRecord("src", "ext-1", "Title", "https://x", "lead body text", map[string]any{"k": "v"})
+	rec := BuildRecord("src", "ext-1", "Title", "https://x", "lead body text", nil, map[string]any{"k": "v"})
 	if rec.ExternalID != "ext-1" || rec.Fingerprint == "" {
 		t.Fatalf("record = %+v", rec)
 	}
@@ -141,7 +141,7 @@ func jsonExtractor(source, path string) ([]Record, error) {
 	}
 	records := make([]Record, 0, len(items))
 	for _, it := range items {
-		records = append(records, BuildRecord(source, it.ID, it.Title, "https://x/"+it.ID, it.Text, nil))
+		records = append(records, BuildRecord(source, it.ID, it.Title, "https://x/"+it.ID, it.Text, nil, nil))
 	}
 	return records, nil
 }

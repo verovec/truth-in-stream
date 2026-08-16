@@ -1,6 +1,11 @@
 package service
 
-import "github.com/verovec/truth-in-stream/backend/internal/domain"
+import (
+	"math"
+	"time"
+
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
+)
 
 // confidenceParams bounds confidence scoring. clusterSize caps how many of the
 // strongest matches feed the score (the cluster is already sorted by descending
@@ -13,6 +18,12 @@ type confidenceParams struct {
 	clusterSize int
 	leadWeight  float64
 	bodyWeight  float64
+	// recencyHalfLife, when positive, halves a dated evidence hit's weight for
+	// every half-life of age at `now`; zero disables the decay and undated
+	// evidence is never decayed, so recency can only ever demote provably old
+	// passages, not punish timeless ones.
+	recencyHalfLife time.Duration
+	now             time.Time
 }
 
 // computeConfidence aggregates a statement's retrieved cluster into a single
@@ -91,12 +102,26 @@ func matchWeight(m Match, p confidenceParams) float64 {
 		return 0
 	}
 	if m.Kind == domain.MatchKindEvidence {
-		return m.Score * chunkKindWeight(m.WikiKind, p)
+		return m.Score * chunkKindWeight(m.WikiKind, p) * recencyWeight(m.PublishedAt, p)
 	}
 	if m.Verdict == domain.VerdictUnclear {
 		return 0
 	}
 	return m.Score
+}
+
+// recencyWeight is the multiplicative age decay for a dated evidence hit:
+// 0.5^(age/halfLife), 1 when the decay is off, the passage is undated, or the
+// date is not in the past.
+func recencyWeight(publishedAt *time.Time, p confidenceParams) float64 {
+	if p.recencyHalfLife <= 0 || publishedAt == nil {
+		return 1
+	}
+	age := p.now.Sub(*publishedAt)
+	if age <= 0 {
+		return 1
+	}
+	return math.Pow(0.5, age.Hours()/p.recencyHalfLife.Hours())
 }
 
 // chunkKindWeight maps a chunk kind to its corroboration weight, defaulting an

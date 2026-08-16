@@ -151,7 +151,7 @@ func parseAmendement(source string, data []byte) (record, error) {
 	}
 
 	url := fmt.Sprintf(amendementURLTemplate, a.UID)
-	return buildEvidenceRecord(source, a.UID, amendementTitle(a), url, renderAmendement(a), amendementMetadata(a)), nil
+	return buildEvidenceRecord(source, a.UID, amendementTitle(a), url, renderAmendement(a), documentDate(a.CycleDeVie.DateDepot), amendementMetadata(a)), nil
 }
 
 // amendementNumero returns the most human-readable amendment number available.

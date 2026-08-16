@@ -919,6 +919,9 @@ services:
       MATCH_RERANK_CANDIDATES: "${MATCH_RERANK_CANDIDATES:-}"
       MATCH_RERANK_TIMEOUT: "${MATCH_RERANK_TIMEOUT:-}"
       RERANK_API_KEY: "${RERANK_API_KEY:-}"
+      # Recency weighting (VER-227): empty/0 keeps scoring unchanged; a positive
+      # duration halves a dated passage's corroboration weight per half-life.
+      MATCH_RECENCY_HALF_LIFE: "${MATCH_RECENCY_HALF_LIFE:-}"
       # Retrieval tuning (VER-202). Per-corpus matcher knobs; empty keeps the
       # backend defaults. Threshold and top-k are already per corpus (curated
       # claims vs wiki evidence); the ef_search knobs raise one corpus's HNSW
@@ -1062,6 +1065,9 @@ services:
       # manipulation flags + real source) with no LLM call (default 0.85). Empty
       # keeps the default; only read when FACTCHECK_POLITICAL and the verify path are on.
       FACTCHECK_POLITICAL_CURATED_TAU: "${FACTCHECK_POLITICAL_CURATED_TAU:-}"
+      # Curated fast-borrow age guard (VER-227): empty/0 disables; a positive
+      # duration stops borrowing verdicts checked longer ago than that.
+      FACTCHECK_POLITICAL_CURATED_MAX_AGE: "${FACTCHECK_POLITICAL_CURATED_MAX_AGE:-}"
       # Political source packs (read only when FACTCHECK_POLITICAL is on). Web search
       # is the mandatory open-ended fallback, so WEBSEARCH_API_KEY (a Brave token) is
       # required in political mode; the press pack joins only when PRESS_API_KEY is

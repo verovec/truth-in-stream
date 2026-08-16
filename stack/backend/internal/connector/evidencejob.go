@@ -3,6 +3,7 @@ package connector
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
@@ -29,7 +30,11 @@ type EvidenceJob struct {
 	Content    string         `json:"content"`
 	Kind       string         `json:"kind"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
-	Attempt    int            `json:"attempt,omitzero"`
+	// PublishedAt is the source's own publication date for the document, nil
+	// when the source is undated. Additive on the queue wire: an old message
+	// without the field decodes to nil and stores an undated chunk.
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	Attempt     int        `json:"attempt,omitzero"`
 }
 
 // Validate rejects a job that can never produce a valid corpus row, so a worker
@@ -64,14 +69,15 @@ func (j EvidenceJob) Validate() error {
 // to fill from Content. Call Validate first; Chunk does not re-validate.
 func (j EvidenceJob) Chunk() domain.EvidenceChunk {
 	return domain.EvidenceChunk{
-		Source:     j.Source,
-		ExternalID: j.ExternalID,
-		ChunkIndex: j.ChunkIndex,
-		Title:      j.Title,
-		URL:        j.URL,
-		Content:    j.Content,
-		Kind:       domain.EvidenceChunkKind(j.Kind),
-		Metadata:   j.Metadata,
-		Embedding:  nil,
+		Source:      j.Source,
+		ExternalID:  j.ExternalID,
+		ChunkIndex:  j.ChunkIndex,
+		Title:       j.Title,
+		URL:         j.URL,
+		Content:     j.Content,
+		Kind:        domain.EvidenceChunkKind(j.Kind),
+		Metadata:    j.Metadata,
+		PublishedAt: j.PublishedAt,
+		Embedding:   nil,
 	}
 }

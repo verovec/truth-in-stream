@@ -146,6 +146,10 @@ func promptFor(locale domain.Locale) string {
 type Passage struct {
 	ID   string
 	Text string
+	// Date is the passage's publication date label (YYYY-MM-DD), empty when the
+	// source is undated; shown beside the evidence_id so the model can judge
+	// whether a figure is current without guessing.
+	Date string
 }
 
 // Citation is one grounding the model returned: the evidence_id it relied on and
@@ -324,6 +328,10 @@ func buildPrompt(claim string, passages []Passage) string {
 	for _, p := range passages {
 		b.WriteString("\n[evidence_id: ")
 		b.WriteString(p.ID)
+		if p.Date != "" {
+			b.WriteString(" | date: ")
+			b.WriteString(p.Date)
+		}
 		b.WriteString("]\n")
 		b.WriteString(p.Text)
 		b.WriteString("\n")

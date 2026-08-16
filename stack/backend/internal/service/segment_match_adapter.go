@@ -82,6 +82,7 @@ func (a *SegmentMatchAdapter) convert(hits []Match, query []float32, err error) 
 			Similarity:   h.Score,
 			Contribution: contribution,
 			EvidenceID:   h.EvidenceID,
+			PublishedAt:  h.PublishedAt,
 		}
 		if h.Kind == domain.MatchKindEvidence {
 			article := h.Article
