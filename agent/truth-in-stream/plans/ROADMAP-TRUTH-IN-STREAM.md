@@ -101,6 +101,13 @@
 | E1 | No-source claims are unverifiable and every rationale is French | Done | High | |
 | E2 | Claim extraction reads the previous group and quotes only the claim core | Done | High | E1 |
 | E3 | Live view merges a claim unit into one statement with claim-core highlights | Done | High | E2 |
+| VER-224 | French-language deterministic precheck gate rejects non-claims before any model call | Todo | High | |
+| VER-225 | Local check-worthiness classifier with calibrated grey zone replaces the LLM gate for clear cases | Todo | High | |
+| VER-226 | Cross-encoder reranking between hybrid fusion and the evidence cut | Todo | Medium | |
+| VER-227 | Evidence publication dates: typed published_at with recency-aware retrieval and verdicts | Todo | Medium | |
+| VER-228 | NLI stance scorer resolves clear verdicts from retrieved evidence before any LLM call | Todo | High | VER-225 |
+| VER-229 | Per-claim pipeline telemetry table for threshold calibration and classifier training | Todo | Medium | VER-227 |
+| VER-230 | Vector-first defaults: enable the verify path with local gates and hold an LLM-call budget | Todo | Medium | VER-228, VER-226 |
 
 ## Dependency graph
 
@@ -113,13 +120,23 @@ VER-219 -> VER-221
 VER-220 -> VER-222
 E1 -> E2
 E2 -> E3
+VER-225 -> VER-228
+VER-227 -> VER-229
+VER-228 -> VER-230
+VER-226 -> VER-230
 
 ## Ready queue
 
-(empty - Epic E delivered in full on 2026-07-21: E1 = PR #261, E2 = PR #262, E3 = PR #263,
-all merged to dev. E1..E3 are provisional ids: Linear was unreachable at creation (API key
-401); replay the bodies in `LINEAR-LEDGER-CLAIM-QUALITY.md` once the connector
-re-authenticates, replace E1..E3 with the real VER numbers, and create the cards directly
-in Done. Note: the card list above VER-216 is a stale historical snapshot that predates
-VER-93; it is not maintained by this entry. Linear card states still need the deferred sync
-once the connector is re-authenticated.)
+Epic F (vector-first verdicts), all cards created in Linear 2026-08-16, state `Todo`:
+
+1. VER-225 - Local check-worthiness classifier (High, transitively unblocks VER-228 and VER-230)
+2. VER-224 - French deterministic precheck gate (High)
+3. VER-226 - Cross-encoder reranking (Medium, unblocks VER-230)
+4. VER-227 - Evidence publication dates (Medium, unblocks VER-229)
+
+VER-228, VER-229, VER-230 become ready as their dependencies reach In Review/Done.
+
+(Historical note kept from the Epic E close-out: E1..E3 were delivered 2026-07-21 as PRs
+#261-#263 under provisional ids while Linear was unreachable; bodies in
+`LINEAR-LEDGER-CLAIM-QUALITY.md`. The card list above VER-216 is a stale historical
+snapshot predating VER-93 and is not maintained by this entry.)
