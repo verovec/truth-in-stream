@@ -624,7 +624,7 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale doma
 // wrapped in a model cascade when the check-worthiness model is configured. The
 // API key is never logged.
 func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, error) {
-	heuristic := service.NewHeuristicClassifier(cfg.MinWords)
+	heuristic := service.NewHeuristicClassifier(cfg.MinWords, locale)
 	if !cw.Active() {
 		return heuristic, nil
 	}
