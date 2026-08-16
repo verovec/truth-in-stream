@@ -206,6 +206,10 @@ type VerifyPathConfig struct {
 	// the path runs the credibility-only verify stage, so the political flag off is
 	// byte-for-byte the legacy retrieve-then-verify behavior.
 	Political *PoliticalConfig
+	// Telemetry, when non-nil, records one analytical claim-check row per live
+	// decision through the asynchronous recorder. Nil (the default) records
+	// nothing and the pipeline behaves exactly as before.
+	Telemetry *TelemetryRecorder
 	// SecondPass, when non-nil, enables the deeper-reasoner second pass: after a
 	// credibility-only verify call returns an evidence-grounded verdict whose
 	// confidence sits in the configured mid band, a stronger reasoning model
@@ -234,6 +238,7 @@ type VerifyPath struct {
 	cache          *semanticCache
 	pol            *PoliticalConfig
 	secondPass     *secondPass
+	telemetry      *TelemetryRecorder
 }
 
 // NewVerifyPath builds a VerifyPath, failing when a required collaborator is
@@ -293,6 +298,7 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		cache = newSemanticCache(cfg.CacheTTL, cfg.CacheThreshold, maxEntries)
 	}
 	return &VerifyPath{
+		telemetry:      cfg.Telemetry,
 		decomposer:     cfg.Decomposer,
 		matcher:        cfg.Matcher,
 		verifier:       cfg.Verifier,
@@ -439,6 +445,7 @@ func (vp *VerifyPath) resolveClaimBatch(ctx context.Context, claim AtomicClaim) 
 // matcher and verifier are its own. A non-checkable unit emits the legacy skip
 // result per member, so a not_a_claim unit looks the same as on the old path.
 func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit) {
+	started := time.Now()
 	members := pu.members
 	text := combinedText(members)
 
@@ -453,6 +460,9 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 	if !decision.Checkable {
 		// A gate skip mirrors the legacy result shape so a not_a_claim unit is
 		// reported identically whether or not the verify path is on.
+		check := newClaimCheck(started, pu.speaker, text, "", domain.DecisionGateSkip, nil)
+		check.SkipReason = string(decision.Reason)
+		vp.recordCheck(check)
 		for _, m := range members {
 			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: decision.Reason}) {
 				return
@@ -465,6 +475,9 @@ func (vp *VerifyPath) scoreUnit(ctx context.Context, a *LiveAnalyzer, out chan<-
 	if len(claims) == 0 {
 		// Decomposition dropped every fragment as non-factual: the unit carried no
 		// verifiable claim, so it is a single not_a_claim skip rather than a fan-out.
+		check := newClaimCheck(started, pu.speaker, text, "", domain.DecisionNoClaim, nil)
+		check.SkipReason = string(domain.SkipReasonNotAClaim)
+		vp.recordCheck(check)
 		for _, m := range members {
 			if !sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: m.id, Segment: m.seg, SkipReason: domain.SkipReasonNotAClaim}) {
 				return
@@ -537,8 +550,10 @@ func (vp *VerifyPath) decomposeText(ctx context.Context, text, speaker, recentCo
 // repeated claim. Retrieval and verdict errors are reported as the non-fatal
 // error terminal status rather than ending the session.
 func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim) {
+	started := time.Now()
 	unitID := pu.members[0].id
 	seg := pu.members[0].seg
+	unitText := combinedText(pu.members)
 
 	ret, err := vp.retrieve(ctx, claim.Text)
 	if err != nil {
@@ -546,6 +561,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 			vp.logger.ErrorContext(ctx, "verify-path retrieval failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
+		vp.recordCheck(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionError, nil))
 		return
 	}
 
@@ -558,6 +574,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		vp.emitVerdict(ctx, out, unitID, claim, seg, cached.source, cached.verdict)
 		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, cached.verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+		vp.recordCheck(withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionCache, ret.matches), string(cached.source), cached.verdict))
 		return
 	}
 
@@ -574,6 +591,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 			vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 			vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 			vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+			vp.recordCheck(withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionPoliticalCurated, ret.matches), string(SourceCurated), verdict))
 			return
 		}
 	}
@@ -596,6 +614,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceCurated, verdict)
 		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+		vp.recordCheck(withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionCurated, ret.matches), string(SourceCurated), verdict))
 		return
 	}
 
@@ -603,7 +622,7 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	// and two-axis verify, folding into the flag-aware aggregator. It owns its own
 	// checking/verified/unchecked/error lifecycle from here.
 	if vp.political() {
-		vp.scorePoliticalClaim(ctx, a, out, mem, pu, claim, ret)
+		vp.scorePoliticalClaim(ctx, a, out, mem, pu, claim, ret, started)
 		return
 	}
 
@@ -617,6 +636,9 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	verdict, shed, err := vp.verifyClaim(ctx, claim.Text, ret.matches)
 	if shed {
 		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
+		check := newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionShed, ret.matches)
+		check.SkipReason = string(domain.SkipReasonNotChecked)
+		vp.recordCheck(check)
 		return
 	}
 	if err != nil {
@@ -624,6 +646,9 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 			vp.logger.ErrorContext(ctx, "verify-path verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
+		check := newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionError, ret.matches)
+		check.LLMCalls = 1
+		vp.recordCheck(check)
 		return
 	}
 	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
@@ -636,7 +661,24 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	// fast verdict has already emitted above and outside the verify pool, so it never
 	// delays the live result or consumes a scoring slot; it is a no-op when the feature
 	// is off or the verdict is already strong.
-	vp.maybeReverify(ctx, out, mem, pu, claim, verdict, ret)
+	final, gateAttempted, escalated := vp.maybeReverify(ctx, out, mem, pu, claim, verdict, ret)
+	path := domain.DecisionVerified
+	llmCalls := 1
+	if len(ret.matches) == 0 {
+		// verifyClaim short-circuits an empty retrieval to the honest
+		// unverifiable outcome with no generative call.
+		path = domain.DecisionNoEvidence
+		llmCalls = 0
+	}
+	check := withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, path, ret.matches), string(SourceVerified), final)
+	check.Escalated = escalated
+	if gateAttempted {
+		// The reasoning call was made whether or not it replaced the verdict;
+		// the cost is real either way.
+		llmCalls++
+	}
+	check.LLMCalls = llmCalls
+	vp.recordCheck(check)
 }
 
 // retrieve embeds the atomic claim and pulls the high-recall evidence cluster

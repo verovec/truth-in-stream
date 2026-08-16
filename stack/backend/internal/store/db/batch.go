@@ -19,6 +19,99 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const insertClaimChecks = `-- name: InsertClaimChecks :batchexec
+INSERT INTO claim_checks (
+    occurred_at, session_kind, locale, speaker, unit_text, claim_text,
+    decision_path, skip_reason,
+    retrieval_top, retrieval_candidates, retrieval_claim_hits, retrieval_evidence_hits,
+    verdict, basis, literal, confidence, source,
+    escalated, llm_calls, latency_ms
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+`
+
+type InsertClaimChecksBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertClaimChecksParams struct {
+	OccurredAt            pgtype.Timestamptz
+	SessionKind           string
+	Locale                string
+	Speaker               string
+	UnitText              string
+	ClaimText             string
+	DecisionPath          string
+	SkipReason            string
+	RetrievalTop          float64
+	RetrievalCandidates   int32
+	RetrievalClaimHits    int32
+	RetrievalEvidenceHits int32
+	Verdict               string
+	Basis                 string
+	Literal               string
+	Confidence            float64
+	Source                string
+	Escalated             bool
+	LlmCalls              int32
+	LatencyMs             int64
+}
+
+// Telemetry rows are inserted in batches by the asynchronous recorder; the
+// table is append-only, so this is a plain insert with no conflict target.
+func (q *Queries) InsertClaimChecks(ctx context.Context, arg []InsertClaimChecksParams) *InsertClaimChecksBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.OccurredAt,
+			a.SessionKind,
+			a.Locale,
+			a.Speaker,
+			a.UnitText,
+			a.ClaimText,
+			a.DecisionPath,
+			a.SkipReason,
+			a.RetrievalTop,
+			a.RetrievalCandidates,
+			a.RetrievalClaimHits,
+			a.RetrievalEvidenceHits,
+			a.Verdict,
+			a.Basis,
+			a.Literal,
+			a.Confidence,
+			a.Source,
+			a.Escalated,
+			a.LlmCalls,
+			a.LatencyMs,
+		}
+		batch.Queue(insertClaimChecks, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertClaimChecksBatchResults{br, len(arg), false}
+}
+
+func (b *InsertClaimChecksBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertClaimChecksBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const insertDocumentClaim = `-- name: InsertDocumentClaim :batchexec
 INSERT INTO document_claims (document_id, sentence_seq, claim_id, text, status, source, verdict, basis, literal, flags, confidence, rationale, citations)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)

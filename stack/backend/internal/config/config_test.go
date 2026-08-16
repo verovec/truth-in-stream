@@ -431,6 +431,47 @@ func TestLoadAuth(t *testing.T) {
 	}
 }
 
+func TestLoadTelemetry(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		got, err := LoadTelemetry()
+		if err != nil {
+			t.Fatalf("LoadTelemetry: %v", err)
+		}
+		want := Telemetry{Enabled: true, QueueDepth: 256, FlushEvery: time.Second, SampleRate: 1}
+		if got != want {
+			t.Errorf("LoadTelemetry() = %+v, want %+v", got, want)
+		}
+	})
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("TELEMETRY_ENABLED", "false")
+		t.Setenv("TELEMETRY_QUEUE_DEPTH", "512")
+		t.Setenv("TELEMETRY_SAMPLE_RATE", "0.25")
+		t.Setenv("TELEMETRY_FLUSH_INTERVAL", "5s")
+		got, err := LoadTelemetry()
+		if err != nil {
+			t.Fatalf("LoadTelemetry: %v", err)
+		}
+		want := Telemetry{Enabled: false, QueueDepth: 512, FlushEvery: 5 * time.Second, SampleRate: 0.25}
+		if got != want {
+			t.Errorf("LoadTelemetry() = %+v, want %+v", got, want)
+		}
+	})
+	t.Run("rejects out-of-range values", func(t *testing.T) {
+		for _, tc := range []struct{ key, value string }{
+			{"TELEMETRY_SAMPLE_RATE", "0"},
+			{"TELEMETRY_SAMPLE_RATE", "1.5"},
+			{"TELEMETRY_QUEUE_DEPTH", "0"},
+			{"TELEMETRY_FLUSH_INTERVAL", "-1s"},
+		} {
+			t.Setenv(tc.key, tc.value)
+			if _, err := LoadTelemetry(); err == nil {
+				t.Errorf("LoadTelemetry with %s=%s returned nil error", tc.key, tc.value)
+			}
+			t.Setenv(tc.key, "")
+		}
+	})
+}
+
 func TestLoadMatch(t *testing.T) {
 	defaults := Match{
 		TopK:                  5,

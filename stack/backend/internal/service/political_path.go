@@ -117,9 +117,10 @@ func (vp *VerifyPath) political() bool { return vp.pol != nil }
 // path, and folds the verdict into the flag-aware aggregator. ret carries the
 // curated-matcher embedding already computed for the fast borrow, reused for
 // consistency without re-embedding.
-func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, ret retrieved) {
+func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, ret retrieved, started time.Time) {
 	unitID := pu.members[0].id
 	seg := pu.members[0].seg
+	unitText := combinedText(pu.members)
 
 	ct := vp.pol.Classifier.Classify(ctx, claim.Text)
 
@@ -129,6 +130,9 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 			vp.logger.ErrorContext(ctx, "political routing failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
+		check := newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionError, ret.matches)
+		check.LLMCalls = 1
+		vp.recordCheck(check)
 		return
 	}
 
@@ -150,12 +154,19 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 		vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 		vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 		vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
+		check := withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionNoEvidence, ret.matches), string(SourceVerified), verdict)
+		check.LLMCalls = 1
+		vp.recordCheck(check)
 		return
 	}
 
 	verdict, shed, err := vp.verifyPolitical(ctx, claim.Text, evidence)
 	if shed {
 		_ = sendEvent(ctx, out, LiveEvent{Kind: LiveEventResult, ID: unitID, Segment: seg, ClaimID: claim.ClaimID, ClaimStatus: ClaimStatusUnchecked, SkipReason: domain.SkipReasonNotChecked})
+		check := newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionShed, ret.matches)
+		check.SkipReason = string(domain.SkipReasonNotChecked)
+		check.LLMCalls = 1
+		vp.recordCheck(check)
 		return
 	}
 	if err != nil {
@@ -163,13 +174,23 @@ func (vp *VerifyPath) scorePoliticalClaim(ctx context.Context, a *LiveAnalyzer, 
 			vp.logger.ErrorContext(ctx, "political verifier failed", slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
 		vp.emitClaimError(ctx, out, unitID, claim, seg)
+		check := newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionError, ret.matches)
+		check.LLMCalls = 2
+		vp.recordCheck(check)
 		return
 	}
 	vp.cachePut(ret.embedding, claim.Text, SourceVerified, verdict)
 	vp.emitVerdict(ctx, out, unitID, claim, seg, SourceVerified, verdict)
 	vp.recordSpeakerTally(ctx, out, mem, pu.speaker, verdict)
 	vp.recordConsistency(ctx, a, out, mem, pu, claim, ret.embedding)
-	vp.maybePoliticalGate(ctx, out, mem, pu, claim, verdict, evidence, ret)
+	final, gateAttempted, escalated := vp.maybePoliticalGate(ctx, out, mem, pu, claim, verdict, evidence, ret)
+	check := withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, domain.DecisionVerified, ret.matches), string(SourceVerified), final)
+	check.Escalated = escalated
+	check.LLMCalls = 2
+	if gateAttempted {
+		check.LLMCalls++
+	}
+	vp.recordCheck(check)
 }
 
 // resolvePoliticalClaimBatch is the batch counterpart of scorePoliticalClaim:
@@ -223,22 +244,23 @@ func (vp *VerifyPath) resolvePoliticalClaimBatch(ctx context.Context, claim Atom
 // row. The reasoner it reuses is the credibility Reverify: it judges the literal truth
 // of the claim against the evidence - exactly the axis a weak political verdict is
 // unsure about - while the manipulation flags (framing axis) carry through unchanged.
-func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, evidence []source.Evidence, ret retrieved) {
+func (vp *VerifyPath) maybePoliticalGate(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, evidence []source.Evidence, ret retrieved) (*VerifiedVerdict, bool, bool) {
 	if vp.secondPass == nil {
-		return
+		return fast, false, false
 	}
 	passages := EvidencePassagesFrom(evidence)
-	reasoned, ok := vp.gateReverify(ctx, "live political", claim, fast, passages)
+	reasoned, attempted, ok := vp.gateReverify(ctx, "live political", claim, fast, passages)
 	if !ok {
-		return
+		return fast, attempted, false
 	}
 	upgraded := vp.secondPass.upgradePolitical(fast, reasoned, evidence)
 	if upgraded == fast {
-		return
+		return fast, attempted, false
 	}
 	vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
 	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
+	return upgraded, true, true
 }
 
 // applyPoliticalGateBatch is the batch counterpart of maybePoliticalGate: it
@@ -250,7 +272,7 @@ func (vp *VerifyPath) applyPoliticalGateBatch(ctx context.Context, claim AtomicC
 		return fast
 	}
 	passages := EvidencePassagesFrom(evidence)
-	reasoned, ok := vp.gateReverify(ctx, "batch political", claim, fast, passages)
+	reasoned, _, ok := vp.gateReverify(ctx, "batch political", claim, fast, passages)
 	if !ok {
 		return fast
 	}

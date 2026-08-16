@@ -19,6 +19,30 @@ type Claim struct {
 	SearchVector interface{}
 }
 
+type ClaimCheck struct {
+	ID                    int64
+	OccurredAt            pgtype.Timestamptz
+	SessionKind           string
+	Locale                string
+	Speaker               string
+	UnitText              string
+	ClaimText             string
+	DecisionPath          string
+	SkipReason            string
+	RetrievalTop          float64
+	RetrievalCandidates   int32
+	RetrievalClaimHits    int32
+	RetrievalEvidenceHits int32
+	Verdict               string
+	Basis                 string
+	Literal               string
+	Confidence            float64
+	Source                string
+	Escalated             bool
+	LlmCalls              int32
+	LatencyMs             int64
+}
+
 type Document struct {
 	ID                 uuid.UUID
 	Title              string

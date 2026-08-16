@@ -567,6 +567,10 @@ const (
 	defaultRerankTimeout    = 800 * time.Millisecond
 	// maxRerankCandidates is the rerank API's per-request document ceiling.
 	maxRerankCandidates = 1000
+	// Telemetry recorder defaults: a small in-memory buffer between the live
+	// loop and the writer, flushed at least once a second.
+	defaultTelemetryQueueDepth = 256
+	defaultTelemetryFlushEvery = time.Second
 )
 
 // Match holds the segment matching configuration across the curated claims and
@@ -679,6 +683,41 @@ func LoadMatch() (Match, error) {
 		return Match{}, err
 	}
 	return m, nil
+}
+
+// Telemetry configures the asynchronous per-claim pipeline telemetry recorder
+// (VER-229): one analytical claim_checks row per live decision, written in
+// batches off the hot path. On by default because it is pure additive
+// observability - it changes no verdict and its growth is bounded by sampling
+// and the retention sweep; TELEMETRY_ENABLED=false switches it off entirely.
+type Telemetry struct {
+	Enabled    bool
+	QueueDepth int
+	FlushEvery time.Duration
+	SampleRate float64
+}
+
+// LoadTelemetry reads the telemetry configuration from the environment,
+// failing fast on a sample rate outside (0, 1] or non-positive bounds.
+func LoadTelemetry() (Telemetry, error) {
+	t := Telemetry{Enabled: true, QueueDepth: defaultTelemetryQueueDepth, FlushEvery: defaultTelemetryFlushEvery, SampleRate: 1}
+	var err error
+	if t.Enabled, err = boolEnvDefault("TELEMETRY_ENABLED", t.Enabled); err != nil {
+		return Telemetry{}, err
+	}
+	if t.QueueDepth, err = intEnv("TELEMETRY_QUEUE_DEPTH", t.QueueDepth, 1, math.MaxInt32); err != nil {
+		return Telemetry{}, err
+	}
+	if t.FlushEvery, err = positiveDurationEnv("TELEMETRY_FLUSH_INTERVAL", t.FlushEvery); err != nil {
+		return Telemetry{}, err
+	}
+	if t.SampleRate, err = floatEnv("TELEMETRY_SAMPLE_RATE", t.SampleRate); err != nil {
+		return Telemetry{}, err
+	}
+	if t.SampleRate <= 0 || t.SampleRate > 1 {
+		return Telemetry{}, fmt.Errorf("config: TELEMETRY_SAMPLE_RATE %v outside (0, 1]", t.SampleRate)
+	}
+	return t, nil
 }
 
 // Rerank configures the optional cross-encoder rerank stage of retrieval

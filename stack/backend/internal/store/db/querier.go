@@ -30,6 +30,8 @@ type Querier interface {
 	// count the run. Paired with UpsertVideoAnalysis in one transaction so the
 	// status flip and the stored result are atomic.
 	CompleteVideoAnalysisStatus(ctx context.Context, id uuid.UUID) (Video, error)
+	// The retention dry run: how many rows an apply would remove.
+	CountClaimChecksBefore(ctx context.Context, occurredAt pgtype.Timestamptz) (int64, error)
 	CountEvidenceChunksForDocument(ctx context.Context, arg CountEvidenceChunksForDocumentParams) (int64, error)
 	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
 	// corpora: every statistical source (separate sources that share this table) is
@@ -45,6 +47,9 @@ type Querier interface {
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
 	// row and the caller resolves the existing record by source id instead.
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
+	// The retention sweep: rows older than the cutoff age out; the occurred_at
+	// index serves the range delete.
+	DeleteClaimChecksBefore(ctx context.Context, occurredAt pgtype.Timestamptz) (int64, error)
 	// Sentences and claims go with the document via ON DELETE CASCADE.
 	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
 	// Remove one sentence's prior claims just before its fresh results are written,
@@ -89,6 +94,9 @@ type Querier interface {
 	// same recording finds the existing row instead of colliding on the constraint.
 	GetVideoByObjectKey(ctx context.Context, objectKey string) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
+	// Telemetry rows are inserted in batches by the asynchronous recorder; the
+	// table is append-only, so this is a plain insert with no conflict target.
+	InsertClaimChecks(ctx context.Context, arg []InsertClaimChecksParams) *InsertClaimChecksBatchResults
 	// Persist one atomic claim's verdict. ordinal is assigned by the identity
 	// column, preserving insertion order within the sentence.
 	InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults
@@ -114,6 +122,9 @@ type Querier interface {
 	// The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
 	// natural key for a stable ranking.
 	LexicalSearchEvidenceChunks(ctx context.Context, arg LexicalSearchEvidenceChunksParams) ([]LexicalSearchEvidenceChunksRow, error)
+	// Dataset builds and tests read recent rows oldest-first; the occurred_at
+	// index serves the range scan.
+	ListClaimChecksSince(ctx context.Context, occurredAt pgtype.Timestamptz) ([]ListClaimChecksSinceRow, error)
 	// ordinal, not created_at, carries insertion order: an analysis run writes its
 	// claims in one transaction, so their created_at values are identical.
 	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]ListDocumentClaimsRow, error)
