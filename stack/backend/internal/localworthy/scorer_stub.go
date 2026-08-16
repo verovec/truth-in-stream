@@ -1,4 +1,4 @@
-//go:build !localworthy
+//go:build !localinference
 
 package localworthy
 

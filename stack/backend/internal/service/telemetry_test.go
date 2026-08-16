@@ -302,3 +302,58 @@ func TestVerifyPathCountsAttemptedReverify(t *testing.T) {
 		t.Fatalf("reverifier calls = %d, want 1 (the premise of this test)", len(reverifier.calls))
 	}
 }
+
+func TestVerifyPathRecordsLocalNLIDecision(t *testing.T) {
+	t.Parallel()
+	unit := "the debt exceeds three trillion euros."
+	claim := unit
+
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{
+		Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "B",
+	})}
+	matcher := liveMatcher{
+		matches: map[string][]domain.SegmentMatch{
+			claim: {{Kind: domain.MatchKindEvidence, Claim: "public debt reached 3.1 trillion euros", Similarity: 0.7, EvidenceID: "evidence:7:0"}},
+		},
+	}
+	verifier := &fakeVerifier{}
+	recorder, err := NewTelemetryRecorder(&captureWriter{}, TelemetryConfig{QueueDepth: 32, BatchSize: 8, FlushEvery: time.Second, SampleRate: 1, Locale: "fr"})
+	if err != nil {
+		t.Fatalf("NewTelemetryRecorder: %v", err)
+	}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {claim}}},
+		Verifier:   verifier,
+		Telemetry:  recorder,
+		NLIStance: &StanceConfig{
+			Scorer:              &fakeStanceScorer{byClaim: map[string][]StanceResult{claim: {entail(0.95)}}},
+			EntailThreshold:     0.7,
+			ContradictThreshold: 0.9,
+			MinAgree:            1,
+			MaxPassages:         6,
+		},
+	})
+	runVerifyPath(t, a)
+
+	rows := drainRecorder(recorder)
+	if len(rows) != 1 {
+		t.Fatalf("recorded rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.DecisionPath != domain.DecisionLocalNLI {
+		t.Fatalf("decision path = %q, want %q", row.DecisionPath, domain.DecisionLocalNLI)
+	}
+	if row.LLMCalls != 0 {
+		t.Errorf("llm calls = %d, want 0 for a locally-decided verdict", row.LLMCalls)
+	}
+	if row.Verdict != VerdictCredible || row.Basis != BasisEvidence {
+		t.Errorf("row verdict = %s/%s, want credible/evidence", row.Verdict, row.Basis)
+	}
+	if row.Source != string(SourceVerified) {
+		t.Errorf("row source = %q, want %q (indistinguishable on the wire)", row.Source, SourceVerified)
+	}
+	if len(verifier.calls) != 0 {
+		t.Errorf("verifier called %d times, want 0", len(verifier.calls))
+	}
+}

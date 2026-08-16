@@ -1003,6 +1003,19 @@ services:
       CHECKWORTHINESS_LOCAL_BAND_LOW: "${CHECKWORTHINESS_LOCAL_BAND_LOW:-}"
       CHECKWORTHINESS_LOCAL_BAND_HIGH: "${CHECKWORTHINESS_LOCAL_BAND_HIGH:-}"
       CHECKWORTHINESS_LOCAL_TIMEOUT: "${CHECKWORTHINESS_LOCAL_TIMEOUT:-}"
+      # Local NLI stance stage (VER-228): decides clear verdicts from retrieved
+      # evidence on CPU; only ambiguity reaches the generative verifier. Off by
+      # default; needs a localinference-tagged binary and mounted artifacts.
+      FACTCHECK_NLI_ENABLED: "${FACTCHECK_NLI_ENABLED:-}"
+      FACTCHECK_NLI_MODEL_PATH: "${FACTCHECK_NLI_MODEL_PATH:-}"
+      FACTCHECK_NLI_TOKENIZER_PATH: "${FACTCHECK_NLI_TOKENIZER_PATH:-}"
+      FACTCHECK_NLI_ONNX_LIBRARY: "${FACTCHECK_NLI_ONNX_LIBRARY:-}"
+      FACTCHECK_NLI_TEMPERATURE: "${FACTCHECK_NLI_TEMPERATURE:-}"
+      FACTCHECK_NLI_ENTAIL_THRESHOLD: "${FACTCHECK_NLI_ENTAIL_THRESHOLD:-}"
+      FACTCHECK_NLI_CONTRADICT_THRESHOLD: "${FACTCHECK_NLI_CONTRADICT_THRESHOLD:-}"
+      FACTCHECK_NLI_MIN_AGREE: "${FACTCHECK_NLI_MIN_AGREE:-}"
+      FACTCHECK_NLI_MAX_PASSAGES: "${FACTCHECK_NLI_MAX_PASSAGES:-}"
+      FACTCHECK_NLI_TIMEOUT: "${FACTCHECK_NLI_TIMEOUT:-}"
       # Retrieve-then-verify fact-check path: decompose each unit into atomic
       # claims, retrieve evidence, and have an LLM verifier derive the verdict
       # (supports/refutes/not_enough_info) from that evidence instead of borrowing

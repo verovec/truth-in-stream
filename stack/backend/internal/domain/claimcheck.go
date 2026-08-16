@@ -26,6 +26,9 @@ const (
 	DecisionNoEvidence = "no-evidence"
 	// DecisionVerified is a verdict produced by the generative verifier.
 	DecisionVerified = "verified"
+	// DecisionLocalNLI is a verdict the local NLI stance stage decided from
+	// the retrieved evidence alone, no generative call.
+	DecisionLocalNLI = "local-nli"
 	// DecisionShed is a claim dropped by verify-pool saturation, terminal
 	// unchecked.
 	DecisionShed = "shed"

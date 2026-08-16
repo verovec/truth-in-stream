@@ -21,6 +21,9 @@ type Baseline struct {
 	// Gate is the local check-worthiness gate floor (VER-225). It is additive
 	// and optional: a baseline without the key skips the gate check.
 	Gate *GateBaseline `json:"gate,omitempty"`
+	// NLI is the local stance stage floor (VER-228). Additive and optional
+	// like Gate.
+	NLI *NLIBaseline `json:"nli,omitempty"`
 }
 
 // VerdictBaseline is the two-axis accuracy floor: the minimum fraction of cases
@@ -67,6 +70,16 @@ func LoadBaseline(path string) (Baseline, error) {
 			"gate.min_cascade_accuracy":           b.Gate.MinCascadeAccuracy,
 			"gate.min_outside_band_llm_agreement": b.Gate.MinOutsideBandLLMAgreement,
 			"gate.max_llm_call_rate":              b.Gate.MaxLLMCallRate,
+		} {
+			if v < 0 || v > 1 {
+				return Baseline{}, fmt.Errorf("eval: baseline %s %.4f is outside [0, 1]", name, v)
+			}
+		}
+	}
+	if b.NLI != nil {
+		for name, v := range map[string]float64{
+			"nli.min_decided_accuracy": b.NLI.MinDecidedAccuracy,
+			"nli.min_local_share":      b.NLI.MinLocalShare,
 		} {
 			if v < 0 || v > 1 {
 				return Baseline{}, fmt.Errorf("eval: baseline %s %.4f is outside [0, 1]", name, v)

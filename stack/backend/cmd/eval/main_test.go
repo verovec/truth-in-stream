@@ -28,7 +28,8 @@ func repoGateFixture(t *testing.T) string {
 func TestRunPassesOnCommittedBaseline(t *testing.T) {
 	golden, baseline := repoTestdata(t)
 	var out strings.Builder
-	if err := run([]string{"-golden", golden, "-baseline", baseline, "-gate", repoGateFixture(t)}, &out); err != nil {
+	nliFixture := filepath.Join("..", "..", "internal", "eval", "testdata", "nli_golden.json")
+	if err := run([]string{"-golden", golden, "-baseline", baseline, "-gate", repoGateFixture(t), "-nli", nliFixture}, &out); err != nil {
 		t.Fatalf("run over committed data failed: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -42,6 +43,9 @@ func TestRunPassesOnCommittedBaseline(t *testing.T) {
 	}
 	if !strings.Contains(got, "check-worthiness gate meets every committed floor") {
 		t.Errorf("output missing check-worthiness gate PASS:\n%s", got)
+	}
+	if !strings.Contains(got, "nli stance stage meets every committed floor") {
+		t.Errorf("output missing nli stance PASS:\n%s", got)
 	}
 }
 

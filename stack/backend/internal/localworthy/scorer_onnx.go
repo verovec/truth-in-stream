@@ -1,4 +1,4 @@
-//go:build localworthy
+//go:build localinference
 
 package localworthy
 
@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/daulet/tokenizers"
+	"github.com/verovec/truth-in-stream/backend/internal/onnxrt"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -17,24 +17,6 @@ import (
 // tokenizer.json carries the authoritative truncation; this guard only
 // protects the fixed-cost contract if an artifact ships without it.
 const maxSequenceTokens = 128
-
-var (
-	initOnce sync.Once
-	initErr  error
-)
-
-// initRuntime loads the ONNX Runtime shared library once per process. The
-// library path is global to the runtime, so the first scorer's configuration
-// wins; the server wires exactly one.
-func initRuntime(libraryPath string) error {
-	initOnce.Do(func() {
-		if libraryPath != "" {
-			ort.SetSharedLibraryPath(libraryPath)
-		}
-		initErr = ort.InitializeEnvironment()
-	})
-	return initErr
-}
 
 // maxConcurrentInferences bounds in-flight Run calls. A timed-out inference
 // cannot be cancelled inside ONNX Runtime, so without a bound an overloaded
@@ -61,7 +43,7 @@ func New(cfg Config) (*Scorer, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if err := initRuntime(cfg.LibraryPath); err != nil {
+	if err := onnxrt.Init(cfg.LibraryPath, nil); err != nil {
 		return nil, fmt.Errorf("localworthy: initialize onnx runtime: %w", err)
 	}
 

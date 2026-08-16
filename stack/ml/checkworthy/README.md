@@ -17,15 +17,15 @@ single-digit milliseconds on CPU.
 
 Measured on an Apple M5 Pro (darwin/arm64, INT8 export, sequence <= 64,
 batch 1): **7.8 ms mean per statement** over 20 calls through the Go scorer
-(`go test -tags localworthy ./internal/localworthy/ -run Latency`). The
+(`go test -tags localinference ./internal/localworthy/ -run Latency`). The
 fp32 export parity against the torch reference is exact to 1.4e-6; the INT8
 logit drift is checked against the golden set by the evaluate step.
 
 Both native libraries need cgo, so the scorer compiles only under the
-`localworthy` build tag; the default pure-Go build (CI, current prod image)
+`localinference` build tag; the default pure-Go build (CI, current prod image)
 ships a stub whose constructor reports the scorer unavailable and the backend
 keeps today's heuristic-plus-model cascade. Enabling the gate in an image
-means building with `-tags localworthy`, `CGO_ENABLED=1`, `libtokenizers.a`
+means building with `-tags localinference`, `CGO_ENABLED=1`, `libtokenizers.a`
 on the linker path, and the ONNX Runtime shared library alongside the binary
 (`CHECKWORTHINESS_LOCAL_ONNX_LIBRARY`).
 
@@ -83,3 +83,33 @@ storage, and point `CHECKWORTHINESS_LOCAL_MODEL_PATH` /
 Pure logic only (no torch, no database, no network); CI runs it on every PR
 (`checkworthy-gate-test` in pr.yml). The Go scorer has its own tagged
 integration suite in `stack/backend/internal/localworthy`.
+
+## NLI stance stage (VER-228)
+
+The stance scorer is the pretrained `almanach/camembertav2-base-xnli`
+cross-encoder, consumed as the community ONNX export
+(`onnx-community/camembertav2-base-xnli`) - DeBERTa's custom ops have a
+history of export friction and the community artifact is already validated.
+Labels: index 0 entailment, 1 neutral, 2 contradiction. FEVER convention:
+evidence passage = premise, claim = hypothesis. The Go binding has no pair
+API, so the runtime assembles `[CLS] premise [SEP] [SEP] hypothesis [SEP]`
+by token ids; `nli-fetch` proves that assembly identical to the reference
+tokenizer's own pair encoding before anything ships.
+
+    uv run checkworthy-gate nli-fetch --out out/nli
+    uv run checkworthy-gate nli-calibrate --entail-threshold 0.70 --contradict-threshold 0.90
+
+Calibration (recorded 2026-08-16): temperature 1.8634 fitted by 3-class NLL
+over 119 labeled French pairs (the committed verdict golden set flattened to
+claim/passage pairs plus `data/nli_pairs.jsonl`, which carries 12 negation
+mirror pairs and 12 neutrals). At the shipped thresholds the consensus rule
+decides 53.9 percent of cases locally with 100 percent decided accuracy and
+zero negation violations; the contradiction bar is deliberately higher than
+the entailment bar because wrongly refuting a claim costs more than
+escalating it. The artifact is upstream, so the temperature ships as
+configuration (`FACTCHECK_NLI_TEMPERATURE`), not folded into weights.
+`nli-calibrate` regenerates the committed eval fixture
+(`backend/internal/eval/testdata/nli_golden.json`) that CI replays offline.
+
+Measured through the Go scorer (M5 Pro, INT8): 27 ms per claim against three
+passages (`go test -tags localinference ./internal/nli/ -run Latency`).
