@@ -2,7 +2,7 @@
 // text classifier (a fine-tuned CamemBERTa-v2 head), replacing the generative
 // gate for clear cases at zero marginal cost. The real scorer needs cgo and
 // two native libraries (ONNX Runtime and the HuggingFace tokenizers FFI), so
-// it compiles only under the `localworthy` build tag; the default pure-Go
+// it compiles only under the `localinference` build tag; the default pure-Go
 // build ships a stub whose constructor reports the scorer unavailable, and
 // the caller degrades to the existing heuristic-plus-model cascade. That
 // makes "built without the tag" just another instance of the mandatory
@@ -13,13 +13,14 @@ package localworthy
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 )
 
 // ErrUnavailable reports that this binary was built without the localworthy
 // build tag, so no local inference substrate is linked in.
-var ErrUnavailable = errors.New("localworthy: built without the localworthy build tag")
+var ErrUnavailable = errors.New("localworthy: built without the localinference build tag")
 
 // Config locates the model artifacts and bounds inference. All three paths
 // come from configuration, never from the repository: the ONNX model and
@@ -38,6 +39,9 @@ type Config struct {
 	// Timeout bounds a single inference; an overrun returns an error and the
 	// cascade falls back rather than stalling the live loop.
 	Timeout time.Duration
+	// Logger receives shared-runtime diagnostics (a library-path mismatch
+	// between scorers); nil logs nothing.
+	Logger *slog.Logger
 }
 
 func (c Config) validate() error {

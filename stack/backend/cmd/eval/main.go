@@ -39,6 +39,7 @@ func run(args []string, out io.Writer) error {
 	goldenPath := fs.String("golden", filepath.Join("internal", "eval", "testdata", "golden.json"), "path to the golden set")
 	baselinePath := fs.String("baseline", filepath.Join("internal", "eval", "testdata", "baseline.json"), "path to the committed baseline")
 	gatePath := fs.String("gate", filepath.Join("internal", "eval", "testdata", "gate_golden.json"), "path to the check-worthiness gate fixture (required when the baseline carries a gate section)")
+	nliPath := fs.String("nli", filepath.Join("internal", "eval", "testdata", "nli_golden.json"), "path to the nli stance fixture (required when the baseline carries an nli section)")
 	rerankOn := fs.Bool("rerank", false, "also score the live Voyage reranker over the same cases (needs RERANK_API_KEY or EMBEDDING_API_KEY; informational, not a gate)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -73,6 +74,11 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 	}
+	if base.NLI != nil {
+		if err := runNLICheck(base, *nliPath, out); err != nil {
+			return err
+		}
+	}
 	if *rerankOn {
 		return runRerankComparison(g, rep, out)
 	}
@@ -99,6 +105,30 @@ func runGateCheck(base eval.Baseline, gatePath string, out io.Writer) error {
 		return fmt.Errorf("check-worthiness gate failed with %d missed floor(s)", len(failures))
 	}
 	report += "\n\nPASS: check-worthiness gate meets every committed floor\n"
+	_, err = io.WriteString(out, report)
+	return err
+}
+
+// runNLICheck replays the recorded NLI stance fixture against the baseline's
+// floors and the hard negation invariant: locally-decided accuracy, local
+// share, and never the same stance for a claim and its negation. Fully
+// offline, like the gate check.
+func runNLICheck(base eval.Baseline, nliPath string, out io.Writer) error {
+	g, err := eval.LoadNLIGolden(nliPath)
+	if err != nil {
+		return err
+	}
+	rep := eval.RunNLI(g)
+	report := "\n" + rep.Format()
+	failures := base.CheckNLI(rep)
+	if len(failures) > 0 {
+		report += fmt.Sprintf("\n\nFAIL: nli stance stage outside baseline bounds:%s\n", eval.FormatGateFailures(failures))
+		if _, err := io.WriteString(out, report); err != nil {
+			return err
+		}
+		return fmt.Errorf("nli stance gate failed with %d missed bound(s)", len(failures))
+	}
+	report += "\n\nPASS: nli stance stage meets every committed floor\n"
 	_, err = io.WriteString(out, report)
 	return err
 }

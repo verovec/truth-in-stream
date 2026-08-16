@@ -30,6 +30,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
 	"github.com/verovec/truth-in-stream/backend/internal/localworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
+	"github.com/verovec/truth-in-stream/backend/internal/nli"
 	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/source"
@@ -114,6 +115,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	finalGateCfg, err := config.LoadFinalGate(secondPassCfg)
+	if err != nil {
+		return err
+	}
+	verifyNLICfg, err := config.LoadVerifyNLI()
 	if err != nil {
 		return err
 	}
@@ -372,7 +377,18 @@ func run(logger *slog.Logger) error {
 		// final in-flight batch may be lost on shutdown rather than delaying it.
 		go telemetryRec.Run(ctx)
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
+	// The NLI stance scorer holds one native ONNX session, so it is built once
+	// and shared by the live and batch verify paths (unlike their isolated
+	// verify pools); its own inference semaphore bounds concurrent use.
+	nliStance, nliCloser := buildNLIStance(verifyNLICfg, logger)
+	if nliCloser != nil {
+		defer func() {
+			if err := nliCloser.Close(); err != nil {
+				logger.Warn("closing nli stance scorer", slog.String("error", err.Error()))
+			}
+		}()
+	}
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, nliStance, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 	if err != nil {
 		return err
 	}
@@ -390,7 +406,7 @@ func run(logger *slog.Logger) error {
 	// interrupted by a prior crash to failed so the admin can reanalyse.
 	var batchVerifier service.BatchVerifier
 	if verifyPath != nil {
-		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
+		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, nliStance, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 		if err != nil {
 			return err
 		}
@@ -675,7 +691,7 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, local confi
 // and the three-stage banded cascade when the local scorer is also active, so
 // the generative model is consulted only inside the local classifier's
 // uncertainty band. A local scorer that fails to load (missing artifact,
-// binary built without the localworthy tag) degrades to the two-stage wiring
+// binary built without the localinference tag) degrades to the two-stage wiring
 // with a warning, never failing the boot. The returned closer releases the
 // scorer's native session on shutdown and is nil when no scorer was wired.
 // API keys are never logged.
@@ -696,6 +712,7 @@ func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, local 
 			TokenizerPath: local.TokenizerPath,
 			LibraryPath:   local.LibraryPath,
 			Timeout:       local.Timeout,
+			Logger:        logger,
 		})
 		if err != nil {
 			logger.Warn("local check-worthiness scorer unavailable; keeping the model cascade", slog.String("error", err.Error()))
@@ -711,6 +728,58 @@ func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, local 
 		return heuristic, nil, nil
 	}
 	return service.NewCascadeClassifier(heuristic, model, logger), nil, nil
+}
+
+// buildNLIStance wires the local NLI stance stage when it is active and its
+// artifacts load. Any failure (missing artifact, binary built without the
+// localinference tag) degrades to the LLM-first verify path with a warning,
+// never failing the boot. The returned closer releases the scorer's native
+// session on shutdown and is nil when no scorer was wired.
+func buildNLIStance(cfg config.VerifyNLI, logger *slog.Logger) (*service.StanceConfig, io.Closer) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	scorer, err := nli.New(nli.Config{
+		ModelPath:     cfg.ModelPath,
+		TokenizerPath: cfg.TokenizerPath,
+		LibraryPath:   cfg.LibraryPath,
+		Temperature:   cfg.Temperature,
+		Timeout:       cfg.Timeout,
+		Logger:        logger,
+	})
+	if err != nil {
+		logger.Warn("nli stance scorer unavailable; keeping the LLM-first verify path", slog.String("error", err.Error()))
+		return nil, nil
+	}
+	logger.Info("nli stance stage enabled",
+		slog.String("model_path", cfg.ModelPath),
+		slog.Float64("entail_threshold", cfg.EntailThreshold),
+		slog.Float64("contradict_threshold", cfg.ContradictThreshold),
+		slog.Int("min_agree", cfg.MinAgree))
+	return &service.StanceConfig{
+		Scorer:              nliScorerAdapter{scorer},
+		EntailThreshold:     cfg.EntailThreshold,
+		ContradictThreshold: cfg.ContradictThreshold,
+		MinAgree:            cfg.MinAgree,
+		MaxPassages:         cfg.MaxPassages,
+	}, scorer
+}
+
+// nliScorerAdapter maps the nli package's stance type onto the service port.
+type nliScorerAdapter struct {
+	scorer *nli.Scorer
+}
+
+func (a nliScorerAdapter) ScoreStances(ctx context.Context, claim string, passages []string) ([]service.StanceResult, error) {
+	stances, err := a.scorer.ScoreStances(ctx, claim, passages)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]service.StanceResult, len(stances))
+	for i, s := range stances {
+		out[i] = service.StanceResult{Entailment: s.Entailment, Neutral: s.Neutral, Contradiction: s.Contradiction}
+	}
+	return out, nil
 }
 
 // buildMatcherOpts wires the optional retrieval reranker: the Voyage rerank
@@ -815,7 +884,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, rerankCfg 
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, telemetry *service.TelemetryRecorder, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, nliStance *service.StanceConfig, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, telemetry *service.TelemetryRecorder, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -853,6 +922,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 		CacheMaxEntries:   cfg.CacheMaxEntries,
 		Logger:            logger,
 		Political:         pol,
+		NLIStance:         nliStance,
 		SecondPass:        secondPassCfg,
 		Telemetry:         telemetry,
 	})

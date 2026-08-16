@@ -3150,7 +3150,7 @@ func requireEnv(key string) (string, error) {
 // so the generative gate is consulted only inside the uncertainty band. The
 // model and tokenizer artifacts are distributed outside git and located by
 // path; a missing artifact, a load failure, or a binary built without the
-// localworthy build tag all degrade to the existing heuristic-plus-model
+// localinference build tag all degrade to the existing heuristic-plus-model
 // cascade at boot, never blocking a session.
 type CheckWorthinessLocal struct {
 	Enabled       bool
@@ -3204,6 +3204,91 @@ func LoadCheckWorthinessLocal() (CheckWorthinessLocal, error) {
 	}
 	if c.Timeout, err = positiveDurationEnv("CHECKWORTHINESS_LOCAL_TIMEOUT", defaultCheckWorthinessLocalTimeout); err != nil {
 		return CheckWorthinessLocal{}, err
+	}
+	return c, nil
+}
+
+// VerifyNLI configures the local NLI stance stage in front of the generative
+// verifier (VER-228): a French cross-encoder scores each retrieved passage's
+// stance toward the claim on CPU, and clear support or contradiction decides
+// the verdict locally with citations. Thresholds and the calibration
+// temperature ship from the training pipeline's calibration run; the model
+// artifact is the published community ONNX export, distributed outside git. A
+// missing artifact, a load failure, or a binary built without the
+// localinference build tag degrades to the LLM-first verify path at boot.
+type VerifyNLI struct {
+	Enabled             bool
+	ModelPath           string
+	TokenizerPath       string
+	LibraryPath         string
+	Temperature         float64
+	EntailThreshold     float64
+	ContradictThreshold float64
+	MinAgree            int
+	MaxPassages         int
+	Timeout             time.Duration
+}
+
+// Active reports whether the stance stage should be wired: enabled with both
+// artifacts configured. Artifact usability is proven by the boot-time health
+// check, not here.
+func (c VerifyNLI) Active() bool {
+	return c.Enabled && c.ModelPath != "" && c.TokenizerPath != ""
+}
+
+// Defaults ship from the calibration run recorded by the training pipeline
+// (stack/ml/checkworthy nli-calibrate): temperature fitted on the labeled
+// French pair set, thresholds chosen at 100 percent decided-accuracy with the
+// contradiction bar deliberately higher than the entailment bar - wrongly
+// refuting a claim costs more than escalating it.
+const (
+	defaultVerifyNLITemperature         = 1.8634
+	defaultVerifyNLIEntailThreshold     = 0.70
+	defaultVerifyNLIContradictThreshold = 0.90
+	defaultVerifyNLIMinAgree            = 1
+	defaultVerifyNLIMaxPassages         = 6
+	defaultVerifyNLITimeout             = 2 * time.Second
+)
+
+// LoadVerifyNLI reads the FACTCHECK_NLI_* block. The ONNX Runtime library
+// path falls back to the check-worthiness scorer's, since one process loads
+// exactly one runtime.
+func LoadVerifyNLI() (VerifyNLI, error) {
+	c := VerifyNLI{
+		ModelPath:     os.Getenv("FACTCHECK_NLI_MODEL_PATH"),
+		TokenizerPath: os.Getenv("FACTCHECK_NLI_TOKENIZER_PATH"),
+		LibraryPath:   os.Getenv("FACTCHECK_NLI_ONNX_LIBRARY"),
+	}
+	if c.LibraryPath == "" {
+		c.LibraryPath = os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY")
+	}
+	var err error
+	if c.Enabled, err = boolEnvDefault("FACTCHECK_NLI_ENABLED", false); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.Temperature, err = floatEnv("FACTCHECK_NLI_TEMPERATURE", defaultVerifyNLITemperature); err != nil {
+		return VerifyNLI{}, err
+	}
+	if !(c.Temperature > 0) {
+		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE must be positive, got %v", c.Temperature)
+	}
+	if c.EntailThreshold, err = floatEnv("FACTCHECK_NLI_ENTAIL_THRESHOLD", defaultVerifyNLIEntailThreshold); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.ContradictThreshold, err = floatEnv("FACTCHECK_NLI_CONTRADICT_THRESHOLD", defaultVerifyNLIContradictThreshold); err != nil {
+		return VerifyNLI{}, err
+	}
+	if !(c.EntailThreshold > 0 && c.EntailThreshold <= 1) || !(c.ContradictThreshold > 0 && c.ContradictThreshold <= 1) {
+		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI thresholds must be probabilities in (0, 1], got entail %v contradict %v", c.EntailThreshold, c.ContradictThreshold)
+	}
+	if c.MinAgree, err = intEnv("FACTCHECK_NLI_MIN_AGREE", defaultVerifyNLIMinAgree, 1, 100); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.MaxPassages, err = intEnv("FACTCHECK_NLI_MAX_PASSAGES", defaultVerifyNLIMaxPassages, 1, 100); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.Timeout, err = positiveDurationEnv("FACTCHECK_NLI_TIMEOUT", defaultVerifyNLITimeout); err != nil {
+		return VerifyNLI{}, err
 	}
 	return c, nil
 }

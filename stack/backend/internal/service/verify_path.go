@@ -109,6 +109,10 @@ type VerifiedVerdict struct {
 	Rationale  string
 	Literal    string
 	Flags      []string
+	// DecidedLocally marks a verdict the NLI stance stage resolved without a
+	// generative call. It drives telemetry accounting only; the wire frame is
+	// identical to a verifier verdict.
+	DecidedLocally bool
 }
 
 // ClaimDecomposer splits one checkable unit into atomic, self-contained claims,
@@ -210,6 +214,13 @@ type VerifyPathConfig struct {
 	// decision through the asynchronous recorder. Nil (the default) records
 	// nothing and the pipeline behaves exactly as before.
 	Telemetry *TelemetryRecorder
+	// Stance, when non-nil, puts the local NLI stance stage in front of the
+	// credibility verifier: evidence that clearly supports or clearly
+	// contradicts a claim decides the verdict locally with citations and no
+	// generative call, and anything mixed, neutral, or under-threshold
+	// escalates to the verifier unchanged. When nil (the default) every
+	// verify-stage claim reaches the generative verifier exactly as before.
+	NLIStance *StanceConfig
 	// SecondPass, when non-nil, enables the deeper-reasoner second pass: after a
 	// credibility-only verify call returns an evidence-grounded verdict whose
 	// confidence sits in the configured mid band, a stronger reasoning model
@@ -237,6 +248,7 @@ type VerifyPath struct {
 	logger         *slog.Logger
 	cache          *semanticCache
 	pol            *PoliticalConfig
+	nliStance      *stanceStage
 	secondPass     *secondPass
 	telemetry      *TelemetryRecorder
 }
@@ -278,6 +290,10 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 			return nil, errors.New("service: political verify path requires a two-axis verifier")
 		}
 	}
+	nliStance, err := newStanceStage(cfg.NLIStance)
+	if err != nil {
+		return nil, err
+	}
 	var sp *secondPass
 	if cfg.SecondPass != nil {
 		var err error
@@ -310,6 +326,7 @@ func NewVerifyPath(cfg VerifyPathConfig) (*VerifyPath, error) {
 		logger:         logger,
 		cache:          cache,
 		pol:            cfg.Political,
+		nliStance:      nliStance,
 		secondPass:     sp,
 	}, nil
 }
@@ -664,11 +681,23 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 	final, gateAttempted, escalated := vp.maybeReverify(ctx, out, mem, pu, claim, verdict, ret)
 	path := domain.DecisionVerified
 	llmCalls := 1
-	if len(ret.matches) == 0 {
+	switch {
+	case len(ret.matches) == 0:
 		// verifyClaim short-circuits an empty retrieval to the honest
 		// unverifiable outcome with no generative call.
 		path = domain.DecisionNoEvidence
 		llmCalls = 0
+	case verdict.DecidedLocally:
+		// The NLI stance stage decided from the evidence alone, so no verify
+		// call was made; a second-pass attempt still counts its own call
+		// below. When the second pass replaced the local verdict, the row's
+		// verdict fields are the reasoner's, so the path is the generative
+		// one - local-nli is reserved for rows whose recorded verdict really
+		// was decided locally.
+		llmCalls = 0
+		if !escalated {
+			path = domain.DecisionLocalNLI
+		}
 	}
 	check := withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, path, ret.matches), string(SourceVerified), final)
 	check.Escalated = escalated
@@ -722,6 +751,12 @@ func (vp *VerifyPath) verifyClaim(ctx context.Context, claim string, matches []d
 	if len(matches) == 0 {
 		return noEvidenceVerdict(), false, nil
 	}
+	// The local stance stage runs before slot acquisition: a locally-decided
+	// verdict costs no verify-pool capacity and no generative call, and any
+	// ambiguity falls through to the verifier below.
+	if v := vp.stanceResolve(ctx, claim, matches); v != nil {
+		return v, false, nil
+	}
 	if !vp.acquireVerifySlot(ctx) {
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()
@@ -770,6 +805,9 @@ func (vp *VerifyPath) runVerifier(ctx context.Context, claim string, matches []d
 func (vp *VerifyPath) verifyClaimBlocking(ctx context.Context, claim string, matches []domain.SegmentMatch) (*VerifiedVerdict, error) {
 	if len(matches) == 0 {
 		return noEvidenceVerdict(), nil
+	}
+	if v := vp.stanceResolve(ctx, claim, matches); v != nil {
+		return v, nil
 	}
 	if !vp.acquireVerifySlotBlocking(ctx) {
 		return nil, ctx.Err()

@@ -302,3 +302,175 @@ func TestVerifyPathCountsAttemptedReverify(t *testing.T) {
 		t.Fatalf("reverifier calls = %d, want 1 (the premise of this test)", len(reverifier.calls))
 	}
 }
+
+func TestVerifyPathRecordsLocalNLIDecision(t *testing.T) {
+	t.Parallel()
+	unit := "the debt exceeds three trillion euros."
+	claim := unit
+
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{
+		Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "B",
+	})}
+	matcher := liveMatcher{
+		matches: map[string][]domain.SegmentMatch{
+			claim: {{Kind: domain.MatchKindEvidence, Claim: "public debt reached 3.1 trillion euros", Similarity: 0.7, EvidenceID: "evidence:7:0"}},
+		},
+	}
+	verifier := &fakeVerifier{}
+	recorder, err := NewTelemetryRecorder(&captureWriter{}, TelemetryConfig{QueueDepth: 32, BatchSize: 8, FlushEvery: time.Second, SampleRate: 1, Locale: "fr"})
+	if err != nil {
+		t.Fatalf("NewTelemetryRecorder: %v", err)
+	}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {claim}}},
+		Verifier:   verifier,
+		Telemetry:  recorder,
+		NLIStance: &StanceConfig{
+			Scorer:              &fakeStanceScorer{byClaim: map[string][]StanceResult{claim: {entail(0.95)}}},
+			EntailThreshold:     0.7,
+			ContradictThreshold: 0.9,
+			MinAgree:            1,
+			MaxPassages:         6,
+		},
+	})
+	runVerifyPath(t, a)
+
+	rows := drainRecorder(recorder)
+	if len(rows) != 1 {
+		t.Fatalf("recorded rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.DecisionPath != domain.DecisionLocalNLI {
+		t.Fatalf("decision path = %q, want %q", row.DecisionPath, domain.DecisionLocalNLI)
+	}
+	if row.LLMCalls != 0 {
+		t.Errorf("llm calls = %d, want 0 for a locally-decided verdict", row.LLMCalls)
+	}
+	if row.Verdict != VerdictCredible || row.Basis != BasisEvidence {
+		t.Errorf("row verdict = %s/%s, want credible/evidence", row.Verdict, row.Basis)
+	}
+	if row.Source != string(SourceVerified) {
+		t.Errorf("row source = %q, want %q (indistinguishable on the wire)", row.Source, SourceVerified)
+	}
+	if len(verifier.calls) != 0 {
+		t.Errorf("verifier called %d times, want 0", len(verifier.calls))
+	}
+}
+
+func TestVerifyPathEscalatedNLIVerdictRecordsVerifiedPath(t *testing.T) {
+	t.Parallel()
+	unit := "public debt exceeds three trillion euros again."
+	claim := unit
+
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{
+		Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "C",
+	})}
+	matcher := liveMatcher{
+		matches: map[string][]domain.SegmentMatch{
+			claim: {{Kind: domain.MatchKindEvidence, Claim: "debt data passage", Similarity: 0.7, EvidenceID: "evidence:9:0"}},
+		},
+	}
+	// The stance stage decides locally at 0.75 confidence - inside the second
+	// pass's trigger band - and the reasoner then replaces the verdict.
+	reverifier := &fakeReverifier{byClaim: map[string]ClaimVerdict{
+		claim: {Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.95, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "debt data passage"}}, Rationale: "re-judged"},
+	}}
+	recorder, err := NewTelemetryRecorder(&captureWriter{}, TelemetryConfig{QueueDepth: 32, BatchSize: 8, FlushEvery: time.Second, SampleRate: 1, Locale: "fr"})
+	if err != nil {
+		t.Fatalf("NewTelemetryRecorder: %v", err)
+	}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {claim}}},
+		Verifier:   &fakeVerifier{},
+		Telemetry:  recorder,
+		NLIStance: &StanceConfig{
+			Scorer:              &fakeStanceScorer{byClaim: map[string][]StanceResult{claim: {entail(0.75)}}},
+			EntailThreshold:     0.7,
+			ContradictThreshold: 0.9,
+			MinAgree:            1,
+			MaxPassages:         6,
+		},
+		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+	})
+	runVerifyPath(t, a)
+
+	rows := drainRecorder(recorder)
+	if len(rows) != 1 {
+		t.Fatalf("recorded rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	// The recorded verdict is the reasoner's, so the path must be the
+	// generative one: local-nli is reserved for rows whose verdict really was
+	// decided locally.
+	if row.DecisionPath != domain.DecisionVerified {
+		t.Errorf("decision path = %q, want %q after the second pass replaced the local verdict", row.DecisionPath, domain.DecisionVerified)
+	}
+	if !row.Escalated {
+		t.Error("escalated = false, want true")
+	}
+	if row.LLMCalls != 1 {
+		t.Errorf("llm calls = %d, want 1 (the reverify call only)", row.LLMCalls)
+	}
+	if row.Verdict != VerdictDisputed || row.Confidence != 0.95 {
+		t.Errorf("row verdict = %s/%v, want the reasoner's disputed at 0.95", row.Verdict, row.Confidence)
+	}
+}
+
+func TestVerifyPathAttemptedButKeptNLIVerdictStaysLocal(t *testing.T) {
+	t.Parallel()
+	unit := "the minimum wage was raised twice this year."
+	claim := unit
+
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{
+		Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "D",
+	})}
+	matcher := liveMatcher{
+		matches: map[string][]domain.SegmentMatch{
+			claim: {{Kind: domain.MatchKindEvidence, Claim: "wage data passage", Similarity: 0.7, EvidenceID: "evidence:5:0"}},
+		},
+	}
+	// The reasoner's answer is too weak to adopt (below MinConfidence), so the
+	// local verdict stands; the attempt still cost one generative call.
+	reverifier := &fakeReverifier{byClaim: map[string]ClaimVerdict{
+		claim: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.5, Citations: []EvidenceCitation{{EvidenceID: "evidence:5:0", QuotedSpan: "wage data passage"}}},
+	}}
+	recorder, err := NewTelemetryRecorder(&captureWriter{}, TelemetryConfig{QueueDepth: 32, BatchSize: 8, FlushEvery: time.Second, SampleRate: 1, Locale: "fr"})
+	if err != nil {
+		t.Fatalf("NewTelemetryRecorder: %v", err)
+	}
+
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {claim}}},
+		Verifier:   &fakeVerifier{},
+		Telemetry:  recorder,
+		NLIStance: &StanceConfig{
+			Scorer:              &fakeStanceScorer{byClaim: map[string][]StanceResult{claim: {entail(0.75)}}},
+			EntailThreshold:     0.7,
+			ContradictThreshold: 0.9,
+			MinAgree:            1,
+			MaxPassages:         6,
+		},
+		SecondPass: &SecondPassConfig{Reverifier: reverifier, TriggerBelow: 0.8, MinConfidence: 0.9, Deadline: time.Second},
+	})
+	runVerifyPath(t, a)
+
+	rows := drainRecorder(recorder)
+	if len(rows) != 1 {
+		t.Fatalf("recorded rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.DecisionPath != domain.DecisionLocalNLI {
+		t.Errorf("decision path = %q, want %q when the local verdict stands", row.DecisionPath, domain.DecisionLocalNLI)
+	}
+	if row.Escalated {
+		t.Error("escalated = true, want false when the reverify was rejected")
+	}
+	if row.LLMCalls != 1 {
+		t.Errorf("llm calls = %d, want 1 (the attempted reverify)", row.LLMCalls)
+	}
+	if row.Verdict != VerdictCredible || row.Confidence != 0.75 {
+		t.Errorf("row verdict = %s/%v, want the local credible at 0.75", row.Verdict, row.Confidence)
+	}
+}
