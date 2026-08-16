@@ -15,6 +15,7 @@ package nli
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 )
@@ -47,6 +48,9 @@ type Config struct {
 	Temperature float64
 	// Timeout bounds scoring one claim against all its passages.
 	Timeout time.Duration
+	// Logger receives shared-runtime diagnostics (a library-path mismatch
+	// between scorers); nil logs nothing.
+	Logger *slog.Logger
 }
 
 func (c Config) validate() error {

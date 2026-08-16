@@ -995,7 +995,7 @@ services:
       CHECKWORTHINESS_MODEL: "${CHECKWORTHINESS_MODEL:-}"
       # Local check-worthiness classifier (VER-225): scores heuristic survivors
       # on CPU so only the uncertainty band reaches the generative gate. Off by
-      # default; needs a localworthy-tagged binary and mounted artifacts.
+      # default; needs a localinference-tagged binary and mounted artifacts.
       CHECKWORTHINESS_LOCAL_ENABLED: "${CHECKWORTHINESS_LOCAL_ENABLED:-}"
       CHECKWORTHINESS_LOCAL_MODEL_PATH: "${CHECKWORTHINESS_LOCAL_MODEL_PATH:-}"
       CHECKWORTHINESS_LOCAL_TOKENIZER_PATH: "${CHECKWORTHINESS_LOCAL_TOKENIZER_PATH:-}"

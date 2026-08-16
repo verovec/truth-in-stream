@@ -688,10 +688,16 @@ func (vp *VerifyPath) scoreClaim(ctx context.Context, a *LiveAnalyzer, out chan<
 		path = domain.DecisionNoEvidence
 		llmCalls = 0
 	case verdict.DecidedLocally:
-		// The NLI stance stage decided from the evidence alone; a second-pass
-		// attempt below still counts its own call.
-		path = domain.DecisionLocalNLI
+		// The NLI stance stage decided from the evidence alone, so no verify
+		// call was made; a second-pass attempt still counts its own call
+		// below. When the second pass replaced the local verdict, the row's
+		// verdict fields are the reasoner's, so the path is the generative
+		// one - local-nli is reserved for rows whose recorded verdict really
+		// was decided locally.
 		llmCalls = 0
+		if !escalated {
+			path = domain.DecisionLocalNLI
+		}
 	}
 	check := withVerdict(newClaimCheck(started, pu.speaker, unitText, claim.Text, path, ret.matches), string(SourceVerified), final)
 	check.Escalated = escalated

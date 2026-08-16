@@ -691,7 +691,7 @@ func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, local confi
 // and the three-stage banded cascade when the local scorer is also active, so
 // the generative model is consulted only inside the local classifier's
 // uncertainty band. A local scorer that fails to load (missing artifact,
-// binary built without the localworthy tag) degrades to the two-stage wiring
+// binary built without the localinference tag) degrades to the two-stage wiring
 // with a warning, never failing the boot. The returned closer releases the
 // scorer's native session on shutdown and is nil when no scorer was wired.
 // API keys are never logged.
@@ -712,6 +712,7 @@ func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, local 
 			TokenizerPath: local.TokenizerPath,
 			LibraryPath:   local.LibraryPath,
 			Timeout:       local.Timeout,
+			Logger:        logger,
 		})
 		if err != nil {
 			logger.Warn("local check-worthiness scorer unavailable; keeping the model cascade", slog.String("error", err.Error()))
@@ -744,6 +745,7 @@ func buildNLIStance(cfg config.VerifyNLI, logger *slog.Logger) (*service.StanceC
 		LibraryPath:   cfg.LibraryPath,
 		Temperature:   cfg.Temperature,
 		Timeout:       cfg.Timeout,
+		Logger:        logger,
 	})
 	if err != nil {
 		logger.Warn("nli stance scorer unavailable; keeping the LLM-first verify path", slog.String("error", err.Error()))

@@ -13,6 +13,7 @@ package localworthy
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 )
@@ -38,6 +39,9 @@ type Config struct {
 	// Timeout bounds a single inference; an overrun returns an error and the
 	// cascade falls back rather than stalling the live loop.
 	Timeout time.Duration
+	// Logger receives shared-runtime diagnostics (a library-path mismatch
+	// between scorers); nil logs nothing.
+	Logger *slog.Logger
 }
 
 func (c Config) validate() error {

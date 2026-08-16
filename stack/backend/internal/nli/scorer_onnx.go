@@ -51,7 +51,7 @@ func New(cfg Config) (*Scorer, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if err := onnxrt.Init(cfg.LibraryPath, nil); err != nil {
+	if err := onnxrt.Init(cfg.LibraryPath, cfg.Logger); err != nil {
 		return nil, fmt.Errorf("nli: initialize onnx runtime: %w", err)
 	}
 
