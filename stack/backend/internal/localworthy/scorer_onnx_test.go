@@ -65,6 +65,32 @@ func TestScorerTimeoutFailsOpen(t *testing.T) {
 	}
 }
 
+func TestScorerShedsLoadWhenSaturated(t *testing.T) {
+	s := scorerFromEnv(t)
+
+	// Fill the in-flight semaphore to capacity: the next call must fail open
+	// immediately (shed to the cascade's fallback) instead of queueing behind
+	// uncancellable native inferences.
+	for i := 0; i < maxConcurrentInferences; i++ {
+		s.inflight <- struct{}{}
+	}
+	start := time.Now()
+	_, err := s.Score(context.Background(), "Le chômage a baissé de deux points cette année.")
+	if err == nil {
+		t.Fatal("expected an overload error from a saturated scorer")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("saturated Score took %s, want an immediate fail-open", elapsed)
+	}
+
+	for i := 0; i < maxConcurrentInferences; i++ {
+		<-s.inflight
+	}
+	if _, err := s.Score(context.Background(), "La dette publique dépasse les trois mille milliards d'euros."); err != nil {
+		t.Fatalf("Score after the semaphore drained: %v", err)
+	}
+}
+
 func TestScorerLatencyBudget(t *testing.T) {
 	s := scorerFromEnv(t)
 	ctx := context.Background()
