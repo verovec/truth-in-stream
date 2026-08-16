@@ -53,11 +53,23 @@ can enforce offline.
 ## Measured comparison (recorded 2026-08-16)
 
 `go run -tags localinference ./cmd/eval -compare-defaults` runs the two
-decision stages over the committed French fixtures with live models under
-both configurations; the recorded run is in the VER-230 pull request. The
-streaming transcription leg is configuration-invariant and not part of the
-comparison; retrieval quality is covered by the retrieval gate and the
-`-rerank` comparison (VER-226: recall@1 93.3% -> 100% measured live).
+decision stages over the committed French fixtures with live models
+(DeepSeek + the shipped INT8 artifacts, Apple M5 Pro) under both
+configurations:
+
+| Stage | Configuration | Accuracy | Generative calls | Mean latency |
+|---|---|---|---|---|
+| Gate (159 statements) | legacy (heuristic + generative gate) | 1.000 | 159 (1.000/case) | 1.212s |
+| | vector-first (local band) | 1.000 | 2 (0.013/case) | 23ms |
+| Verdict (89 claims) | legacy (generative verifier) | 0.944 | 89 (1.000/case) | 1.655s |
+| | vector-first (NLI consensus first) | 0.944 | 41 (0.461/case) | 780ms |
+
+Total: 248 -> 43 generative calls, an **83 percent reduction at identical
+accuracy**, with per-statement latency cut 53x at the gate and 2.1x at the
+verdict stage. The streaming transcription leg is configuration-invariant and
+not part of the comparison; retrieval quality is covered by the retrieval
+gate and the `-rerank` comparison (VER-226: recall@1 93.3% -> 100% measured
+live).
 
 ## Operating the artifacts
 
