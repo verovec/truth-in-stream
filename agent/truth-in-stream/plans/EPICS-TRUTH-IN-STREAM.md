@@ -17,8 +17,10 @@ Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Ep
 2026-07-17; docs in `docs/video-preanalysis.md`.
 
 Status 2026-08-16: Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first
-verdicts, VER-224..230) created in Linear, all cards `Todo`; entry cards VER-224,
-VER-225, VER-226, VER-227.
+verdicts, VER-224..230) created in Linear; the same day an epic run delivered
+VER-224 (PR #268), VER-226 (PR #269), VER-227 (PR #270), and VER-229 (PRs #271+#272)
+to `dev`, all Done. VER-225 needs a local-inference training environment (Docker,
+seeded ClaimReview corpus) and stays `Todo`; VER-228 and VER-230 wait behind it.
 
 ---
 
