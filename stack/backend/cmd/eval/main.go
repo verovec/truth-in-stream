@@ -41,7 +41,7 @@ func run(args []string, out io.Writer) error {
 	gatePath := fs.String("gate", filepath.Join("internal", "eval", "testdata", "gate_golden.json"), "path to the check-worthiness gate fixture (required when the baseline carries a gate section)")
 	nliPath := fs.String("nli", filepath.Join("internal", "eval", "testdata", "nli_golden.json"), "path to the nli stance fixture (required when the baseline carries an nli section)")
 	rerankOn := fs.Bool("rerank", false, "also score the live Voyage reranker over the same cases (needs RERANK_API_KEY or EMBEDDING_API_KEY; informational, not a gate)")
-	compareDefaults := fs.Bool("compare-defaults", false, "run the decision stages over the committed fixtures with live models under the legacy and vector-first configurations (needs DEEPSEEK_API_KEY, a localinference build, and the local model artifacts; informational, not a gate)")
+	compareDefaults := fs.Bool("compare-defaults", false, "run the decision stages over the committed fixtures with live models under the legacy and vector-first configurations (needs DEEPSEEK_API_KEY, a localinference build, and the local model artifacts; informational, not a gate; ignored when -rerank is also set)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

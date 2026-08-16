@@ -558,7 +558,7 @@ const (
 	// config bound is [0, maxHNSWEfSearch]. Kept as a local constant so config
 	// stays free of a store-package dependency.
 	maxHNSWEfSearch = 1000
-	// Retrieval reranking (VER-226) is off by default. The candidate pool of 20
+	// Retrieval reranking (VER-226) is on by default since the vector-first defaults (VER-230); MATCH_RERANK=false is the kill-switch. The candidate pool of 20
 	// per corpus matches the lexical over-fetch above, and the timeout keeps the
 	// rerank call well inside the verify fast-deadline so a slow rerank degrades
 	// to the fused order instead of stalling a verdict. The model default lives
@@ -1032,9 +1032,9 @@ func LoadConsistency() (Consistency, error) {
 	return c, nil
 }
 
-// Retrieve-then-verify defaults. The path is off by default (the old
-// gate-and-match path stays the default until the golden eval clears the
-// baseline). Decomposition and verification both run on the selected provider's
+// Retrieve-then-verify defaults. The path is on by default since the
+// vector-first defaults (VER-230) and inactive without an API key, so a
+// keyless deployment keeps the old gate-and-match path. Decomposition and verification both run on the selected provider's
 // default fast model. MaxClaimsPerUnit caps a unit's fan-out at 4 atomic claims. FastTau 0.85
 // is the curated near-match similarity at or above which the fast path borrows a
 // verdict with no LLM call - a high bar, since a borrowed verdict bypasses
@@ -1153,8 +1153,9 @@ func (v VerifyPath) Active() bool {
 // LoadVerifyPath reads the retrieve-then-verify configuration from the
 // environment, applying defaults and failing fast on out-of-range bounds (a
 // non-positive pool or deadline, a fast tau outside cosine similarity's [-1, 1]
-// range, a negative queue depth or cache ttl). FACTCHECK_VERIFY_PATH gates the
-// whole feature (default off). The secret is read but never logged.
+// range, a negative queue depth or cache ttl). FACTCHECK_VERIFY_PATH is the
+// feature's kill-switch (default on since VER-230). The secret is read but
+// never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
 		MaxClaimsPerUnit:   defaultVerifyMaxClaimsPerUnit,
@@ -1382,9 +1383,9 @@ func LoadFinalGate(sp SecondPass) (FinalGate, error) {
 	return g, nil
 }
 
-// CheckWorthiness holds the model stage of the check-worthiness gate. It is the
-// optional upgrade to the gate's stage one: when off (the default) or keyless,
-// the deterministic heuristic alone decides claim-worthiness, exactly as before.
+// CheckWorthiness holds the model stage of the check-worthiness gate. It is
+// on by default since the vector-first defaults (VER-230): keyless or switched
+// off, the deterministic heuristic alone decides claim-worthiness as before.
 // When active, a model judges whether a heuristic-accepted declarative is a
 // check-worthy public claim rather than casual small talk. APIKey is a secret
 // and comes from the environment only - never logged. Model selects the
@@ -1436,7 +1437,8 @@ const defaultPoliticalCuratedTau = 0.85
 
 // Political holds the French/EU political fact-checking mode flag and the routing
 // knob the capstone (VER-103) wires behind it. The whole redesign rides
-// FACTCHECK_POLITICAL (default off) so main stays shippable: with the flag off the
+// FACTCHECK_POLITICAL (default on since VER-230, the product's French
+// political mode): with the flag off the
 // locale is the default English behavior and the verify path (when active) runs its
 // credibility-only stage unchanged, and with it on the live LLM stages prompt and
 // reason in French, the transcriber biases toward French, and the verify path's
@@ -3274,8 +3276,8 @@ func LoadVerifyNLI() (VerifyNLI, error) {
 			return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE %q: %w", raw, err)
 		}
 	}
-	if !(c.Temperature > 0) {
-		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE must be positive, got %v", c.Temperature)
+	if !(c.Temperature > 0) || math.IsInf(c.Temperature, 0) {
+		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE must be a positive finite number, got %v", c.Temperature)
 	}
 	if c.EntailThreshold, err = floatEnv("FACTCHECK_NLI_ENTAIL_THRESHOLD", defaultVerifyNLIEntailThreshold); err != nil {
 		return VerifyNLI{}, err

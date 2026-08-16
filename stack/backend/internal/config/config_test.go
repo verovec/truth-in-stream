@@ -2975,3 +2975,10 @@ func TestLoadVerifyNLI(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadVerifyNLIRejectsInfiniteTemperature(t *testing.T) {
+	t.Setenv("FACTCHECK_NLI_TEMPERATURE", "+Inf")
+	if _, err := LoadVerifyNLI(); err == nil {
+		t.Error("LoadVerifyNLI accepted an infinite temperature")
+	}
+}
