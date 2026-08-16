@@ -165,7 +165,10 @@ def cmd_nli_calibrate(args: argparse.Namespace) -> int:
                 "claim": case.claim,
                 "label": case.label,
                 "negation_of": case.negation_of,
-                "passage_ids": case.passage_ids,
+                "passages": [
+                    {"id": pid, "text": pairs[i].premise}
+                    for pid, i in zip(case.passage_ids, case.pair_indices)
+                ],
                 "probs": [[round(v, 6) for v in probs[i]] for i in case.pair_indices],
             }
         )

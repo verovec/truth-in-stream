@@ -750,7 +750,7 @@ func LoadRerank() (Rerank, error) {
 		Timeout:    defaultRerankTimeout,
 	}
 	var err error
-	if r.Enabled, err = boolEnvDefault("MATCH_RERANK", false); err != nil {
+	if r.Enabled, err = boolEnvDefault("MATCH_RERANK", true); err != nil {
 		return Rerank{}, err
 	}
 	if r.Candidates, err = intEnv("MATCH_RERANK_CANDIDATES", r.Candidates, 1, maxRerankCandidates); err != nil {
@@ -1173,7 +1173,7 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	v.LLMSelection = llmSel
-	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
+	if v.Enabled, err = boolEnvDefault("FACTCHECK_VERIFY_PATH", true); err != nil {
 		return VerifyPath{}, err
 	}
 	v.APIKey = getenv("FACTCHECK_VERIFY_API_KEY", "")
@@ -1413,7 +1413,7 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 		return CheckWorthiness{}, err
 	}
 	c.LLMSelection = llmSel
-	if c.Enabled, err = boolEnv("CHECKWORTHINESS_ENABLED"); err != nil {
+	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_ENABLED", true); err != nil {
 		return CheckWorthiness{}, err
 	}
 	c.APIKey = getenv("CHECKWORTHINESS_API_KEY", "")
@@ -1493,7 +1493,7 @@ func (p Political) RouterLang() string {
 // be positive (a non-positive floor would treat every result as thin and stampede
 // the web fallback).
 func LoadPolitical() (Political, error) {
-	enabled, err := boolEnv("FACTCHECK_POLITICAL")
+	enabled, err := boolEnvDefault("FACTCHECK_POLITICAL", true)
 	if err != nil {
 		return Political{}, err
 	}
@@ -3187,7 +3187,7 @@ func LoadCheckWorthinessLocal() (CheckWorthinessLocal, error) {
 		LibraryPath:   os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY"),
 	}
 	var err error
-	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_LOCAL_ENABLED", false); err != nil {
+	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_LOCAL_ENABLED", true); err != nil {
 		return CheckWorthinessLocal{}, err
 	}
 	if c.BandLow, err = floatEnv("CHECKWORTHINESS_LOCAL_BAND_LOW", defaultCheckWorthinessLocalBandLow); err != nil {
@@ -3263,11 +3263,16 @@ func LoadVerifyNLI() (VerifyNLI, error) {
 		c.LibraryPath = os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY")
 	}
 	var err error
-	if c.Enabled, err = boolEnvDefault("FACTCHECK_NLI_ENABLED", false); err != nil {
+	if c.Enabled, err = boolEnvDefault("FACTCHECK_NLI_ENABLED", true); err != nil {
 		return VerifyNLI{}, err
 	}
-	if c.Temperature, err = floatEnv("FACTCHECK_NLI_TEMPERATURE", defaultVerifyNLITemperature); err != nil {
-		return VerifyNLI{}, err
+	// A softmax temperature legitimately exceeds one, so it cannot go through
+	// the probability-bounded floatEnv helper.
+	c.Temperature = defaultVerifyNLITemperature
+	if raw := os.Getenv("FACTCHECK_NLI_TEMPERATURE"); raw != "" {
+		if c.Temperature, err = strconv.ParseFloat(raw, 64); err != nil {
+			return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE %q: %w", raw, err)
+		}
 	}
 	if !(c.Temperature > 0) {
 		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE must be positive, got %v", c.Temperature)

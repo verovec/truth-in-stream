@@ -1581,7 +1581,7 @@ func TestConsistencyActive(t *testing.T) {
 }
 
 func TestLoadCheckWorthiness(t *testing.T) {
-	defaults := CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: false, APIKey: "", Model: ""}
+	defaults := CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: true, APIKey: "", Model: ""}
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -1589,9 +1589,14 @@ func TestLoadCheckWorthiness(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "off by default (deepseek)",
+			name: "on by default (deepseek), inactive without a key",
 			env:  map[string]string{},
 			want: defaults,
+		},
+		{
+			name: "kill-switch: explicit false disables the model gate",
+			env:  map[string]string{"CHECKWORTHINESS_ENABLED": "false", "CHECKWORTHINESS_API_KEY": "sk-test"},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek}, Enabled: false, APIKey: "sk-test", Model: ""},
 		},
 		{
 			name: "enabled with key and model override under explicit anthropic",
@@ -1609,14 +1614,14 @@ func TestLoadCheckWorthiness(t *testing.T) {
 				"LLM_PROVIDER":   "gemini",
 				"GEMINI_API_KEY": "g-test",
 			},
-			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: false, APIKey: "", Model: ""},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderGemini, GeminiAPIKey: "g-test"}, Enabled: true, APIKey: "", Model: ""},
 		},
 		{
 			name: "deepseek provider reads deepseek key",
 			env: map[string]string{
 				"DEEPSEEK_API_KEY": "d-test",
 			},
-			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d-test"}, Enabled: false, APIKey: "", Model: ""},
+			want: CheckWorthiness{LLMSelection: LLMSelection{Provider: LLMProviderDeepSeek, DeepSeekAPIKey: "d-test"}, Enabled: true, APIKey: "", Model: ""},
 		},
 		{name: "unknown provider rejected", env: map[string]string{"LLM_PROVIDER": "mistral"}, wantErr: true},
 		{name: "non-bool enabled rejected", env: map[string]string{"CHECKWORTHINESS_ENABLED": "maybe"}, wantErr: true},
@@ -1977,17 +1982,24 @@ func TestLoadCrawlWorkerOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadVerifyPathDefaultsOff(t *testing.T) {
-	t.Parallel()
+func TestLoadVerifyPathDefaults(t *testing.T) {
 	got, err := LoadVerifyPath()
 	if err != nil {
 		t.Fatalf("LoadVerifyPath: %v", err)
 	}
-	if got.Enabled {
-		t.Error("verify path must default off")
+	if !got.Enabled {
+		t.Error("verify path must default on (vector-first defaults)")
 	}
 	if got.Active() {
 		t.Error("verify path with no key must not be Active")
+	}
+	t.Setenv("FACTCHECK_VERIFY_PATH", "false")
+	off, err := LoadVerifyPath()
+	if err != nil {
+		t.Fatalf("LoadVerifyPath kill-switch: %v", err)
+	}
+	if off.Enabled {
+		t.Error("FACTCHECK_VERIFY_PATH=false must disable the verify path")
 	}
 	if got.MaxClaimsPerUnit != defaultVerifyMaxClaimsPerUnit || got.FastTau != defaultVerifyFastTau ||
 		got.Concurrency != defaultVerifyConcurrency || got.QueueDepth != defaultVerifyQueueDepth ||
@@ -2372,10 +2384,10 @@ func TestLoadPolitical(t *testing.T) {
 		wantErr        bool
 	}{
 		{
-			name:           "disabled by default keeps english locale",
+			name:           "enabled by default selects french locale",
 			env:            map[string]string{},
-			wantEnabled:    false,
-			wantLocale:     domain.LocaleEnglish,
+			wantEnabled:    true,
+			wantLocale:     domain.LocaleFrench,
 			wantMinResults: 1,
 			wantCuratedTau: defaultPoliticalCuratedTau,
 		},
@@ -2787,7 +2799,7 @@ func TestLoadCheckWorthinessLocal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadCheckWorthinessLocal: %v", err)
 		}
-		want := CheckWorthinessLocal{BandLow: 0.35, BandHigh: 0.75, Timeout: 300 * time.Millisecond}
+		want := CheckWorthinessLocal{Enabled: true, BandLow: 0.35, BandHigh: 0.75, Timeout: 300 * time.Millisecond}
 		if got != want {
 			t.Errorf("LoadCheckWorthinessLocal() = %+v, want %+v", got, want)
 		}
@@ -2854,6 +2866,112 @@ func TestLoadCheckWorthinessLocal(t *testing.T) {
 		t.Setenv("CHECKWORTHINESS_LOCAL_BAND_HIGH", "0.2")
 		if _, err := LoadCheckWorthinessLocal(); err == nil {
 			t.Error("LoadCheckWorthinessLocal with an inverted band returned nil error")
+		}
+	})
+}
+
+func TestLoadRerankDefaultsOn(t *testing.T) {
+	got, err := LoadRerank()
+	if err != nil {
+		t.Fatalf("LoadRerank: %v", err)
+	}
+	if !got.Enabled {
+		t.Error("reranking must default on (vector-first defaults)")
+	}
+	t.Setenv("MATCH_RERANK", "false")
+	off, err := LoadRerank()
+	if err != nil {
+		t.Fatalf("LoadRerank kill-switch: %v", err)
+	}
+	if off.Enabled || off.Active() {
+		t.Error("MATCH_RERANK=false must disable reranking")
+	}
+}
+
+func TestLoadCheckWorthinessLocalKillSwitch(t *testing.T) {
+	t.Setenv("CHECKWORTHINESS_LOCAL_ENABLED", "false")
+	t.Setenv("CHECKWORTHINESS_LOCAL_MODEL_PATH", "/models/gate.onnx")
+	t.Setenv("CHECKWORTHINESS_LOCAL_TOKENIZER_PATH", "/models/tokenizer.json")
+	got, err := LoadCheckWorthinessLocal()
+	if err != nil {
+		t.Fatalf("LoadCheckWorthinessLocal: %v", err)
+	}
+	if got.Enabled || got.Active() {
+		t.Error("CHECKWORTHINESS_LOCAL_ENABLED=false must disable the local scorer even with artifacts configured")
+	}
+}
+
+func TestLoadVerifyNLI(t *testing.T) {
+	t.Run("defaults: on, inactive without artifacts", func(t *testing.T) {
+		got, err := LoadVerifyNLI()
+		if err != nil {
+			t.Fatalf("LoadVerifyNLI: %v", err)
+		}
+		want := VerifyNLI{
+			Enabled:             true,
+			Temperature:         1.8634,
+			EntailThreshold:     0.70,
+			ContradictThreshold: 0.90,
+			MinAgree:            1,
+			MaxPassages:         6,
+			Timeout:             2 * time.Second,
+		}
+		if got != want {
+			t.Errorf("LoadVerifyNLI() = %+v, want %+v", got, want)
+		}
+		if got.Active() {
+			t.Error("Active() = true with no artifacts configured")
+		}
+	})
+	t.Run("kill-switch: explicit false disables the stance stage", func(t *testing.T) {
+		t.Setenv("FACTCHECK_NLI_ENABLED", "false")
+		t.Setenv("FACTCHECK_NLI_MODEL_PATH", "/models/nli.onnx")
+		t.Setenv("FACTCHECK_NLI_TOKENIZER_PATH", "/models/tokenizer.json")
+		got, err := LoadVerifyNLI()
+		if err != nil {
+			t.Fatalf("LoadVerifyNLI: %v", err)
+		}
+		if got.Enabled || got.Active() {
+			t.Error("FACTCHECK_NLI_ENABLED=false must disable the stance stage even with artifacts configured")
+		}
+	})
+	t.Run("overrides and library fallback", func(t *testing.T) {
+		t.Setenv("FACTCHECK_NLI_MODEL_PATH", "/models/nli.onnx")
+		t.Setenv("FACTCHECK_NLI_TOKENIZER_PATH", "/models/tok.json")
+		t.Setenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY", "/usr/lib/libonnxruntime.so")
+		t.Setenv("FACTCHECK_NLI_TEMPERATURE", "2.5")
+		t.Setenv("FACTCHECK_NLI_ENTAIL_THRESHOLD", "0.8")
+		t.Setenv("FACTCHECK_NLI_CONTRADICT_THRESHOLD", "0.95")
+		t.Setenv("FACTCHECK_NLI_MIN_AGREE", "2")
+		t.Setenv("FACTCHECK_NLI_MAX_PASSAGES", "4")
+		t.Setenv("FACTCHECK_NLI_TIMEOUT", "1s")
+		got, err := LoadVerifyNLI()
+		if err != nil {
+			t.Fatalf("LoadVerifyNLI: %v", err)
+		}
+		if got.LibraryPath != "/usr/lib/libonnxruntime.so" {
+			t.Errorf("LibraryPath = %q, want the check-worthiness library fallback", got.LibraryPath)
+		}
+		if !got.Active() || got.Temperature != 2.5 || got.EntailThreshold != 0.8 || got.ContradictThreshold != 0.95 || got.MinAgree != 2 || got.MaxPassages != 4 || got.Timeout != time.Second {
+			t.Errorf("overrides not applied: %+v", got)
+		}
+	})
+	t.Run("rejects invalid values", func(t *testing.T) {
+		for _, tc := range []struct{ key, value string }{
+			{"FACTCHECK_NLI_TEMPERATURE", "0"},
+			{"FACTCHECK_NLI_TEMPERATURE", "-1"},
+			{"FACTCHECK_NLI_ENTAIL_THRESHOLD", "0"},
+			{"FACTCHECK_NLI_CONTRADICT_THRESHOLD", "1.5"},
+			{"FACTCHECK_NLI_MIN_AGREE", "0"},
+			{"FACTCHECK_NLI_MAX_PASSAGES", "0"},
+			{"FACTCHECK_NLI_TIMEOUT", "-1s"},
+			{"FACTCHECK_NLI_ENABLED", "maybe"},
+		} {
+			t.Setenv(tc.key, tc.value)
+			if _, err := LoadVerifyNLI(); err == nil {
+				t.Errorf("LoadVerifyNLI with %s=%s returned nil error", tc.key, tc.value)
+			}
+			t.Setenv(tc.key, "")
 		}
 	})
 }

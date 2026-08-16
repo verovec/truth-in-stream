@@ -24,6 +24,9 @@ type Baseline struct {
 	// NLI is the local stance stage floor (VER-228). Additive and optional
 	// like Gate.
 	NLI *NLIBaseline `json:"nli,omitempty"`
+	// Budget is the generative-cost ceiling (VER-230). Additive and optional;
+	// checking it requires both the Gate and NLI fixtures.
+	Budget *BudgetBaseline `json:"budget,omitempty"`
 }
 
 // VerdictBaseline is the two-axis accuracy floor: the minimum fraction of cases
@@ -84,6 +87,17 @@ func LoadBaseline(path string) (Baseline, error) {
 			if v < 0 || v > 1 {
 				return Baseline{}, fmt.Errorf("eval: baseline %s %.4f is outside [0, 1]", name, v)
 			}
+		}
+	}
+	if b.Budget != nil {
+		if b.Budget.MaxLLMCallsPerClaim <= 0 {
+			return Baseline{}, fmt.Errorf("eval: baseline budget.max_llm_calls_per_claim %.4f must be positive", b.Budget.MaxLLMCallsPerClaim)
+		}
+		if b.Budget.SecondPassTriggerBelow < 0 || b.Budget.SecondPassTriggerBelow > 1 {
+			return Baseline{}, fmt.Errorf("eval: baseline budget.second_pass_trigger_below %.4f is outside [0, 1]", b.Budget.SecondPassTriggerBelow)
+		}
+		if b.Gate == nil || b.NLI == nil {
+			return Baseline{}, fmt.Errorf("eval: baseline budget requires the gate and nli sections it is composed from")
 		}
 	}
 	for cat, v := range b.Retrieval.Categories {

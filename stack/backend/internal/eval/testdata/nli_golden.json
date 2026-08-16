@@ -10,8 +10,11 @@
       "claim": "Le taux de chômage en France est de 7,3% au dernier trimestre.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "insee:chomage:0"
+      "passages": [
+        {
+          "id": "insee:chomage:0",
+          "text": "Selon l'INSEE, le taux de chômage en France s'établit à 7,3% au dernier trimestre, stable sur un an."
+        }
       ],
       "probs": [
         [
@@ -26,8 +29,11 @@
       "claim": "Le chômage est à 12% aujourd'hui.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "insee:chomage:1"
+      "passages": [
+        {
+          "id": "insee:chomage:1",
+          "text": "Le taux de chômage est de 7,3% au dernier trimestre selon l'INSEE, loin du niveau avancé dans le débat."
+        }
       ],
       "probs": [
         [
@@ -42,8 +48,11 @@
       "claim": "La délinquance a baissé de 10% l'an dernier.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "insee:delinquance:0"
+      "passages": [
+        {
+          "id": "insee:delinquance:0",
+          "text": "La délinquance a baissé de 10% l'an dernier, après une hausse de 35% sur les cinq années précédentes."
+        }
       ],
       "probs": [
         [
@@ -58,8 +67,11 @@
       "claim": "La dette publique française dépasse 110% du PIB.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "insee:dette:0"
+      "passages": [
+        {
+          "id": "insee:dette:0",
+          "text": "La dette publique de la France atteint environ 112% du produit intérieur brut à la fin de l'exercice."
+        }
       ],
       "probs": [
         [
@@ -74,8 +86,11 @@
       "claim": "L'inflation en France est de 6%.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "insee:inflation:0"
+      "passages": [
+        {
+          "id": "insee:inflation:0",
+          "text": "L'inflation sur un an s'établit désormais à 3,1%, après un pic à 6% observé deux ans plus tôt."
+        }
       ],
       "probs": [
         [
@@ -90,8 +105,11 @@
       "claim": "Le SMIC mensuel net est d'environ 1 400 euros.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "dares:smic:0"
+      "passages": [
+        {
+          "id": "dares:smic:0",
+          "text": "Le SMIC net mensuel s'élève à environ 1 400 euros pour un temps plein au taux horaire en vigueur."
+        }
       ],
       "probs": [
         [
@@ -106,8 +124,11 @@
       "claim": "Les immigrés représentent 50% de la population française.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "insee:immigration:0"
+      "passages": [
+        {
+          "id": "insee:immigration:0",
+          "text": "Les immigrés représentent environ 10% de la population résidant en France."
+        }
       ],
       "probs": [
         [
@@ -122,8 +143,11 @@
       "claim": "Ce député a voté pour la réforme des retraites.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "an:scrutin:4012"
+      "passages": [
+        {
+          "id": "an:scrutin:4012",
+          "text": "Scrutin n°4012 sur le projet de loi portant réforme des retraites: le député a voté pour."
+        }
       ],
       "probs": [
         [
@@ -138,8 +162,11 @@
       "claim": "Cette députée a voté contre le budget de la Sécurité sociale.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "an:scrutin:3987"
+      "passages": [
+        {
+          "id": "an:scrutin:3987",
+          "text": "Scrutin n°3987 sur le projet de loi de financement de la Sécurité sociale: la députée s'est abstenue."
+        }
       ],
       "probs": [
         [
@@ -154,8 +181,11 @@
       "claim": "Ce sénateur a soutenu la loi sur l'énergie.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "senat:scrutin:221"
+      "passages": [
+        {
+          "id": "senat:scrutin:221",
+          "text": "Scrutin n°221 sur la loi relative à l'énergie: le sénateur a voté pour, tout en cosignant une réserve sur le calendrier d'application."
+        }
       ],
       "probs": [
         [
@@ -170,8 +200,11 @@
       "claim": "Ce député a personnellement bloqué la loi en coulisses.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "an:scrutin:4100"
+      "passages": [
+        {
+          "id": "an:scrutin:4100",
+          "text": "Scrutin n°4100: le texte a été rejeté par 250 voix contre 240."
+        }
       ],
       "probs": [
         [
@@ -186,8 +219,11 @@
       "claim": "Le ministre a déclaré que la réforme serait reportée.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:declaration:0"
+      "passages": [
+        {
+          "id": "presse:declaration:0",
+          "text": "Lors de la conférence de presse, le ministre a indiqué que la réforme serait reportée à l'an prochain."
+        }
       ],
       "probs": [
         [
@@ -202,8 +238,11 @@
       "claim": "La présidente du groupe a dit qu'il fallait supprimer l'impôt sur le revenu.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "presse:attribution:1"
+      "passages": [
+        {
+          "id": "presse:attribution:1",
+          "text": "C'est un économiste invité, et non la présidente du groupe, qui a proposé de supprimer l'impôt sur le revenu lors du débat."
+        }
       ],
       "probs": [
         [
@@ -218,8 +257,11 @@
       "claim": "Le maire a dit qu'il fallait fermer toutes les écoles.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "presse:tronque:0"
+      "passages": [
+        {
+          "id": "presse:tronque:0",
+          "text": "Le maire a dit qu'il faudrait fermer temporairement les écoles uniquement en cas d'alerte sanitaire majeure, pas de façon générale."
+        }
       ],
       "probs": [
         [
@@ -234,8 +276,11 @@
       "claim": "La baisse des charges a créé 200 000 emplois l'an dernier.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "dares:emploi:0"
+      "passages": [
+        {
+          "id": "dares:emploi:0",
+          "text": "Environ 200 000 emplois ont été créés l'an dernier, une hausse que les économistes attribuent à la reprise mondiale, à la consommation et, en partie seulement, à la baisse des charges."
+        }
       ],
       "probs": [
         [
@@ -250,8 +295,11 @@
       "claim": "La fermeture des centrales a fait exploser le prix de l'électricité.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "presse:energie:0"
+      "passages": [
+        {
+          "id": "presse:energie:0",
+          "text": "La hausse des prix de l'électricité s'explique avant tout par la flambée du marché européen du gaz, et non par les fermetures de centrales."
+        }
       ],
       "probs": [
         [
@@ -266,8 +314,11 @@
       "claim": "La France a une croissance plus forte que l'Allemagne cette année.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "eurostat:croissance:0"
+      "passages": [
+        {
+          "id": "eurostat:croissance:0",
+          "text": "Cette année, la croissance du PIB français dépasse celle de l'Allemagne, en récession technique."
+        }
       ],
       "probs": [
         [
@@ -282,8 +333,11 @@
       "claim": "La France dépense plus pour sa santé que tous ses voisins.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "ocde:sante:0"
+      "passages": [
+        {
+          "id": "ocde:sante:0",
+          "text": "Rapportée au PIB, la dépense de santé de la France est comparable à celle de l'Allemagne et inférieure à celle de la Suisse; seule la comparaison en valeur absolue la place en tête."
+        }
       ],
       "probs": [
         [
@@ -298,8 +352,11 @@
       "claim": "La France a la fiscalité la plus lourde de la zone euro.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "eurostat:fiscalite:0"
+      "passages": [
+        {
+          "id": "eurostat:fiscalite:0",
+          "text": "Le taux de prélèvements obligatoires de la France est le plus élevé de la zone euro rapporté au PIB."
+        }
       ],
       "probs": [
         [
@@ -314,8 +371,11 @@
       "claim": "Notre programme est le meilleur pour le pays.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "presse:programme:0"
+      "passages": [
+        {
+          "id": "presse:programme:0",
+          "text": "Le programme prévoit une baisse d'impôts financée par des coupes dans les dépenses publiques."
+        }
       ],
       "probs": [
         [
@@ -330,8 +390,11 @@
       "claim": "Cette réforme est profondément injuste.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "presse:reforme:0"
+      "passages": [
+        {
+          "id": "presse:reforme:0",
+          "text": "La réforme relève l'âge légal de départ et allonge la durée de cotisation requise."
+        }
       ],
       "probs": [
         [
@@ -346,8 +409,11 @@
       "claim": "Le candidat est quelqu'un de malhonnête dans sa vie privée.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "presse:candidat:0"
+      "passages": [
+        {
+          "id": "presse:candidat:0",
+          "text": "Le candidat a présenté son patrimoine à la Haute Autorité pour la transparence de la vie publique, comme l'exige la loi."
+        }
       ],
       "probs": [
         [
@@ -362,8 +428,11 @@
       "claim": "Les énergies renouvelables couvrent un quart de l'électricité française.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "rte:renouvelable:0"
+      "passages": [
+        {
+          "id": "rte:renouvelable:0",
+          "text": "Les énergies renouvelables ont couvert environ 25% de la production d'électricité française sur l'année."
+        }
       ],
       "probs": [
         [
@@ -378,8 +447,11 @@
       "claim": "Le taux de pauvreté atteint 8% en France.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "insee:pauvrete:0"
+      "passages": [
+        {
+          "id": "insee:pauvrete:0",
+          "text": "Le taux de pauvreté monétaire s'établit à environ 14% selon la dernière enquête, contre des niveaux plus bas il y a plusieurs décennies."
+        }
       ],
       "probs": [
         [
@@ -394,8 +466,11 @@
       "claim": "Le Premier ministre s'est engagé à plein emploi d'ici la fin du mandat.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:engagement:0"
+      "passages": [
+        {
+          "id": "presse:engagement:0",
+          "text": "Le Premier ministre s'est engagé à atteindre le plein emploi d'ici la fin du mandat lors de son discours de politique générale."
+        }
       ],
       "probs": [
         [
@@ -410,8 +485,11 @@
       "claim": "La hausse du tabac a réduit le tabagisme des jeunes.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:tabac:0"
+      "passages": [
+        {
+          "id": "presse:tabac:0",
+          "text": "Le prix du paquet de cigarettes a augmenté à plusieurs reprises au cours de la dernière décennie."
+        }
       ],
       "probs": [
         [
@@ -426,8 +504,11 @@
       "claim": "Il y a plus de 5 millions d'agents publics en France.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "dgafp:effectif:0"
+      "passages": [
+        {
+          "id": "dgafp:effectif:0",
+          "text": "La fonction publique française compte environ 5,7 millions d'agents tous versants confondus."
+        }
       ],
       "probs": [
         [
@@ -442,8 +523,11 @@
       "claim": "La France a réduit ses émissions plus vite que l'Allemagne l'an dernier.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "eurostat:co2:0"
+      "passages": [
+        {
+          "id": "eurostat:co2:0",
+          "text": "La France a réduit ses émissions plus vite que l'Allemagne l'an dernier, mais sur dix ans la baisse allemande reste nettement supérieure."
+        }
       ],
       "probs": [
         [
@@ -458,8 +542,11 @@
       "claim": "Ce groupe a voté contre le pacte budgétaire européen.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "an:scrutin:2901"
+      "passages": [
+        {
+          "id": "an:scrutin:2901",
+          "text": "Scrutin n°2901 sur la ratification du pacte budgétaire européen: le groupe a voté contre dans sa majorité."
+        }
       ],
       "probs": [
         [
@@ -474,8 +561,11 @@
       "claim": "Le porte-parole du gouvernement a promis la gratuité des transports.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "presse:transports:0"
+      "passages": [
+        {
+          "id": "presse:transports:0",
+          "text": "C'est un candidat d'opposition, et non le porte-parole du gouvernement, qui a promis la gratuité des transports dans son programme."
+        }
       ],
       "probs": [
         [
@@ -490,8 +580,11 @@
       "claim": "Le nucléaire produit moins de la moitié de l'électricité française.",
       "label": "refute",
       "negation_of": "",
-      "passage_ids": [
-        "rte:nucleaire:0"
+      "passages": [
+        {
+          "id": "rte:nucleaire:0",
+          "text": "Le parc nucléaire a fourni environ 65% de la production d'électricité française sur l'année."
+        }
       ],
       "probs": [
         [
@@ -506,8 +599,11 @@
       "claim": "La guerre a contribué à la hausse des prix de l'énergie.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:energie:1"
+      "passages": [
+        {
+          "id": "presse:energie:1",
+          "text": "Les prix de l'énergie ont connu une forte volatilité ces dernières années sur les marchés européens."
+        }
       ],
       "probs": [
         [
@@ -522,8 +618,11 @@
       "claim": "La France compte moins d'enseignants par élève que la moyenne de l'OCDE.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "presse:education:0"
+      "passages": [
+        {
+          "id": "presse:education:0",
+          "text": "Le débat sur les effectifs enseignants oppose régulièrement la majorité et l'opposition lors des discussions budgétaires."
+        }
       ],
       "probs": [
         [
@@ -538,8 +637,11 @@
       "claim": "Le déficit public dépasse 5% du PIB.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "insee:deficit:0"
+      "passages": [
+        {
+          "id": "insee:deficit:0",
+          "text": "Le déficit public de la France s'établit à environ 5,5% du produit intérieur brut sur l'exercice."
+        }
       ],
       "probs": [
         [
@@ -554,8 +656,11 @@
       "claim": "Ce parti a soutenu la loi immigration.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "an:scrutin:4205"
+      "passages": [
+        {
+          "id": "an:scrutin:4205",
+          "text": "Scrutin n°4205: le parti a voté pour la loi immigration, mais seulement après réécriture en commission d'un texte sensiblement différent de la version initiale."
+        }
       ],
       "probs": [
         [
@@ -570,8 +675,11 @@
       "claim": "Les aides sociales expliquent le niveau du chômage.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "presse:chomage:0"
+      "passages": [
+        {
+          "id": "presse:chomage:0",
+          "text": "Les économistes rappellent que le niveau du chômage dépend de nombreux facteurs et qu'aucune étude ne l'impute aux seules aides sociales."
+        }
       ],
       "probs": [
         [
@@ -586,8 +694,11 @@
       "claim": "Plus de deux millions de personnes attendent un logement social.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:logement:0"
+      "passages": [
+        {
+          "id": "presse:logement:0",
+          "text": "Plus de 2,4 millions de ménages sont inscrits sur la liste d'attente d'un logement social en France."
+        }
       ],
       "probs": [
         [
@@ -602,8 +713,11 @@
       "claim": "La ministre a annoncé un plan de 10 milliards d'euros.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "presse:plan:0"
+      "passages": [
+        {
+          "id": "presse:plan:0",
+          "text": "La ministre a annoncé un plan d'investissement de 10 milliards d'euros pour l'industrie verte."
+        }
       ],
       "probs": [
         [
@@ -618,10 +732,19 @@
       "claim": "Le taux de chômage s'élève à 7,3% ce trimestre.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "rp:chomage:0",
-        "rp:chomage:1",
-        "rp:chomage:2"
+      "passages": [
+        {
+          "id": "rp:chomage:0",
+          "text": "L'INSEE mesure un taux de chômage de 7,3% au dernier trimestre en France métropolitaine."
+        },
+        {
+          "id": "rp:chomage:1",
+          "text": "Le taux de chômage des jeunes atteint 17,2% selon la même enquête."
+        },
+        {
+          "id": "rp:chomage:2",
+          "text": "Le taux d'emploi des seniors progresse de deux points sur un an."
+        }
       ],
       "probs": [
         [
@@ -646,10 +769,19 @@
       "claim": "Le déficit public atteint 5,5% du PIB.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "rp:deficit:0",
-        "rp:deficit:1",
-        "rp:deficit:2"
+      "passages": [
+        {
+          "id": "rp:deficit:0",
+          "text": "Le déficit public de la France s'établit à 5,5% du produit intérieur brut sur l'exercice."
+        },
+        {
+          "id": "rp:deficit:1",
+          "text": "La dette publique dépasse 110% du produit intérieur brut à la même date."
+        },
+        {
+          "id": "rp:deficit:2",
+          "text": "Le déficit commercial se creuse de plusieurs milliards d'euros."
+        }
       ],
       "probs": [
         [
@@ -674,10 +806,19 @@
       "claim": "Le SMIC net mensuel est d'environ 1 400 euros.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "rp:smic:0",
-        "rp:smic:1",
-        "rp:smic:2"
+      "passages": [
+        {
+          "id": "rp:smic:0",
+          "text": "Le SMIC net s'élève à près de 1 400 euros par mois après revalorisation."
+        },
+        {
+          "id": "rp:smic:1",
+          "text": "Le salaire médian en France avoisine 2 100 euros nets par mois."
+        },
+        {
+          "id": "rp:smic:2",
+          "text": "Le SMIC brut horaire est fixé par décret chaque année."
+        }
       ],
       "probs": [
         [
@@ -702,10 +843,19 @@
       "claim": "Élisabeth Borne a engagé la responsabilité du gouvernement avec le 49.3.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "ne:borne:0",
-        "ne:borne:1",
-        "ne:borne:2"
+      "passages": [
+        {
+          "id": "ne:borne:0",
+          "text": "La Première ministre Élisabeth Borne a déclenché l'article 49.3 sur le budget."
+        },
+        {
+          "id": "ne:borne:1",
+          "text": "Le ministre de l'Économie Bruno Le Maire a présenté le projet de loi de finances."
+        },
+        {
+          "id": "ne:borne:2",
+          "text": "Le président de l'Assemblée a organisé le vote solennel du budget."
+        }
       ],
       "probs": [
         [
@@ -730,10 +880,19 @@
       "claim": "L'INSEE publie les chiffres de la croissance.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "ne:insee:0",
-        "ne:insee:1",
-        "ne:insee:2"
+      "passages": [
+        {
+          "id": "ne:insee:0",
+          "text": "L'INSEE, institut national de la statistique, publie l'estimation de croissance du PIB."
+        },
+        {
+          "id": "ne:insee:1",
+          "text": "La Banque de France révise sa prévision de croissance pour l'année."
+        },
+        {
+          "id": "ne:insee:2",
+          "text": "Eurostat compile les données de croissance des États membres."
+        }
       ],
       "probs": [
         [
@@ -758,10 +917,19 @@
       "claim": "Le Conseil constitutionnel a censuré une partie de la loi immigration.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "ne:conseil:0",
-        "ne:conseil:1",
-        "ne:conseil:2"
+      "passages": [
+        {
+          "id": "ne:conseil:0",
+          "text": "Le Conseil constitutionnel a censuré plusieurs articles de la loi immigration."
+        },
+        {
+          "id": "ne:conseil:1",
+          "text": "Le Conseil d'État a rendu un avis sur le projet de loi immigration."
+        },
+        {
+          "id": "ne:conseil:2",
+          "text": "L'Assemblée nationale a adopté la loi immigration en lecture définitive."
+        }
       ],
       "probs": [
         [
@@ -786,10 +954,19 @@
       "claim": "La réforme des retraites a été promulguée en 2023.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "da:retraites:0",
-        "da:retraites:1",
-        "da:retraites:2"
+      "passages": [
+        {
+          "id": "da:retraites:0",
+          "text": "La loi portant réforme des retraites a été promulguée en 2023 après le recours au 49.3."
+        },
+        {
+          "id": "da:retraites:1",
+          "text": "Une précédente réforme des retraites avait été adoptée en 2010 sous une autre majorité."
+        },
+        {
+          "id": "da:retraites:2",
+          "text": "Le débat sur l'âge de départ à la retraite a mobilisé les syndicats."
+        }
       ],
       "probs": [
         [
@@ -814,10 +991,19 @@
       "claim": "Les Jeux olympiques se sont tenus à Paris en 2024.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "da:jo:0",
-        "da:jo:1",
-        "da:jo:2"
+      "passages": [
+        {
+          "id": "da:jo:0",
+          "text": "Paris a accueilli les Jeux olympiques d'été en 2024."
+        },
+        {
+          "id": "da:jo:1",
+          "text": "Paris avait organisé les Jeux olympiques en 1924, un siècle plus tôt."
+        },
+        {
+          "id": "da:jo:2",
+          "text": "Los Angeles accueillera les Jeux olympiques en 2028."
+        }
       ],
       "probs": [
         [
@@ -842,10 +1028,19 @@
       "claim": "Emmanuel Macron a été réélu président en 2022.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "da:presid:0",
-        "da:presid:1",
-        "da:presid:2"
+      "passages": [
+        {
+          "id": "da:presid:0",
+          "text": "Emmanuel Macron a été réélu à la présidence de la République en 2022."
+        },
+        {
+          "id": "da:presid:1",
+          "text": "Emmanuel Macron avait été élu pour la première fois en 2017."
+        },
+        {
+          "id": "da:presid:2",
+          "text": "Les élections législatives se sont tenues en juin 2022."
+        }
       ],
       "probs": [
         [
@@ -870,10 +1065,19 @@
       "claim": "L'âge légal de départ passe à 64 ans.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "pp:retraites:0",
-        "pp:retraites:1",
-        "pp:retraites:2"
+      "passages": [
+        {
+          "id": "pp:retraites:0",
+          "text": "La réforme repousse à 64 ans le seuil à partir duquel on peut liquider sa pension."
+        },
+        {
+          "id": "pp:retraites:1",
+          "text": "L'âge légal de la retraite fait débat dans l'opinion publique."
+        },
+        {
+          "id": "pp:retraites:2",
+          "text": "Le départ anticipé pour carrière longue reste possible sous conditions."
+        }
       ],
       "probs": [
         [
@@ -898,10 +1102,19 @@
       "claim": "L'économie française a progressé de 0,9% l'an dernier.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "pp:croissance:0",
-        "pp:croissance:1",
-        "pp:croissance:2"
+      "passages": [
+        {
+          "id": "pp:croissance:0",
+          "text": "Le PIB de la France a augmenté de 0,9% sur l'année écoulée."
+        },
+        {
+          "id": "pp:croissance:1",
+          "text": "L'économie française devrait ralentir selon les prévisionnistes."
+        },
+        {
+          "id": "pp:croissance:2",
+          "text": "La croissance de la zone euro reste atone cette année."
+        }
       ],
       "probs": [
         [
@@ -926,10 +1139,19 @@
       "claim": "Le Parlement a définitivement adopté la loi sur l'immigration.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "pp:immigration:0",
-        "pp:immigration:1",
-        "pp:immigration:2"
+      "passages": [
+        {
+          "id": "pp:immigration:0",
+          "text": "L'Assemblée et le Sénat ont voté le texte relatif à l'immigration en lecture finale."
+        },
+        {
+          "id": "pp:immigration:1",
+          "text": "Le Parlement examinera prochainement plusieurs autres textes."
+        },
+        {
+          "id": "pp:immigration:2",
+          "text": "La loi de finances a été adoptée avant la fin de l'année."
+        }
       ],
       "probs": [
         [
@@ -954,10 +1176,19 @@
       "claim": "Le déficit public est de 4,4% du PIB.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "nm:deficit:0",
-        "nm:deficit:1",
-        "nm:deficit:2"
+      "passages": [
+        {
+          "id": "nm:deficit:0",
+          "text": "Le déficit public s'établit à 4,4% du PIB cette année."
+        },
+        {
+          "id": "nm:deficit:1",
+          "text": "Le déficit public s'établissait à 5,5% du PIB l'an dernier."
+        },
+        {
+          "id": "nm:deficit:2",
+          "text": "Le déficit public devrait revenir à 3% du PIB à moyen terme."
+        }
       ],
       "probs": [
         [
@@ -982,10 +1213,19 @@
       "claim": "Le taux de chômage est de 7,3%.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "nm:chomage:0",
-        "nm:chomage:1",
-        "nm:chomage:2"
+      "passages": [
+        {
+          "id": "nm:chomage:0",
+          "text": "Le taux de chômage s'établit à 7,3% ce trimestre."
+        },
+        {
+          "id": "nm:chomage:1",
+          "text": "Le taux de chômage s'établissait à 7,5% le trimestre précédent."
+        },
+        {
+          "id": "nm:chomage:2",
+          "text": "Le taux de chômage atteignait 9,1% il y a cinq ans."
+        }
       ],
       "probs": [
         [
@@ -1010,10 +1250,19 @@
       "claim": "La dette publique atteint 112% du PIB.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "nm:dette:0",
-        "nm:dette:1",
-        "nm:dette:2"
+      "passages": [
+        {
+          "id": "nm:dette:0",
+          "text": "La dette publique française atteint 112% du PIB."
+        },
+        {
+          "id": "nm:dette:1",
+          "text": "La dette publique française atteignait 98% du PIB avant la crise."
+        },
+        {
+          "id": "nm:dette:2",
+          "text": "La dette publique française pourrait atteindre 120% du PIB à terme."
+        }
       ],
       "probs": [
         [
@@ -1038,8 +1287,11 @@
       "claim": "Le chomage a baisse en France sur un an.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-1a-p"
+      "passages": [
+        {
+          "id": "neg-1a-p",
+          "text": "Selon l'INSEE, le taux de chomage s'etablit a 7,3 pour cent de la population active au quatrieme trimestre, en baisse de 0,4 point sur un an."
+        }
       ],
       "probs": [
         [
@@ -1054,8 +1306,11 @@
       "claim": "Le chomage n'a pas baisse en France sur un an.",
       "label": "refute",
       "negation_of": "neg-1a",
-      "passage_ids": [
-        "neg-1b-p"
+      "passages": [
+        {
+          "id": "neg-1b-p",
+          "text": "Selon l'INSEE, le taux de chomage s'etablit a 7,3 pour cent de la population active au quatrieme trimestre, en baisse de 0,4 point sur un an."
+        }
       ],
       "probs": [
         [
@@ -1070,8 +1325,11 @@
       "claim": "L'age legal de depart a la retraite a ete releve a 64 ans.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-2a-p"
+      "passages": [
+        {
+          "id": "neg-2a-p",
+          "text": "La loi du 14 avril 2023 porte l'age legal de depart a la retraite de 62 a 64 ans, a raison de trois mois par generation a compter du 1er septembre 2023."
+        }
       ],
       "probs": [
         [
@@ -1086,8 +1344,11 @@
       "claim": "L'age legal de depart a la retraite n'a pas ete releve a 64 ans.",
       "label": "refute",
       "negation_of": "neg-2a",
-      "passage_ids": [
-        "neg-2b-p"
+      "passages": [
+        {
+          "id": "neg-2b-p",
+          "text": "La loi du 14 avril 2023 porte l'age legal de depart a la retraite de 62 a 64 ans, a raison de trois mois par generation a compter du 1er septembre 2023."
+        }
       ],
       "probs": [
         [
@@ -1102,8 +1363,11 @@
       "claim": "La France exploite 56 reacteurs nucleaires.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-3a-p"
+      "passages": [
+        {
+          "id": "neg-3a-p",
+          "text": "Le parc nucleaire francais compte 56 reacteurs en exploitation repartis sur 18 centrales, selon le rapport annuel de l'Autorite de surete nucleaire."
+        }
       ],
       "probs": [
         [
@@ -1118,8 +1382,11 @@
       "claim": "La France n'exploite pas 56 reacteurs nucleaires.",
       "label": "refute",
       "negation_of": "neg-3a",
-      "passage_ids": [
-        "neg-3b-p"
+      "passages": [
+        {
+          "id": "neg-3b-p",
+          "text": "Le parc nucleaire francais compte 56 reacteurs en exploitation repartis sur 18 centrales, selon le rapport annuel de l'Autorite de surete nucleaire."
+        }
       ],
       "probs": [
         [
@@ -1134,8 +1401,11 @@
       "claim": "La dette publique francaise depasse les trois mille milliards d'euros.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-4a-p"
+      "passages": [
+        {
+          "id": "neg-4a-p",
+          "text": "D'apres la Banque de France, la dette publique a atteint 3 100 milliards d'euros au premier trimestre, soit 110,7 pour cent du produit interieur brut."
+        }
       ],
       "probs": [
         [
@@ -1150,8 +1420,11 @@
       "claim": "La dette publique francaise reste inferieure a trois mille milliards d'euros.",
       "label": "refute",
       "negation_of": "neg-4a",
-      "passage_ids": [
-        "neg-4b-p"
+      "passages": [
+        {
+          "id": "neg-4b-p",
+          "text": "D'apres la Banque de France, la dette publique a atteint 3 100 milliards d'euros au premier trimestre, soit 110,7 pour cent du produit interieur brut."
+        }
       ],
       "probs": [
         [
@@ -1166,8 +1439,11 @@
       "claim": "La mortalite routiere a augmente cette annee en France metropolitaine.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-5a-p"
+      "passages": [
+        {
+          "id": "neg-5a-p",
+          "text": "Le bilan annuel de la securite routiere fait etat de 3 167 morts sur les routes de France metropolitaine, un chiffre en hausse de 2 pour cent par rapport a l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1182,8 +1458,11 @@
       "claim": "La mortalite routiere a diminue cette annee en France metropolitaine.",
       "label": "refute",
       "negation_of": "neg-5a",
-      "passage_ids": [
-        "neg-5b-p"
+      "passages": [
+        {
+          "id": "neg-5b-p",
+          "text": "Le bilan annuel de la securite routiere fait etat de 3 167 morts sur les routes de France metropolitaine, un chiffre en hausse de 2 pour cent par rapport a l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1198,8 +1477,11 @@
       "claim": "L'Assemblee nationale a adopte le texte en premiere lecture.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-6a-p"
+      "passages": [
+        {
+          "id": "neg-6a-p",
+          "text": "L'Assemblee nationale a adopte le projet de loi en premiere lecture par 210 voix contre 190, avec le soutien des deputes de la majorite et d'une partie de l'opposition."
+        }
       ],
       "probs": [
         [
@@ -1214,8 +1496,11 @@
       "claim": "L'Assemblee nationale a rejete le texte en premiere lecture.",
       "label": "refute",
       "negation_of": "neg-6a",
-      "passage_ids": [
-        "neg-6b-p"
+      "passages": [
+        {
+          "id": "neg-6b-p",
+          "text": "L'Assemblee nationale a adopte le projet de loi en premiere lecture par 210 voix contre 190, avec le soutien des deputes de la majorite et d'une partie de l'opposition."
+        }
       ],
       "probs": [
         [
@@ -1230,8 +1515,11 @@
       "claim": "Le nombre de premiers titres de sejour delivres par la France a augmente.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-7a-p"
+      "passages": [
+        {
+          "id": "neg-7a-p",
+          "text": "Selon Eurostat, la France a accueilli 320 000 premiers titres de sejour l'an dernier, soit une hausse de 8 pour cent par rapport a l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1246,8 +1534,11 @@
       "claim": "Le nombre de premiers titres de sejour delivres par la France a diminue.",
       "label": "refute",
       "negation_of": "neg-7a",
-      "passage_ids": [
-        "neg-7b-p"
+      "passages": [
+        {
+          "id": "neg-7b-p",
+          "text": "Selon Eurostat, la France a accueilli 320 000 premiers titres de sejour l'an dernier, soit une hausse de 8 pour cent par rapport a l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1262,8 +1553,11 @@
       "claim": "Le deficit de l'assurance maladie s'est aggrave.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-8a-p"
+      "passages": [
+        {
+          "id": "neg-8a-p",
+          "text": "Le rapport de la Cour des comptes indique que le deficit de l'assurance maladie s'est creuse a 11,1 milliards d'euros, contre 8,8 milliards l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1278,8 +1572,11 @@
       "claim": "Le deficit de l'assurance maladie s'est resorbe.",
       "label": "refute",
       "negation_of": "neg-8a",
-      "passage_ids": [
-        "neg-8b-p"
+      "passages": [
+        {
+          "id": "neg-8b-p",
+          "text": "Le rapport de la Cour des comptes indique que le deficit de l'assurance maladie s'est creuse a 11,1 milliards d'euros, contre 8,8 milliards l'annee precedente."
+        }
       ],
       "probs": [
         [
@@ -1294,8 +1591,11 @@
       "claim": "L'annee ecoulee a ete la plus chaude jamais enregistree en France.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-9a-p"
+      "passages": [
+        {
+          "id": "neg-9a-p",
+          "text": "Meteo-France confirme que l'annee ecoulee a ete la plus chaude jamais mesuree dans le pays depuis le debut des releves en 1900, avec une anomalie de +1,4 degre."
+        }
       ],
       "probs": [
         [
@@ -1310,8 +1610,11 @@
       "claim": "L'annee ecoulee n'a pas ete la plus chaude jamais enregistree en France.",
       "label": "refute",
       "negation_of": "neg-9a",
-      "passage_ids": [
-        "neg-9b-p"
+      "passages": [
+        {
+          "id": "neg-9b-p",
+          "text": "Meteo-France confirme que l'annee ecoulee a ete la plus chaude jamais mesuree dans le pays depuis le debut des releves en 1900, avec une anomalie de +1,4 degre."
+        }
       ],
       "probs": [
         [
@@ -1326,8 +1629,11 @@
       "claim": "La redevance audiovisuelle a ete supprimee.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-10a-p"
+      "passages": [
+        {
+          "id": "neg-10a-p",
+          "text": "Le decret publie au Journal officiel supprime la redevance audiovisuelle de 138 euros a compter de la rentree, pour un cout budgetaire estime a 3,2 milliards d'euros."
+        }
       ],
       "probs": [
         [
@@ -1342,8 +1648,11 @@
       "claim": "La redevance audiovisuelle est toujours en vigueur.",
       "label": "refute",
       "negation_of": "neg-10a",
-      "passage_ids": [
-        "neg-10b-p"
+      "passages": [
+        {
+          "id": "neg-10b-p",
+          "text": "Le decret publie au Journal officiel supprime la redevance audiovisuelle de 138 euros a compter de la rentree, pour un cout budgetaire estime a 3,2 milliards d'euros."
+        }
       ],
       "probs": [
         [
@@ -1358,8 +1667,11 @@
       "claim": "Le nombre d'exploitations agricoles francaises a recule en dix ans.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-11a-p"
+      "passages": [
+        {
+          "id": "neg-11a-p",
+          "text": "D'apres le ministere de l'agriculture, la France a perdu 101 000 exploitations agricoles en dix ans, passant de 490 000 a 389 000 entre les deux recensements."
+        }
       ],
       "probs": [
         [
@@ -1374,8 +1686,11 @@
       "claim": "Le nombre d'exploitations agricoles francaises a progresse en dix ans.",
       "label": "refute",
       "negation_of": "neg-11a",
-      "passage_ids": [
-        "neg-11b-p"
+      "passages": [
+        {
+          "id": "neg-11b-p",
+          "text": "D'apres le ministere de l'agriculture, la France a perdu 101 000 exploitations agricoles en dix ans, passant de 490 000 a 389 000 entre les deux recensements."
+        }
       ],
       "probs": [
         [
@@ -1390,8 +1705,11 @@
       "claim": "La Banque centrale europeenne a releve ses taux directeurs.",
       "label": "support",
       "negation_of": "",
-      "passage_ids": [
-        "neg-12a-p"
+      "passages": [
+        {
+          "id": "neg-12a-p",
+          "text": "Le communique de la Banque centrale europeenne annonce une dixieme hausse consecutive des taux directeurs, portant le taux de depot a 4 pour cent."
+        }
       ],
       "probs": [
         [
@@ -1406,8 +1724,11 @@
       "claim": "La Banque centrale europeenne a abaisse ses taux directeurs.",
       "label": "refute",
       "negation_of": "neg-12a",
-      "passage_ids": [
-        "neg-12b-p"
+      "passages": [
+        {
+          "id": "neg-12b-p",
+          "text": "Le communique de la Banque centrale europeenne annonce une dixieme hausse consecutive des taux directeurs, portant le taux de depot a 4 pour cent."
+        }
       ],
       "probs": [
         [
@@ -1422,8 +1743,11 @@
       "claim": "Le budget de la defense a double en dix ans.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-1-p"
+      "passages": [
+        {
+          "id": "neu-1-p",
+          "text": "Selon l'INSEE, le taux de chomage s'etablit a 7,3 pour cent de la population active au quatrieme trimestre."
+        }
       ],
       "probs": [
         [
@@ -1438,8 +1762,11 @@
       "claim": "Les urgences hospitalieres ont ferme dans cent villes cet ete.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-2-p"
+      "passages": [
+        {
+          "id": "neu-2-p",
+          "text": "La loi porte l'age legal de depart a la retraite de 62 a 64 ans a compter du 1er septembre 2023."
+        }
       ],
       "probs": [
         [
@@ -1454,8 +1781,11 @@
       "claim": "La France est le premier exportateur mondial de ble.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-3-p"
+      "passages": [
+        {
+          "id": "neu-3-p",
+          "text": "Le parc nucleaire francais compte 56 reacteurs en exploitation repartis sur 18 centrales."
+        }
       ],
       "probs": [
         [
@@ -1470,8 +1800,11 @@
       "claim": "Le prix des billets de train a baisse de moitie.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-4-p"
+      "passages": [
+        {
+          "id": "neu-4-p",
+          "text": "Meteo-France confirme que l'annee ecoulee a ete la plus chaude jamais mesuree dans le pays."
+        }
       ],
       "probs": [
         [
@@ -1486,8 +1819,11 @@
       "claim": "Le Senat a rejete le budget de la securite sociale.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-5-p"
+      "passages": [
+        {
+          "id": "neu-5-p",
+          "text": "L'Assemblee nationale a adopte le projet de loi en premiere lecture par 210 voix contre 190."
+        }
       ],
       "probs": [
         [
@@ -1502,8 +1838,11 @@
       "claim": "Les pharmacies rurales ont augmente leurs marges.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-6-p"
+      "passages": [
+        {
+          "id": "neu-6-p",
+          "text": "Le deficit de l'assurance maladie s'est creuse a 11,1 milliards d'euros selon la Cour des comptes."
+        }
       ],
       "probs": [
         [
@@ -1518,8 +1857,11 @@
       "claim": "Les collectivites locales ont gele les taux de la taxe fonciere.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-7-p"
+      "passages": [
+        {
+          "id": "neu-7-p",
+          "text": "La Banque de France estime la dette publique a 110,7 pour cent du produit interieur brut."
+        }
       ],
       "probs": [
         [
@@ -1534,8 +1876,11 @@
       "claim": "Le tourisme etranger a atteint un record cet ete en France.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-8-p"
+      "passages": [
+        {
+          "id": "neu-8-p",
+          "text": "La France a accueilli 320 000 premiers titres de sejour l'an dernier selon Eurostat."
+        }
       ],
       "probs": [
         [
@@ -1550,8 +1895,11 @@
       "claim": "Le permis de conduire est desormais accessible des 16 ans.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-9-p"
+      "passages": [
+        {
+          "id": "neu-9-p",
+          "text": "Le bilan de la securite routiere fait etat de 3 167 morts sur les routes de France metropolitaine."
+        }
       ],
       "probs": [
         [
@@ -1566,8 +1914,11 @@
       "claim": "Les chaines publiques ont perdu la moitie de leur audience.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-10-p"
+      "passages": [
+        {
+          "id": "neu-10-p",
+          "text": "Le decret supprime la redevance audiovisuelle de 138 euros a compter de la rentree."
+        }
       ],
       "probs": [
         [
@@ -1582,8 +1933,11 @@
       "claim": "Les importations de fruits ont ete interdites par Bruxelles.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-11-p"
+      "passages": [
+        {
+          "id": "neu-11-p",
+          "text": "La France a perdu 101 000 exploitations agricoles en dix ans selon le ministere."
+        }
       ],
       "probs": [
         [
@@ -1598,8 +1952,11 @@
       "claim": "Le bitcoin est reconnu comme monnaie legale dans l'Union europeenne.",
       "label": "neutral",
       "negation_of": "",
-      "passage_ids": [
-        "neu-12-p"
+      "passages": [
+        {
+          "id": "neu-12-p",
+          "text": "La Banque centrale europeenne a porte le taux de depot a 4 pour cent."
+        }
       ],
       "probs": [
         [
