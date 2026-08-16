@@ -8,6 +8,8 @@ card. Card and claim rules live in the `roadmap-linear` and `delivering-linear-c
 
 ## Arguments
 - (none): claim the top ready card and deliver it.
+- `<epic-tag>` (e.g. `/pick epic:vector-first`): **epic run**. Deliver every card of that epic,
+  one at a time, in dependency order, until the epic is done (see "Epic run" below).
 - `--steal <ID>`: forcibly reclaim a card stuck `In Progress` from a dead session. Skips the
   ready-queue scan and the claim race. Use only when you know the prior session is gone.
 
@@ -57,6 +59,32 @@ card. Card and claim rules live in the `roadmap-linear` and `delivering-linear-c
    dependency branch instead. Re-run `/roadmap` first so the Ready queue reflects the merge. Either
    way the next card is equally claimable by a fresh `/pick` session - the Ready queue, not the
    session, is what unblocks it. Deliver one card fully (through merge) before starting the next.
+
+## Epic run (`/pick <epic-tag>`)
+
+One session owns one whole epic and drains it card by card. The loop is the single-card flow
+repeated; nothing about the per-card workflow changes.
+
+1. **Resolve the epic's cards.** The tag is a Linear label in the `epic` group
+   (`epic:<slug>`, per `roadmap-linear`). Membership is the set of cards carrying that label;
+   if the label does not exist yet on the board, fall back to the epic's card list in
+   `agent/<org_slug>/plans/EPICS-<ORG_UPPER>.md` and report that the label is missing so the
+   human can create it (the MCP connector cannot create labels).
+2. **Refresh the ready queue** (`/roadmap`), then filter it to the epic's cards.
+3. **Claim the top ready epic card** with the standard claim protocol (steps 2a-2e above) and
+   deliver it fully through the standard hand-off (step 4): TDD, `/code-review` applied, unit
+   gate green, PR against `dev` (or stacked on its dependency branch), **merge on green CI**,
+   card to Done. One card at a time; never two epic cards in flight from the same session.
+4. **Loop.** After the merge lands, re-filter the queue (the merge usually just unblocked the
+   next link) and go back to step 3. Keep the card's checkboxes and status current as you go.
+5. **Stop** when no epic card is claimable: all Done -> run the epic close-out
+   (`delivering-linear-cards`, "Epic close-out digest") and report the epic complete; some
+   cards blocked or claimed by other sessions -> report exactly which cards remain and why.
+   A red CI or a blocked card never ends the run silently: fix it or report it, then continue
+   with the next claimable card if one exists.
+
+Multiple epic runs can execute in parallel (one session per epic) because epics are sized
+file-disjoint (`roadmap-linear`); the per-card claim protocol still guards every card.
 
 ## --steal <ID>
 Skip steps 1-2. Confirm the prior session is gone, set/keep the card `In Progress`, post a

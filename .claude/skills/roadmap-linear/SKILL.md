@@ -47,9 +47,13 @@ Whenever you create (or materially reshape) an epic, do both of these and keep t
 - Record it in `agent/<org_slug>/plans/EPICS-<ORG_UPPER>.md` (the coarse epic-level handoff
   map; `ROADMAP-<ORG_UPPER>.md` stays the fine per-card ready queue).
 - Give it a Linear label `epic:<slug>` and apply that label to every card in the epic, so the
-  grouping is visible and filterable on the board. Labels are metadata only - they do not
-  affect `/pick` or the ready queue. (Linear has no native epic object in this workspace; the
-  label plus the map are how an epic is represented.)
+  grouping is visible and filterable on the board. The label drives `/pick epic:<slug>` (the
+  epic run: one session drains the epic card by card in dependency order); it never changes
+  the ready queue itself. (Linear has no native epic object in this workspace; the label plus
+  the map are how an epic is represented.) The MCP connector cannot create labels - if the
+  `epic:<slug>` child label is missing from the `epic` label group, ask the human to create
+  it (one click) and note that `/pick <epic-tag>` falls back to the epic map's card list
+  until then.
 
 Every epic entry in the map MUST have the same shape, in this order:
 

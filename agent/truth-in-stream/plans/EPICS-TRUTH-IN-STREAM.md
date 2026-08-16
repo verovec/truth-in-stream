@@ -16,6 +16,12 @@ Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Ep
 (VER-216..222) merged to `dev` via PRs #251-#255, #258, #259 (+ deflake #256) on
 2026-07-17; docs in `docs/video-preanalysis.md`.
 
+Status 2026-08-16: Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first
+verdicts, VER-224..230) created in Linear; the same day an epic run delivered
+VER-224 (PR #268), VER-226 (PR #269), VER-227 (PR #270), and VER-229 (PRs #271+#272)
+to `dev`, all Done. VER-225 needs a local-inference training environment (Docker,
+seeded ClaimReview corpus) and stays `Todo`; VER-228 and VER-230 wait behind it.
+
 ---
 
 ## Epic A - Ingestion robustness & source expansion (VER-188..204, 17 cards)
@@ -177,6 +183,55 @@ political_path,live,document_analyzer,claimspan,video_analyzer}.go`, `stack/back
 
 **Parallelism:** the epic itself can run now; internally strictly serial (E1 -> E2 -> E3,
 delivered merge-then-next on `dev`).
+
+---
+
+## Epic F - Vector-first verdicts (VER-224..230, 7 cards)
+
+**Scope for its agent.** Make generative LLM calls the last resort of the fact-check
+pipeline: a French deterministic gate, a local encoder check-worthiness classifier with a
+calibrated grey zone, an NLI stance scorer ahead of the LLM verifier, cross-encoder
+reranking after hybrid fusion, evidence publication dates, per-claim telemetry, and a
+final default flip with an enforced generative-call budget.
+
+**Context.** The retrieve-then-verify path (VER-83..92) and hybrid RRF retrieval
+(VER-191/195) match current best practice, but every check-worthiness and verdict
+decision is still a Haiku call and the free heuristic gate is English-only, which inverts
+the product doctrine of vector data first, generative models last. The epic inserts
+non-generative stages in front of every LLM call - fine-tuned CamemBERTa-v2 classifier,
+`camembertav2-base-xnli` NLI scorer (FEVER-style), Voyage `rerank-2.5` reranking - and
+calibrates the grey zones from real telemetry. All schema changes are additive; no data
+export/import is needed. Card bodies live in Linear (VER-224..230). The Linear label
+`epic:vector-first` still needs one-click creation inside the `epic` label group (the MCP
+connector cannot create labels); apply it to all seven cards once created.
+
+**Cards & internal order:**
+- `VER-225 (local classifier + inference substrate) -> VER-228 (NLI stance scorer)`.
+- `VER-227 (published_at + recency) -> VER-229 (telemetry table)` - serialized only to
+  keep migration numbering linear; no functional coupling.
+- `VER-224` (French deterministic gate) and `VER-226` (reranker) are independent.
+- `{VER-228, VER-226} -> VER-230` (vector-first defaults + LLM-call budget), last.
+
+**Entry cards (no deps, start immediately):** VER-224, VER-225, VER-226, VER-227.
+
+**Owns / touches:** `stack/backend/internal/service/{precheck_classifier,precheck_cascade,
+precheck,verify_path,match,confidence}.go`, `stack/backend/internal/checkworthy/`, new
+local-inference, NLI, and rerank packages under `stack/backend/internal/`,
+`stack/backend/internal/eval/`, `stack/backend/migrations/` (additive, 0021+),
+`stack/backend/queries/`, source renderers under `stack/backend/internal/source/` and
+`stack/backend/internal/wiki/`, `stack/backend/internal/config/config.go`,
+`stack/backend/cmd/server/main.go`, `docker-compose.yml`, `.env.example`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A..E are delivered. VER-223 (transcript flow,
+In Review) is frontend-only; no file overlap with this epic.
+
+**Parallelism:** the four entry cards run in parallel under these hot-file rules:
+`internal/config/config.go` and `cmd/server/main.go` are append-only (nearly every card
+adds flags/wiring; second-to-merge rebases, never rewrites); the committed eval baseline
+(`internal/eval/` fixtures) is extended by VER-225/226/228/230 with additive keys only;
+`verify_path.go` is contended by VER-227 (fast-borrow age guard) and VER-228 (NLI
+insertion) - VER-227 merges first or the later branch rebases. One agent owns the whole
+epic; the ordering above is intra-epic scheduling, not a license to split it.
 
 ---
 
