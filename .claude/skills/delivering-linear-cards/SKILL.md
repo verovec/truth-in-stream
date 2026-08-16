@@ -51,6 +51,18 @@ Once the PR is open, the merge is automatic and gated only on the PR's CI. No hu
 
 This requires the harness to allow `gh pr merge` and `gh pr checks` for this repo (a one-time user-granted permission; an agent cannot grant itself merge rights). Without it the merge step prompts the user - an acceptable manual fallback, but the flow assumes the rules are in place. See the `/pick` command's "One-time permission" note for the exact rules.
 
+## Epic run (`/pick <epic-tag>`)
+
+`/pick epic:<slug>` hands one session the whole epic: it filters the ready queue to the cards
+carrying that Linear label (fallback: the epic's card list in the epic map when the label does
+not exist yet) and repeats the per-card workflow above - claim, TDD, `/code-review`, unit gate
+green, PR against `dev` (or stacked on the dependency branch), merge on green CI, card Done -
+then moves to the next ready epic card, until no epic card is claimable. Strictly one card in
+flight at a time; keep checkboxes and states current per card, exactly as in the single-card
+flow. When the last epic card lands, run the epic close-out digest below. Cards of the epic
+claimed by other sessions are respected (the claim protocol decides); report any card left
+blocked instead of ending silently.
+
 ## Epic close-out digest
 
 When the card you just moved to Done has a parent epic, check whether that completes the epic and,
