@@ -150,22 +150,46 @@ func (r GateReport) Format() string {
 	)
 }
 
-// CheckGate compares a gate report against the baseline's gate floors and
+// GateFailure is one gate metric that missed its committed bound. Ceiling
+// distinguishes a maximum (the call rate) from a floor, so the failure
+// message states the violation in the right direction.
+type GateFailure struct {
+	Metric  string
+	Got     float64
+	Want    float64
+	Ceiling bool
+}
+
+// CheckGate compares a gate report against the baseline's gate bounds and
 // returns the misses in a stable order. A nil receiver section means the
 // baseline does not gate the local classifier yet.
-func (b Baseline) CheckGate(r GateReport) []RetrievalFailure {
+func (b Baseline) CheckGate(r GateReport) []GateFailure {
 	if b.Gate == nil {
 		return nil
 	}
-	var failures []RetrievalFailure
+	var failures []GateFailure
 	if lt(r.CascadeAccuracy, b.Gate.MinCascadeAccuracy) {
-		failures = append(failures, RetrievalFailure{Category: "cascade-accuracy", Got: r.CascadeAccuracy, Want: b.Gate.MinCascadeAccuracy})
+		failures = append(failures, GateFailure{Metric: "cascade-accuracy", Got: r.CascadeAccuracy, Want: b.Gate.MinCascadeAccuracy})
 	}
 	if lt(r.OutsideBandLLMAgreement, b.Gate.MinOutsideBandLLMAgreement) {
-		failures = append(failures, RetrievalFailure{Category: "llm-agreement", Got: r.OutsideBandLLMAgreement, Want: b.Gate.MinOutsideBandLLMAgreement})
+		failures = append(failures, GateFailure{Metric: "llm-agreement", Got: r.OutsideBandLLMAgreement, Want: b.Gate.MinOutsideBandLLMAgreement})
 	}
 	if lt(b.Gate.MaxLLMCallRate, r.LLMCallRate) {
-		failures = append(failures, RetrievalFailure{Category: "llm-call-rate", Got: r.LLMCallRate, Want: b.Gate.MaxLLMCallRate})
+		failures = append(failures, GateFailure{Metric: "llm-call-rate", Got: r.LLMCallRate, Want: b.Gate.MaxLLMCallRate, Ceiling: true})
 	}
 	return failures
+}
+
+// FormatGateFailures renders a gate failure list as a multi-line message, one
+// line per missed bound, phrased by direction.
+func FormatGateFailures(failures []GateFailure) string {
+	var out string
+	for _, f := range failures {
+		if f.Ceiling {
+			out += fmt.Sprintf("\n  %-18s %.3f above ceiling %.3f", f.Metric, f.Got, f.Want)
+		} else {
+			out += fmt.Sprintf("\n  %-18s %.3f below floor %.3f", f.Metric, f.Got, f.Want)
+		}
+	}
+	return out
 }

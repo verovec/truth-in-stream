@@ -36,6 +36,13 @@ func initRuntime(libraryPath string) error {
 	return initErr
 }
 
+// maxConcurrentInferences bounds in-flight Run calls. A timed-out inference
+// cannot be cancelled inside ONNX Runtime, so without a bound an overloaded
+// CPU would accumulate concurrent native calls and reinforce the overload;
+// with it, excess callers fail open immediately and the cascade sheds load to
+// its existing fallback instead.
+const maxConcurrentInferences = 8
+
 // Scorer serves the fine-tuned check-worthiness classifier in-process on CPU.
 // Sessions and tokenizers are safe for concurrent Score calls.
 type Scorer struct {
@@ -43,6 +50,7 @@ type Scorer struct {
 	tokenizer  *tokenizers.Tokenizer
 	inputNames []string
 	timeout    time.Duration
+	inflight   chan struct{}
 }
 
 // New loads the tokenizer and model, then proves the pair usable with a
@@ -82,7 +90,7 @@ func New(cfg Config) (*Scorer, error) {
 		return nil, fmt.Errorf("localworthy: create session: %w", err)
 	}
 
-	s := &Scorer{session: session, tokenizer: tk, inputNames: inputNames, timeout: cfg.Timeout}
+	s := &Scorer{session: session, tokenizer: tk, inputNames: inputNames, timeout: cfg.Timeout, inflight: make(chan struct{}, maxConcurrentInferences)}
 	if _, err := s.Score(context.Background(), "bonjour"); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("localworthy: health check: %w", err)
@@ -97,12 +105,19 @@ func (s *Scorer) Score(ctx context.Context, text string) (float64, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
+	select {
+	case s.inflight <- struct{}{}:
+	default:
+		return 0, fmt.Errorf("localworthy: %d inferences already in flight", maxConcurrentInferences)
+	}
+
 	type outcome struct {
 		p   float64
 		err error
 	}
 	done := make(chan outcome, 1)
 	go func() {
+		defer func() { <-s.inflight }()
 		p, err := s.infer(text)
 		done <- outcome{p: p, err: err}
 	}()

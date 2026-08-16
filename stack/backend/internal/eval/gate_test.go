@@ -3,6 +3,7 @@ package eval
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -139,7 +140,7 @@ func TestCheckGateFloors(t *testing.T) {
 			t.Errorf("CheckGate = %v, want no failures", failures)
 		}
 	})
-	t.Run("each floor can fail", func(t *testing.T) {
+	t.Run("each bound can fail", func(t *testing.T) {
 		t.Parallel()
 		b := Baseline{Gate: &GateBaseline{MinCascadeAccuracy: 0.95, MinOutsideBandLLMAgreement: 0.95, MaxLLMCallRate: 0.1}}
 		failures := b.CheckGate(rep)
@@ -148,9 +149,19 @@ func TestCheckGateFloors(t *testing.T) {
 		}
 		wantOrder := []string{"cascade-accuracy", "llm-agreement", "llm-call-rate"}
 		for i, f := range failures {
-			if f.Category != wantOrder[i] {
-				t.Errorf("failure %d = %q, want %q", i, f.Category, wantOrder[i])
+			if f.Metric != wantOrder[i] {
+				t.Errorf("failure %d = %q, want %q", i, f.Metric, wantOrder[i])
 			}
+			if wantCeiling := f.Metric == "llm-call-rate"; f.Ceiling != wantCeiling {
+				t.Errorf("failure %q Ceiling = %v, want %v", f.Metric, f.Ceiling, wantCeiling)
+			}
+		}
+		msg := FormatGateFailures(failures)
+		if !strings.Contains(msg, "llm-call-rate") || !strings.Contains(msg, "above ceiling") {
+			t.Errorf("FormatGateFailures does not phrase the call-rate ceiling correctly:%s", msg)
+		}
+		if !strings.Contains(msg, "below floor") {
+			t.Errorf("FormatGateFailures does not phrase floors correctly:%s", msg)
 		}
 	})
 }

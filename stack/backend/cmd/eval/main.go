@@ -92,7 +92,7 @@ func runGateCheck(base eval.Baseline, gatePath string, out io.Writer) error {
 	report := "\n" + rep.Format()
 	failures := base.CheckGate(rep)
 	if len(failures) > 0 {
-		report += fmt.Sprintf("\n\nFAIL: check-worthiness gate below baseline:%s\n", eval.FormatFailures(failures))
+		report += fmt.Sprintf("\n\nFAIL: check-worthiness gate outside baseline bounds:%s\n", eval.FormatGateFailures(failures))
 		if _, err := io.WriteString(out, report); err != nil {
 			return err
 		}
