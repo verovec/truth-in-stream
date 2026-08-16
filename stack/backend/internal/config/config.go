@@ -1489,7 +1489,7 @@ func (p Political) RouterLang() string {
 }
 
 // LoadPolitical reads the political fact-checking mode flag and routing knob from
-// the environment. FACTCHECK_POLITICAL gates the whole feature (default off); an
+// the environment. FACTCHECK_POLITICAL is the mode kill-switch (default on since VER-230); an
 // unparseable value fails fast rather than silently defaulting.
 // FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS overrides the thin-result floor and must
 // be positive (a non-positive floor would treat every result as thin and stampede
