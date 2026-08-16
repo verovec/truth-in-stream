@@ -75,6 +75,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	telemetryCfg, err := config.LoadTelemetry()
+	if err != nil {
+		return err
+	}
 	precheckCfg, err := config.LoadPrecheck()
 	if err != nil {
 		return err
@@ -337,7 +341,24 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+	var telemetryRec *service.TelemetryRecorder
+	if telemetryCfg.Enabled {
+		telemetryRec, err = service.NewTelemetryRecorder(pgStore, service.TelemetryConfig{
+			QueueDepth: telemetryCfg.QueueDepth,
+			BatchSize:  32,
+			FlushEvery: telemetryCfg.FlushEvery,
+			SampleRate: telemetryCfg.SampleRate,
+			Locale:     string(locale),
+			Logger:     logger,
+		})
+		if err != nil {
+			return err
+		}
+		// Fire-and-forget by design: telemetry is lossy by contract, so the
+		// final in-flight batch may be lost on shutdown rather than delaying it.
+		go telemetryRec.Run(ctx)
+	}
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 	if err != nil {
 		return err
 	}
@@ -355,7 +376,7 @@ func run(logger *slog.Logger) error {
 	// interrupted by a prior crash to failed so the admin can reanalyse.
 	var batchVerifier service.BatchVerifier
 	if verifyPath != nil {
-		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 		if err != nil {
 			return err
 		}
@@ -750,7 +771,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, rerankCfg 
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, telemetry *service.TelemetryRecorder, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -789,6 +810,7 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGat
 		Logger:            logger,
 		Political:         pol,
 		SecondPass:        secondPassCfg,
+		Telemetry:         telemetry,
 	})
 	if err != nil {
 		return nil, err

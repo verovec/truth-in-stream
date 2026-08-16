@@ -922,6 +922,13 @@ services:
       # Recency weighting (VER-227): empty/0 keeps scoring unchanged; a positive
       # duration halves a dated passage's corroboration weight per half-life.
       MATCH_RECENCY_HALF_LIFE: "${MATCH_RECENCY_HALF_LIFE:-}"
+      # Per-claim telemetry (VER-229): one analytical claim_checks row per live
+      # decision, written asynchronously; on by default, lossy by contract.
+      # Bounded by TELEMETRY_SAMPLE_RATE and the telemetryretention sweep.
+      TELEMETRY_ENABLED: "${TELEMETRY_ENABLED:-}"
+      TELEMETRY_QUEUE_DEPTH: "${TELEMETRY_QUEUE_DEPTH:-}"
+      TELEMETRY_SAMPLE_RATE: "${TELEMETRY_SAMPLE_RATE:-}"
+      TELEMETRY_FLUSH_INTERVAL: "${TELEMETRY_FLUSH_INTERVAL:-}"
       # Retrieval tuning (VER-202). Per-corpus matcher knobs; empty keeps the
       # backend defaults. Threshold and top-k are already per corpus (curated
       # claims vs wiki evidence); the ef_search knobs raise one corpus's HNSW

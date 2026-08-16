@@ -130,19 +130,23 @@ func (sp *secondPass) upgrade(orig *VerifiedVerdict, reasoned ClaimVerdict, matc
 // path - so the one place that changes when the gate protocol changes is here, not four.
 // stage names the calling path (e.g. "live credibility", "batch political") so a
 // reverify failure in the logs still says which pipeline and axis degraded.
-func (vp *VerifyPath) gateReverify(ctx context.Context, stage string, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool) {
+// gateReverify runs the terminal gate's weakness check and, when the verdict
+// qualifies, the deeper reasoning call. It reports attempted - whether the
+// generative call was actually made, the cost telemetry counts - separately
+// from ok, whether a reasoned verdict came back to fold in.
+func (vp *VerifyPath) gateReverify(ctx context.Context, stage string, claim AtomicClaim, fast *VerifiedVerdict, passages []EvidencePassage) (ClaimVerdict, bool, bool) {
 	sp := vp.secondPass
 	if !sp.weak(fast, len(passages)) {
-		return ClaimVerdict{}, false
+		return ClaimVerdict{}, false, false
 	}
 	reasoned, err := sp.reverify(ctx, claim.Text, passages)
 	if err != nil {
 		if ctx.Err() == nil {
 			vp.logger.ErrorContext(ctx, "terminal-gate reverify failed", slog.String("stage", stage), slog.String("claim_id", claim.ClaimID), slog.Any("err", err))
 		}
-		return ClaimVerdict{}, false
+		return ClaimVerdict{}, true, false
 	}
-	return reasoned, true
+	return reasoned, true, true
 }
 
 // reverify runs the deeper reasoning call under its own bounded deadline,
@@ -171,22 +175,22 @@ func (sp *secondPass) reverify(ctx context.Context, claim string, passages []Evi
 // the viewer now sees. This is required precisely because the gate now fires on weak
 // (including unverifiable) verdicts: an unverifiable-to-definite upgrade would otherwise
 // leave the tally showing the claim as unverifiable while the UI shows it disputed.
-func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) {
+func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, mem *speakerMemory, pu pendingUnit, claim AtomicClaim, fast *VerifiedVerdict, ret retrieved) (*VerifiedVerdict, bool, bool) {
 	if vp.secondPass == nil {
-		return
+		return fast, false, false
 	}
 	// passagesFromMatches counts the evidence-bearing passages the reverifier would
 	// actually receive (those carrying an evidence id), not every retrieved match, so
 	// the gate reflects what the deeper model can ground against rather than the raw hit
 	// count.
 	passages := passagesFromMatches(ret.matches)
-	reasoned, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passages)
+	reasoned, attempted, ok := vp.gateReverify(ctx, "live credibility", claim, fast, passages)
 	if !ok {
-		return
+		return fast, attempted, false
 	}
 	upgraded := vp.secondPass.upgrade(fast, reasoned, ret.matches)
 	if upgraded == fast {
-		return
+		return fast, attempted, false
 	}
 	// Overwrite the cache entry so a repeat of the same claim within the TTL replays
 	// the upgraded verdict, not the stale fast one; the retrieval embedding is carried
@@ -194,6 +198,7 @@ func (vp *VerifyPath) maybeReverify(ctx context.Context, out chan<- LiveEvent, m
 	vp.cachePut(ret.embedding, claim.Text, SourceVerified, upgraded)
 	vp.emitVerdict(ctx, out, pu.members[0].id, claim, pu.members[0].seg, SourceVerified, upgraded)
 	vp.recordSpeakerReTally(ctx, out, mem, pu.speaker, fast, upgraded)
+	return upgraded, true, true
 }
 
 // applyReverifyBatch is the batch counterpart of maybeReverify: it re-judges a weak
@@ -208,7 +213,7 @@ func (vp *VerifyPath) applyReverifyBatch(ctx context.Context, claim AtomicClaim,
 		return fast
 	}
 	passages := passagesFromMatches(ret.matches)
-	reasoned, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passages)
+	reasoned, _, ok := vp.gateReverify(ctx, "batch credibility", claim, fast, passages)
 	if !ok {
 		return fast
 	}
