@@ -1098,11 +1098,13 @@ services:
       # Curated fast-borrow age guard (VER-227): empty/0 disables; a positive
       # duration stops borrowing verdicts checked longer ago than that.
       FACTCHECK_POLITICAL_CURATED_MAX_AGE: "${FACTCHECK_POLITICAL_CURATED_MAX_AGE:-}"
-      # Political source packs (read only when FACTCHECK_POLITICAL is on). Web search
-      # is the mandatory open-ended fallback, so WEBSEARCH_API_KEY (a Brave token) is
-      # required in political mode; the press pack joins only when PRESS_API_KEY is
-      # set, and the stats pack is keyless (optional STATS_TIMEOUT / STATS_CACHE_TTL
-      # tuning only). Secrets are never logged.
+      # Political source packs (read only when FACTCHECK_POLITICAL is on, the default
+      # since VER-230). Every pack is optional: WEBSEARCH_API_KEY (a Brave token)
+      # wires the open-ended fallback and PRESS_API_KEY the attribution pack, each
+      # joining only when its own key is set; the stats pack is keyless (optional
+      # STATS_TIMEOUT / STATS_CACHE_TTL tuning only). Without a web-search key the
+      # backend starts with a warning and open-ended claims retrieve no evidence.
+      # Secrets are never logged.
       WEBSEARCH_API_KEY: "${WEBSEARCH_API_KEY:-}"
       WEBSEARCH_TIMEOUT: "${WEBSEARCH_TIMEOUT:-}"
       PRESS_API_KEY: "${PRESS_API_KEY:-}"

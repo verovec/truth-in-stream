@@ -23,7 +23,7 @@ committed calibration runs recorded in `stack/ml/checkworthy`.
 | Local check-worthiness band | `CHECKWORTHINESS_LOCAL_ENABLED` | on (needs artifacts) | band [0.35, 0.75); calibration folded into the exported head |
 | Generative gate (band only) | `CHECKWORTHINESS_ENABLED` | on (needs key) | consulted only inside the band once the local scorer is active |
 | Verify path | `FACTCHECK_VERIFY_PATH` | on (needs key) | fast-borrow tau 0.9; retrieval floor 0.45 |
-| Political two-axis mode | `FACTCHECK_POLITICAL` | on (French locale) | curated tau, two-axis literal+flags verdicts |
+| Political two-axis mode | `FACTCHECK_POLITICAL` | on (French locale, needs no key) | curated tau, two-axis literal+flags verdicts |
 | NLI stance stage | `FACTCHECK_NLI_ENABLED` | on (needs artifacts) | temperature 1.8634; entail >= 0.70, contradict >= 0.90, min agree 1, max 6 passages |
 | Second pass | `FACTCHECK_SECOND_PASS` | off (opt-in) | trigger below 0.8, adopt at >= 0.9 |
 
@@ -70,6 +70,24 @@ verdict stage. The streaming transcription leg is configuration-invariant and
 not part of the comparison; retrieval quality is covered by the retrieval
 gate and the `-rerank` comparison (VER-226: recall@1 93.3% -> 100% measured
 live).
+
+## Operating the political source packs
+
+Political mode is on by default and needs no key of its own, but the sources it
+routes to are each independently keyed and each independently optional:
+
+| Pack | Key | Unset behavior |
+|---|---|---|
+| Web search (open-ended fallback) | `WEBSEARCH_API_KEY` (Brave) | pack dropped with a boot warning; open-ended claims retrieve no evidence and stay unverified |
+| Press / attribution | `PRESS_API_KEY` (Brave) | pack dropped silently; attribution claims fall through to web search |
+| Stats (INSEE/Eurostat) | none | always on |
+| Voting records | none (reads the political store) | always on |
+
+A key that is set but paired with malformed tuning (a bad `WEBSEARCH_TIMEOUT` or
+`PRESS_TIMEOUT`) still fails fast: only the missing-key case degrades, so a typo
+is never swallowed as "pack absent". Brave keys come from
+<https://brave.com/search/api/> on the Search plan (both packs call
+`/res/v1/web/search`); the $5 of monthly free credits covers local development.
 
 ## Operating the artifacts
 
