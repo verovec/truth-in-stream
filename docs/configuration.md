@@ -288,9 +288,12 @@ equivalent.
 The gate is strictly evidence-only: a claim that retrieved no passages never escalates, and
 only a grounded, cited re-judgment at the min-confidence floor can replace a weak verdict.
 
-The French/EU political two-axis mode (`FACTCHECK_POLITICAL`) and its source packs
-(`WEBSEARCH_API_KEY`, `PRESS_API_KEY`, stats-pack tuning) are documented inline in `.env.example`;
-they are read only when political mode is on.
+The French/EU political two-axis mode (`FACTCHECK_POLITICAL`, default on since VER-230) and its
+source packs (`WEBSEARCH_API_KEY`, `PRESS_API_KEY`, stats-pack tuning) are documented inline in
+`.env.example`; they are read only when political mode is on. Every source-pack key is optional:
+an unset key drops that pack (with a boot warning for web search, the open-ended fallback) rather
+than blocking startup, so a keyless deployment answers what the keyless stats and voting packs
+cover and reports the rest as unverified.
 
 ## Authentication (Keycloak identity gate)
 

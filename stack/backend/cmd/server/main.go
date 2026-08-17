@@ -999,28 +999,38 @@ func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Politica
 
 // buildRouter assembles the context-aware source router over the configured source
 // packs. The stats and voting packs are keyless (the voting pack reads the
-// political store); the press pack joins only when its key is set; web search is
-// the mandatory open-ended fallback, so its key is required when political mode is
-// on - a missing key is a fail-fast misconfiguration rather than a router with no
-// fallback. The router's language tracks the political locale.
+// political store); the press and web-search packs join only when their own key is
+// set. Web search is the open-ended fallback every unrouted claim depends on, so
+// its absence is degraded loudly (a boot warning) rather than fatally: political
+// mode still answers statistic and voting-record claims from the keyless packs,
+// and open-ended claims retrieve no evidence instead of the server refusing to
+// start. The router's language tracks the political locale.
 func buildRouter(political config.Political, votingStore voting.Store, logger *slog.Logger) (*service.Router, error) {
-	websearchCfg, err := websearch.LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("political mode requires a web-search fallback: %w", err)
-	}
-	web, err := websearch.New(websearch.Config{APIKey: websearchCfg.APIKey, Timeout: websearchCfg.Timeout})
-	if err != nil {
-		return nil, err
-	}
-
 	statsCfg, err := stats.LoadConfig()
 	if err != nil {
 		return nil, err
 	}
 	retrievers := []source.Retriever{
-		web,
 		stats.New(stats.Config{Timeout: statsCfg.Timeout, CacheTTL: statsCfg.CacheTTL}),
 		voting.New(votingStore),
+	}
+
+	// Same contract as the press pack below: a missing key is a documented
+	// degradation, while a set key with malformed tuning (e.g. a bad
+	// WEBSEARCH_TIMEOUT) is a real misconfiguration and still fails fast, so a typo
+	// is never swallowed as "web search absent".
+	if os.Getenv("WEBSEARCH_API_KEY") != "" {
+		websearchCfg, err := websearch.LoadConfig()
+		if err != nil {
+			return nil, err
+		}
+		web, err := websearch.New(websearch.Config{APIKey: websearchCfg.APIKey, Timeout: websearchCfg.Timeout})
+		if err != nil {
+			return nil, err
+		}
+		retrievers = append(retrievers, web)
+	} else {
+		logger.Warn("political web-search fallback disabled: WEBSEARCH_API_KEY is unset; open-ended claims will retrieve no evidence")
 	}
 
 	// The press pack is optional: it joins the registry only when its own key is

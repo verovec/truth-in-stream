@@ -28,6 +28,9 @@ import (
 // constructed and the live path is exactly as before.
 type Router struct {
 	retrievers map[source.Kind]source.Retriever
+	// web is the open-ended fallback, or nil when the web-search pack is not
+	// configured; every read of it is guarded so an unkeyed deployment degrades to
+	// the keyless packs instead of failing to wire.
 	web        source.Retriever
 	minResults int
 	lang       string
@@ -58,11 +61,18 @@ var defaultRoutes = map[claimtype.Type][]source.Kind{
 
 // NewRouter builds a Router over the given retrievers, indexed by their advertised
 // Kind. It fails when two retrievers advertise the same Kind (an ambiguous
-// registry), when no web-search retriever is supplied (the fallback every
-// open-ended claim and every thin result depends on), or when MinResults is not
-// positive (a non-positive floor would make every result thin and stampede the
-// web fallback). The routing table is fixed (defaultRoutes); a future pack adds a
-// Kind constant and a route entry, not a Router field.
+// registry), when no retriever is supplied at all (a router that can never answer
+// anything), or when MinResults is not positive (a non-positive floor would make
+// every result thin and stampede the web fallback). The routing table is fixed
+// (defaultRoutes); a future pack adds a Kind constant and a route entry, not a
+// Router field.
+//
+// The web-search retriever is the open-ended fallback but is not required: when
+// its key is unset the pack is absent and the router degrades to the keyless packs
+// rather than refusing to build, so a deployment without a web-search key runs the
+// political path over stats and voting records instead of failing to start. Claims
+// that would have broadened to web then retrieve nothing, which the verify path
+// already treats as "no evidence" and never escalates.
 func NewRouter(retrievers []source.Retriever, cfg RouterConfig) (*Router, error) {
 	if cfg.MinResults < 1 {
 		return nil, fmt.Errorf("service: router min results must be positive, got %d", cfg.MinResults)
@@ -77,13 +87,12 @@ func NewRouter(retrievers []source.Retriever, cfg RouterConfig) (*Router, error)
 		}
 		byKind[r.Kind()] = r
 	}
-	web, ok := byKind[source.KindWebSearch]
-	if !ok {
-		return nil, fmt.Errorf("service: router requires a %q retriever for the web fallback", source.KindWebSearch)
+	if len(byKind) == 0 {
+		return nil, fmt.Errorf("service: router requires at least one retriever")
 	}
 	return &Router{
 		retrievers: byKind,
-		web:        web,
+		web:        byKind[source.KindWebSearch],
 		minResults: cfg.MinResults,
 		lang:       cfg.Lang,
 	}, nil
@@ -95,7 +104,9 @@ func NewRouter(retrievers []source.Retriever, cfg RouterConfig) (*Router, error)
 // the preferred adapters for the type are queried in order with the
 // coreference-resolved claim text and the caller's structured hints (a stats
 // series key, a resolved voting selector); when their combined yield is below
-// MinResults the router broadens to web search and merges its passages in.
+// MinResults the router broadens to web search and merges its passages in - or,
+// when no web pack is configured, lets the thin result stand and returns no
+// evidence for a claim that had no other source.
 // Evidence is deduplicated by its stable EvidenceID so a passage re-surfaced by
 // the fallback is never handed to the verifier twice.
 //
@@ -141,8 +152,9 @@ func (r *Router) Retrieve(ctx context.Context, claim string, ct claimtype.Type, 
 
 	// Thin (or empty) preferred result: broaden to web search, the
 	// precision-deferred fallback. When web was itself the preferred adapter it has
-	// already run; skip the redundant second call.
-	if !webRan {
+	// already run; skip the redundant second call. With no web pack configured
+	// there is nothing to broaden to and the thin result stands as-is.
+	if !webRan && r.web != nil {
 		evidence, err := r.web.Retrieve(ctx, q)
 		if err != nil {
 			lastErr = err
