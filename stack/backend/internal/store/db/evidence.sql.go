@@ -235,8 +235,83 @@ func (q *Queries) GetOtherEvidenceSource(ctx context.Context, source string) (st
 	return source_2, err
 }
 
+const lexicalSearchEvidenceChunks = `-- name: LexicalSearchEvidenceChunks :many
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata, published_at,
+       (embedding <=> $1)::float8 AS distance
+FROM evidence_chunks, websearch_to_tsquery('french', immutable_unaccent($2::text)) AS q
+WHERE search_vector @@ q
+  AND embedding IS NOT NULL
+  AND ($3::text[] IS NULL OR source = ANY($3::text[]))
+ORDER BY ts_rank_cd(search_vector, q) DESC, source, external_id, chunk_index
+LIMIT $4
+`
+
+type LexicalSearchEvidenceChunksParams struct {
+	QueryEmbedding *pgvector.HalfVector
+	QueryText      string
+	Sources        []string
+	ResultLimit    int32
+}
+
+type LexicalSearchEvidenceChunksRow struct {
+	Source      string
+	ExternalID  string
+	ChunkIndex  int32
+	Title       string
+	Url         string
+	Content     string
+	Kind        string
+	Metadata    []byte
+	PublishedAt pgtype.Timestamptz
+	Distance    float64
+}
+
+// Lexical half of hybrid retrieval (VER-195) over the evidence corpus, mirroring
+// LexicalSearchClaims. The GIN index on search_vector drives the @@ filter (a
+// bounded index scan, no seq scan); ts_rank_cd ranks by cover density. Only
+// embedded chunks are eligible so a fused hit always carries a real cosine
+// distance (the same wire shape SearchEvidenceChunks returns) and an unembedded
+// chunk - which has no vector similarity to fuse - is never a lexical-only match.
+// The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
+// natural key for a stable ranking.
+func (q *Queries) LexicalSearchEvidenceChunks(ctx context.Context, arg LexicalSearchEvidenceChunksParams) ([]LexicalSearchEvidenceChunksRow, error) {
+	rows, err := q.db.Query(ctx, lexicalSearchEvidenceChunks,
+		arg.QueryEmbedding,
+		arg.QueryText,
+		arg.Sources,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LexicalSearchEvidenceChunksRow{}
+	for rows.Next() {
+		var i LexicalSearchEvidenceChunksRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.ExternalID,
+			&i.ChunkIndex,
+			&i.Title,
+			&i.Url,
+			&i.Content,
+			&i.Kind,
+			&i.Metadata,
+			&i.PublishedAt,
+			&i.Distance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchEvidenceChunks = `-- name: SearchEvidenceChunks :many
-SELECT source, external_id, chunk_index, title, url, content, kind, metadata,
+SELECT source, external_id, chunk_index, title, url, content, kind, metadata, published_at,
        (embedding <=> $1)::float8 AS distance
 FROM evidence_chunks
 WHERE embedding IS NOT NULL
@@ -252,15 +327,16 @@ type SearchEvidenceChunksParams struct {
 }
 
 type SearchEvidenceChunksRow struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Metadata   []byte
-	Distance   float64
+	Source      string
+	ExternalID  string
+	ChunkIndex  int32
+	Title       string
+	Url         string
+	Content     string
+	Kind        string
+	Metadata    []byte
+	PublishedAt pgtype.Timestamptz
+	Distance    float64
 }
 
 // Approximate nearest-neighbor retrieval over the embedded corpus, mirroring
@@ -291,6 +367,7 @@ func (q *Queries) SearchEvidenceChunks(ctx context.Context, arg SearchEvidenceCh
 			&i.Content,
 			&i.Kind,
 			&i.Metadata,
+			&i.PublishedAt,
 			&i.Distance,
 		); err != nil {
 			return nil, err
@@ -319,7 +396,7 @@ reranked AS (
     ORDER BY distance
     LIMIT $4
 )
-SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind, e.metadata,
+SELECT e.source, e.external_id, e.chunk_index, e.title, e.url, e.content, e.kind, e.metadata, e.published_at,
        r.distance
 FROM reranked r
 JOIN evidence_chunks e USING (source, external_id, chunk_index)
@@ -334,15 +411,16 @@ type SearchEvidenceChunksBinaryQuantizedParams struct {
 }
 
 type SearchEvidenceChunksBinaryQuantizedRow struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Metadata   []byte
-	Distance   float64
+	Source      string
+	ExternalID  string
+	ChunkIndex  int32
+	Title       string
+	Url         string
+	Content     string
+	Kind        string
+	Metadata    []byte
+	PublishedAt pgtype.Timestamptz
+	Distance    float64
 }
 
 // Two-stage binary-quantization search (VER-176), opt-in and off by default.
@@ -391,6 +469,7 @@ func (q *Queries) SearchEvidenceChunksBinaryQuantized(ctx context.Context, arg S
 			&i.Content,
 			&i.Kind,
 			&i.Metadata,
+			&i.PublishedAt,
 			&i.Distance,
 		); err != nil {
 			return nil, err
@@ -451,6 +530,7 @@ const unembeddedEvidenceChunks = `-- name: UnembeddedEvidenceChunks :many
 SELECT source, external_id, chunk_index, title, url, content, kind, metadata
 FROM evidence_chunks
 WHERE embedding IS NULL
+  AND NOT (metadata @> '{"duplicate": true}')
   AND (source, external_id, chunk_index) > ($1::text, $2::text, $3::integer)
 ORDER BY source, external_id, chunk_index
 LIMIT $4
@@ -478,7 +558,11 @@ type UnembeddedEvidenceChunksRow struct {
 // keyset order to embed them in place. The embedding IS NULL filter scopes the
 // scan to the unembedded chunks a delta run produced. The keyset spans the full
 // (source, external_id, chunk_index) because external_id is unique only within a
-// source.
+// source. The metadata not-duplicate guard excludes the near-duplicate rows the
+// volume-control gate withheld (VER-203): the delta sync scans the whole shared
+// table, so without it a duplicate-flagged row (embedding IS NULL) of any source
+// would be re-embedded and re-served, defeating the gate. It mirrors the raw
+// live un-embedded scans' `notDuplicate` predicate.
 func (q *Queries) UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEvidenceChunksParams) ([]UnembeddedEvidenceChunksRow, error) {
 	rows, err := q.db.Query(ctx, unembeddedEvidenceChunks,
 		arg.AfterSource,
@@ -514,28 +598,30 @@ func (q *Queries) UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEv
 }
 
 const upsertEmbeddedEvidenceChunk = `-- name: UpsertEmbeddedEvidenceChunk :exec
-INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, embedding, synced_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+INSERT INTO evidence_chunks (source, external_id, chunk_index, title, url, content, kind, metadata, published_at, embedding, synced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
 ON CONFLICT (source, external_id, chunk_index) DO UPDATE
     SET title = EXCLUDED.title,
         url = EXCLUDED.url,
         content = EXCLUDED.content,
         kind = EXCLUDED.kind,
         metadata = evidence_chunks.metadata || EXCLUDED.metadata,
+        published_at = EXCLUDED.published_at,
         embedding = EXCLUDED.embedding,
         synced_at = now()
 `
 
 type UpsertEmbeddedEvidenceChunkParams struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Metadata   []byte
-	Embedding  *pgvector.HalfVector
+	Source      string
+	ExternalID  string
+	ChunkIndex  int32
+	Title       string
+	Url         string
+	Content     string
+	Kind        string
+	Metadata    []byte
+	PublishedAt pgtype.Timestamptz
+	Embedding   *pgvector.HalfVector
 }
 
 // Crawl ingestion writes content and embedding together: the worker embeds the
@@ -552,6 +638,7 @@ func (q *Queries) UpsertEmbeddedEvidenceChunk(ctx context.Context, arg UpsertEmb
 		arg.Content,
 		arg.Kind,
 		arg.Metadata,
+		arg.PublishedAt,
 		arg.Embedding,
 	)
 	return err

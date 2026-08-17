@@ -37,6 +37,12 @@ needs none of this — see the [README quick start](../README.md#quick-start).
   (`scripts/aws-target-guard.sh`) refuses every ingestion run until the placeholder
   ids are replaced. The database scripts do not read it — they target whatever
   account the active profile resolves to, so check the profile before tunnelling.
+- Build the metrics-poller Lambda binary before the first `terraform apply` of
+  either environment: `make lambda-mqmetrics` (in `stack/backend`) compiles
+  `build/mqmetrics/bootstrap`, which the metrics lambda packages. Ingestion
+  observability (the queue dashboard and the backlog/DLQ/no-run alarms) is on by
+  default, so a missing binary fails the apply; set `enable_metrics_lambda = false`
+  in a cost-sensitive environment to skip it.
 
 ### 2. Bootstrap the Terraform state backend (once)
 
@@ -217,8 +223,8 @@ political fast path, `political_claims`); `wiki_chunks` holds evidence used to
 verify matched claims and never changes coverage. So the order of value is:
 schema (migrations) -> curated claims (seed) -> evidence corpora (Wikipedia,
 official statistics) -> structured lookups (parliamentary voting records). Locally,
-`make up` already migrates and seeds all curated datasets offline from the
-committed embedding cache.
+`make up` migrates; `make seed` loads all curated datasets offline from the
+committed embedding cache (seeding is explicit, never part of the boot).
 
 ### Choose a path
 
@@ -266,7 +272,8 @@ and the underlying commands accept `--stop-after` to do it automatically. Detail
 ### Local path: build locally, push to prod
 
 ```sh
-make up                                                   # postgres + migrations + offline seed
+make up                                                   # postgres + migrations (no seed)
+make seed                                                 # optional: offline curated fixtures
 make fleet-up                                             # broker + embedding worker fleet
 make wiki-populate                                        # bulk Wikipedia corpus build (Voyage key)
 make stats-ingest                                         # Eurostat + INSEE + interior ministry passages

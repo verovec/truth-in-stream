@@ -44,7 +44,7 @@ func TestAnalyzeTextGateSkip(t *testing.T) {
 		Decomposer: fakeDecomposer{}, Matcher: liveMatcher{}, Verifier: &fakeVerifier{},
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), gate, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), gate, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestAnalyzeTextGateError(t *testing.T) {
 		Decomposer: fakeDecomposer{}, Matcher: liveMatcher{}, Verifier: &fakeVerifier{},
 	})
 
-	if _, err := vp.AnalyzeText(t.Context(), gate, text, "s0"); err == nil {
+	if _, err := vp.AnalyzeText(t.Context(), gate, text, "", "s0"); err == nil {
 		t.Fatal("gate failure was swallowed")
 	}
 }
@@ -82,7 +82,7 @@ func TestAnalyzeTextNotAClaim(t *testing.T) {
 		Matcher:    liveMatcher{}, Verifier: &fakeVerifier{},
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestAnalyzeTextCuratedFastBorrow(t *testing.T) {
 		Verifier:   verifier,
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAnalyzeTextVerifies(t *testing.T) {
 		Verifier:   verifier,
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestAnalyzeTextNoEvidence(t *testing.T) {
 		Matcher:    liveMatcher{}, Verifier: verifier,
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -194,6 +194,9 @@ func TestAnalyzeTextNoEvidence(t *testing.T) {
 	c := res.Claims[0]
 	if c.Status != ClaimStatusVerified || c.Verdict == nil || c.Verdict.Verdict != VerdictUnverifiable || c.Verdict.Basis != BasisKnowledge {
 		t.Errorf("claim = %+v / %+v, want verified unverifiable/knowledge", c, c.Verdict)
+	}
+	if c.Verdict != nil && c.Verdict.Rationale != noSourceRationale {
+		t.Errorf("rationale = %q, want the fixed French no-source rationale", c.Verdict.Rationale)
 	}
 	if len(verifier.seen()) != 0 {
 		t.Errorf("no-evidence claim still called the verifier: %v", verifier.seen())
@@ -211,7 +214,7 @@ func TestAnalyzeTextVerifierError(t *testing.T) {
 		Verifier:   verifier,
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText returned a fatal error for a per-claim failure: %v", err)
 	}
@@ -234,7 +237,11 @@ func TestAnalyzeTextPoliticalTwoAxis(t *testing.T) {
 	classifier := fakeClassifier{}
 	router := &fakeRouterRetriever{byClaim: map[string][]source.Evidence{text: evidence}}
 	verifier := &fakePoliticalVerifier{byClaim: map[string]PoliticalVerdict{
-		text: {Literal: string(domain.LiteralInaccurate), Basis: BasisEvidence, Flags: []string{"missing-context"}, Confidence: 0.8, Rationale: "les chiffres different"},
+		text: {
+			Literal: string(domain.LiteralInaccurate), Basis: BasisEvidence, Flags: []string{"missing-context"},
+			Confidence: 0.8, Rationale: "les chiffres different",
+			Citations: []EvidenceCitation{{EvidenceID: evidence[0].ID.String(), QuotedSpan: "defense +12%"}},
+		},
 	}}
 	vp := newBatchVerifyPath(t, VerifyPathConfig{
 		Decomposer: fakeDecomposer{byText: map[string][]string{text: {text}}},
@@ -243,7 +250,7 @@ func TestAnalyzeTextPoliticalTwoAxis(t *testing.T) {
 		Political:  &PoliticalConfig{Classifier: classifier, Retriever: router, Verifier: verifier},
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -284,7 +291,7 @@ func TestAnalyzeTextPoliticalNoEvidence(t *testing.T) {
 		Political: &PoliticalConfig{Classifier: fakeClassifier{}, Retriever: router, Verifier: verifier},
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}
@@ -294,6 +301,9 @@ func TestAnalyzeTextPoliticalNoEvidence(t *testing.T) {
 	c := res.Claims[0]
 	if c.Status != ClaimStatusVerified || c.Verdict == nil || c.Verdict.Verdict != VerdictUnverifiable {
 		t.Errorf("claim = %+v / %+v, want verified unverifiable", c, c.Verdict)
+	}
+	if c.Verdict != nil && c.Verdict.Rationale != noSourceRationale {
+		t.Errorf("rationale = %q, want the fixed French no-source rationale", c.Verdict.Rationale)
 	}
 	if len(verifier.seen()) != 0 {
 		t.Errorf("no-evidence political claim still called the verifier: %v", verifier.seen())
@@ -323,7 +333,7 @@ func TestAnalyzeTextNeverSheds(t *testing.T) {
 		VerifyQueueDepth:  0,
 	})
 
-	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "s0")
+	res, err := vp.AnalyzeText(t.Context(), allowAllPrechecker{}, text, "", "s0")
 	if err != nil {
 		t.Fatalf("AnalyzeText: %v", err)
 	}

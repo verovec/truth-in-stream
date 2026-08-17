@@ -243,13 +243,39 @@ func TestVerifyPoliticalForcesStructuredToolCall(t *testing.T) {
 	}
 }
 
-func TestVerifyPoliticalRequiresPassages(t *testing.T) {
+func TestVerifyPoliticalNoPassagesJudgesFromKnowledge(t *testing.T) {
 	t.Parallel()
-	c := newPoliticalTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("VerifyPolitical must not call the model when no passages are supplied")
+	// The knowledge fallback for a sparse evidence corpus: with no passages the
+	// two-axis verifier is still asked, and the guard demotes any claimed
+	// evidence grounding to a capped knowledge basis - a fabricated citation
+	// cannot survive an empty passage set.
+	c := newPoliticalTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, politicalToolUseResponse(t, map[string]any{
+			"literal":    LiteralAccurate,
+			"basis":      BasisEvidence,
+			"flags":      []any{},
+			"confidence": 0.9,
+			"citations":  []any{map[string]any{"evidence_id": "made-up", "quoted_span": "fabricated"}},
+			"rationale":  "conforme aux chiffres publies",
+		}))
 	})
-	if _, err := c.VerifyPolitical(context.Background(), "une affirmation", nil); err == nil {
-		t.Fatal("expected an error when no evidence passages are supplied")
+
+	got, err := c.VerifyPolitical(context.Background(), "une affirmation", nil)
+	if err != nil {
+		t.Fatalf("VerifyPolitical: %v", err)
+	}
+	if got.Literal != LiteralAccurate {
+		t.Errorf("literal = %q, want %q", got.Literal, LiteralAccurate)
+	}
+	if got.Basis != BasisKnowledge {
+		t.Errorf("basis = %q, want demoted %q", got.Basis, BasisKnowledge)
+	}
+	if got.Confidence != knowledgeConfidenceCap {
+		t.Errorf("confidence = %v, want capped %v", got.Confidence, knowledgeConfidenceCap)
+	}
+	if len(got.Citations) != 0 {
+		t.Errorf("citations = %v, want the fabricated citation dropped", got.Citations)
 	}
 }
 

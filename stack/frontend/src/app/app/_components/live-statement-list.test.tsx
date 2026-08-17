@@ -2,10 +2,12 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
+import {
+  TranscriptDisplayProvider,
+  useTranscriptDisplay,
+} from "@/components/live/transcript-display";
 import { renderWithPlayback } from "@/test/playback";
-import type { SkipReason } from "@/lib/fact-check/api";
 import { fr } from "@/lib/i18n/dictionaries/fr";
-import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveStatement } from "@/lib/live/statements";
 import { stubScrollLayout } from "@/test/scroll-layout";
 import { LiveStatementList } from "./live-statement-list";
@@ -39,6 +41,17 @@ function subtitleList() {
   return screen.getByRole("list", { name: t.transcriptAria });
 }
 
+// ToggleProbe exposes the display context's toggle as a plain button so a test
+// can flip the unverified-highlights preference the way the strip does.
+function ToggleProbe() {
+  const { toggleUnverified } = useTranscriptDisplay();
+  return (
+    <button type="button" onClick={toggleUnverified}>
+      probe-toggle
+    </button>
+  );
+}
+
 describe("LiveStatementList", () => {
   test("renders timestamps in tabular sans numerals, not a mono face", () => {
     renderWithPlayback(
@@ -55,19 +68,188 @@ describe("LiveStatementList", () => {
     expect(timestamp?.className).toContain("tabular-nums");
   });
 
-  test("renders a statement's atomic claims under it, suppressing the generic marker", () => {
+  test("marks the exact words a claim was checked against, tinted by its verdict", () => {
     renderWithPlayback(
       <LiveStatementList
-        statements={[analysing("0", 0, "the bridge opened in 1937")]}
+        statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
         selectedStatementId={null}
-        claimsFor={(id) =>
-          id === "0"
+        highlightsFor={(segmentId) =>
+          segmentId === "0"
             ? [
                 {
+                  unitId: "0",
                   claimId: "0-0",
-                  text: "the bridge opened in 1937",
+                  start: 3,
+                  end: 19,
                   status: "verified",
-                  source: "verified",
+                  verdict: "disputed",
+                },
+              ]
+            : []
+        }
+      />,
+    );
+    const mark = subtitleList().querySelector("mark");
+    expect(mark?.textContent).toBe("chomage a baisse");
+    expect(mark?.getAttribute("data-claim-id")).toBe("0-0");
+    expect(mark?.className).toContain("bg-verdict-disputed");
+    // The sentence's full text is intact around the mark.
+    expect(subtitleList().textContent).toContain(
+      "Le chomage a baisse fortement.",
+    );
+  });
+
+  test("a corroborated claim marks green", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
+        selectedStatementId={null}
+        highlightsFor={() => [
+          {
+            unitId: "0",
+            claimId: "0-0",
+            start: 3,
+            end: 19,
+            status: "verified",
+            verdict: "credible",
+          },
+        ]}
+      />,
+    );
+    const mark = subtitleList().querySelector("mark");
+    expect(mark?.textContent).toBe("chomage a baisse");
+    expect(mark?.className).toContain("bg-verdict-credible");
+  });
+
+  test("a verified-unverifiable highlight renders plain by default", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
+        selectedStatementId={null}
+        highlightsFor={() => [
+          {
+            unitId: "0",
+            claimId: "0-0",
+            start: 3,
+            end: 19,
+            status: "verified",
+            verdict: "unverifiable",
+          },
+        ]}
+      />,
+    );
+    // By default only corroborated and contradicted claims mark the text; an
+    // unverifiable verdict stays plain until the viewer opts in.
+    expect(subtitleList().querySelector("mark")).toBeNull();
+    expect(subtitleList().textContent).toContain(
+      "Le chomage a baisse fortement.",
+    );
+  });
+
+  test("the unverified toggle reveals unverifiable marks, muted", async () => {
+    render(
+      <TranscriptDisplayProvider>
+        <PlaybackProvider>
+          <ToggleProbe />
+          <LiveStatementList
+            statements={[checked("0", 0, "Le chomage a baisse fortement.")]}
+            selectedStatementId={null}
+            highlightsFor={() => [
+              {
+                unitId: "0",
+                claimId: "0-0",
+                start: 3,
+                end: 19,
+                status: "verified",
+                verdict: "unverifiable",
+              },
+            ]}
+          />
+        </PlaybackProvider>
+      </TranscriptDisplayProvider>,
+    );
+    expect(subtitleList().querySelector("mark")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "probe-toggle" }));
+    const mark = subtitleList().querySelector("mark");
+    expect(mark?.textContent).toBe("chomage a baisse");
+    expect(mark?.className).toContain("bg-verdict-unverifiable");
+
+    // Toggling back off hides the mark again; the text never disappears.
+    await userEvent.click(screen.getByRole("button", { name: "probe-toggle" }));
+    expect(subtitleList().querySelector("mark")).toBeNull();
+    expect(subtitleList().textContent).toContain(
+      "Le chomage a baisse fortement.",
+    );
+  });
+
+  test("pending, checking, and shed claims render plain text, no wash", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[checked("0", 0, "Deux affirmations distinctes ici.")]}
+        selectedStatementId={null}
+        highlightsFor={() => [
+          {
+            unitId: "0",
+            claimId: "0-0",
+            start: 0,
+            end: 4,
+            status: "pending",
+          },
+          {
+            unitId: "0",
+            claimId: "0-1",
+            start: 5,
+            end: 17,
+            status: "checking",
+          },
+          {
+            unitId: "0",
+            claimId: "0-2",
+            start: 18,
+            end: 27,
+            status: "unchecked",
+          },
+        ]}
+      />,
+    );
+    // An unresolved claim asserts nothing yet, so nothing is marked and the
+    // whole sentence stays readable.
+    expect(subtitleList().querySelectorAll("mark")).toHaveLength(0);
+    expect(subtitleList().textContent).toContain(
+      "Deux affirmations distinctes ici.",
+    );
+  });
+
+  test("a merged unit flows sentence by sentence with per-member highlights", () => {
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          {
+            ...analysing("0", 0, "Le budget monte. Il monte de dix pour cent."),
+            speaker: "A",
+            end: 6,
+            parts: [
+              { id: "0", text: "Le budget monte.", start: 0, end: 3 },
+              {
+                id: "1",
+                text: "Il monte de dix pour cent.",
+                start: 3,
+                end: 6,
+              },
+            ],
+          },
+        ]}
+        selectedStatementId={null}
+        highlightsFor={(segmentId) =>
+          segmentId === "1"
+            ? [
+                {
+                  unitId: "0",
+                  claimId: "0-0",
+                  start: 12,
+                  end: 25,
+                  status: "verified",
                   verdict: "credible",
                 },
               ]
@@ -75,165 +257,72 @@ describe("LiveStatementList", () => {
         }
       />,
     );
-
-    expect(screen.getByText(fr.app.claims.verdicts.credible)).toBeInTheDocument();
-    expect(screen.getByText(fr.app.claims.sources.verified)).toBeInTheDocument();
-    // The per-statement checking marker yields to the claim list.
-    expect(screen.queryByText(t.checking)).not.toBeInTheDocument();
+    // One speaker turn, with each member sentence its own inline click target -
+    // no per-unit block.
+    const items = subtitleList().querySelectorAll("li");
+    expect(items).toHaveLength(1);
+    const sentences = items[0].querySelectorAll("p button");
+    expect(sentences).toHaveLength(2);
+    expect(sentences[0].textContent).toBe("Le budget monte.");
+    expect(sentences[1].textContent).toBe("Il monte de dix pour cent.");
+    // The second member's span still anchors by its own segment offsets.
+    const mark = items[0].querySelector("mark");
+    expect(mark?.textContent).toBe("dix pour cent");
+    expect(mark?.className).toContain("bg-verdict-credible");
   });
 
-  test("a legacy statement with no claims renders the generic marker as before", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[analysing("0", 0, "the earth is round")]}
-        selectedStatementId={null}
-        claimsFor={() => []}
-      />,
-    );
-    expect(screen.getByText(t.checking)).toBeInTheDocument();
-  });
-
-  test("shows an in-flight affordance for an analysing statement", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[analysing("0", 0, "the earth is round")]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.getByText(/the earth is round/i)).toBeInTheDocument();
-    expect(screen.getByText(t.checking)).toBeInTheDocument();
-  });
-
-  test("labels a statement with its diarized speaker when present", () => {
+  test("consecutive statements by one speaker flow as one labelled turn", () => {
     renderWithPlayback(
       <LiveStatementList
         statements={[
-          {
-            id: "0",
-            start: 0,
-            end: 2,
-            text: "the earth is round",
-            speaker: "A",
-            status: "analysing",
-          },
+          { ...checked("0", 0, "Première phrase."), speaker: "A" },
+          { ...checked("1", 3, "Deuxième phrase."), speaker: "A" },
+          { ...checked("2", 6, "Autre voix."), speaker: "B" },
         ]}
         selectedStatementId={null}
       />,
     );
-
-    expect(screen.getByText(`${t.speaker} A`)).toBeInTheDocument();
+    const turns = screen.getAllByRole("listitem");
+    expect(turns).toHaveLength(2);
+    expect(turns[0].textContent).toContain(`${t.speaker} A`);
+    expect(turns[0].textContent).toContain("Première phrase.");
+    expect(turns[0].textContent).toContain("Deuxième phrase.");
+    expect(turns[1].textContent).toContain(`${t.speaker} B`);
+    expect(turns[1].textContent).toContain("Autre voix.");
+    // One speaker label per turn, not one per sentence.
+    expect(screen.getAllByText(`${t.speaker} A`)).toHaveLength(1);
   });
 
-  test("omits the speaker tag for an unattributed statement", () => {
+  test("unattributed statements flow as one unlabelled paragraph", () => {
     renderWithPlayback(
       <LiveStatementList
-        statements={[analysing("0", 0, "the earth is round")]}
+        statements={[
+          checked("0", 0, "the earth is round"),
+          checked("1", 3, "the sky is blue"),
+        ]}
         selectedStatementId={null}
       />,
     );
-
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(
       screen.queryByText(new RegExp(t.speaker, "i")),
     ).not.toBeInTheDocument();
   });
 
-  test("does not render verdicts inline; those live in the fact-check region", () => {
+  test("shows no per-statement status markers; verdict detail lives in the fact-check region", () => {
     renderWithPlayback(
       <LiveStatementList
         statements={[
-          checked("0", 0, "the earth is round", {
+          analysing("0", 0, "the earth is round"),
+          checked("1", 3, "garbled", { error: "analysis failed" }),
+          checked("2", 6, "small talk", { skipReason: "not_a_claim" }),
+          checked("3", 9, "the moon is rock", {
             matches: [
               {
                 kind: "claim",
                 claim: "Earth is an oblate spheroid",
                 verdict: "corroborates",
                 sources: [{ title: "NASA", url: "https://nasa.gov" }],
-                similarity: 0.92,
-              },
-            ],
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.getByText(/the earth is round/i)).toBeInTheDocument();
-    expect(screen.queryByText(/oblate spheroid/i)).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: "NASA" }),
-    ).not.toBeInTheDocument();
-  });
-
-  test("surfaces a non-fatal analysis error without a verdict", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[checked("0", 0, "garbled", { error: "analysis failed" })]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.getByText(t.checkFailed)).toBeInTheDocument();
-  });
-
-  test("notes a skipped statement's reason rather than a verdict", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[checked("0", 0, "small talk", { skipReason: "not_a_claim" })]}
-        selectedStatementId={null}
-      />,
-    );
-
-    // The wire's not_a_claim reason renders through the dictionary's
-    // notAClaim label inside the skipped template.
-    expect(
-      screen.getByText(
-        formatTemplate(t.notChecked, { reason: t.skipReasons.notAClaim }),
-      ),
-    ).toBeInTheDocument();
-  });
-
-  test("reads cleanly for a skip reason the frontend does not recognise", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "mystery", {
-            skipReason: "brand_new_reason" as SkipReason,
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(
-      screen.getByText(
-        formatTemplate(t.notChecked, { reason: t.skipReasons.unknown }),
-      ),
-    ).toBeInTheDocument();
-  });
-
-  test("notes when a checked statement found no confident match", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[checked("0", 0, "obscure aside", { matches: [] })]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.getByText(t.noMatch)).toBeInTheDocument();
-  });
-
-  test("shows the corroboration percentage for a scored statement", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "the earth is round", {
-            matches: [
-              {
-                kind: "claim",
-                claim: "Earth is an oblate spheroid",
-                verdict: "corroborates",
-                sources: [],
                 similarity: 0.92,
               },
             ],
@@ -248,104 +337,20 @@ describe("LiveStatementList", () => {
         selectedStatementId={null}
       />,
     );
-
-    expect(screen.getByText(/82%/)).toBeInTheDocument();
-    expect(screen.getByText(t.corroborated)).toBeInTheDocument();
-  });
-
-  test("breaks the score down into its supporting and contradicting evidence weights", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "the earth is round", {
-            matches: [
-              {
-                kind: "claim",
-                claim: "Earth is an oblate spheroid",
-                verdict: "corroborates",
-                sources: [],
-                similarity: 0.92,
-              },
-            ],
-            confidence: {
-              score: 0.75,
-              supporting: 0.9,
-              contradicting: 0.3,
-              evidenceItems: 2,
-            },
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.getByText(`2 ${t.match.other}`)).toBeInTheDocument();
-    expect(screen.getByText(`0.90 ${t.supporting}`)).toBeInTheDocument();
-    expect(screen.getByText(`0.30 ${t.contradicting}`)).toBeInTheDocument();
-  });
-
-  test("reads the breakdown's evidence count in the singular for a lone match", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "the earth is round", {
-            matches: [
-              {
-                kind: "claim",
-                claim: "Earth is an oblate spheroid",
-                verdict: "corroborates",
-                sources: [],
-                similarity: 0.92,
-              },
-            ],
-            confidence: {
-              score: 1,
-              supporting: 0.92,
-              contradicting: 0,
-              evidenceItems: 1,
-            },
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    // French Intl.PluralRules reads 1 as singular; an exact match rejects the
-    // plural form.
-    expect(screen.getByText(`1 ${t.match.one}`)).toBeInTheDocument();
-  });
-
-  test("shows no breakdown for a skipped statement", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "small talk", {
-            skipReason: "not_a_claim",
-            confidence: undefined,
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.queryByText(new RegExp(t.supporting, "i"))).toBeNull();
-    expect(screen.queryByText(new RegExp(t.contradicting, "i"))).toBeNull();
-  });
-
-  test("shows no percentage for a skipped statement", () => {
-    renderWithPlayback(
-      <LiveStatementList
-        statements={[
-          checked("0", 0, "small talk", {
-            skipReason: "not_a_claim",
-            confidence: undefined,
-          }),
-        ]}
-        selectedStatementId={null}
-      />,
-    );
-
-    expect(screen.queryByText(t.corroborated)).toBeNull();
+    // Every sentence is displayed, always - analysing, errored, skipped, and
+    // scored alike - as plain flowing text without status paragraphs.
+    for (const text of [
+      "the earth is round",
+      "garbled",
+      "small talk",
+      "the moon is rock",
+    ]) {
+      expect(subtitleList().textContent).toContain(text);
+    }
+    expect(screen.queryByText(/82%/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/oblate spheroid/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "NASA" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   test("renders an inconsistency flag linking back to the earlier statement", () => {
@@ -375,7 +380,7 @@ describe("LiveStatementList", () => {
     ).toBeInTheDocument();
   });
 
-  test("the inconsistency link scrolls the earlier statement into view within the list, not the page", async () => {
+  test("the inconsistency link scrolls the earlier sentence into view within the list, not the page", async () => {
     const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderWithPlayback(
@@ -419,7 +424,7 @@ describe("LiveStatementList", () => {
     expect(screen.queryByText(t.contradictsEarlier)).not.toBeInTheDocument();
   });
 
-  test("renders the newest statement at the top, older ones below", () => {
+  test("reads chronologically: oldest text first, newest last", () => {
     renderWithPlayback(
       <LiveStatementList
         statements={[
@@ -431,13 +436,16 @@ describe("LiveStatementList", () => {
       />,
     );
 
-    const rows = screen.getAllByRole("listitem");
-    expect(rows[0]).toHaveTextContent("the newest remark");
-    expect(rows[1]).toHaveTextContent("a middle remark");
-    expect(rows[2]).toHaveTextContent("the oldest remark");
+    const text = subtitleList().textContent ?? "";
+    const oldest = text.indexOf("the oldest remark");
+    const middle = text.indexOf("a middle remark");
+    const newest = text.indexOf("the newest remark");
+    expect(oldest).toBeGreaterThanOrEqual(0);
+    expect(oldest).toBeLessThan(middle);
+    expect(middle).toBeLessThan(newest);
   });
 
-  test("snaps the newest statement to the top while pinned, never scrolling the page", () => {
+  test("snaps the newest text to the bottom while pinned, never scrolling the page", () => {
     const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       const { rerender } = render(
@@ -458,19 +466,19 @@ describe("LiveStatementList", () => {
         </PlaybackProvider>,
       );
 
-      // Pinned (resting at the top) by default: a new line snaps the subtitle list
-      // back to its top instantly - no smooth animation that would read as a
-      // down-then-back bounce - and never the page-scrolling scrollIntoView.
+      // Pinned (resting at the bottom) by default: new text snaps the subtitle
+      // list back to its bottom instantly - no smooth animation - and never the
+      // page-scrolling scrollIntoView.
       const calls = scrollTo.mock.calls.map(([opts]) => opts as ScrollToOptions);
       expect(scrollTo.mock.instances).toContain(subtitleList());
-      expect(calls).toContainEqual({ top: 0 });
+      expect(calls).toContainEqual({ top: 1000 });
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       restore();
     }
   });
 
-  test("freezes the scroll position once the operator scrolls away from the top", () => {
+  test("freezes the scroll position once the operator scrolls away from the bottom", () => {
     const { scrollTo, restore } = stubScrollLayout();
     try {
       const { rerender } = render(
@@ -481,7 +489,8 @@ describe("LiveStatementList", () => {
           />
         </PlaybackProvider>,
       );
-      // The operator scrolls down to read earlier lines, dropping the pin.
+      // The operator scrolls up to read earlier lines, dropping the pin (the
+      // stubbed list rests at the bottom at scrollTop 900).
       fireEvent.scroll(subtitleList(), { target: { scrollTop: 500 } });
       scrollTo.mockClear();
       rerender(
@@ -493,14 +502,14 @@ describe("LiveStatementList", () => {
         </PlaybackProvider>,
       );
 
-      // A newly arrived statement must not move their view: no pin-to-top scroll.
+      // Newly arrived text must not move their view: no pin-to-bottom scroll.
       expect(scrollTo).not.toHaveBeenCalled();
     } finally {
       restore();
     }
   });
 
-  test("re-pins and snaps to the top when the operator scrolls back up", () => {
+  test("re-pins and snaps to the bottom when the operator scrolls back down", () => {
     const { scrollTo, restore } = stubScrollLayout();
     try {
       const { rerender } = render(
@@ -512,8 +521,8 @@ describe("LiveStatementList", () => {
         </PlaybackProvider>,
       );
       fireEvent.scroll(subtitleList(), { target: { scrollTop: 500 } });
-      // Back to the top: the pin is restored.
-      fireEvent.scroll(subtitleList(), { target: { scrollTop: 0 } });
+      // Back to the bottom: the pin is restored.
+      fireEvent.scroll(subtitleList(), { target: { scrollTop: 900 } });
       scrollTo.mockClear();
       rerender(
         <PlaybackProvider>
@@ -525,13 +534,13 @@ describe("LiveStatementList", () => {
       );
 
       const calls = scrollTo.mock.calls.map(([opts]) => opts as ScrollToOptions);
-      expect(calls).toContainEqual({ top: 0 });
+      expect(calls).toContainEqual({ top: 1000 });
     } finally {
       restore();
     }
   });
 
-  test("marks the statement at the playback position active and selects, not seeks, on click", async () => {
+  test("marks the sentence at the playback position active and selects, not seeks, on click", async () => {
     const onSelect = vi.fn();
     const { store } = renderWithPlayback(
       <LiveStatementList
@@ -543,11 +552,14 @@ describe("LiveStatementList", () => {
 
     act(() => store.update({ currentTime: 11 }));
 
-    const active = screen.getByText("second").closest("li");
+    const active = screen.getByText("second").closest("button");
     expect(active).toHaveAttribute("aria-current", "true");
+    expect(screen.getByText("first").closest("button")).not.toHaveAttribute(
+      "aria-current",
+    );
 
-    // Clicking a transcript line highlights it for inspection; it must never seek
-    // the video, because a seek restarts the live session and wipes the running
+    // Clicking a sentence highlights it for inspection; it must never seek the
+    // video, because a seek restarts the live session and wipes the running
     // speaker credibility and in-flight findings.
     const seek = vi.fn();
     store.registerSeekHandler(seek);
@@ -556,7 +568,71 @@ describe("LiveStatementList", () => {
     expect(seek).not.toHaveBeenCalled();
   });
 
-  test("scrolls the selected statement into view within the list, not the page", () => {
+  test("tracks the playback position at sentence granularity inside a merged unit", () => {
+    const { store } = renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          {
+            ...analysing("0", 0, "Le budget monte. Il monte de dix pour cent."),
+            end: 6,
+            parts: [
+              { id: "0", text: "Le budget monte.", start: 0, end: 3 },
+              {
+                id: "1",
+                text: "Il monte de dix pour cent.",
+                start: 3,
+                end: 6,
+              },
+            ],
+          },
+        ]}
+        selectedStatementId={null}
+      />,
+    );
+
+    act(() => store.update({ currentTime: 4 }));
+
+    // Only the member sentence containing the position is active, not the whole
+    // unit - the transcript never regresses to block-level tracking.
+    expect(
+      screen.getByText("Il monte de dix pour cent.").closest("button"),
+    ).toHaveAttribute("aria-current", "true");
+    expect(
+      screen.getByText("Le budget monte.").closest("button"),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  test("a click on any member sentence of a merged unit selects the unit's statement", async () => {
+    const onSelect = vi.fn();
+    renderWithPlayback(
+      <LiveStatementList
+        statements={[
+          {
+            ...analysing("0", 0, "Le budget monte. Il monte de dix pour cent."),
+            end: 6,
+            parts: [
+              { id: "0", text: "Le budget monte.", start: 0, end: 3 },
+              {
+                id: "1",
+                text: "Il monte de dix pour cent.",
+                start: 3,
+                end: 6,
+              },
+            ],
+          },
+        ]}
+        selectedStatementId={null}
+        onSelect={onSelect}
+      />,
+    );
+
+    await userEvent.click(screen.getByText("Il monte de dix pour cent."));
+    // The non-anchor member still selects the unit's id - the id its fact-check
+    // entry is keyed on.
+    expect(onSelect).toHaveBeenCalledWith("0");
+  });
+
+  test("scrolls the selected statement's sentence into view within the list, not the page", () => {
     const { scrollTo, scrollIntoView, restore } = stubScrollLayout();
     try {
       renderWithPlayback(

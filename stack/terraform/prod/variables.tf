@@ -488,3 +488,65 @@ variable "enable_legacy_password_login" {
   default     = false
   description = "Re-enable the retired operator password login (/api/login + /api/logout). Off by default: the /api gate uses the verified Keycloak identity. When true, the AUTH_EMAIL/AUTH_PASSWORD_HASH/SESSION_SECRET secret containers are created (values pushed out of band) and injected into the backend along with LEGACY_PASSWORD_LOGIN=true."
 }
+
+# --- Ingestion observability (VER-190) ---
+
+variable "enable_metrics_lambda" {
+  type        = bool
+  default     = true
+  description = "Provision the scheduled metrics-poller lambda, the ingestion queue dashboard, and the queue alarms (backlog-without-consumers, DLQ depth). On by default so prod ingestion is observable; set false in a cost-sensitive environment. Requires `make lambda-mqmetrics` in stack/backend before apply."
+}
+
+variable "metrics_namespace" {
+  type        = string
+  default     = "TruthInStream/RabbitMQ"
+  description = "Custom CloudWatch namespace the metrics lambda publishes queue metrics to and the dashboard/queue alarms read from."
+}
+
+variable "metrics_poll_schedule" {
+  type        = string
+  default     = "rate(1 minute)"
+  description = "EventBridge Scheduler expression for how often the metrics lambda polls the broker."
+}
+
+variable "metrics_queue_bases" {
+  type        = list(string)
+  default     = ["embedding.jobs", "crawl.chunks", "factcheck.claims", "scrutins.votes"]
+  description = "Base names of the ingestion queues the metrics lambda measures (each also measures its .dlq companion) and the queue alarms cover. Keep in sync with the producer/worker queue names."
+
+  validation {
+    condition     = length(var.metrics_queue_bases) > 0 && alltrue([for q in var.metrics_queue_bases : trimspace(q) != ""])
+    error_message = "metrics_queue_bases must list at least one non-blank base queue."
+  }
+}
+
+variable "run_metrics_namespace" {
+  type        = string
+  default     = "TruthInStream/Ingestion"
+  description = "CloudWatch namespace producers publish the per-source RunSuccess metric to (RUN_METRICS_NAMESPACE). Drives the no-successful-run alarm and the task role's PutMetricData grant. A fresh environment's run alarms breach until each source has run once; empty disables the run metric and alarms."
+}
+
+variable "run_sources" {
+  type    = list(string)
+  default = []
+  # Empty by default: the no-successful-run-in-24h alarm is a dead-man's switch
+  # that fits a producer running on a schedule, but prod producers are on-demand
+  # (schedule_expression = "", launched with `aws ecs run-task`) and off by default,
+  # so an always-on alarm would sit permanently in ALARM and false-page. Set this to
+  # the producer source names (wikipedia, factcheck, scrutins - the Name each
+  # reports to crawlnotify) once those producers run on a 24h cadence. The RunSuccess
+  # metric is still emitted regardless, so the history is there when you enable it.
+  description = "Producer source names the no-successful-run-in-24h alarm covers (the RunSuccess Source dimension). Empty (default) disables the run alarms; enable it only for producers that actually run at least daily, or they false-page."
+}
+
+variable "mq_maintenance_window_day" {
+  type        = string
+  default     = "SUNDAY"
+  description = "Day of the weekly broker maintenance window. Defaults off the daily producer cron slots (03:00/04:00/04:30 UTC) and the RDS windows."
+}
+
+variable "mq_maintenance_window_time" {
+  type        = string
+  default     = "07:00"
+  description = "Start time (HH:MM UTC) of the weekly broker maintenance window, clear of the 03:00-05:30 UTC ingestion/RDS windows."
+}

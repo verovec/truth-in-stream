@@ -84,7 +84,7 @@ func resetSchema(ctx context.Context, t *testing.T, dsn string) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claims, documents, document_sentences, document_claims, segment_results, processed_videos, videos, tv_channels, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS claim_checks, claims, documents, document_sentences, document_claims, segment_results, processed_videos, video_analyses, videos, tv_channels, wiki_chunks, wiki_chunks_staging, wiki_chunks_old, wiki_sync_state, evidence_chunks, evidence_chunks_staging, evidence_chunks_old, evidence_sync_state, political_claims, voting_records"); err != nil {
 		t.Fatalf("reset: drop tables: %v", err)
 	}
 	dir := filepath.Join("..", "..", "migrations")

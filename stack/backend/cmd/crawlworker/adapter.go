@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
@@ -22,14 +23,20 @@ func (q qDelivery) Nack(requeue bool) error { return q.d.Nack(requeue) }
 // qStream adapts a queue.Client's consume stream to crawljob.Stream, wrapping
 // each broker delivery as it arrives. The forwarding goroutine ends when the
 // broker closes the underlying stream (ctx canceled) or ctx is canceled while a
-// hand-off is pending, so it never leaks past shutdown.
-type qStream struct{ client *queue.Client }
+// hand-off is pending, so it never leaks past shutdown. When idle is positive the
+// stream idle-exits after that window with an empty queue (drain-to-idle),
+// letting the worker drain and exit; zero keeps it running until shutdown.
+type qStream struct {
+	client *queue.Client
+	idle   time.Duration
+}
 
 func (s qStream) Consume(ctx context.Context) (<-chan crawljob.Delivery, error) {
 	raw, err := s.client.Consume(ctx)
 	if err != nil {
 		return nil, err
 	}
+	raw = queue.WithIdleTimeout(ctx, raw, s.idle)
 	out := make(chan crawljob.Delivery)
 	go func() {
 		defer close(out)

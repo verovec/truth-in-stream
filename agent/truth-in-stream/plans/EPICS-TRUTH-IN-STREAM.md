@@ -8,9 +8,15 @@ two epics in parallel - they are what keep the branches from colliding at merge.
 Source of truth for card ordering stays `ROADMAP-TRUTH-IN-STREAM.md` (the per-card ready
 queue). This file is the coarser epic-level view. Keep both in sync when cards change.
 
-On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `epic:tv`)
-applied to all its cards - group-by-label to see the three swimlanes. Labels are metadata
-only and do not affect `/pick` or the ready queue.
+On the Linear board each epic is a label (`epic:ingestion`, `epic:backoffice`, `epic:tv`,
+`epic:preanalysis`) applied to all its cards - group-by-label to see the swimlanes. Labels
+are metadata only and do not affect `/pick` or the ready queue.
+
+Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Epic D
+(VER-216..222) merged to `dev` via PRs #251-#255, #258, #259 (+ deflake #256) on
+2026-07-17; docs in `docs/video-preanalysis.md`.
+
+Status 2026-08-16 (end of day): Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first verdicts) COMPLETE: all seven cards Done via one epic run - VER-224 (PR #268), VER-226 (PR #269, live recall@1 93.3%->100%), VER-227 (PR #270), VER-229 (PRs #271+#272), VER-225 (PR #273, corpus ingested locally 12->4,743 claims, gate agreement 99.4%), VER-228 (PR #274, 53.9% verdicts decided locally at 100% decided accuracy), VER-230 (PR #275, vector-first defaults on, measured 83% fewer generative calls at identical accuracy, 0.65 calls/claim budget enforced in CI). Defaults are now vector-first; docs/vector-first-defaults.md records the reconciled set.
 
 ---
 
@@ -92,6 +98,136 @@ The two UI cards (VER-213, VER-214) wait for Epic B's VER-206.
 `stack/terraform/*` (capture host, VER-215).
 
 **Parallelism:** starts now on backend (210/211/212); UI cards gated on Epic B; VER-215 after 212.
+
+---
+
+## Epic D - Imported-video pre-analysis (VER-216..222, 7 cards)
+
+**Scope for its agent.** One-shot server-side pre-analysis of imported videos persisted in
+Postgres, analysed playback with pre-generated subtitles and a verdict-colored claim
+timeline, backoffice analyse/re-analyse controls, and the docs close-out.
+
+**Context.** Makes the 24 h Redis replay snapshot durable behind the same
+`AnalysisRecorder`/`AnalysisReplayer` seam, adds the first server-side audio path
+(ffmpeg from object storage into the existing AssemblyAI + verify pipeline, realtime
+pacing), and mirrors the documents feature's `analysis_status` job lifecycle. Live TV and
+non-analysed videos keep the live pipeline untouched; analysed videos never re-analyse
+live. The ffmpeg/pacing piece (D2) and the claim-timeline UI (D5) are split out from
+their neighbors because they are the epic's two genuinely unprecedented pieces (no
+server-side audio path exists today; no custom seek-bar UI exists today) - the split is
+for focused review, not merge-conflict avoidance (the chain is serial regardless). Spec:
+`docs/superpowers/specs/2026-07-17-video-preanalysis-design.md`.
+
+**Cards & internal order:**
+- `D1 VER-216 (storage + read API) -> D2 VER-217 (ffmpeg audio-extraction adapter) ->
+  D3 VER-218 (headless job + analyse endpoint) -> D4 VER-219 (player: REST hydration +
+  button) -> D5 VER-221 (claim timeline strip)`.
+- `D3 VER-218 -> D6 VER-220 (backoffice controls)`, running parallel to `D4`/`D5`
+  (file-disjoint).
+- `D7 VER-222 (docs + e2e close-out)` depends on `D5 + D6`.
+
+**Entry cards (no deps, start immediately):** D1 VER-216.
+
+**Owns / touches:** `stack/backend/migrations/0019_*`, `stack/backend/queries/`,
+`stack/backend/internal/{store,service,handler,config}`, new
+`stack/backend/internal/audioextract`, `stack/backend/cmd/server/main.go`,
+`docker-compose.yml` (env forwarding), `stack/frontend/src/app/app/_components/*`,
+`stack/frontend/src/components/playback/*`, `stack/frontend/src/lib/live/*` (REST
+hydration), `stack/frontend/src/lib/video/api.ts`,
+`stack/frontend/src/app/backoffice/_components/backoffice-video*`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A, B, and C are delivered. If a future epic
+runs beside D, the backend route registry `stack/backend/internal/handler/handler.go`
+and `docker-compose.yml` stay append-only with a rebase rule (same doctrine as the B x C
+hot files below).
+
+**Parallelism:** can start as soon as its cards exist in Linear; no other epic is
+currently open. Within the epic: D1 -> D2 -> D3 serial, then D4 -> D5 beside D6 (player
+vs backoffice files), D7 last.
+
+---
+
+## Epic E - Claim detection quality (E1..E3, 3 cards, Linear ids pending re-auth) - DELIVERED 2026-07-21 (PRs #261-#263 to dev)
+
+**Scope for its agent.** Tighten the verify-path detection loop: no-source claims always land
+unverifiable with French-only rationales, the decomposer reads the full previous sentence group
+as context and quotes only the claim core, and the live view merges a claim-bearing unit into
+one statement with claim-core-only highlights.
+
+**Context.** All three cards reshape the retrieve-then-verify path delivered by VER-83..92 and
+refined by the claims-window work (PR #246). The knowledge fallback (`FACTCHECK_KNOWLEDGE_FALLBACK`)
+is retired: a verdict may only be credible/disputed when at least one validated citation backs it.
+The claims frame gains an additive `segment_ids` field so the frontend can merge a unit's member
+statements. Linear was unreachable at authoring time (API key 401); the full card bodies live in
+`LINEAR-LEDGER-CLAIM-QUALITY.md` beside this file for replay, label `epic:claim-quality`.
+
+**Cards & internal order:**
+- `E1 (no-source unverifiable + French rationales) -> E2 (previous-group context + minimal
+  quotes + segment_ids) -> E3 (frontend merged statements + claim-core highlights)`.
+- The chain is serial: E1 and E2 both edit `internal/service/verify_path.go`; E3 consumes E2's
+  wire field.
+
+**Entry cards (no deps, start immediately):** E1.
+
+**Owns / touches:** `stack/backend/internal/verify/`, `stack/backend/internal/service/{verify_path,
+political_path,live,document_analyzer,claimspan,video_analyzer}.go`, `stack/backend/internal/claimdecomp/`,
+`stack/backend/internal/config/config.go`, `stack/backend/cmd/server/main.go`,
+`stack/backend/internal/handler/live.go`, `stack/frontend/src/lib/live/*`,
+`stack/frontend/src/app/app/_components/live-statement-list.tsx`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A..D are delivered.
+
+**Parallelism:** the epic itself can run now; internally strictly serial (E1 -> E2 -> E3,
+delivered merge-then-next on `dev`).
+
+---
+
+## Epic F - Vector-first verdicts (VER-224..230, 7 cards)
+
+**Scope for its agent.** Make generative LLM calls the last resort of the fact-check
+pipeline: a French deterministic gate, a local encoder check-worthiness classifier with a
+calibrated grey zone, an NLI stance scorer ahead of the LLM verifier, cross-encoder
+reranking after hybrid fusion, evidence publication dates, per-claim telemetry, and a
+final default flip with an enforced generative-call budget.
+
+**Context.** The retrieve-then-verify path (VER-83..92) and hybrid RRF retrieval
+(VER-191/195) match current best practice, but every check-worthiness and verdict
+decision is still a Haiku call and the free heuristic gate is English-only, which inverts
+the product doctrine of vector data first, generative models last. The epic inserts
+non-generative stages in front of every LLM call - fine-tuned CamemBERTa-v2 classifier,
+`camembertav2-base-xnli` NLI scorer (FEVER-style), Voyage `rerank-2.5` reranking - and
+calibrates the grey zones from real telemetry. All schema changes are additive; no data
+export/import is needed. Card bodies live in Linear (VER-224..230). The Linear label
+`epic:vector-first` still needs one-click creation inside the `epic` label group (the MCP
+connector cannot create labels); apply it to all seven cards once created.
+
+**Cards & internal order:**
+- `VER-225 (local classifier + inference substrate) -> VER-228 (NLI stance scorer)`.
+- `VER-227 (published_at + recency) -> VER-229 (telemetry table)` - serialized only to
+  keep migration numbering linear; no functional coupling.
+- `VER-224` (French deterministic gate) and `VER-226` (reranker) are independent.
+- `{VER-228, VER-226} -> VER-230` (vector-first defaults + LLM-call budget), last.
+
+**Entry cards (no deps, start immediately):** VER-224, VER-225, VER-226, VER-227.
+
+**Owns / touches:** `stack/backend/internal/service/{precheck_classifier,precheck_cascade,
+precheck,verify_path,match,confidence}.go`, `stack/backend/internal/checkworthy/`, new
+local-inference, NLI, and rerank packages under `stack/backend/internal/`,
+`stack/backend/internal/eval/`, `stack/backend/migrations/` (additive, 0021+),
+`stack/backend/queries/`, source renderers under `stack/backend/internal/source/` and
+`stack/backend/internal/wiki/`, `stack/backend/internal/config/config.go`,
+`stack/backend/cmd/server/main.go`, `docker-compose.yml`, `.env.example`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A..E are delivered. VER-223 (transcript flow,
+In Review) is frontend-only; no file overlap with this epic.
+
+**Parallelism:** the four entry cards run in parallel under these hot-file rules:
+`internal/config/config.go` and `cmd/server/main.go` are append-only (nearly every card
+adds flags/wiring; second-to-merge rebases, never rewrites); the committed eval baseline
+(`internal/eval/` fixtures) is extended by VER-225/226/228/230 with additive keys only;
+`verify_path.go` is contended by VER-227 (fast-borrow age guard) and VER-228 (NLI
+insertion) - VER-227 merges first or the later branch rebases. One agent owns the whole
+epic; the ordering above is intra-epic scheduling, not a license to split it.
 
 ---
 

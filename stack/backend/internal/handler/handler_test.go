@@ -34,7 +34,7 @@ func testTVHub() *service.TVHub {
 func newAuthedTestServer(auth AuthConfig, storeErr error) http.Handler {
 	health := service.NewHealthChecker(fakePinger{err: storeErr})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, &fakeVideoService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", auth, logger)
+	return NewMux(health, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", auth, logger)
 }
 
 // newDebugTestServer builds a router with the debug wiki-search route registered
@@ -43,7 +43,7 @@ func newAuthedTestServer(auth AuthConfig, storeErr error) http.Handler {
 func newDebugTestServer() http.Handler {
 	health := service.NewHealthChecker(fakePinger{})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, &fakeVideoService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, &fakeWikiSearcher{}, "", globalTestAuth, logger)
+	return NewMux(health, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, &fakeWikiSearcher{}, "", globalTestAuth, logger)
 }
 
 // TestDebugEndpointRequiresAdmin proves the admin gate on a debug endpoint: a

@@ -377,14 +377,15 @@ func TestLiveAnalyzerGroupsSameSpeakerRunIntoOneUnit(t *testing.T) {
 
 func TestLiveAnalyzerSplitsSameSpeakerRunAtSentenceCap(t *testing.T) {
 	t.Parallel()
-	// A same-speaker run longer than the cap splits into successive units of at
-	// most three sentences: the first three turns score together, the fourth
-	// opens a new unit.
+	// A same-speaker run longer than the default cap (four sentences) splits into
+	// successive units of at most that many sentences: the first four turns score
+	// together, the fifth opens a new unit.
 	segs := []domain.Segment{
 		{Text: "one.", Speaker: "A"},
 		{Text: "two.", Speaker: "A"},
 		{Text: "three.", Speaker: "A"},
 		{Text: "four.", Speaker: "A"},
+		{Text: "five.", Speaker: "A"},
 	}
 	mc := &countingMatcher{}
 	analyzer, err := NewLiveAnalyzer(LiveAnalyzerConfig{
@@ -405,12 +406,37 @@ func TestLiveAnalyzerSplitsSameSpeakerRunAtSentenceCap(t *testing.T) {
 
 	// Units score on concurrent workers, so compare the set of scored texts, not
 	// their order.
-	wantCalls := []string{"four.", "one. two. three."}
+	wantCalls := []string{"five.", "one. two. three. four."}
 	if diff := cmp.Diff(wantCalls, sortedCalls(mc)); diff != "" {
 		t.Errorf("unit boundaries mismatch (-want +got):\n%s", diff)
 	}
-	if len(results) != 4 {
+	if len(results) != 5 {
 		t.Errorf("every member must still get a result, got %d", len(results))
+	}
+}
+
+func TestContextTail(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("mot ", maxContextWords+10) + "fin"
+	tests := []struct {
+		name    string
+		speaker string
+		text    string
+		want    string
+	}{
+		{"full unit kept with speaker prefix", "A", "Un point. Deux points.", "A: Un point. Deux points."},
+		{"multi-sentence unit rides whole", "B", "Le budget monte. Il monte de dix pour cent. Depuis 2020.", "B: Le budget monte. Il monte de dix pour cent. Depuis 2020."},
+		{"unknown speaker unprefixed", "", "Deux points.", "Deux points."},
+		{"empty text yields no context", "A", "  ", ""},
+		{"overlong run keeps the trailing cap of words", "", long, strings.Join(strings.Fields(long)[len(strings.Fields(long))-maxContextWords:], " ")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := contextTail(tc.speaker, tc.text); got != tc.want {
+				t.Errorf("contextTail(%q, %q) = %q, want %q", tc.speaker, tc.text, got, tc.want)
+			}
+		})
 	}
 }
 

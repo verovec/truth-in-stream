@@ -17,13 +17,57 @@ package embedjob
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
+
+// Voyage's documented per-request ceilings for voyage-4-large
+// (docs.voyageai.com, verified 2026-07): at most maxInputsPerRequest inputs and
+// maxTokensPerRequest tokens across the whole request. A request over either
+// returns HTTP 400 and fails the entire call, so the worker keeps every provider
+// call under both ceilings and splits an over-budget batch rather than thrashing.
+const (
+	maxInputsPerRequest = 1000
+	maxTokensPerRequest = 120000
+)
+
+// defaultBatchTokens is the token budget the worker packs each provider call to.
+// It sits below the hard maxTokensPerRequest ceiling because the token count is
+// estimated from character counts (see estimateTokens), which under-counts a
+// token-dense input (many short words, or CJK where one character is often one
+// token); the 80% headroom absorbs that error so a batch that estimates under
+// budget almost never trips the provider's hard limit. When it does anyway, the
+// recursive split recovers.
+const defaultBatchTokens = maxTokensPerRequest * 8 / 10
+
+// charsPerToken is Voyage's documented average characters per token
+// (docs.voyageai.com), used to estimate a batch's token count cheaply without
+// calling the tokenizer. estimateTokens divides byte length by it, so a
+// multibyte input (whose bytes exceed its characters) is over-counted, keeping
+// the estimate conservative.
+const charsPerToken = 5
+
+// estimateTokens cheaply approximates a text's token count from its byte length,
+// rounding up so even a short non-empty text counts as at least one token.
+func estimateTokens(text string) int {
+	return len(text)/charsPerToken + 1
+}
+
+// Stats is the running outcome of a Worker drain: how many deliveries it
+// acknowledged and how many it parked in the dead-letter queue. It is read after
+// Run returns to report the drain to the operator.
+type Stats struct {
+	Processed   int64
+	ParkedToDLQ int64
+}
 
 // Job is one unit of embedding work: the chunk to embed, identified by its
 // corpus position, the text to embed, and the delivery attempt so far. The
@@ -72,8 +116,7 @@ func (j Job) validate() error {
 type Action int
 
 const (
-	// ActionAck drops the delivery: the job was handled, was obsolete, or can
-	// never succeed (a poison message or one past its retry budget).
+	// ActionAck drops the delivery: the job was handled or was obsolete.
 	ActionAck Action = iota
 	// ActionRepublish re-enqueues the job (with its attempt incremented) for a
 	// bounded retry, then drops the original.
@@ -81,6 +124,9 @@ const (
 	// ActionRequeue returns the delivery to the broker unhandled because a
 	// shutdown cut the work short, so it is redelivered without burning an attempt.
 	ActionRequeue
+	// ActionReject dead-letters the delivery: a poison message or one past its
+	// retry budget is parked in the DLQ, never silently acked away.
+	ActionReject
 )
 
 // Result is the outcome of processing one message: the broker action plus, for
@@ -144,12 +190,16 @@ const defaultBatchWait = 200 * time.Millisecond
 // delivery stamped with any other version is dropped rather than mis-processed.
 // An empty KnownVersions disables the check (every version is accepted), which
 // keeps a worker that does not configure versions working unchanged.
+// MaxBatchTokens caps the estimated token count of one provider call; a batch
+// whose chunks would exceed it is split before the call so the request stays
+// under Voyage's per-request token ceiling. Zero selects defaultBatchTokens.
 type Config struct {
-	Concurrency   int
-	BatchSize     int
-	BatchWait     time.Duration
-	MaxAttempts   int
-	KnownVersions []string
+	Concurrency    int
+	BatchSize      int
+	BatchWait      time.Duration
+	MaxAttempts    int
+	MaxBatchTokens int
+	KnownVersions  []string
 }
 
 // Worker drains embedding jobs and writes their vectors into the corpus.
@@ -163,7 +213,15 @@ type Worker struct {
 	batchSize     int
 	batchWait     time.Duration
 	maxAttempts   int
+	maxInputs     int
+	maxTokens     int
 	knownVersions map[string]struct{}
+
+	// processed counts acknowledged deliveries and parked counts dead-lettered
+	// ones, so a run reports its drain outcome. Both are touched from the parallel
+	// batch handlers, so they are atomic.
+	processed atomic.Int64
+	parked    atomic.Int64
 }
 
 // NewWorker builds a Worker. Concurrency, BatchSize, and MaxAttempts below one
@@ -182,6 +240,9 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 	}
 	if cfg.MaxAttempts < 1 {
 		cfg.MaxAttempts = 1
+	}
+	if cfg.MaxBatchTokens < 1 {
+		cfg.MaxBatchTokens = defaultBatchTokens
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -203,8 +264,16 @@ func NewWorker(embedder Embedder, store Store, stream Stream, enqueuer Enqueuer,
 		batchSize:     cfg.BatchSize,
 		batchWait:     cfg.BatchWait,
 		maxAttempts:   cfg.MaxAttempts,
+		maxInputs:     maxInputsPerRequest,
+		maxTokens:     cfg.MaxBatchTokens,
 		knownVersions: known,
 	}
+}
+
+// Stats reports the drain outcome accumulated so far: acknowledged and
+// dead-lettered delivery counts. It is safe to call after Run returns.
+func (w *Worker) Stats() Stats {
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
 }
 
 // knowsVersion reports whether the worker should process a delivery stamped with
@@ -366,14 +435,14 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 	items := make([]pending, 0, len(deliveries))
 	for _, d := range deliveries {
 		if !w.knowsVersion(d.Version()) {
-			w.logger.ErrorContext(ctx, "dropping embedding job with unknown queue version",
+			w.logger.ErrorContext(ctx, "dead-lettering embedding job with unknown queue version",
 				slog.String("version", d.Version()))
-			w.ack(ctx, d)
+			w.reject(ctx, d)
 			continue
 		}
 		job, ok := w.decode(ctx, d.Body())
 		if !ok {
-			w.ack(ctx, d)
+			w.reject(ctx, d)
 			continue
 		}
 		items = append(items, pending{d: d, job: job})
@@ -387,40 +456,34 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 		texts[i] = it.job.Content
 	}
 
-	embeddings, err := w.embedder.EmbedDocuments(ctx, texts)
-	if err != nil {
-		if ctx.Err() != nil {
-			w.requeueItems(ctx, items)
-			return
-		}
-		// A batch-level failure may be one poison input failing the whole call, so
-		// fall back to embedding each delivery alone: the bad one fails by itself
-		// while the rest succeed.
-		w.logger.WarnContext(ctx, "batch embed failed, falling back to per-chunk embedding",
-			slog.Int("batch", len(items)), slog.Any("err", err))
-		for _, it := range items {
-			w.applyResult(ctx, it.d, w.embedAndWrite(ctx, it.job, it.d.Priority()))
-		}
+	vecs, errs := w.embedAligned(ctx, texts)
+	if ctx.Err() != nil {
+		w.requeueItems(ctx, items)
 		return
 	}
 
 	good := make([]pending, 0, len(items))
 	var live, staging []domain.EvidenceChunk
 	for i, it := range items {
-		var vec []float32
-		if i < len(embeddings) {
-			vec = embeddings[i]
+		if err := errs[i]; err != nil {
+			// A single input the provider rejected even on its own (a genuinely
+			// oversized or malformed chunk): retry it a bounded number of times, then
+			// dead-letter it. The whole-batch call was already split down to this one
+			// input, so the rest of the batch is unaffected - no per-chunk thrash.
+			w.applyResult(ctx, it.d, w.afterFailure(ctx, it.job, it.d.Priority(), "embed", err))
+			continue
 		}
+		vec := vecs[i]
 		if len(vec) != domain.EmbeddingDim {
 			// A wrong shape is the provider breaking its contract, not a transient
 			// fault: re-embedding the same content would reproduce it, so drop rather
 			// than loop, and never write a malformed vector into the corpus.
-			w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
+			w.logger.ErrorContext(ctx, "dead-lettering embedding job with unexpected provider response",
 				slog.String("source", it.job.Source), slog.String("external_id", it.job.ExternalID),
 				slog.Int("chunk_index", it.job.ChunkIndex),
 				slog.Int("dims", len(vec)),
 				slog.Int("want_dims", domain.EmbeddingDim))
-			w.ack(ctx, it.d)
+			w.reject(ctx, it.d)
 			continue
 		}
 		good = append(good, it)
@@ -460,6 +523,106 @@ func (w *Worker) processBatch(ctx context.Context, deliveries []Delivery) {
 	for _, g := range good {
 		w.ack(ctx, g.d)
 	}
+}
+
+// embedAligned embeds texts and returns, for each index, its vector (nil on
+// failure) and the error that stopped it (nil on success). It keeps every
+// provider call under Voyage's input-count and token-budget ceilings by
+// splitting an over-budget group before the call, and recovers from a size-class
+// 400 the character-based estimate under-counted by halving the group and
+// retrying - so an oversized batch embeds via O(log n) split calls, never a
+// per-chunk sweep (the 128x amplification the token-blind cap used to fall into).
+// A non-size failure (auth, an exhausted 429, a 5xx, a network fault) is not
+// split: it is recorded once for the whole group, which the caller retries or
+// dead-letters, so a persistent fault never fans out into a binary-split storm of
+// provider calls.
+func (w *Worker) embedAligned(ctx context.Context, texts []string) ([][]float32, []error) {
+	vecs := make([][]float32, len(texts))
+	errs := make([]error, len(texts))
+	w.embedGroup(ctx, texts, 0, vecs, errs)
+	return vecs, errs
+}
+
+// embedGroup embeds texts[off:off+len(texts)] into vecs/errs. It splits an
+// over-budget group before the call, and on a call failure splits only a
+// size-class rejection (see isSizeError); any other error is recorded for the
+// whole group so the caller handles it without amplifying provider load.
+func (w *Worker) embedGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
+	if len(texts) == 0 {
+		return
+	}
+	// Proactively split an over-budget group so a request the provider would reject
+	// with a size-class 400 is never sent; repeated halving lands each group under
+	// both the input-count and token ceilings.
+	if len(texts) > 1 && w.overBudget(texts) {
+		w.splitGroup(ctx, texts, off, vecs, errs)
+		return
+	}
+	embeddings, err := w.embedder.EmbedDocuments(ctx, texts)
+	if err != nil {
+		if ctx.Err() != nil {
+			for i := range texts {
+				errs[off+i] = err
+			}
+			return
+		}
+		// The error surfaced after the embedder's own retry decorator gave up, so it
+		// is persistent. Split only a size-class 400 the token estimate under-counted:
+		// halving lands the group under the ceiling in O(log n) calls. Any other
+		// persistent error (auth, an exhausted 429, a 5xx, a network outage) is not a
+		// size problem, so splitting it would re-run the same failure across the whole
+		// ~2n-1 split tree (and re-drive the retry ladder against an already-failing
+		// provider); record it once for the group and let afterFailure and the DLQ
+		// handle it on redelivery instead.
+		if len(texts) > 1 && isSizeError(err) {
+			w.splitGroup(ctx, texts, off, vecs, errs)
+			return
+		}
+		for i := range texts {
+			errs[off+i] = err
+		}
+		return
+	}
+	for i := range texts {
+		if i < len(embeddings) {
+			vecs[off+i] = embeddings[i]
+		}
+	}
+}
+
+// isSizeError reports whether err is a Voyage size-class rejection - an
+// embed.APIError carrying HTTP 400 - the only failure the worker recovers from by
+// splitting the batch. The proactive token budget makes such a 400 rare; it fires
+// only when the character-based estimate under-counted a token-dense batch. Every
+// other error is left for the retry/DLQ machinery, so an auth failure or an
+// exhausted rate limit is never amplified into a split storm.
+func isSizeError(err error) bool {
+	var apiErr *embed.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest
+}
+
+// splitGroup embeds the two halves of texts, so a recursive split isolates a bad
+// input while the rest of the group still embeds in whole batches. The two halves
+// run sequentially rather than concurrently: a collected batch caps at BatchSize
+// (default 128), so the split depth is tiny and the simplicity is worth more than
+// the parallelism the bulk pipeline's larger super-batches needed.
+func (w *Worker) splitGroup(ctx context.Context, texts []string, off int, vecs [][]float32, errs []error) {
+	mid := len(texts) / 2
+	w.embedGroup(ctx, texts[:mid], off, vecs, errs)
+	w.embedGroup(ctx, texts[mid:], off+mid, vecs, errs)
+}
+
+// overBudget reports whether a group would exceed Voyage's per-request input
+// count or estimated token budget, so it must be split before the call.
+func (w *Worker) overBudget(texts []string) bool {
+	if len(texts) > w.maxInputs {
+		return true
+	}
+	tokens := 0
+	for _, t := range texts {
+		tokens += estimateTokens(t)
+	}
+	return tokens > w.maxTokens
 }
 
 // writeChunks writes the live and staging halves of a batch, each in one
@@ -502,36 +665,55 @@ func (w *Worker) decode(ctx context.Context, body []byte) (Job, bool) {
 }
 
 // applyResult applies the broker action Process or afterFailure chose. A failed
-// republish requeues the original rather than acking it, so a transient failure
-// can never silently drop the job.
+// republish requeues the original on shutdown (redelivered later) or dead-letters
+// it otherwise, so a transient failure can never silently drop the job nor loop
+// forever with an unadvanced attempt.
 func (w *Worker) applyResult(ctx context.Context, d Delivery, res Result) {
 	switch res.Action {
 	case ActionRepublish:
 		if err := w.enqueuer.Enqueue(ctx, res.RepublishBody, res.RepublishPriority); err != nil {
-			w.logger.ErrorContext(ctx, "re-enqueue failed, requeuing original delivery", slog.Any("err", err))
-			w.nack(ctx, d)
+			if ctx.Err() != nil {
+				w.logger.InfoContext(ctx, "re-enqueue interrupted by shutdown, requeuing original delivery", slog.Any("err", err))
+				w.nack(ctx, d)
+				return
+			}
+			w.logger.ErrorContext(ctx, "re-enqueue failed, dead-lettering original delivery", slog.Any("err", err))
+			w.reject(ctx, d)
 			return
 		}
 		w.ack(ctx, d)
 	case ActionRequeue:
 		w.nack(ctx, d)
+	case ActionReject:
+		w.reject(ctx, d)
 	default:
 		w.ack(ctx, d)
 	}
 }
 
 func (w *Worker) ack(ctx context.Context, d Delivery) {
+	w.processed.Add(1)
 	if err := d.Ack(); err != nil {
 		w.logger.ErrorContext(ctx, "ack failed", slog.Any("err", err))
 	}
 }
 
-// nack returns a delivery to the broker for redelivery. The worker only ever
-// nacks to requeue (a shutdown or transient failure); it drops a dead message by
-// acking, never by nacking, so requeue is always true.
+// nack returns a delivery to the broker for redelivery. It is used only to
+// requeue (a shutdown or an interrupted re-enqueue), so requeue is always true; a
+// dead message is dead-lettered via reject, never acked away.
 func (w *Worker) nack(ctx context.Context, d Delivery) {
 	if err := d.Nack(true); err != nil {
 		w.logger.ErrorContext(ctx, "nack failed", slog.Any("err", err))
+	}
+}
+
+// reject dead-letters a delivery: a poison message or a job past its retry budget
+// is parked in the DLQ via a requeue=false nack, so the loss is inspectable and
+// replayable, never silent.
+func (w *Worker) reject(ctx context.Context, d Delivery) {
+	w.parked.Add(1)
+	if err := d.Nack(false); err != nil {
+		w.logger.ErrorContext(ctx, "reject (dead-letter) failed", slog.Any("err", err))
 	}
 }
 
@@ -553,13 +735,13 @@ func (w *Worker) requeueItems(ctx context.Context, items []pending) {
 
 // Process embeds the job in body and writes its vector, returning the action the
 // caller must take on the delivery. It never returns an error: a malformed or
-// invalid message and a persistent failure are both folded into ActionAck (after
-// an ERROR log, so the drop is visible, not silent), a transient failure into
-// ActionRepublish, and a shutdown into ActionRequeue.
+// invalid message and a persistent failure are both folded into ActionReject
+// (after an ERROR log, so the message is parked in the DLQ, not lost), a transient
+// failure into ActionRepublish, and a shutdown into ActionRequeue.
 func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Result {
 	job, ok := w.decode(ctx, body)
 	if !ok {
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	return w.embedAndWrite(ctx, job, priority)
 }
@@ -577,13 +759,13 @@ func (w *Worker) embedAndWrite(ctx context.Context, job Job, priority uint8) Res
 		if len(embeddings) == 1 {
 			got = len(embeddings[0])
 		}
-		w.logger.ErrorContext(ctx, "dropping embedding job with unexpected provider response",
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job with unexpected provider response",
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("vectors", len(embeddings)),
 			slog.Int("dims", got),
 			slog.Int("want_dims", domain.EmbeddingDim))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	chunk := domain.EvidenceChunk{Source: job.Source, ExternalID: job.ExternalID, ChunkIndex: job.ChunkIndex, Content: job.Content, Embedding: embeddings[0]}
@@ -613,9 +795,9 @@ func (w *Worker) writeChunk(ctx context.Context, staging bool, chunk domain.Evid
 // afterFailure decides what to do with a job whose embed or write failed. A
 // canceled context means a shutdown cut the work short: requeue it so it is
 // redelivered without counting the attempt. Otherwise the attempt counts: if the
-// budget is spent the job is dropped with an ERROR log so the loss is visible;
-// if attempts remain it is re-enqueued with the attempt incremented, at the same
-// priority so an important chunk keeps its place.
+// budget is spent the job is dead-lettered with an ERROR log so the loss is
+// inspectable; if attempts remain it is re-enqueued with the attempt incremented,
+// at the same priority so an important chunk keeps its place.
 func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stage string, cause error) Result {
 	if ctx.Err() != nil {
 		w.logger.InfoContext(ctx, "embedding job interrupted by shutdown, requeuing",
@@ -629,14 +811,14 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	// corrupt or crafted job with a near-max attempt cannot overflow past the cap
 	// and loop forever; validate already rejected a negative attempt.
 	if job.Attempt >= w.maxAttempts-1 {
-		w.logger.ErrorContext(ctx, "dropping embedding job after exhausting retries",
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job after exhausting retries",
 			slog.String("stage", stage),
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Int("attempt", job.Attempt),
 			slog.Int("max_attempts", w.maxAttempts),
 			slog.Any("err", cause))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	retry := job
@@ -644,12 +826,12 @@ func (w *Worker) afterFailure(ctx context.Context, job Job, priority uint8, stag
 	encoded, err := json.Marshal(retry)
 	if err != nil {
 		// Marshaling a value just unmarshaled cannot realistically fail; if it
-		// does, dropping is safer than spinning on a job that can never re-enqueue.
-		w.logger.ErrorContext(ctx, "dropping embedding job that cannot be re-encoded for retry",
+		// does, dead-lettering is safer than spinning on a job that can never re-enqueue.
+		w.logger.ErrorContext(ctx, "dead-lettering embedding job that cannot be re-encoded for retry",
 			slog.String("source", job.Source), slog.String("external_id", job.ExternalID),
 			slog.Int("chunk_index", job.ChunkIndex),
 			slog.Any("err", err))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	w.logger.WarnContext(ctx, "embedding job failed, re-enqueuing for retry",
 		slog.String("stage", stage),

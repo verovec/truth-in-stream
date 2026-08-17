@@ -33,6 +33,8 @@ locals {
     local.rds_dsn_secret_arn,
     aws_secretsmanager_secret.checkworthy_api_key.arn,
     aws_secretsmanager_secret.factcheck_api_key.arn,
+    aws_secretsmanager_secret.legifrance_client_id.arn,
+    aws_secretsmanager_secret.legifrance_client_secret.arn,
   ])
   consumer_host_secret_arns = compact([
     module.rabbitmq.url_secret_arn,
@@ -261,6 +263,23 @@ resource "aws_secretsmanager_secret" "checkworthy_api_key" {
 resource "aws_secretsmanager_secret" "factcheck_api_key" {
   name                    = "${local.project}/${var.environment}/app/factcheck-api-key"
   description             = "Google Fact Check Tools API key for the fact-check crawl producer. Value set manually, never in Terraform."
+  recovery_window_in_days = 0
+}
+
+# DILA Legifrance PISTE OAuth2 client credentials for the legifrance producer
+# (LEGIFRANCE_CLIENT_ID / LEGIFRANCE_CLIENT_SECRET). Created empty; the values are
+# set out of band. The producer authenticates to the PISTE gateway via the
+# client-credentials grant to fetch consolidated code articles; it degrades to a
+# clean skip when these are absent, so the source can be enabled before they are set.
+resource "aws_secretsmanager_secret" "legifrance_client_id" {
+  name                    = "${local.project}/${var.environment}/app/legifrance-client-id"
+  description             = "DILA Legifrance PISTE OAuth2 client id for the legifrance crawl producer. Value set manually, never in Terraform."
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret" "legifrance_client_secret" {
+  name                    = "${local.project}/${var.environment}/app/legifrance-client-secret"
+  description             = "DILA Legifrance PISTE OAuth2 client secret for the legifrance crawl producer. Value set manually, never in Terraform."
   recovery_window_in_days = 0
 }
 
@@ -551,6 +570,7 @@ module "metrics_lambda" {
   rabbitmq_url_secret_arn = module.rabbitmq.url_secret_arn
   broker_name             = local.broker_name
   metrics_namespace       = var.metrics_namespace
+  queue_names             = var.metrics_queue_bases
 
   schedule_expression = var.metrics_poll_schedule
 }

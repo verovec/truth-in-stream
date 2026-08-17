@@ -21,10 +21,19 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// Stats is the running outcome of a Worker drain: acknowledged deliveries and
+// deliveries parked in the dead-letter queue. It is read after Run returns to
+// report the drain to the operator, symmetrically to a producer run.
+type Stats struct {
+	Processed   int64
+	ParkedToDLQ int64
+}
 
 // ClaimJob is one unit of fact-check-ingest work: a fully self-contained curated
 // claim. Every field needed to write a political_claims row travels in the body,
@@ -98,12 +107,15 @@ func (j ClaimJob) validate() error {
 type Action int
 
 const (
-	// ActionAck drops the delivery: handled, obsolete, or unprocessable.
+	// ActionAck drops the delivery: it was handled or is obsolete.
 	ActionAck Action = iota
 	// ActionRepublish re-enqueues the job (attempt incremented) then drops the original.
 	ActionRepublish
 	// ActionRequeue returns the delivery unhandled because shutdown cut work short.
 	ActionRequeue
+	// ActionReject dead-letters the delivery: a poison message or a job that
+	// exhausted its retry budget is parked in the DLQ, never silently acked away.
+	ActionReject
 )
 
 // Result is the outcome of processing one message.
@@ -164,6 +176,17 @@ type Worker struct {
 	concurrency   int
 	maxAttempts   int
 	knownVersions map[string]struct{}
+
+	// processed counts acknowledged deliveries and parked counts dead-lettered
+	// ones, touched from the parallel handlers, so a run reports its drain outcome.
+	processed atomic.Int64
+	parked    atomic.Int64
+}
+
+// Stats reports the drain outcome accumulated so far: acknowledged and
+// dead-lettered delivery counts. It is safe to call after Run returns.
+func (w *Worker) Stats() Stats {
+	return Stats{Processed: w.processed.Load(), ParkedToDLQ: w.parked.Load()}
 }
 
 // NewWorker builds a Worker, clamping concurrency and attempts to at least one
@@ -239,33 +262,48 @@ loop:
 // handle processes one delivery and applies the broker action Process chose.
 func (w *Worker) handle(ctx context.Context, d Delivery) {
 	if !w.knowsVersion(d.Version()) {
-		w.logger.ErrorContext(ctx, "dropping fact-check job with unknown queue version", slog.String("version", d.Version()))
-		w.ack(ctx, d)
+		w.logger.ErrorContext(ctx, "dead-lettering fact-check job with unknown queue version", slog.String("version", d.Version()))
+		w.nack(ctx, d, false)
 		return
 	}
 	res := w.Process(ctx, d.Body(), d.Priority())
 	switch res.Action {
 	case ActionRepublish:
 		if err := w.enqueuer.Enqueue(ctx, res.RepublishBody, res.RepublishPriority); err != nil {
-			w.logger.ErrorContext(ctx, "re-enqueue failed, requeuing original delivery", slog.Any("err", err))
-			w.nack(ctx, d, true)
+			if ctx.Err() != nil {
+				w.logger.InfoContext(ctx, "re-enqueue interrupted by shutdown, requeuing original delivery", slog.Any("err", err))
+				w.nack(ctx, d, true)
+				return
+			}
+			// Re-enqueue failed for a non-shutdown reason: park the original in the
+			// DLQ rather than requeue it forever with an unadvanced attempt.
+			w.logger.ErrorContext(ctx, "re-enqueue failed, dead-lettering original delivery", slog.Any("err", err))
+			w.nack(ctx, d, false)
 			return
 		}
 		w.ack(ctx, d)
 	case ActionRequeue:
 		w.nack(ctx, d, true)
+	case ActionReject:
+		w.nack(ctx, d, false)
 	default:
 		w.ack(ctx, d)
 	}
 }
 
 func (w *Worker) ack(ctx context.Context, d Delivery) {
+	w.processed.Add(1)
 	if err := d.Ack(); err != nil {
 		w.logger.ErrorContext(ctx, "ack failed", slog.Any("err", err))
 	}
 }
 
 func (w *Worker) nack(ctx context.Context, d Delivery, requeue bool) {
+	// A requeue=false nack dead-letters the delivery to the DLQ; count those. A
+	// requeue nack (shutdown or transient) is not a parked message.
+	if !requeue {
+		w.parked.Add(1)
+	}
 	if err := d.Nack(requeue); err != nil {
 		w.logger.ErrorContext(ctx, "nack failed", slog.Any("err", err), slog.Bool("requeue", requeue))
 	}
@@ -273,17 +311,18 @@ func (w *Worker) nack(ctx context.Context, d Delivery, requeue bool) {
 
 // Process embeds the job in body and upserts its curated claim, returning the
 // action the caller must take. It never returns an error: a malformed or invalid
-// message and a persistent failure fold into ActionAck (after an ERROR log), a
-// transient failure into ActionRepublish, and a shutdown into ActionRequeue.
+// message and a persistent failure fold into ActionReject (after an ERROR log, so
+// the message is parked in the DLQ, not lost), a transient failure into
+// ActionRepublish, and a shutdown into ActionRequeue.
 func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Result {
 	var job ClaimJob
 	if err := json.Unmarshal(body, &job); err != nil {
-		w.logger.ErrorContext(ctx, "dropping malformed fact-check job", slog.Any("err", err))
-		return Result{Action: ActionAck}
+		w.logger.ErrorContext(ctx, "dead-lettering malformed fact-check job", slog.Any("err", err))
+		return Result{Action: ActionReject}
 	}
 	if err := job.validate(); err != nil {
-		w.logger.ErrorContext(ctx, "dropping invalid fact-check job", slog.Any("err", err))
-		return Result{Action: ActionAck}
+		w.logger.ErrorContext(ctx, "dead-lettering invalid fact-check job", slog.Any("err", err))
+		return Result{Action: ActionReject}
 	}
 
 	embeddings, err := w.embedder.EmbedDocuments(ctx, []string{job.Text})
@@ -295,10 +334,10 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 		if len(embeddings) == 1 {
 			got = len(embeddings[0])
 		}
-		w.logger.ErrorContext(ctx, "dropping fact-check job with unexpected provider response",
+		w.logger.ErrorContext(ctx, "dead-lettering fact-check job with unexpected provider response",
 			slog.String("id", job.ID), slog.Int("vectors", len(embeddings)),
 			slog.Int("dims", got), slog.Int("want_dims", domain.EmbeddingDim))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 
 	// validate already proved checkedAt parses, so the error path is unreachable.
@@ -327,8 +366,8 @@ func (w *Worker) Process(ctx context.Context, body []byte, priority uint8) Resul
 
 // afterFailure decides what to do with a job whose embed or upsert failed. A
 // canceled context means shutdown: requeue without counting the attempt.
-// Otherwise the attempt counts: drop with an ERROR log when the budget is spent,
-// else re-enqueue with the attempt incremented at the same priority.
+// Otherwise the attempt counts: dead-letter with an ERROR log when the budget is
+// spent, else re-enqueue with the attempt incremented at the same priority.
 func (w *Worker) afterFailure(ctx context.Context, job ClaimJob, priority uint8, stage string, cause error) Result {
 	if ctx.Err() != nil {
 		w.logger.InfoContext(ctx, "fact-check job interrupted by shutdown, requeuing",
@@ -336,18 +375,18 @@ func (w *Worker) afterFailure(ctx context.Context, job ClaimJob, priority uint8,
 		return Result{Action: ActionRequeue}
 	}
 	if job.Attempt >= w.maxAttempts-1 {
-		w.logger.ErrorContext(ctx, "dropping fact-check job after exhausting retries",
+		w.logger.ErrorContext(ctx, "dead-lettering fact-check job after exhausting retries",
 			slog.String("stage", stage), slog.String("id", job.ID),
 			slog.Int("attempt", job.Attempt), slog.Int("max_attempts", w.maxAttempts), slog.Any("err", cause))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	retry := job
 	retry.Attempt = job.Attempt + 1
 	encoded, err := json.Marshal(retry)
 	if err != nil {
-		w.logger.ErrorContext(ctx, "dropping fact-check job that cannot be re-encoded for retry",
+		w.logger.ErrorContext(ctx, "dead-lettering fact-check job that cannot be re-encoded for retry",
 			slog.String("id", job.ID), slog.Any("err", err))
-		return Result{Action: ActionAck}
+		return Result{Action: ActionReject}
 	}
 	w.logger.WarnContext(ctx, "fact-check job failed, re-enqueuing for retry",
 		slog.String("stage", stage), slog.String("id", job.ID),

@@ -91,11 +91,46 @@
 | VER-90 | Speaker-credibility fact-checking (credible/disputed/unverifiable + per-speaker score) | Done | High | |
 | VER-91 | Buffer live transcript to complete-sentence boundaries before fact-checking | Done | High | |
 | VER-92 | Show "Unverifiable" (not "Unclear") for unverifiable verdicts in the live finding bar | Done | Medium | |
+| VER-216 | Durable video analysis storage and read API | Done | High | |
+| VER-217 | ffmpeg audio-extraction adapter and pacing | Done | High | VER-216 |
+| VER-218 | Headless server-side pre-analysis job for imported videos | Done | High | VER-216, VER-217 |
+| VER-219 | Analysed playback plumbing: stored subtitles and pre-analyse control | Done | High | VER-218 |
+| VER-220 | Backoffice: video analysis status and analyse/re-analyse controls | Done | High | VER-218 |
+| VER-221 | Claim timeline strip: verdict-colored playback overview | Done | Medium | VER-219 |
+| VER-222 | Pre-analysis docs and end-to-end verification close-out | Done | Medium | VER-221, VER-220 |
+| E1 | No-source claims are unverifiable and every rationale is French | Done | High | |
+| E2 | Claim extraction reads the previous group and quotes only the claim core | Done | High | E1 |
+| E3 | Live view merges a claim unit into one statement with claim-core highlights | Done | High | E2 |
+| VER-224 | French-language deterministic precheck gate rejects non-claims before any model call | Done | High | |
+| VER-225 | Local check-worthiness classifier with calibrated grey zone replaces the LLM gate for clear cases | Done | High | |
+| VER-226 | Cross-encoder reranking between hybrid fusion and the evidence cut | Done | Medium | |
+| VER-227 | Evidence publication dates: typed published_at with recency-aware retrieval and verdicts | Done | Medium | |
+| VER-228 | NLI stance scorer resolves clear verdicts from retrieved evidence before any LLM call | Done | High | VER-225 |
+| VER-229 | Per-claim pipeline telemetry table for threshold calibration and classifier training | Done | Medium | VER-227 |
+| VER-230 | Vector-first defaults: enable the verify path with local gates and hold an LLM-call budget | Done | Medium | VER-228, VER-226 |
 
 ## Dependency graph
 
-(no `depends_on` edges among open cards)
+VER-216 -> VER-217
+VER-216 -> VER-218
+VER-217 -> VER-218
+VER-218 -> VER-219
+VER-218 -> VER-220
+VER-219 -> VER-221
+VER-220 -> VER-222
+E1 -> E2
+E2 -> E3
+VER-225 -> VER-228
+VER-227 -> VER-229
+VER-228 -> VER-230
+VER-226 -> VER-230
 
 ## Ready queue
 
-(empty - no `Todo` cards; every card is Done or Duplicate)
+Epic F (vector-first verdicts) COMPLETE 2026-08-16: all seven cards delivered to `dev`
+in one epic run (PRs #268-#275). The ready queue is empty.
+
+(Historical note kept from the Epic E close-out: E1..E3 were delivered 2026-07-21 as PRs
+#261-#263 under provisional ids while Linear was unreachable; bodies in
+`LINEAR-LEDGER-CLAIM-QUALITY.md`. The card list above VER-216 is a stale historical
+snapshot predating VER-93 and is not maintained by this entry.)

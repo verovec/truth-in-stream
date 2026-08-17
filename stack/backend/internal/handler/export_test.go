@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -30,7 +31,7 @@ func (r *exportReplayer) Snapshot(_ context.Context, _ string) ([]service.LiveEv
 func newExportServer(videos VideoService, replayer AnalysisReplayer) http.Handler {
 	health := service.NewHealthChecker(fakePinger{})
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	return NewMux(health, videos, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, replayer, nil, false, nil, "", globalTestAuth, logger)
+	return NewMux(health, videos, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, replayer, nil, false, nil, "", globalTestAuth, logger)
 }
 
 func exportSnapshot() []service.LiveEvent {
@@ -51,6 +52,69 @@ func exportSnapshot() []service.LiveEvent {
 			Source:      service.SourceVerified,
 			Verdict:     &service.VerifiedVerdict{Verdict: "credible", Rationale: "ok"},
 		},
+	}
+}
+
+// storedAnalysisStub backs a real service.StoredAnalysisReader in tests: a
+// domain.VideoAnalysisStore holding one stored analysis, plus the video-record
+// read the reader's view path needs.
+type storedAnalysisStub struct {
+	analysis domain.VideoAnalysis
+}
+
+func (s *storedAnalysisStub) CompleteVideoAnalysis(_ context.Context, a domain.VideoAnalysis) (domain.VideoAnalysis, error) {
+	return a, nil
+}
+
+func (s *storedAnalysisStub) GetVideoAnalysis(_ context.Context, videoID string) (domain.VideoAnalysis, error) {
+	if videoID != s.analysis.VideoID {
+		return domain.VideoAnalysis{}, domain.ErrVideoAnalysisNotFound
+	}
+	return s.analysis, nil
+}
+
+func (s *storedAnalysisStub) GetVideo(context.Context, string) (domain.Video, error) {
+	return domain.Video{}, domain.ErrVideoNotFound
+}
+
+// TestExportServesStoredAnalysisOverComposite pins the durable acceptance
+// path: the export endpoint reads through a real composite replayer whose
+// Postgres tier holds the pre-analysis and whose Redis tier always misses, so
+// the SRT is served from the durable store with no cache entry and no TTL
+// involved.
+func TestExportServesStoredAnalysisOverComposite(t *testing.T) {
+	payload, err := json.Marshal(exportSnapshot())
+	if err != nil {
+		t.Fatalf("marshal events: %v", err)
+	}
+	store := &storedAnalysisStub{analysis: domain.VideoAnalysis{
+		VideoID:         "vid-1",
+		SnapshotVersion: service.SnapshotVersion,
+		Events:          payload,
+		Engine:          []byte(`{}`),
+	}}
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	stored, err := service.NewStoredAnalysisReader(store, store, logger)
+	if err != nil {
+		t.Fatalf("NewStoredAnalysisReader: %v", err)
+	}
+	composite, err := service.NewCompositeReplayer(logger, stored, &exportReplayer{})
+	if err != nil {
+		t.Fatalf("NewCompositeReplayer: %v", err)
+	}
+	videos := &fakeVideoService{playable: service.PlayableVideo{Video: domain.Video{ID: "vid-1", Title: "My Video"}}}
+	srv := newExportServer(videos, composite)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/videos/vid-1/export/transcript.srt", nil)
+	bearer(req, testAdminToken)
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Hello") {
+		t.Fatalf("SRT body missing the stored transcript:\n%s", rec.Body.String())
 	}
 }
 
@@ -153,8 +217,8 @@ func TestExportReturns404WhenNoSnapshot(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s status = %d, want 404", path, rec.Code)
 		}
-		if !strings.Contains(strings.ToLower(rec.Body.String()), "re-run") {
-			t.Fatalf("%s 404 body should tell operator to re-run analysis: %s", path, rec.Body.String())
+		if !strings.Contains(strings.ToLower(rec.Body.String()), "run an analysis") {
+			t.Fatalf("%s 404 body should tell the operator to run an analysis: %s", path, rec.Body.String())
 		}
 	}
 }

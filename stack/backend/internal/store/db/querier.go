@@ -26,6 +26,12 @@ type Querier interface {
 	// Terminal success: mark the run complete, stamp the completion time, and count
 	// the run.
 	CompleteDocumentAnalysis(ctx context.Context, id uuid.UUID) error
+	// Terminal success: mark the run complete, stamp the completion time, and
+	// count the run. Paired with UpsertVideoAnalysis in one transaction so the
+	// status flip and the stored result are atomic.
+	CompleteVideoAnalysisStatus(ctx context.Context, id uuid.UUID) (Video, error)
+	// The retention dry run: how many rows an apply would remove.
+	CountClaimChecksBefore(ctx context.Context, occurredAt pgtype.Timestamptz) (int64, error)
 	CountEvidenceChunksForDocument(ctx context.Context, arg CountEvidenceChunksForDocumentParams) (int64, error)
 	// The delta-sync bulk-recommendation denominator counts only the encyclopedic
 	// corpora: every statistical source (separate sources that share this table) is
@@ -41,6 +47,9 @@ type Querier interface {
 	// unique constraint makes a repeat submission a no-op, so DO NOTHING returns no
 	// row and the caller resolves the existing record by source id instead.
 	CreateYouTubeVideo(ctx context.Context, arg CreateYouTubeVideoParams) (Video, error)
+	// The retention sweep: rows older than the cutoff age out; the occurred_at
+	// index serves the range delete.
+	DeleteClaimChecksBefore(ctx context.Context, occurredAt pgtype.Timestamptz) (int64, error)
 	// Sentences and claims go with the document via ON DELETE CASCADE.
 	DeleteDocument(ctx context.Context, id uuid.UUID) (int64, error)
 	// Remove one sentence's prior claims just before its fresh results are written,
@@ -69,21 +78,53 @@ type Querier interface {
 	// Terminal failure: record the reason and flip the run to failed so the admin
 	// can reanalyse.
 	FailDocumentAnalysis(ctx context.Context, arg FailDocumentAnalysisParams) error
+	// Terminal failure: record the reason and flip the run to failed so the
+	// operator can re-analyse. A previously stored analysis is untouched and
+	// stays readable.
+	FailVideoAnalysis(ctx context.Context, arg FailVideoAnalysisParams) error
 	GetDocument(ctx context.Context, id uuid.UUID) (Document, error)
 	GetEvidenceChunk(ctx context.Context, arg GetEvidenceChunkParams) (GetEvidenceChunkRow, error)
 	GetEvidenceSyncState(ctx context.Context, source string) (EvidenceSyncState, error)
 	GetOtherEvidenceSource(ctx context.Context, source string) (string, error)
 	GetTVChannel(ctx context.Context, id uuid.UUID) (TvChannel, error)
 	GetVideo(ctx context.Context, id uuid.UUID) (Video, error)
+	GetVideoAnalysis(ctx context.Context, videoID uuid.UUID) (VideoAnalysis, error)
 	// Resolve a video by its storage object key. The key is UNIQUE, so this is the
 	// idempotency probe for a deterministic-key writer: a repeated request for the
 	// same recording finds the existing row instead of colliding on the constraint.
 	GetVideoByObjectKey(ctx context.Context, objectKey string) (Video, error)
 	GetVideoBySourceID(ctx context.Context, sourceID pgtype.Text) (Video, error)
+	// Telemetry rows are inserted in batches by the asynchronous recorder; the
+	// table is append-only, so this is a plain insert with no conflict target.
+	InsertClaimChecks(ctx context.Context, arg []InsertClaimChecksParams) *InsertClaimChecksBatchResults
 	// Persist one atomic claim's verdict. ordinal is assigned by the identity
 	// column, preserving insertion order within the sentence.
 	InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
+	// Lexical half of hybrid retrieval (VER-195): the top result_limit claims whose
+	// French-folded search_vector matches the query terms, ranked by cover density
+	// (ts_rank_cd weighs term proximity, which favours exact-figure and named-entity
+	// overlap over raw term frequency). The GIN index on search_vector drives the @@
+	// filter, so this is a bounded index scan, never a seq scan. The same
+	// immutable_unaccent wrapper the generated column uses folds the query terms, so
+	// accent matching is symmetric. The row also carries the cosine distance to
+	// query_embedding so a fused lexical hit exposes the same wire-visible similarity
+	// a vector hit does; the ORDER BY is the lexical rank, so the vector distance is
+	// a carried attribute here and the HNSW index is not consulted. Ties break on id
+	// for a stable ranking.
+	LexicalSearchClaims(ctx context.Context, arg LexicalSearchClaimsParams) ([]LexicalSearchClaimsRow, error)
+	// Lexical half of hybrid retrieval (VER-195) over the evidence corpus, mirroring
+	// LexicalSearchClaims. The GIN index on search_vector drives the @@ filter (a
+	// bounded index scan, no seq scan); ts_rank_cd ranks by cover density. Only
+	// embedded chunks are eligible so a fused hit always carries a real cosine
+	// distance (the same wire shape SearchEvidenceChunks returns) and an unembedded
+	// chunk - which has no vector similarity to fuse - is never a lexical-only match.
+	// The optional sources filter mirrors SearchEvidenceChunks. Ties break on the
+	// natural key for a stable ranking.
+	LexicalSearchEvidenceChunks(ctx context.Context, arg LexicalSearchEvidenceChunksParams) ([]LexicalSearchEvidenceChunksRow, error)
+	// Dataset builds and tests read recent rows oldest-first; the occurred_at
+	// index serves the range scan.
+	ListClaimChecksSince(ctx context.Context, occurredAt pgtype.Timestamptz) ([]ListClaimChecksSinceRow, error)
 	// ordinal, not created_at, carries insertion order: an analysis run writes its
 	// claims in one transaction, so their created_at values are identical.
 	ListDocumentClaims(ctx context.Context, documentID uuid.UUID) ([]ListDocumentClaimsRow, error)
@@ -120,6 +161,15 @@ type Querier interface {
 	// reprocessed, so a run that fails partway keeps the previous run's verdicts for
 	// the sentences it never reached instead of destroying them all up front.
 	LockDocumentForAnalysis(ctx context.Context, id uuid.UUID) (Document, error)
+	// Claim a ready video for a fresh analysis run: flip it to analysing (the
+	// lock), zero the progress position, and clear any prior error - all in one
+	// guarded update. The guard admits a video that is ready and not already
+	// analysing (so a none/complete/failed analysis re-runs, a concurrent run is
+	// excluded). No row returned means the store resolves why (unknown, not
+	// ready, or already analysing) and maps it to the right error. The previous
+	// stored analysis is NOT wiped here: it stays readable until the new run
+	// completes and overwrites it.
+	LockVideoForAnalysis(ctx context.Context, id uuid.UUID) (Video, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an
 	// exact match on the recorded scrutin date; a caller resolves the scrutin date
@@ -128,6 +178,9 @@ type Querier interface {
 	// Startup recovery: any document left analysing when the process died is flipped
 	// to failed with a clear reason. Returns the recovered ids for logging.
 	RecoverInterruptedAnalyses(ctx context.Context) ([]uuid.UUID, error)
+	// Startup recovery: any video left analysing when the process died is flipped
+	// to failed with a clear reason. Returns the recovered ids for logging.
+	RecoverInterruptedVideoAnalyses(ctx context.Context) ([]uuid.UUID, error)
 	// Atomically claim a failed ingest for retry: flip it back to pending only if it
 	// is currently failed, so two concurrent re-submissions cannot both re-download.
 	// The guard returns no row (and thus no claim) when the record is not failed.
@@ -190,6 +243,9 @@ type Querier interface {
 	// Delta sync writes embeddings straight into the live table: at delta volume the
 	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
 	SetEvidenceChunkEmbedding(ctx context.Context, arg []SetEvidenceChunkEmbeddingParams) *SetEvidenceChunkEmbeddingBatchResults
+	// Advance the run's audio position. Progress is database state, so it
+	// survives a refresh and a restart.
+	SetVideoAnalysisProgress(ctx context.Context, arg SetVideoAnalysisProgressParams) error
 	// A failed ingest: record the reason and flip the record to failed.
 	SetVideoFailed(ctx context.Context, arg SetVideoFailedParams) (Video, error)
 	// A completed ingest: record the probed title, size, and duration, clear any
@@ -211,7 +267,11 @@ type Querier interface {
 	// keyset order to embed them in place. The embedding IS NULL filter scopes the
 	// scan to the unembedded chunks a delta run produced. The keyset spans the full
 	// (source, external_id, chunk_index) because external_id is unique only within a
-	// source.
+	// source. The metadata not-duplicate guard excludes the near-duplicate rows the
+	// volume-control gate withheld (VER-203): the delta sync scans the whole shared
+	// table, so without it a duplicate-flagged row (embedding IS NULL) of any source
+	// would be re-embedded and re-served, defeating the gate. It mirrors the raw
+	// live un-embedded scans' `notDuplicate` predicate.
 	UnembeddedEvidenceChunks(ctx context.Context, arg UnembeddedEvidenceChunksParams) ([]UnembeddedEvidenceChunksRow, error)
 	// Write the mutable fields of an existing channel. slug is immutable (it keys
 	// storage paths and seeds), so it is not updatable here.
@@ -248,6 +308,10 @@ type Querier interface {
 	// overwritten so reseeding never re-arms a channel the operator turned off (or
 	// disarmed archiving on); the first insert seeds them from the params.
 	UpsertTVChannelBySlug(ctx context.Context, arg UpsertTVChannelBySlugParams) (TvChannel, error)
+	// Persist a completed run's full event stream, one row per video: a
+	// re-analysis overwrites the previous result atomically (the run counter on
+	// videos, not rows here, is the history).
+	UpsertVideoAnalysis(ctx context.Context, arg UpsertVideoAnalysisParams) (VideoAnalysis, error)
 	// Scrutins ingest writes one recorded position per person per scrutin. Re-running
 	// the ingest rewrites the same row, so a bulk re-run is idempotent.
 	UpsertVotingRecord(ctx context.Context, arg UpsertVotingRecordParams) error

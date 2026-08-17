@@ -11,11 +11,36 @@ import (
 )
 
 type Claim struct {
-	ID        string
-	Content   string
-	Verdict   string
-	Sources   []byte
-	Embedding pgvector.HalfVector
+	ID           string
+	Content      string
+	Verdict      string
+	Sources      []byte
+	Embedding    pgvector.HalfVector
+	SearchVector interface{}
+}
+
+type ClaimCheck struct {
+	ID                    int64
+	OccurredAt            pgtype.Timestamptz
+	SessionKind           string
+	Locale                string
+	Speaker               string
+	UnitText              string
+	ClaimText             string
+	DecisionPath          string
+	SkipReason            string
+	RetrievalTop          float64
+	RetrievalCandidates   int32
+	RetrievalClaimHits    int32
+	RetrievalEvidenceHits int32
+	Verdict               string
+	Basis                 string
+	Literal               string
+	Confidence            float64
+	Source                string
+	Escalated             bool
+	LlmCalls              int32
+	LatencyMs             int64
 }
 
 type Document struct {
@@ -65,16 +90,19 @@ type DocumentSentence struct {
 }
 
 type EvidenceChunk struct {
-	Source     string
-	ExternalID string
-	ChunkIndex int32
-	Title      string
-	Url        string
-	Content    string
-	Kind       string
-	Embedding  *pgvector.HalfVector
-	Metadata   []byte
-	SyncedAt   pgtype.Timestamptz
+	Source       string
+	ExternalID   string
+	ChunkIndex   int32
+	Title        string
+	Url          string
+	Content      string
+	Kind         string
+	Embedding    *pgvector.HalfVector
+	Metadata     []byte
+	SyncedAt     pgtype.Timestamptz
+	SearchVector interface{}
+	ContentHash  []byte
+	PublishedAt  pgtype.Timestamptz
 }
 
 type EvidenceSyncState struct {
@@ -111,21 +139,39 @@ type TvChannel struct {
 }
 
 type Video struct {
-	ID          uuid.UUID
-	Title       string
-	ObjectKey   string
-	ContentType string
-	SizeBytes   int64
-	Status      string
-	Kind        string
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	SourceUrl   pgtype.Text
-	SourceID    pgtype.Text
-	DurationMs  int64
-	Error       pgtype.Text
-	ChannelID   uuid.NullUUID
-	RecordedAt  pgtype.Timestamptz
+	ID                 uuid.UUID
+	Title              string
+	ObjectKey          string
+	ContentType        string
+	SizeBytes          int64
+	Status             string
+	Kind               string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	SourceUrl          pgtype.Text
+	SourceID           pgtype.Text
+	DurationMs         int64
+	Error              pgtype.Text
+	ChannelID          uuid.NullUUID
+	RecordedAt         pgtype.Timestamptz
+	AnalysisStatus     string
+	AnalysisError      string
+	AnalyzedAt         pgtype.Timestamptz
+	AnalysisRuns       int32
+	AnalysisProgressMs int64
+}
+
+type VideoAnalysis struct {
+	VideoID            uuid.UUID
+	SnapshotVersion    int32
+	Events             []byte
+	Engine             []byte
+	ClaimsTotal        int32
+	ClaimsCredible     int32
+	ClaimsDisputed     int32
+	ClaimsUnverifiable int32
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
 }
 
 type VotingRecord struct {

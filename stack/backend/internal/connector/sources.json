@@ -1,0 +1,266 @@
+{
+  "sources": [
+    {
+      "name": "wikipedia",
+      "default_cron": "0 3 * * *",
+      "producer": "wikicrawl",
+      "worker": "crawlworker",
+      "queue": "crawl.chunks",
+      "required_env": [
+        "CRAWL_CATEGORIES"
+      ],
+      "forward_env": [
+        "CRAWL_CATEGORIES",
+        "CRAWL_PROJECT",
+        "WIKI_CORPUS",
+        "CRAWL_CORPUS",
+        "CRAWL_MAX_DEPTH",
+        "CRAWL_MAX_PAGES",
+        "CRAWL_INCLUDE_BODY",
+        "CRAWL_SHARDS",
+        "CRAWL_SHARD_INDEX",
+        "CRAWL_CHECKWORTHY",
+        "CRAWL_CHECKWORTHY_MODEL",
+        "CRAWL_CHECKWORTHY_CONCURRENCY",
+        "CRAWL_CHECKWORTHY_RPM",
+        "LLM_PROVIDER"
+      ],
+      "secrets": [
+        {
+          "env_var": "CHECKWORTHY_API_KEY",
+          "secret_suffix": "app/checkworthy-api-key"
+        }
+      ]
+    },
+    {
+      "name": "stats",
+      "producer": "statsingest",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
+    },
+    {
+      "name": "factcheck",
+      "default_cron": "0 4 * * *",
+      "producer": "factcheckcrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "FACTCHECK_QUERIES",
+        "FACTCHECK_PUBLISHER_SITES",
+        "FACTCHECK_LANGUAGE",
+        "FACTCHECK_MAX_PAGES",
+        "FACTCHECK_MAX_AGE_DAYS",
+        "FACTCHECK_CHECKPOINT_PATH"
+      ],
+      "secrets": [
+        {
+          "env_var": "FACTCHECK_API_KEY",
+          "secret_suffix": "app/factcheck-api-key"
+        }
+      ]
+    },
+    {
+      "name": "scrutins",
+      "default_cron": "30 4 * * *",
+      "producer": "scrutinscrawl",
+      "worker": "scrutinsworker",
+      "queue": "scrutins.votes",
+      "forward_env": [
+        "SCRUTINS_LEGISLATURE"
+      ]
+    },
+    {
+      "name": "sdmx",
+      "producer": "sdmxcrawl",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "SDMX_SOURCES",
+        "SDMX_START_PERIOD",
+        "SDMX_END_PERIOD",
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
+    },
+    {
+      "name": "ods",
+      "producer": "odsingest",
+      "worker": "embedworker",
+      "queue": "embedding.jobs",
+      "forward_env": [
+        "WIKI_ENQUEUE_BATCH_SIZE"
+      ]
+    },
+    {
+      "name": "an-amendements",
+      "default_cron": "0 5 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_LEGISLATURE",
+        "PARLIAMENT_MAX_ITEMS"
+      ],
+      "new_queue": true
+    },
+    {
+      "name": "an-questions",
+      "default_cron": "20 5 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_LEGISLATURE",
+        "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "an-comptesrendus",
+      "default_cron": "40 5 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_LEGISLATURE",
+        "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "senat-questions",
+      "default_cron": "0 6 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "senat-dosleg",
+      "default_cron": "30 6 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "senat-scrutins",
+      "default_cron": "0 7 * * *",
+      "producer": "parliamentcrawl",
+      "worker": "scrutinsworker",
+      "queue": "scrutins.votes",
+      "required_env": [
+        "PARLIAMENT_DATASET"
+      ],
+      "forward_env": [
+        "PARLIAMENT_DATASET",
+        "PARLIAMENT_SINCE_YEAR",
+        "PARLIAMENT_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "datacommons",
+      "default_cron": "0 5 * * *",
+      "producer": "datacommonscrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "DATACOMMONS_FEED_URL",
+        "DATACOMMONS_OUTLET_ALLOWLIST",
+        "DATACOMMONS_MAX_ITEMS",
+        "DATACOMMONS_FEED_FORMAT"
+      ]
+    },
+    {
+      "name": "claimreview",
+      "default_cron": "30 5 * * *",
+      "producer": "claimreviewcrawl",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "CLAIMREVIEW_USER_AGENT",
+        "CLAIMREVIEW_MIN_DELAY_MS",
+        "CLAIMREVIEW_MAX_URLS"
+      ]
+    },
+    {
+      "name": "claimskg",
+      "producer": "claimskgseed",
+      "worker": "factcheckworker",
+      "queue": "factcheck.claims",
+      "forward_env": [
+        "CLAIMSKG_SEED_ENABLED",
+        "CLAIMSKG_SEED_FILE",
+        "CLAIMSKG_SEED_VINTAGE",
+        "CLAIMSKG_SEED_TSV"
+      ]
+    },
+    {
+      "name": "viepublique",
+      "default_cron": "0 8 * * *",
+      "producer": "viepubliquecrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "VIEPUBLIQUE_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "hatvp",
+      "default_cron": "30 8 * * *",
+      "producer": "hatvpcrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "HATVP_MAX_ITEMS"
+      ]
+    },
+    {
+      "name": "legifrance",
+      "producer": "legifrancecrawl",
+      "worker": "evidenceworker",
+      "queue": "evidence.chunks",
+      "forward_env": [
+        "LEGIFRANCE_ARTICLES",
+        "LEGIFRANCE_MAX_ITEMS",
+        "LEGIFRANCE_MIN_INTERVAL_MS",
+        "LEGIFRANCE_TOKEN_URL",
+        "LEGIFRANCE_API_BASE_URL"
+      ],
+      "secrets": [
+        {
+          "env_var": "LEGIFRANCE_CLIENT_ID",
+          "secret_suffix": "app/legifrance-client-id"
+        },
+        {
+          "env_var": "LEGIFRANCE_CLIENT_SECRET",
+          "secret_suffix": "app/legifrance-client-secret"
+        }
+      ]
+    }
+  ]
+}

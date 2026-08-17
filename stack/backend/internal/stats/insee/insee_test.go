@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 // realBDMResponse is the SDMX-ML 2.1 StructureSpecificData wire format of a live
@@ -40,6 +42,7 @@ func newTestClient(t *testing.T, cfg Config, handler http.HandlerFunc) *Client {
 	cfg.BaseURL = srv.URL
 	cfg.HTTPClient = srv.Client()
 	cfg.MinInterval = time.Millisecond // no real throttle sleep in tests
+	cfg.Retry = httpx.RetryConfig{MaxRetries: -1}
 	return New(cfg)
 }
 

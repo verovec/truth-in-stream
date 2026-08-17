@@ -17,12 +17,19 @@ type stubSegmentMatcher struct {
 	contributions []float64
 	err           error
 	gotText       string
+	gotVec        []float32
 	gotScored     []Match
 	gotContribFor []Match
 }
 
 func (s *stubSegmentMatcher) MatchSegment(_ context.Context, segment string) ([]Match, []float32, error) {
 	s.gotText = segment
+	return s.matches, s.embedding, s.err
+}
+
+func (s *stubSegmentMatcher) MatchSegmentVec(_ context.Context, segment string, vec []float32) ([]Match, []float32, error) {
+	s.gotText = segment
+	s.gotVec = vec
 	return s.matches, s.embedding, s.err
 }
 

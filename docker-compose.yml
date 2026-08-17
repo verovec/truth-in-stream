@@ -48,8 +48,13 @@ services:
   # the only path that uses EMBEDDING_API_KEY. Sample media is fetched once from SAMPLE_VIDEO_URL
   # (default a public test clip) and cached under seed/media-cache (bind-mounted,
   # so it survives reseeds); an unreachable host with no cache seeds the records
-  # without media rather than failing. The backend waits for this so the stores
-  # and gallery are populated before the first request - no restart needed.
+  # without media rather than failing. Nothing depends on this service: seeding
+  # is explicit (`make seed`, or the per-dataset targets) so a stack boot never
+  # touches the operator's data - a real encyclopedic corpus (frwiki) claims the
+  # single-source store, and an auto-seed racing it used to fail `make up`
+  # outright. CI runs it explicitly in the login smoke job. If the store already
+  # holds a real corpus, the wiki fixture is skipped with a warning and the
+  # other datasets still seed.
   seed:
     build:
       context: ./stack/backend
@@ -384,11 +389,19 @@ services:
       # each crawl a disjoint round-robin slice of CRAWL_CATEGORIES.
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      # Resumable crawl: a killed run resumes from the checkpoint on the crawl-state
+      # volume instead of restarting (empty CRAWL_CHECKPOINT_PATH disables resume).
+      # CRAWL_ERROR_BUDGET pages may be skipped before the run fails; a page's
+      # extract failure is skipped, not fatal. CRAWL_GATE_FAIL_MODE=closed holds a
+      # chunk whose gate call errored (retried next run) instead of publishing it.
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       # Fact-checkability gate: on by default, so a key is required unless you set
       # CRAWL_CHECKWORTHY=false to publish every chunk. The gate drops chunks that
       # are not citable evidence before they reach the broker; gate errors fail
-      # open (the chunk is published). CONCURRENCY caps in-flight judgments;
-      # RPM (empty/0 = unpaced) caps the Anthropic call rate.
+      # open (the chunk is published) unless CRAWL_GATE_FAIL_MODE=closed. CONCURRENCY
+      # caps in-flight judgments; RPM (empty/0 = unpaced) caps the Anthropic call rate.
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -403,6 +416,7 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+      - crawl-state:/state
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -591,6 +605,9 @@ services:
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -613,6 +630,8 @@ services:
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
+      # One /state volume holds both the scrutins marker and the crawl checkpoint
+      # (distinct files), since the scheduler runs both producers.
       - scrutins-state:/state
     depends_on:
       rabbitmq:
@@ -690,6 +709,30 @@ services:
       WIKI_CLUSTER_K: "${WIKI_CLUSTER_K:-}"
       WIKI_CLUSTER_MAX_ITERS: "${WIKI_CLUSTER_MAX_ITERS:-}"
       WIKI_CLUSTER_SEED: "${WIKI_CLUSTER_SEED:-}"
+    volumes:
+      - ./stack/backend:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Per-source evidence retention sweep (VER-203, measure 3). Opt-in ("tools"),
+  # one-shot, no API key: it removes the chunks of one source last synced before a
+  # cutoff so a superseded statistical generation ages out. Dry-run by default;
+  # pass -apply to delete. Args are supplied by overriding the command, so run it
+  # via `make evidence-retention ARGS="-source insee-emploi -max-age 720h"`
+  # (add -apply to delete). Re-ingesting the source restores the rows.
+  evidence-retention:
+    profiles: ["tools"]
+    build:
+      context: ./stack/backend
+      target: dev
+    working_dir: /app
+    command: ["go", "run", "./cmd/evidenceretention"]
+    environment:
+      DATABASE_URL: "postgres://postgres:dev@postgres:5432/truthinstream?sslmode=disable"
     volumes:
       - ./stack/backend:/app
       - go-mod-cache:/go/pkg/mod
@@ -845,8 +888,82 @@ services:
       # default) keeps the single-stage halfvec search; a positive value gathers
       # multiplier x k coarse candidates on the bit index and reranks them on the
       # halfvec column. Off until the corpus approaches the halfvec HNSW's RAM
-      # ceiling; validate recall on the real corpus before enabling.
+      # ceiling; validate recall on the real corpus before enabling. Note: while
+      # hybrid evidence search is on (MATCH_HYBRID_SEARCH below, default on), the
+      # evidence vector branch is the single-stage halfvec search, so this BQ
+      # two-stage path is NOT in effect for evidence retrieval (curated-claims BQ
+      # is unaffected); the backend logs a one-time startup warning when both set.
       EVIDENCE_BQ_MULTIPLIER: "${EVIDENCE_BQ_MULTIPLIER:-}"
+      # Hybrid retrieval (VER-195): fuse a French lexical full-text branch with
+      # the vector branch by Reciprocal Rank Fusion so exact figures, dates, and
+      # named entities dense embeddings blur are caught. On by default; a store
+      # without the lexical index (or MATCH_HYBRID_SEARCH=false) falls back to the
+      # pure vector search. While on, evidence retrieval uses the single-stage
+      # vector branch, so EVIDENCE_BQ_MULTIPLIER above has no effect for evidence.
+      # Optional tuning falls back to binary defaults when empty: MATCH_LEXICAL_TOP_K
+      # (20, the lexical candidate pool per corpus) and MATCH_RRF_K (60, the RRF
+      # smoothing constant). Forwarded explicitly - a variable in .env does nothing
+      # unless compose passes it through.
+      MATCH_HYBRID_SEARCH: "${MATCH_HYBRID_SEARCH:-}"
+      MATCH_LEXICAL_TOP_K: "${MATCH_LEXICAL_TOP_K:-}"
+      MATCH_RRF_K: "${MATCH_RRF_K:-}"
+      # Retrieval reranking (VER-226). Off by default; when on (and keyed, the
+      # key falling back to EMBEDDING_API_KEY) the fused candidate pool widens to
+      # MATCH_RERANK_CANDIDATES (20) and the Voyage reranker picks which
+      # candidates survive the cut, fail-open on any error or timeout
+      # (MATCH_RERANK_TIMEOUT, 800ms; MATCH_RERANK_MODEL, rerank-2.5). Forwarded
+      # explicitly - a variable in .env does nothing unless compose passes it
+      # through.
+      MATCH_RERANK: "${MATCH_RERANK:-}"
+      MATCH_RERANK_MODEL: "${MATCH_RERANK_MODEL:-}"
+      MATCH_RERANK_CANDIDATES: "${MATCH_RERANK_CANDIDATES:-}"
+      MATCH_RERANK_TIMEOUT: "${MATCH_RERANK_TIMEOUT:-}"
+      RERANK_API_KEY: "${RERANK_API_KEY:-}"
+      # Recency weighting (VER-227): empty/0 keeps scoring unchanged; a positive
+      # duration halves a dated passage's corroboration weight per half-life.
+      MATCH_RECENCY_HALF_LIFE: "${MATCH_RECENCY_HALF_LIFE:-}"
+      # Per-claim telemetry (VER-229): one analytical claim_checks row per live
+      # decision, written asynchronously; on by default, lossy by contract.
+      # Bounded by TELEMETRY_SAMPLE_RATE and the telemetryretention sweep.
+      TELEMETRY_ENABLED: "${TELEMETRY_ENABLED:-}"
+      TELEMETRY_QUEUE_DEPTH: "${TELEMETRY_QUEUE_DEPTH:-}"
+      TELEMETRY_SAMPLE_RATE: "${TELEMETRY_SAMPLE_RATE:-}"
+      TELEMETRY_FLUSH_INTERVAL: "${TELEMETRY_FLUSH_INTERVAL:-}"
+      # Retrieval tuning (VER-202). Per-corpus matcher knobs; empty keeps the
+      # backend defaults. Threshold and top-k are already per corpus (curated
+      # claims vs wiki evidence); the ef_search knobs raise one corpus's HNSW
+      # candidate list independently (0 = pgvector session default). Forwarded
+      # explicitly - a variable in .env does nothing unless compose passes it
+      # through. Change a default only with golden-eval + latency evidence.
+      MATCH_TOP_K: "${MATCH_TOP_K:-}"
+      MATCH_SCORE_THRESHOLD: "${MATCH_SCORE_THRESHOLD:-}"
+      MATCH_EVIDENCE_TOP_K: "${MATCH_EVIDENCE_TOP_K:-}"
+      MATCH_EVIDENCE_SCORE_THRESHOLD: "${MATCH_EVIDENCE_SCORE_THRESHOLD:-}"
+      MATCH_MAX_RESULTS: "${MATCH_MAX_RESULTS:-}"
+      MATCH_EMBED_CONCURRENCY: "${MATCH_EMBED_CONCURRENCY:-}"
+      MATCH_TIMEOUT: "${MATCH_TIMEOUT:-}"
+      MATCH_CONFIDENCE_CLUSTER_SIZE: "${MATCH_CONFIDENCE_CLUSTER_SIZE:-}"
+      MATCH_CONFIDENCE_LEAD_WEIGHT: "${MATCH_CONFIDENCE_LEAD_WEIGHT:-}"
+      MATCH_CONFIDENCE_BODY_WEIGHT: "${MATCH_CONFIDENCE_BODY_WEIGHT:-}"
+      MATCH_CLAIMS_EF_SEARCH: "${MATCH_CLAIMS_EF_SEARCH:-}"
+      MATCH_EVIDENCE_EF_SEARCH: "${MATCH_EVIDENCE_EF_SEARCH:-}"
+      # Check-worthiness precheck gate (legacy gate-and-match path). Empty keeps the
+      # backend defaults. PRECHECK_COVERAGE_EF_SEARCH is the recall-critical coverage
+      # probe's HNSW budget (default 200), now env-tunable (VER-202).
+      PRECHECK_ENABLED: "${PRECHECK_ENABLED:-}"
+      PRECHECK_MIN_WORDS: "${PRECHECK_MIN_WORDS:-}"
+      PRECHECK_COVERAGE_THRESHOLD: "${PRECHECK_COVERAGE_THRESHOLD:-}"
+      PRECHECK_WIKI_COVERAGE_ENABLED: "${PRECHECK_WIKI_COVERAGE_ENABLED:-}"
+      PRECHECK_WIKI_COVERAGE_THRESHOLD: "${PRECHECK_WIKI_COVERAGE_THRESHOLD:-}"
+      PRECHECK_COVERAGE_EF_SEARCH: "${PRECHECK_COVERAGE_EF_SEARCH:-}"
+      # Live analyzer scoring pool (legacy path). Concurrency is the verdict worker
+      # count; queue depth is the ready-unit backlog before a unit sheds to
+      # not_checked; max sentences caps how many sentences accumulate into one
+      # analysis unit before it is scored (the decomposer's window). Empty keeps
+      # the backend defaults (4 / 32 / 4).
+      LIVE_CONCURRENCY: "${LIVE_CONCURRENCY:-}"
+      LIVE_QUEUE_DEPTH: "${LIVE_QUEUE_DEPTH:-}"
+      LIVE_MAX_SENTENCES: "${LIVE_MAX_SENTENCES:-}"
       # LLM provider for every LLM-backed stage (consistency, check-worthiness,
       # claim decomposition, claim typing, the credibility verifier). Defaults to
       # deepseek (DeepSeek's cheap chat model, keyed on DEEPSEEK_API_KEY). Set
@@ -876,6 +993,29 @@ services:
       CHECKWORTHINESS_ENABLED: "${CHECKWORTHINESS_ENABLED:-}"
       CHECKWORTHINESS_API_KEY: "${CHECKWORTHINESS_API_KEY:-}"
       CHECKWORTHINESS_MODEL: "${CHECKWORTHINESS_MODEL:-}"
+      # Local check-worthiness classifier (VER-225): scores heuristic survivors
+      # on CPU so only the uncertainty band reaches the generative gate. Off by
+      # default; needs a localinference-tagged binary and mounted artifacts.
+      CHECKWORTHINESS_LOCAL_ENABLED: "${CHECKWORTHINESS_LOCAL_ENABLED:-}"
+      CHECKWORTHINESS_LOCAL_MODEL_PATH: "${CHECKWORTHINESS_LOCAL_MODEL_PATH:-}"
+      CHECKWORTHINESS_LOCAL_TOKENIZER_PATH: "${CHECKWORTHINESS_LOCAL_TOKENIZER_PATH:-}"
+      CHECKWORTHINESS_LOCAL_ONNX_LIBRARY: "${CHECKWORTHINESS_LOCAL_ONNX_LIBRARY:-}"
+      CHECKWORTHINESS_LOCAL_BAND_LOW: "${CHECKWORTHINESS_LOCAL_BAND_LOW:-}"
+      CHECKWORTHINESS_LOCAL_BAND_HIGH: "${CHECKWORTHINESS_LOCAL_BAND_HIGH:-}"
+      CHECKWORTHINESS_LOCAL_TIMEOUT: "${CHECKWORTHINESS_LOCAL_TIMEOUT:-}"
+      # Local NLI stance stage (VER-228): decides clear verdicts from retrieved
+      # evidence on CPU; only ambiguity reaches the generative verifier. Off by
+      # default; needs a localinference-tagged binary and mounted artifacts.
+      FACTCHECK_NLI_ENABLED: "${FACTCHECK_NLI_ENABLED:-}"
+      FACTCHECK_NLI_MODEL_PATH: "${FACTCHECK_NLI_MODEL_PATH:-}"
+      FACTCHECK_NLI_TOKENIZER_PATH: "${FACTCHECK_NLI_TOKENIZER_PATH:-}"
+      FACTCHECK_NLI_ONNX_LIBRARY: "${FACTCHECK_NLI_ONNX_LIBRARY:-}"
+      FACTCHECK_NLI_TEMPERATURE: "${FACTCHECK_NLI_TEMPERATURE:-}"
+      FACTCHECK_NLI_ENTAIL_THRESHOLD: "${FACTCHECK_NLI_ENTAIL_THRESHOLD:-}"
+      FACTCHECK_NLI_CONTRADICT_THRESHOLD: "${FACTCHECK_NLI_CONTRADICT_THRESHOLD:-}"
+      FACTCHECK_NLI_MIN_AGREE: "${FACTCHECK_NLI_MIN_AGREE:-}"
+      FACTCHECK_NLI_MAX_PASSAGES: "${FACTCHECK_NLI_MAX_PASSAGES:-}"
+      FACTCHECK_NLI_TIMEOUT: "${FACTCHECK_NLI_TIMEOUT:-}"
       # Retrieve-then-verify fact-check path: decompose each unit into atomic
       # claims, retrieve evidence, and have an LLM verifier derive the verdict
       # (supports/refutes/not_enough_info) from that evidence instead of borrowing
@@ -900,26 +1040,44 @@ services:
       FACTCHECK_VERIFY_QUEUE_DEPTH: "${FACTCHECK_VERIFY_QUEUE_DEPTH:-}"
       FACTCHECK_VERIFY_FAST_DEADLINE: "${FACTCHECK_VERIFY_FAST_DEADLINE:-}"
       FACTCHECK_VERIFY_DEADLINE: "${FACTCHECK_VERIFY_DEADLINE:-}"
+      # Semantic claim cache (VER-202): a paraphrase of a recently verified claim
+      # replays its verdict with no verifier call. FACTCHECK_VERIFY_CACHE_TTL bounds
+      # the window (0 disables), FACTCHECK_VERIFY_CACHE_THRESHOLD is the cosine bar
+      # for a hit (default 0.95, high = precision over recall), and
+      # FACTCHECK_VERIFY_CACHE_MAX_ENTRIES bounds the in-process size (default 1024).
       FACTCHECK_VERIFY_CACHE_TTL: "${FACTCHECK_VERIFY_CACHE_TTL:-}"
-      # Deeper-reasoner second pass: after the verify path returns an evidence-grounded
-      # verdict whose confidence sits in a mid band, a stronger reasoning model
-      # re-judges the same evidence and may upgrade the verdict in place. It runs off
-      # the live hot path (after the fast verdict is emitted, outside the verify pool)
-      # and never lifts a knowledge-only verdict past the confidence cap. Off unless
-      # FACTCHECK_SECOND_PASS is true AND FACTCHECK_SECOND_PASS_API_KEY (Anthropic) or
-      # the selected provider's key is set; with no key it degrades to the single-pass
-      # verify path. Only the credibility-only verify stage runs it (political mode owns
-      # its own verify stage). Optional tuning falls back to defaults when empty:
-      # FACTCHECK_SECOND_PASS_MODEL (deepseek-v4-pro under DeepSeek - the larger,
-      # costlier reasoning tier), FACTCHECK_SECOND_PASS_BAND_LO (0.45) /
-      # FACTCHECK_SECOND_PASS_BAND_HI (0.8) bound the qualifying confidence band, and
-      # FACTCHECK_SECOND_PASS_DEADLINE (12s) bounds one reverify call.
+      FACTCHECK_VERIFY_CACHE_THRESHOLD: "${FACTCHECK_VERIFY_CACHE_THRESHOLD:-}"
+      FACTCHECK_VERIFY_CACHE_MAX_ENTRIES: "${FACTCHECK_VERIFY_CACHE_MAX_ENTRIES:-}"
+      # Terminal reasoning gate (VER-192): when the verify path's best verdict for a
+      # claim is weak - unverifiable, or confidence below the trigger floor - a stronger
+      # reasoning model re-judges the same retrieved evidence one last time and upgrades
+      # the verdict in place only when its re-judgment is grounded AND reaches the
+      # min-confidence floor; otherwise the honest weak verdict stands. It runs off the
+      # live hot path (after the fast verdict is emitted, outside the verify pool) and
+      # applies to BOTH the credibility path and the political two-axis path. Off unless
+      # FACTCHECK_SECOND_PASS (or FACTCHECK_FINAL_GATE) is true AND a reasoner key is set
+      # (the selected provider's key, or the Anthropic API-key knob); with no key it
+      # degrades to the single-pass verify path. The gate layers over the second pass:
+      # every FACTCHECK_FINAL_GATE_* knob falls back to its FACTCHECK_SECOND_PASS_*
+      # equivalent and overrides it piece by piece; the gate provider is decoupled from
+      # LLM_PROVIDER. Optional tuning falls back to defaults when empty:
+      # FACTCHECK_FINAL_GATE_MODEL (the second pass's model), FACTCHECK_FINAL_GATE_TRIGGER_BELOW
+      # (0.8) escalates verdicts below that confidence, FACTCHECK_FINAL_GATE_MIN_CONFIDENCE
+      # (0.90) is the grounded confidence to adopt a re-judgment, and
+      # FACTCHECK_FINAL_GATE_DEADLINE (12s) bounds one reverify call.
       FACTCHECK_SECOND_PASS: "${FACTCHECK_SECOND_PASS:-}"
       FACTCHECK_SECOND_PASS_API_KEY: "${FACTCHECK_SECOND_PASS_API_KEY:-}"
       FACTCHECK_SECOND_PASS_MODEL: "${FACTCHECK_SECOND_PASS_MODEL:-}"
       FACTCHECK_SECOND_PASS_BAND_LO: "${FACTCHECK_SECOND_PASS_BAND_LO:-}"
       FACTCHECK_SECOND_PASS_BAND_HI: "${FACTCHECK_SECOND_PASS_BAND_HI:-}"
       FACTCHECK_SECOND_PASS_DEADLINE: "${FACTCHECK_SECOND_PASS_DEADLINE:-}"
+      FACTCHECK_FINAL_GATE: "${FACTCHECK_FINAL_GATE:-}"
+      FACTCHECK_FINAL_GATE_PROVIDER: "${FACTCHECK_FINAL_GATE_PROVIDER:-}"
+      FACTCHECK_FINAL_GATE_API_KEY: "${FACTCHECK_FINAL_GATE_API_KEY:-}"
+      FACTCHECK_FINAL_GATE_MODEL: "${FACTCHECK_FINAL_GATE_MODEL:-}"
+      FACTCHECK_FINAL_GATE_TRIGGER_BELOW: "${FACTCHECK_FINAL_GATE_TRIGGER_BELOW:-}"
+      FACTCHECK_FINAL_GATE_MIN_CONFIDENCE: "${FACTCHECK_FINAL_GATE_MIN_CONFIDENCE:-}"
+      FACTCHECK_FINAL_GATE_DEADLINE: "${FACTCHECK_FINAL_GATE_DEADLINE:-}"
       # French/EU political fact-checking mode. Off by default; when true the live
       # transcription biases toward French (language_code=fr) and the gate and
       # claim decomposition prompt and reason in French. When it is on AND the
@@ -933,11 +1091,20 @@ services:
       # is the thin-result floor below which the router broadens to web search.
       FACTCHECK_POLITICAL: "${FACTCHECK_POLITICAL:-}"
       FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS: "${FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS:-}"
-      # Political source packs (read only when FACTCHECK_POLITICAL is on). Web search
-      # is the mandatory open-ended fallback, so WEBSEARCH_API_KEY (a Brave token) is
-      # required in political mode; the press pack joins only when PRESS_API_KEY is
-      # set, and the stats pack is keyless (optional STATS_TIMEOUT / STATS_CACHE_TTL
-      # tuning only). Secrets are never logged.
+      # Cosine bar to borrow a curated two-axis political claim (literal verdict +
+      # manipulation flags + real source) with no LLM call (default 0.85). Empty
+      # keeps the default; only read when FACTCHECK_POLITICAL and the verify path are on.
+      FACTCHECK_POLITICAL_CURATED_TAU: "${FACTCHECK_POLITICAL_CURATED_TAU:-}"
+      # Curated fast-borrow age guard (VER-227): empty/0 disables; a positive
+      # duration stops borrowing verdicts checked longer ago than that.
+      FACTCHECK_POLITICAL_CURATED_MAX_AGE: "${FACTCHECK_POLITICAL_CURATED_MAX_AGE:-}"
+      # Political source packs (read only when FACTCHECK_POLITICAL is on, the default
+      # since VER-230). Every pack is optional: WEBSEARCH_API_KEY (a Brave token)
+      # wires the open-ended fallback and PRESS_API_KEY the attribution pack, each
+      # joining only when its own key is set; the stats pack is keyless (optional
+      # STATS_TIMEOUT / STATS_CACHE_TTL tuning only). Without a web-search key the
+      # backend starts with a warning and open-ended claims retrieve no evidence.
+      # Secrets are never logged.
       WEBSEARCH_API_KEY: "${WEBSEARCH_API_KEY:-}"
       WEBSEARCH_TIMEOUT: "${WEBSEARCH_TIMEOUT:-}"
       PRESS_API_KEY: "${PRESS_API_KEY:-}"
@@ -999,6 +1166,19 @@ services:
       DOCUMENT_MAX_SIZE_BYTES: "${DOCUMENT_MAX_SIZE_BYTES:-}"
       DOCUMENT_MAX_SENTENCES: "${DOCUMENT_MAX_SENTENCES:-}"
       DOCUMENT_ANALYSIS_TIMEOUT: "${DOCUMENT_ANALYSIS_TIMEOUT:-}"
+      # Headless video pre-analysis (POST /api/videos/{id}/analyse). The job
+      # extracts the stored media's audio with the bundled ffmpeg and replays
+      # it through the live pipeline at PREANALYSIS_PACING_FACTOR x realtime
+      # (in (0, 1]; AssemblyAI closes sessions fed faster than realtime).
+      # PREANALYSIS_MAX_CONCURRENT caps simultaneous runs (default 1; queued
+      # starts wait, holding the analysing status at zero progress).
+      # PREANALYSIS_RUN_TIMEOUT bounds one whole run (default 4h; at realtime
+      # pacing it must exceed the longest video to analyse). Empty keeps the
+      # backend defaults. Forwarded explicitly - a variable in .env does
+      # nothing unless compose passes it through.
+      PREANALYSIS_PACING_FACTOR: "${PREANALYSIS_PACING_FACTOR:-}"
+      PREANALYSIS_MAX_CONCURRENT: "${PREANALYSIS_MAX_CONCURRENT:-}"
+      PREANALYSIS_RUN_TIMEOUT: "${PREANALYSIS_RUN_TIMEOUT:-}"
       # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
       # yt-dlp and ffmpeg, so the defaults work as-is. Optional overrides:
       # YOUTUBE_DOWNLOADER_PATH (default "yt-dlp"), YOUTUBE_MAX_DOWNLOAD_BYTES
@@ -1012,8 +1192,6 @@ services:
       postgres:
         condition: service_healthy
       migrate:
-        condition: service_completed_successfully
-      seed:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
@@ -1114,3 +1292,6 @@ volumes:
   # Scratch for in-progress TV capture segments before upload; a crash leaves
   # partial .ts here for the worker's startup salvage pass.
   tv-capture-work:
+  # Persists the wikipedia crawl checkpoint across runs, so a killed crawl resumes
+  # from its last completed batch instead of restarting.
+  crawl-state:

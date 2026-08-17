@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -280,6 +282,101 @@ func TestUpsertVotingRecordIsIdempotent(t *testing.T) {
 	}
 	if got[0].Position != domain.VoteAgainst {
 		t.Errorf("position = %q, want against after re-upsert", got[0].Position)
+	}
+}
+
+// TestUpsertVotingRecordsAppliesAtomically proves the scrutins worker's apply is
+// all-or-nothing: while one goroutine repeatedly rewrites a scrutin's whole set,
+// flipping every deputy's position together, a concurrent reader never observes a
+// partial vote set - the scrutin's rows always share a single position in any
+// snapshot, and the row count never straddles the apply.
+func TestUpsertVotingRecordsAppliesAtomically(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	const (
+		n         = 12
+		scrutinID = "s-atomic"
+	)
+	day := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	build := func(pos domain.VotePosition) []domain.VotingRecord {
+		recs := make([]domain.VotingRecord, n)
+		for i := range n {
+			recs[i] = votingRecord(fmt.Sprintf("p%d", i), scrutinID, "Loi atomique", day, pos)
+		}
+		return recs
+	}
+	if err := store.UpsertVotingRecords(ctx, build(domain.VoteFor)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// snapshot reads, in one query (one MVCC snapshot), the scrutin's row count and
+	// how many distinct positions those rows carry. An atomic apply flips every row
+	// together, so a reader must always see exactly n rows with a single distinct
+	// position; a straddled read (some flipped, some not) would show two positions.
+	snapshot := func() (total, distinctPositions int, err error) {
+		err = store.pool.QueryRow(ctx,
+			`SELECT count(*), count(DISTINCT position) FROM voting_records WHERE scrutin_id = $1`, scrutinID).
+			Scan(&total, &distinctPositions)
+		return
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			total, distinct, err := snapshot()
+			if err != nil {
+				t.Errorf("snapshot read: %v", err)
+				return
+			}
+			if total != n {
+				t.Errorf("scrutin row count = %d, want %d (rows appeared or vanished mid-apply)", total, n)
+				return
+			}
+			if distinct != 1 {
+				t.Errorf("partial vote set visible: %d distinct positions across the scrutin's rows, want 1", distinct)
+				return
+			}
+		}
+	}()
+
+	positions := []domain.VotePosition{domain.VoteFor, domain.VoteAgainst, domain.VoteAbstain, domain.VoteAbsent}
+	for i := range 300 {
+		if err := store.UpsertVotingRecords(ctx, build(positions[i%len(positions)])); err != nil {
+			t.Fatalf("apply %d: %v", i, err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestUpsertVotingRecordsRejectsBadInputBeforeApply(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	day := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	good := votingRecord("p1", "s-bad", "Loi", day, domain.VoteFor)
+	bad := votingRecord("p2", "s-bad", "Loi", day, "yes") // invalid position
+
+	if err := store.UpsertVotingRecords(ctx, []domain.VotingRecord{good, bad}); err == nil {
+		t.Fatal("expected an error for an invalid record in the batch")
+	}
+	// The invalid batch is rejected before any transaction opens, so not even the
+	// valid record lands - no partial vote set.
+	got, err := store.LookupVotingRecords(ctx, "p1", "Loi", day)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("a batch with one invalid record wrote %d rows, want 0 (fail before applying)", len(got))
 	}
 }
 

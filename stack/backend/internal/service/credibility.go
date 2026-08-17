@@ -88,6 +88,28 @@ type speakerCredibility struct {
 // other two. An unknown state is ignored (no tally move), so a future verdict label
 // cannot silently distort the breakdown.
 func (s *speakerCredibility) observe(state string) SpeakerTally {
+	s.increment(state)
+	return s.snapshot()
+}
+
+// reobserve moves a claim from its prior verdict bucket to a new one after the terminal
+// gate upgraded that claim's verdict: it decrements the old state's count and increments
+// the new. It keeps the aggregate consistent with the corrected per-claim verdict
+// without double-counting the claim - the claim was already observed once, so a move
+// (not a second observe) is what a one-claim verdict change demands. An unknown state on
+// either side is ignored, mirroring observe/increment. It does not touch the
+// misleading-framing tally: a gate upgrade carries the claim's manipulation flags
+// through unchanged (the credibility reasoner does not assess framing), so the framing
+// count the first observation set is already correct.
+func (s *speakerCredibility) reobserve(oldState, newState string) SpeakerTally {
+	s.decrement(oldState)
+	s.increment(newState)
+	return s.snapshot()
+}
+
+// increment bumps the count for one verdict state; an unknown state is ignored so a
+// future label cannot silently distort the breakdown.
+func (s *speakerCredibility) increment(state string) {
 	switch state {
 	case VerdictCredible:
 		s.credible++
@@ -96,7 +118,26 @@ func (s *speakerCredibility) observe(state string) SpeakerTally {
 	case VerdictUnverifiable:
 		s.unverifiable++
 	}
-	return s.snapshot()
+}
+
+// decrement removes one count for a verdict state, guarding against underflow (a
+// re-observed claim was always counted first, so the guard is defense in depth). An
+// unknown state is ignored.
+func (s *speakerCredibility) decrement(state string) {
+	switch state {
+	case VerdictCredible:
+		if s.credible > 0 {
+			s.credible--
+		}
+	case VerdictDisputed:
+		if s.disputed > 0 {
+			s.disputed--
+		}
+	case VerdictUnverifiable:
+		if s.unverifiable > 0 {
+			s.unverifiable--
+		}
+	}
 }
 
 // observeFraming records that the speaker's just-counted claim carried at least

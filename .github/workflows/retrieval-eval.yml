@@ -1,0 +1,41 @@
+name: retrieval-eval
+# The retrieval eval gate (VER-191). It runs only when a PR touches a
+# retrieval-affecting path - the store and its vector queries/migrations, the
+# verify path, the embedding layer, the eval harness itself, or the vectorbench
+# harness - so a change to search ranking cannot merge without proving it did not
+# regress recall over the French political/statistical golden set. The eval is
+# deterministic and fully offline (no model API, no database): the golden passages
+# are the seeded corpus and the baseline is a reviewed file. Make this a required
+# status check in branch protection so a recall regression blocks merge.
+on:
+  pull_request:
+    paths:
+      - 'stack/backend/internal/eval/**'
+      - 'stack/backend/internal/store/**'
+      - 'stack/backend/internal/verify/**'
+      - 'stack/backend/internal/embed/**'
+      - 'stack/backend/internal/vectorbench/**'
+      - 'stack/backend/queries/**'
+      - 'stack/backend/migrations/**'
+      - 'stack/backend/cmd/eval/**'
+      - 'stack/backend/cmd/vectorbench/**'
+      - '.github/workflows/retrieval-eval.yml'
+jobs:
+  retrieval-eval:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache: false }
+      # The one command: score recall per category and fail on a regression
+      # against the committed baseline. Non-zero exit fails the job.
+      - name: Retrieval recall gate
+        working-directory: stack/backend
+        run: go run ./cmd/eval
+      # Race-cover the eval harness and the vectorbench harness. The vectorbench
+      # integration test skips cleanly with no TEST_DATABASE_URL, so this job
+      # needs no database.
+      - name: Eval and vectorbench tests
+        working-directory: stack/backend
+        run: go test -race ./internal/eval/... ./internal/vectorbench/... ./cmd/eval/...

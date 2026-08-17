@@ -95,10 +95,13 @@ type wireFrame struct {
 	EarlierText string                `json:"earlier_text"`
 	Rationale   string                `json:"rationale"`
 	Claims      []struct {
-		ClaimID string `json:"claim_id"`
-		Text    string `json:"text"`
-		Status  string `json:"status"`
+		ClaimID string             `json:"claim_id"`
+		Text    string             `json:"text"`
+		Status  string             `json:"status"`
+		Quote   string             `json:"quote"`
+		Spans   []domain.ClaimSpan `json:"spans"`
 	} `json:"claims"`
+	SegmentIDs  []string `json:"segment_ids"`
 	ClaimID     string   `json:"claim_id"`
 	Status      string   `json:"status"`
 	Source      string   `json:"source"`
@@ -738,7 +741,12 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	seg := domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "the moon is made of cheese", Speaker: "A"}
 	cite := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "the moon is rock", Similarity: 0.7, EvidenceID: "evidence:42:0"}
 	fake := &recordingLive{events: []service.LiveEvent{
-		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, Claims: []service.AtomicClaim{{ClaimID: "0-0", Text: "the moon is made of cheese."}}},
+		{Kind: service.LiveEventClaims, ID: "0", Segment: seg, SegmentIDs: []string{"0", "1"}, Claims: []service.AtomicClaim{{
+			ClaimID: "0-0",
+			Text:    "the moon is made of cheese.",
+			Quote:   "moon is made of cheese",
+			Spans:   []domain.ClaimSpan{{SegmentID: "0", Start: 4, End: 26}},
+		}}},
 		{Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusChecking},
 		{
 			Kind: service.LiveEventResult, ID: "0", Segment: seg, ClaimID: "0-0", ClaimStatus: service.ClaimStatusVerified, Source: service.SourceVerified,
@@ -769,6 +777,15 @@ func TestLiveHandlerForwardsClaimsAndPerClaimResults(t *testing.T) {
 	}
 	if claims.Claims[0].ClaimID != "0-0" || claims.Claims[0].Status != "pending" {
 		t.Errorf("claim = %+v, want claim_id 0-0 pending", claims.Claims[0])
+	}
+	if claims.Claims[0].Quote != "moon is made of cheese" {
+		t.Errorf("claim quote = %q, want the verbatim quote round-tripped", claims.Claims[0].Quote)
+	}
+	if len(claims.Claims[0].Spans) != 1 || claims.Claims[0].Spans[0] != (domain.ClaimSpan{SegmentID: "0", Start: 4, End: 26}) {
+		t.Errorf("claim spans = %+v, want the highlight span round-tripped", claims.Claims[0].Spans)
+	}
+	if len(claims.SegmentIDs) != 2 || claims.SegmentIDs[0] != "0" || claims.SegmentIDs[1] != "1" {
+		t.Errorf("claims segment_ids = %v, want the unit's ordered member ids round-tripped", claims.SegmentIDs)
 	}
 
 	checking := readFrame(ctx, t, conn)
@@ -1127,7 +1144,7 @@ func liveMuxServer(t *testing.T, analyzer LiveAnalyzer, debugFactCheck bool) str
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	mux := NewMux(hc, &fakeVideoService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), analyzer, nil, nil, nil, debugFactCheck, nil, "", globalTestAuth, logger)
+	mux := NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), analyzer, nil, nil, nil, debugFactCheck, nil, "", globalTestAuth, logger)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"

@@ -14,10 +14,11 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
-// noSnapshotMessage tells an operator why an export is empty and how to repopulate
-// the replay cache: the snapshot is only written on a completed analysis and
-// expires with the cache TTL, so a miss is recoverable by re-running analysis.
-const noSnapshotMessage = "no cached analysis for this video; re-run analysis to repopulate the export cache"
+// noSnapshotMessage tells an operator why an export is empty and how to fix
+// it: the replayer serves the durable store first and the replay cache second,
+// so a miss means the video has no stored pre-analysis and no un-expired
+// cached session, and running an analysis makes the exports available.
+const noSnapshotMessage = "no stored or cached analysis for this video; run an analysis to make exports available"
 
 // renderExport reads the named formatter's bytes for a video and streams them as a
 // download attachment. It is the shared body of both export handlers: it resolves

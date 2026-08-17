@@ -81,6 +81,10 @@ type LiveEvent struct {
 	Err         string
 	Consistency *ConsistencyFlag
 	Claims      []AtomicClaim
+	// SegmentIDs lists the unit's member subtitle ids, in order, on a
+	// LiveEventClaims event, so a client can render the whole group as one
+	// statement. It is additive and empty on every other kind.
+	SegmentIDs  []string
 	ClaimID     string
 	ClaimStatus ClaimStatus
 	Source      VerdictSource
@@ -105,8 +109,12 @@ const defaultLiveConcurrency = 4
 const defaultLiveQueueDepth = 32
 
 // defaultMaxSentences bounds an analysis unit to a few sentences so a verdict
-// reads as one tight, coherent claim instead of a paragraph.
-const defaultMaxSentences = 3
+// reads as one tight, coherent claim instead of a paragraph. Four sentences
+// give the decomposer enough surrounding speech to extract claims that a
+// single sentence leaves ambiguous, while a verdict still reads as one
+// thought. The env layer mirrors this default (LIVE_MAX_SENTENCES in
+// config.LoadLive) and the two must stay in sync.
+const defaultMaxSentences = 4
 
 // defaultIdleFlush bounds how long a buffered unit waits for more same-speaker
 // speech before it is scored anyway, so a trailing short turn is checked within
@@ -297,13 +305,17 @@ type unitMember struct {
 }
 
 // pendingUnit is one analysis unit handed to the worker pool: the members to
-// score together and the unit's canonical speaker (the label intra-speaker
-// consistency is scoped to). Speaker travels alongside the members because the
-// unit's normalized speaker is resolved during accumulation and would be lost
-// once the members are detached from their liveUnit.
+// score together, the unit's canonical speaker (the label intra-speaker
+// consistency is scoped to), and the previously flushed unit's full text
+// (bounded by contextTail) as decomposition context. Speaker travels alongside the members
+// because the unit's normalized speaker is resolved during accumulation and
+// would be lost once the members are detached from their liveUnit; context
+// travels the same way because only the analyze loop knows what was flushed
+// before this unit.
 type pendingUnit struct {
 	speaker string
 	members []unitMember
+	context string
 }
 
 // liveUnit accumulates consecutive same-speaker committed segments into one
@@ -401,6 +413,13 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 	var unit liveUnit
 	seq := 0
 	idleHolds := 0
+	// prevContext carries the previously flushed unit's full text (with its
+	// speaker, bounded by maxContextWords) into the next unit's decomposition,
+	// so a claim opening with a pronoun or an ellipsis still resolves against
+	// anything in the group that was just said - across speakers too, since a
+	// reply's referent is usually the other speaker's last turn. It is
+	// session-local state, discarded with this loop.
+	prevContext := ""
 	flush := func() bool {
 		if unit.empty() {
 			return true
@@ -411,7 +430,14 @@ func (a *LiveAnalyzer) analyzeLoop(ctx context.Context, transcripts <-chan domai
 		// order of unit.speaker against unit.take() in one literal is unspecified,
 		// so reading it inline can pick up the post-reset empty label.
 		speaker := unit.speaker
-		return a.dispatch(ctx, out, queue, pendingUnit{speaker: speaker, members: unit.take()})
+		members := unit.take()
+		pu := pendingUnit{speaker: speaker, members: members, context: prevContext}
+		if a.verify != nil {
+			// Only the verify path's decomposer consumes the context; the legacy
+			// path skips the join-and-extract so its flush cost is unchanged.
+			prevContext = contextTail(speaker, combinedText(members))
+		}
+		return a.dispatch(ctx, out, queue, pu)
 	}
 
 	for {
@@ -522,7 +548,7 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem 
 	}
 	members := pu.members
 	text := combinedText(members)
-	result, decision, err := gateAndMatch(ctx, a.prechecker, a.matcher, text)
+	result, decision, err := a.gateAndMatch(ctx, text)
 	if err != nil {
 		if ctx.Err() == nil {
 			a.logger.ErrorContext(ctx, "live analysis failed", slog.String("ids", memberIDs(members)), slog.Any("err", err))
@@ -553,6 +579,24 @@ func (a *LiveAnalyzer) scoreUnit(ctx context.Context, out chan<- LiveEvent, mem 
 	if decision.Checkable {
 		a.detectConsistency(ctx, out, mem, pu, text, result.QueryEmbedding)
 	}
+}
+
+// gateAndMatch runs the legacy check-worthiness core for one unit, taking the
+// single-embed path when the analyzer's gate and matcher both support it (the
+// production wiring: a *Gate with an embedding coverage stage and the segment
+// match adapter) and otherwise the two-embed gateAndMatch. Selecting by
+// capability keeps a fake gate or matcher in tests, and the no-op allow-all
+// prechecker, on the unchanged path - neither embeds twice anyway - while the
+// real legacy pipeline collapses its former double embed into one.
+func (a *LiveAnalyzer) gateAndMatch(ctx context.Context, text string) (MatchResult, domain.PrecheckDecision, error) {
+	if gate, ok := a.prechecker.(*Gate); ok {
+		if matcher, ok := a.matcher.(embedOnceMatcher); ok {
+			if classifier, coverage, ready := gate.embedOnce(); ready {
+				return gateAndMatchEmbedOnce(ctx, classifier, coverage, matcher, text)
+			}
+		}
+	}
+	return gateAndMatch(ctx, a.prechecker, a.matcher, text)
 }
 
 // detectConsistency flags a checkable statement that contradicts an earlier
@@ -757,6 +801,32 @@ func incompleteTrailingFragment(text string) bool {
 		}
 	}
 	return trailingWords > 0 && trailingWords < maxWordsPerSentence
+}
+
+// maxContextWords bounds the decomposition context handed to the next unit: a
+// full unit of defaultMaxSentences sentences fits comfortably, while an
+// unpunctuated run can never grow the prompt without limit. The most recent
+// words are kept, since a reference usually points at what was said last.
+const maxContextWords = 120
+
+// contextTail renders one flushed unit's full text as the next unit's
+// decomposition context, prefixed with the speaker label when known so a
+// cross-speaker reply resolves "he/that" against the right person. The whole
+// previous group rides along - not just its last sentence - so a reference to
+// anything said in it still resolves; the tail is bounded at maxContextWords
+// (keeping the most recent words).
+func contextTail(speaker, text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	if words := strings.Fields(trimmed); len(words) > maxContextWords {
+		trimmed = strings.Join(words[len(words)-maxContextWords:], " ")
+	}
+	if speaker == "" {
+		return trimmed
+	}
+	return speaker + ": " + trimmed
 }
 
 // sendEvent emits one event, reporting false when ctx is canceled before the

@@ -90,6 +90,9 @@ type SegmentMatch struct {
 	Article      *Article  `json:"article,omitempty"`
 	Contribution float64   `json:"contribution"`
 	EvidenceID   string    `json:"evidence_id,omitempty"`
+	// PublishedAt is the matched passage's publication date when the corpus
+	// knows one; additive on the wire so old snapshots decode unchanged.
+	PublishedAt *time.Time `json:"published_at,omitempty"`
 }
 
 // UnmarshalJSON decodes a SegmentMatch, defaulting an absent kind to claim so a
@@ -106,6 +109,20 @@ func (m *SegmentMatch) UnmarshalJSON(data []byte) error {
 	}
 	*m = SegmentMatch(decoded)
 	return nil
+}
+
+// ClaimSpan locates the verbatim words an atomic claim was extracted from
+// inside one transcript segment: the segment's correlation id (the subtitle id
+// the client keys statement rows on) and the [Start, End) offsets of the quoted
+// words within that segment's text. Offsets count runes, not bytes, so a
+// JavaScript client maps them onto its own string indices by code point rather
+// than by UTF-8 byte. The json tags are the claims frame's wire shape, served
+// verbatim to the client. A claim whose quote crosses a segment boundary
+// carries one span per segment it touches.
+type ClaimSpan struct {
+	SegmentID string `json:"segment_id"`
+	Start     int    `json:"start"`
+	End       int    `json:"end"`
 }
 
 // Confidence is the corroboration strength of a checked statement, aggregated

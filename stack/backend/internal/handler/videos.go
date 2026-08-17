@@ -76,19 +76,24 @@ type uploadResponse struct {
 // videoJSON is the wire form of one domain.Video. ObjectKey is intentionally
 // omitted: clients address a video by id and never need the storage key.
 // SourceURL, DurationMS, and Error are only meaningful for ingested videos and
-// are omitted when zero, so an upload's wire form is unchanged.
+// are omitted when zero, so an upload's wire form is unchanged. AnalysisStatus
+// rides on every list item so tiles and the backoffice badge pre-analysis
+// state without a per-row call; AnalyzedAt dates a completed analysis and is
+// omitted until one exists.
 type videoJSON struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	Kind        string    `json:"kind"`
-	ContentType string    `json:"content_type"`
-	SizeBytes   int64     `json:"size_bytes"`
-	SourceURL   string    `json:"source_url,omitzero"`
-	DurationMS  int64     `json:"duration_ms,omitzero"`
-	Error       string    `json:"error,omitzero"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	Status         string    `json:"status"`
+	Kind           string    `json:"kind"`
+	ContentType    string    `json:"content_type"`
+	SizeBytes      int64     `json:"size_bytes"`
+	SourceURL      string    `json:"source_url,omitzero"`
+	DurationMS     int64     `json:"duration_ms,omitzero"`
+	Error          string    `json:"error,omitzero"`
+	AnalysisStatus string    `json:"analysis_status"`
+	AnalyzedAt     time.Time `json:"analyzed_at,omitzero"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type listVideosResponse struct {
@@ -224,17 +229,19 @@ func deleteVideoHandler(svc VideoService) http.HandlerFunc {
 
 func toVideoJSON(v domain.Video) videoJSON {
 	return videoJSON{
-		ID:          v.ID,
-		Title:       v.Title,
-		Status:      string(v.Status),
-		Kind:        string(v.Kind),
-		ContentType: v.ContentType,
-		SizeBytes:   v.SizeBytes,
-		SourceURL:   v.SourceURL,
-		DurationMS:  v.DurationMS,
-		Error:       v.Error,
-		CreatedAt:   v.CreatedAt,
-		UpdatedAt:   v.UpdatedAt,
+		ID:             v.ID,
+		Title:          v.Title,
+		Status:         string(v.Status),
+		Kind:           string(v.Kind),
+		ContentType:    v.ContentType,
+		SizeBytes:      v.SizeBytes,
+		SourceURL:      v.SourceURL,
+		DurationMS:     v.DurationMS,
+		Error:          v.Error,
+		AnalysisStatus: string(v.AnalysisStatus),
+		AnalyzedAt:     v.AnalyzedAt,
+		CreatedAt:      v.CreatedAt,
+		UpdatedAt:      v.UpdatedAt,
 	}
 }
 

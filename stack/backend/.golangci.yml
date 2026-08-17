@@ -38,6 +38,38 @@ linters:
         # design (documents.analysis_status = 'analysing'): API and DB
         # vocabulary, not prose to be re-spelled.
         - analysing
+        # The pre-analysis trigger route fixed by the video pre-analysis design
+        # (POST /api/videos/{id}/analyse, mirroring the documents reanalyse
+        # route): API vocabulary, not prose to be re-spelled.
+        - analyse
+        # Official French name of the OECD (OCDE = "Organisation de coopération
+        # et de développement économiques") stamped verbatim on OECD evidence
+        # citations; a proper noun, not an English misspelling.
+        - Organisation
+        # French open-data labels and dataset slugs carried verbatim by the
+        # OpenDataSoft/SSMSI connector (secteur d'activité, temps partiel,
+        # gendarmerie nationales), not English misspellings.
+        - activite
+        - partiel
+        - nationales
+        # French parliamentary open-data terms (AN/Senat) carried verbatim into
+        # rendered evidence passages, JSON field names, and jsonb metadata keys:
+        # "reponse" (answer), "chambre" (chamber), "identite" (identity),
+        # "licences". Not English misspellings.
+        - reponse
+        - chambre
+        - identite
+        - licences
+        # French institutional open-data terms (vie-publique discours, HATVP
+        # declarations) carried verbatim into rendered evidence passages, XML/JSON
+        # field names, and jsonb metadata keys: "employeur" (employer), "activite"
+        # (activity, incl. accented "Activites"), "mandats" (mandates), "organes"
+        # (organs/bodies). Not English misspellings.
+        - employeur
+        - activit
+        - mandats
+        - organes
+        - prononciation
   exclusions:
     # Exclude sqlc-generated code (internal/store/db) by the canonical
     # "// Code generated ... DO NOT EDIT." header only.

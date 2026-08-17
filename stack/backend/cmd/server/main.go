@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 
+	"github.com/verovec/truth-in-stream/backend/internal/audioextract"
 	"github.com/verovec/truth-in-stream/backend/internal/auth"
 	"github.com/verovec/truth-in-stream/backend/internal/checkworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/claimdecomp"
@@ -26,7 +28,10 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/handler"
 	"github.com/verovec/truth-in-stream/backend/internal/llm"
+	"github.com/verovec/truth-in-stream/backend/internal/localworthy"
 	"github.com/verovec/truth-in-stream/backend/internal/middleware"
+	"github.com/verovec/truth-in-stream/backend/internal/nli"
+	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 	"github.com/verovec/truth-in-stream/backend/internal/source"
 	"github.com/verovec/truth-in-stream/backend/internal/source/press"
@@ -69,6 +74,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	rerankCfg, err := config.LoadRerank()
+	if err != nil {
+		return err
+	}
+	telemetryCfg, err := config.LoadTelemetry()
+	if err != nil {
+		return err
+	}
 	precheckCfg, err := config.LoadPrecheck()
 	if err != nil {
 		return err
@@ -85,6 +98,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	checkWorthinessLocalCfg, err := config.LoadCheckWorthinessLocal()
+	if err != nil {
+		return err
+	}
 	verifyPathCfg, err := config.LoadVerifyPath()
 	if err != nil {
 		return err
@@ -94,6 +111,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	secondPassCfg, err := config.LoadSecondPass()
+	if err != nil {
+		return err
+	}
+	finalGateCfg, err := config.LoadFinalGate(secondPassCfg)
+	if err != nil {
+		return err
+	}
+	verifyNLICfg, err := config.LoadVerifyNLI()
 	if err != nil {
 		return err
 	}
@@ -164,6 +189,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	preanalysisCfg, err := config.LoadPreanalysis()
+	if err != nil {
+		return err
+	}
 
 	bqMultiplier, err := config.EvidenceBinaryQuantizationMultiplier()
 	if err != nil {
@@ -174,6 +203,17 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer pgStore.Close()
+
+	// Hybrid evidence search always runs its vector branch as the single-stage
+	// halfvec search, so with hybrid on the binary-quantization two-stage path is
+	// not used for evidence retrieval. Warn once at startup when both are enabled
+	// so the operator knows BQ's RAM-saving path is not in effect for the evidence
+	// hits the matcher and verify path retrieve while hybrid is on (curated-claims
+	// BQ is unaffected; combining the two is VER-202 tuning scope).
+	if bqMultiplier > 0 && matchCfg.HybridSearch && matchCfg.EvidenceTopK > 0 {
+		logger.Warn("hybrid evidence search does not use the binary-quantization two-stage path; EVIDENCE_BQ_MULTIPLIER is not in effect for evidence retrieval while MATCH_HYBRID_SEARCH is on",
+			slog.Int("evidence_bq_multiplier", bqMultiplier))
+	}
 
 	// The cache is wired and lifecycle-managed here. The snapshot persister tees a
 	// completed finite video's live analysis into it; the snapshot reader serves it
@@ -192,6 +232,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	snapshotReader, err := service.NewSnapshotReader(analysisCache, logger)
+	if err != nil {
+		return err
+	}
+	// The durable tier of the replay path: a deliberate pre-analysis persisted
+	// in Postgres outlives the cache TTL and wins over it, while the Redis tier
+	// keeps serving live-view replays for videos with no stored analysis. The
+	// recorder stays Redis-only above, so a lossy browser view never overwrites
+	// a stored pre-analysis.
+	storedAnalysisReader, err := service.NewStoredAnalysisReader(pgStore, pgStore, logger)
+	if err != nil {
+		return err
+	}
+	analysisReplayer, err := service.NewCompositeReplayer(logger, storedAnalysisReader, snapshotReader)
 	if err != nil {
 		return err
 	}
@@ -242,6 +295,10 @@ func run(logger *slog.Logger) error {
 	health := service.NewHealthChecker(pgStore)
 
 	embedder := embed.New(embed.Config{APIKey: embedding.APIKey, Model: embedding.Model, Dim: embedding.Dim})
+	matcherOpts, err := buildMatcherOpts(rerankCfg, logger)
+	if err != nil {
+		return err
+	}
 	matcher, err := service.NewMatcher(embedder, pgStore, pgStore, service.MatcherConfig{
 		TopK:                  matchCfg.TopK,
 		ScoreThreshold:        matchCfg.ScoreThreshold,
@@ -253,7 +310,15 @@ func run(logger *slog.Logger) error {
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
-	})
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
+		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
+		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
+		RerankCandidates:      rerankCfg.Candidates,
+		RerankTimeout:         rerankCfg.Timeout,
+		RecencyHalfLife:       matchCfg.RecencyHalfLife,
+	}, matcherOpts...)
 	if err != nil {
 		return err
 	}
@@ -263,13 +328,21 @@ func run(logger *slog.Logger) error {
 	// is active the prechecker is the coverage-free ClaimGate. When it is off the
 	// legacy two-stage gate (claim + coverage) is used, unchanged.
 	var prechecker service.SegmentPrechecker
+	var precheckCloser io.Closer
 	if verifyPathCfg.Active() {
-		prechecker, err = buildClaimGate(precheckCfg, checkWorthinessCfg, locale, logger)
+		prechecker, precheckCloser, err = buildClaimGate(precheckCfg, checkWorthinessCfg, checkWorthinessLocalCfg, locale, logger)
 	} else {
-		prechecker, err = buildPrechecker(precheckCfg, checkWorthinessCfg, locale, embedder, pgStore, pgStore, logger)
+		prechecker, precheckCloser, err = buildPrechecker(precheckCfg, checkWorthinessCfg, checkWorthinessLocalCfg, locale, embedder, pgStore, pgStore, logger)
 	}
 	if err != nil {
 		return err
+	}
+	if precheckCloser != nil {
+		defer func() {
+			if err := precheckCloser.Close(); err != nil {
+				logger.Warn("closing local check-worthiness scorer", slog.String("error", err.Error()))
+			}
+		}()
 	}
 
 	debugSearch, err := buildDebugSearch(debugSearchCfg, embedder, pgStore)
@@ -283,11 +356,39 @@ func run(logger *slog.Logger) error {
 	}
 
 	segmentMatcher := service.NewSegmentMatchAdapter(matcher)
-	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, embedder, pgStore, segmentMatcher)
+	verifyMatcher, err := buildVerifyMatcher(verifyPathCfg, matchCfg, rerankCfg, embedder, pgStore, segmentMatcher, matcherOpts)
 	if err != nil {
 		return err
 	}
-	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+	var telemetryRec *service.TelemetryRecorder
+	if telemetryCfg.Enabled {
+		telemetryRec, err = service.NewTelemetryRecorder(pgStore, service.TelemetryConfig{
+			QueueDepth: telemetryCfg.QueueDepth,
+			BatchSize:  32,
+			FlushEvery: telemetryCfg.FlushEvery,
+			SampleRate: telemetryCfg.SampleRate,
+			Locale:     string(locale),
+			Logger:     logger,
+		})
+		if err != nil {
+			return err
+		}
+		// Fire-and-forget by design: telemetry is lossy by contract, so the
+		// final in-flight batch may be lost on shutdown rather than delaying it.
+		go telemetryRec.Run(ctx)
+	}
+	// The NLI stance scorer holds one native ONNX session, so it is built once
+	// and shared by the live and batch verify paths (unlike their isolated
+	// verify pools); its own inference semaphore bounds concurrent use.
+	nliStance, nliCloser := buildNLIStance(verifyNLICfg, logger)
+	if nliCloser != nil {
+		defer func() {
+			if err := nliCloser.Close(); err != nil {
+				logger.Warn("closing nli stance scorer", slog.String("error", err.Error()))
+			}
+		}()
+	}
+	verifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, nliStance, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 	if err != nil {
 		return err
 	}
@@ -305,7 +406,7 @@ func run(logger *slog.Logger) error {
 	// interrupted by a prior crash to failed so the admin can reanalyse.
 	var batchVerifier service.BatchVerifier
 	if verifyPath != nil {
-		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, secondPassCfg, verifyMatcher, pgStore, pgStore, locale, logger)
+		analyzerVerifyPath, err := buildVerifyPath(verifyPathCfg, politicalCfg, finalGateCfg, nliStance, verifyMatcher, pgStore, pgStore, locale, telemetryRec, logger)
 		if err != nil {
 			return err
 		}
@@ -336,6 +437,7 @@ func run(logger *slog.Logger) error {
 		Logger:           logger,
 		Concurrency:      liveCfg.Concurrency,
 		QueueDepth:       liveCfg.QueueDepth,
+		MaxSentences:     liveCfg.MaxSentences,
 		Stance:           stanceClassifier,
 		ConsistencyTopK:  consistencyCfg.TopK,
 		ConsistencyFloor: consistencyCfg.SimilarityFloor,
@@ -353,13 +455,38 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// The headless pre-analysis job replays a stored video's audio through the
+	// same live analyzer a browser session uses (each Run gets fresh per-session
+	// state), paced at realtime by the ffmpeg extractor, and persists the teed
+	// events durably. Startup recovery flips any run a prior crash left
+	// analysing to failed so the operator can re-run it.
+	audioExtractor, err := audioextract.New(audioextract.Config{PacingFactor: preanalysisCfg.PacingFactor})
+	if err != nil {
+		return err
+	}
+	storedAnalysisPersister, err := service.NewStoredAnalysisPersister(pgStore)
+	if err != nil {
+		return err
+	}
+	videoAnalyzer, err := service.NewVideoAnalyzer(pgStore, videoAudioStreamer{extractor: audioExtractor, media: internalDownloadPresigner{store: mediaStore}}, liveAnalyzer, storedAnalysisPersister, service.VideoAnalyzerConfig{
+		Timeout:       preanalysisCfg.RunTimeout,
+		MaxConcurrent: preanalysisCfg.MaxConcurrent,
+		Engine:        preanalysisEngine(transcription, preanalysisCfg, verifyPathCfg, politicalCfg, finalGateCfg, matchCfg),
+	}, logger)
+	if err != nil {
+		return err
+	}
+	if err := videoAnalyzer.Recover(ctx); err != nil {
+		return err
+	}
+
 	liveOrigins := liveAllowedOrigins(cfg.CORSAllowedOrigin)
 	if cfg.CORSAllowedOrigin != "" && len(liveOrigins) == 0 {
 		logger.Warn("live websocket enforces same-origin: CORS_ALLOWED_ORIGIN has no parseable host",
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, snapshotReader, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -535,40 +662,140 @@ func buildDebugSearch(cfg config.DebugSearch, embedder service.QueryEmbedder, ev
 // survivors reach the model, which skips casual or personal declaratives a
 // word-list cannot. An unconfigured or keyless model leaves the heuristic alone,
 // exactly the prior behavior.
-func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildPrechecker(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, embedder service.QueryEmbedder, claims service.ClaimSearcher, wiki service.EvidenceSearcher, logger *slog.Logger) (service.SegmentPrechecker, io.Closer, error) {
 	if !cfg.Enabled {
-		return nil, nil
+		return nil, nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
+	classifier, closer, err := buildClaimClassifier(cfg, cw, local, locale, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	coverage, err := service.NewCombinedCoverage(embedder, claims, wiki, service.CoverageConfig{
 		ClaimsThreshold: cfg.CoverageThreshold,
 		WikiThreshold:   cfg.WikiCoverageThreshold,
 		WikiEnabled:     cfg.WikiCoverageEnabled,
+		EfSearch:        cfg.CoverageEfSearch,
 	})
 	if err != nil {
-		return nil, err
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return nil, nil, err
 	}
-	return service.NewGate(classifier, coverage), nil
+	return service.NewGate(classifier, coverage), closer, nil
 }
 
 // buildClaimClassifier returns the gate's stage-one classifier: the
-// deterministic heuristic alone when the model is inactive, or the heuristic
-// wrapped in a model cascade when the check-worthiness model is configured. The
-// API key is never logged.
-func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, error) {
-	heuristic := service.NewHeuristicClassifier(cfg.MinWords)
-	if !cw.Active() {
-		return heuristic, nil
+// deterministic heuristic alone when no model stage is active, the heuristic
+// wrapped in a model cascade when the check-worthiness model is configured,
+// and the three-stage banded cascade when the local scorer is also active, so
+// the generative model is consulted only inside the local classifier's
+// uncertainty band. A local scorer that fails to load (missing artifact,
+// binary built without the localinference tag) degrades to the two-stage wiring
+// with a warning, never failing the boot. The returned closer releases the
+// scorer's native session on shutdown and is nil when no scorer was wired.
+// API keys are never logged.
+func buildClaimClassifier(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, logger *slog.Logger) (service.ClaimClassifier, io.Closer, error) {
+	heuristic := service.NewHeuristicClassifier(cfg.MinWords, locale)
+	var model service.CheckWorthinessClassifier
+	if cw.Active() {
+		client, err := checkworthy.New(checkworthy.Config{Provider: llm.ProviderName(cw.Provider), APIKey: cw.APIKey, GeminiAPIKey: cw.GeminiAPIKey, DeepSeekAPIKey: cw.DeepSeekAPIKey, Model: cw.Model, Locale: locale})
+		if err != nil {
+			return nil, nil, err
+		}
+		logger.Info("model check-worthiness classifier enabled", slog.String("model", cw.Model))
+		model = client
 	}
-	model, err := checkworthy.New(checkworthy.Config{Provider: llm.ProviderName(cw.Provider), APIKey: cw.APIKey, GeminiAPIKey: cw.GeminiAPIKey, DeepSeekAPIKey: cw.DeepSeekAPIKey, Model: cw.Model, Locale: locale})
+	if local.Active() {
+		scorer, err := localworthy.New(localworthy.Config{
+			ModelPath:     local.ModelPath,
+			TokenizerPath: local.TokenizerPath,
+			LibraryPath:   local.LibraryPath,
+			Timeout:       local.Timeout,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Warn("local check-worthiness scorer unavailable; keeping the model cascade", slog.String("error", err.Error()))
+		} else {
+			logger.Info("local check-worthiness classifier enabled",
+				slog.String("model_path", local.ModelPath),
+				slog.Float64("band_low", local.BandLow),
+				slog.Float64("band_high", local.BandHigh))
+			return service.NewBandedCascadeClassifier(heuristic, scorer, model, local.BandLow, local.BandHigh, logger), scorer, nil
+		}
+	}
+	if model == nil {
+		return heuristic, nil, nil
+	}
+	return service.NewCascadeClassifier(heuristic, model, logger), nil, nil
+}
+
+// buildNLIStance wires the local NLI stance stage when it is active and its
+// artifacts load. Any failure (missing artifact, binary built without the
+// localinference tag) degrades to the LLM-first verify path with a warning,
+// never failing the boot. The returned closer releases the scorer's native
+// session on shutdown and is nil when no scorer was wired.
+func buildNLIStance(cfg config.VerifyNLI, logger *slog.Logger) (*service.StanceConfig, io.Closer) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	scorer, err := nli.New(nli.Config{
+		ModelPath:     cfg.ModelPath,
+		TokenizerPath: cfg.TokenizerPath,
+		LibraryPath:   cfg.LibraryPath,
+		Temperature:   cfg.Temperature,
+		Timeout:       cfg.Timeout,
+		Logger:        logger,
+	})
+	if err != nil {
+		logger.Warn("nli stance scorer unavailable; keeping the LLM-first verify path", slog.String("error", err.Error()))
+		return nil, nil
+	}
+	logger.Info("nli stance stage enabled",
+		slog.String("model_path", cfg.ModelPath),
+		slog.Float64("entail_threshold", cfg.EntailThreshold),
+		slog.Float64("contradict_threshold", cfg.ContradictThreshold),
+		slog.Int("min_agree", cfg.MinAgree))
+	return &service.StanceConfig{
+		Scorer:              nliScorerAdapter{scorer},
+		EntailThreshold:     cfg.EntailThreshold,
+		ContradictThreshold: cfg.ContradictThreshold,
+		MinAgree:            cfg.MinAgree,
+		MaxPassages:         cfg.MaxPassages,
+	}, scorer
+}
+
+// nliScorerAdapter maps the nli package's stance type onto the service port.
+type nliScorerAdapter struct {
+	scorer *nli.Scorer
+}
+
+func (a nliScorerAdapter) ScoreStances(ctx context.Context, claim string, passages []string) ([]service.StanceResult, error) {
+	stances, err := a.scorer.ScoreStances(ctx, claim, passages)
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("model check-worthiness classifier enabled", slog.String("model", cw.Model))
-	return service.NewCascadeClassifier(heuristic, model, logger), nil
+	out := make([]service.StanceResult, len(stances))
+	for i, s := range stances {
+		out[i] = service.StanceResult{Entailment: s.Entailment, Neutral: s.Neutral, Contradiction: s.Contradiction}
+	}
+	return out, nil
+}
+
+// buildMatcherOpts wires the optional retrieval reranker: the Voyage rerank
+// client behind the matcher's Reranker port when the stage is enabled and
+// keyed, or no option at all, leaving retrieval byte-identical to before. The
+// API key is never logged.
+func buildMatcherOpts(cfg config.Rerank, logger *slog.Logger) ([]service.MatcherOption, error) {
+	if !cfg.Active() {
+		return nil, nil
+	}
+	client, err := rerank.New(rerank.Config{APIKey: cfg.APIKey, Model: cfg.Model})
+	if err != nil {
+		return nil, fmt.Errorf("build reranker: %w", err)
+	}
+	logger.Info("retrieval reranking enabled", slog.String("model", cfg.Model))
+	return []service.MatcherOption{service.WithReranker(client, logger)}, nil
 }
 
 // buildStanceClassifier wires the intra-speaker consistency stance check, or
@@ -592,15 +819,15 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 // heuristic-plus-model cascade), with no coverage stage. Whether evidence exists
 // is discovered by the verify path's retrieval, not pre-judged here, so a novel
 // but checkable claim is no longer dropped as not_covered.
-func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, locale domain.Locale, logger *slog.Logger) (service.SegmentPrechecker, error) {
+func buildClaimGate(cfg config.Precheck, cw config.CheckWorthiness, local config.CheckWorthinessLocal, locale domain.Locale, logger *slog.Logger) (service.SegmentPrechecker, io.Closer, error) {
 	if !cfg.Enabled {
-		return nil, nil
+		return nil, nil, nil
 	}
-	classifier, err := buildClaimClassifier(cfg, cw, locale, logger)
+	classifier, closer, err := buildClaimClassifier(cfg, cw, local, locale, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return service.NewClaimGate(classifier), nil
+	return service.NewClaimGate(classifier), closer, nil
 }
 
 // evidenceStore is the slice of the store the verify-path matcher needs: nearest
@@ -619,7 +846,7 @@ type evidenceStore interface {
 // nothing and every claim short-circuits to a no-evidence not_enough_info). When
 // the path is inactive it returns the supplied fallback unchanged - buildVerifyPath
 // ignores it - so the extra matcher exists only when it is used.
-func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder service.QueryEmbedder, store evidenceStore, fallback service.SegmentMatcher) (service.SegmentMatcher, error) {
+func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, rerankCfg config.Rerank, embedder service.QueryEmbedder, store evidenceStore, fallback service.SegmentMatcher, opts []service.MatcherOption) (service.SegmentMatcher, error) {
 	if !cfg.Active() {
 		return fallback, nil
 	}
@@ -634,7 +861,15 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 		ConfidenceClusterSize: matchCfg.ConfidenceClusterSize,
 		ConfidenceLeadWeight:  matchCfg.ConfidenceLeadWeight,
 		ConfidenceBodyWeight:  matchCfg.ConfidenceBodyWeight,
-	})
+		HybridSearch:          matchCfg.HybridSearch,
+		LexicalTopK:           matchCfg.LexicalTopK,
+		RRFK:                  matchCfg.RRFK,
+		ClaimsEfSearch:        matchCfg.ClaimsEfSearch,
+		EvidenceEfSearch:      matchCfg.EvidenceEfSearch,
+		RerankCandidates:      rerankCfg.Candidates,
+		RerankTimeout:         rerankCfg.Timeout,
+		RecencyHalfLife:       matchCfg.RecencyHalfLife,
+	}, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build verify matcher: %w", err)
 	}
@@ -649,7 +884,7 @@ func buildVerifyMatcher(cfg config.VerifyPath, matchCfg config.Match, embedder s
 // switched onto the political pipeline (classify -> route+retrieve -> two-axis
 // verify) by passing the political collaborators through. The API key is never
 // logged.
-func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPass config.SecondPass, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, logger *slog.Logger) (*service.VerifyPath, error) {
+func buildVerifyPath(cfg config.VerifyPath, political config.Political, finalGate config.FinalGate, nliStance *service.StanceConfig, matcher service.SegmentMatcher, votingStore voting.Store, curatedClaims service.PoliticalClaimSearcher, locale domain.Locale, telemetry *service.TelemetryRecorder, logger *slog.Logger) (*service.VerifyPath, error) {
 	if !cfg.Active() {
 		return nil, nil
 	}
@@ -665,10 +900,11 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 	if err != nil {
 		return nil, err
 	}
-	// The second pass attaches to the credibility-only verify stage; the political
-	// path owns its own two-axis lifecycle and does not run the credibility second
-	// pass, so it is wired only when political mode is off.
-	secondPassCfg, err := buildSecondPass(secondPass, pol, locale, logger)
+	// The terminal gate attaches to whichever verify stage runs: the credibility path
+	// re-judges a weak credibility verdict, the political path re-judges a weak
+	// two-axis verdict (mapping the reasoner's credibility back onto the literal axis).
+	// It is wired for both, so a political run gets the same last-resort adjudication.
+	secondPassCfg, err := buildSecondPass(finalGate, locale)
 	if err != nil {
 		return nil, err
 	}
@@ -682,9 +918,13 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 		FastDeadline:      cfg.FastDeadline,
 		VerifyDeadline:    cfg.VerifyDeadline,
 		CacheTTL:          cfg.CacheTTL,
+		CacheThreshold:    cfg.CacheThreshold,
+		CacheMaxEntries:   cfg.CacheMaxEntries,
 		Logger:            logger,
 		Political:         pol,
+		NLIStance:         nliStance,
 		SecondPass:        secondPassCfg,
+		Telemetry:         telemetry,
 	})
 	if err != nil {
 		return nil, err
@@ -695,21 +935,21 @@ func buildVerifyPath(cfg config.VerifyPath, political config.Political, secondPa
 		logger.Info("retrieve-then-verify fact-check path enabled", slog.String("model", cfg.Model))
 	}
 	if secondPassCfg != nil {
-		logger.Info("deeper-reasoner second pass enabled for grounded mid-confidence verdicts", slog.String("model", secondPass.Model))
+		logger.Info("terminal reasoning gate enabled for weak verdicts", slog.String("provider", finalGate.Provider), slog.String("model", finalGate.Model))
 	}
 	return path, nil
 }
 
-// buildSecondPass wires the deeper-reasoner second pass, or returns nil (so the
-// verify path runs its single fast pass unchanged) when the feature is not active
-// or political mode owns the verify stage. The reverifier is a verify client built
-// on the larger reasoning model; it shares the credibility verifier's locale so the
-// re-judged rationale stays in the viewer's language. The API key is never logged.
-func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale domain.Locale, logger *slog.Logger) (*service.SecondPassConfig, error) {
-	if !cfg.Active() || pol != nil {
-		if cfg.Active() && pol != nil {
-			logger.Info("deeper-reasoner second pass skipped: political mode owns the verify stage")
-		}
+// buildSecondPass wires the terminal reasoning gate, or returns nil (so the verify
+// path runs its single fast pass unchanged) when the feature is not active. The
+// reverifier is a verify client built on the gate's own provider and reasoning model
+// - decoupled from the hot-path LLM_PROVIDER so the expensive reasoner can run on a
+// different backend - and it shares the credibility verifier's locale so the re-judged
+// rationale stays in the viewer's language. The gate is wired regardless of political
+// mode: the political path routes its weak two-axis verdicts through the same reasoner.
+// The API key is never logged.
+func buildSecondPass(cfg config.FinalGate, locale domain.Locale) (*service.SecondPassConfig, error) {
+	if !cfg.Active() {
 		return nil, nil
 	}
 	reverifier, err := verify.New(verify.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, Model: cfg.Model, Locale: locale})
@@ -717,10 +957,10 @@ func buildSecondPass(cfg config.SecondPass, pol *service.PoliticalConfig, locale
 		return nil, err
 	}
 	return &service.SecondPassConfig{
-		Reverifier: reverifierAdapter{reverifier},
-		MidBandLo:  cfg.BandLo,
-		MidBandHi:  cfg.BandHi,
-		Deadline:   cfg.Deadline,
+		Reverifier:    reverifierAdapter{reverifier},
+		TriggerBelow:  cfg.TriggerBelow,
+		MinConfidence: cfg.MinConfidence,
+		Deadline:      cfg.Deadline,
 	}, nil
 }
 
@@ -748,38 +988,49 @@ func buildPoliticalConfig(verifyCfg config.VerifyPath, political config.Politica
 		return nil, err
 	}
 	return &service.PoliticalConfig{
-		Classifier:   classifier,
-		Retriever:    router,
-		Verifier:     politicalVerifierAdapter{politicalVerifier},
-		CuratedStore: curatedClaims,
-		CuratedTau:   political.CuratedTau,
+		Classifier:    classifier,
+		Retriever:     router,
+		Verifier:      politicalVerifierAdapter{politicalVerifier},
+		CuratedStore:  curatedClaims,
+		CuratedTau:    political.CuratedTau,
+		CuratedMaxAge: political.CuratedMaxAge,
 	}, nil
 }
 
 // buildRouter assembles the context-aware source router over the configured source
 // packs. The stats and voting packs are keyless (the voting pack reads the
-// political store); the press pack joins only when its key is set; web search is
-// the mandatory open-ended fallback, so its key is required when political mode is
-// on - a missing key is a fail-fast misconfiguration rather than a router with no
-// fallback. The router's language tracks the political locale.
+// political store); the press and web-search packs join only when their own key is
+// set. Web search is the open-ended fallback every unrouted claim depends on, so
+// its absence is degraded loudly (a boot warning) rather than fatally: political
+// mode still answers statistic and voting-record claims from the keyless packs,
+// and open-ended claims retrieve no evidence instead of the server refusing to
+// start. The router's language tracks the political locale.
 func buildRouter(political config.Political, votingStore voting.Store, logger *slog.Logger) (*service.Router, error) {
-	websearchCfg, err := websearch.LoadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("political mode requires a web-search fallback: %w", err)
-	}
-	web, err := websearch.New(websearch.Config{APIKey: websearchCfg.APIKey, Timeout: websearchCfg.Timeout})
-	if err != nil {
-		return nil, err
-	}
-
 	statsCfg, err := stats.LoadConfig()
 	if err != nil {
 		return nil, err
 	}
 	retrievers := []source.Retriever{
-		web,
 		stats.New(stats.Config{Timeout: statsCfg.Timeout, CacheTTL: statsCfg.CacheTTL}),
 		voting.New(votingStore),
+	}
+
+	// Same contract as the press pack below: a missing key is a documented
+	// degradation, while a set key with malformed tuning (e.g. a bad
+	// WEBSEARCH_TIMEOUT) is a real misconfiguration and still fails fast, so a typo
+	// is never swallowed as "web search absent".
+	if os.Getenv("WEBSEARCH_API_KEY") != "" {
+		websearchCfg, err := websearch.LoadConfig()
+		if err != nil {
+			return nil, err
+		}
+		web, err := websearch.New(websearch.Config{APIKey: websearchCfg.APIKey, Timeout: websearchCfg.Timeout})
+		if err != nil {
+			return nil, err
+		}
+		retrievers = append(retrievers, web)
+	} else {
+		logger.Warn("political web-search fallback disabled: WEBSEARCH_API_KEY is unset; open-ended claims will retrieve no evidence")
 	}
 
 	// The press pack is optional: it joins the registry only when its own key is
@@ -807,6 +1058,72 @@ func buildRouter(political config.Political, votingStore voting.Store, logger *s
 	})
 }
 
+// videoAudioStreamer adapts the ffmpeg extractor to the pre-analysis job's
+// AudioStreamer port: it presigns the video's stored object against the media
+// store, then starts the paced PCM extraction over the presigned URL, so the
+// job knows nothing about ffmpeg or presigning.
+type videoAudioStreamer struct {
+	extractor *audioextract.Extractor
+	media     audioextract.MediaPresigner
+}
+
+// internalDownloadPresigner exposes the media store's internal-endpoint
+// download presign under the audioextract.MediaPresigner shape. The ffmpeg
+// fetch runs inside the backend's own network horizon, where the
+// browser-facing public endpoint may be unreachable (local dev's
+// localhost:9000 is the container's loopback), so the pre-analysis source is
+// signed against the internal endpoint the backend already uses for
+// server-side storage operations.
+type internalDownloadPresigner struct {
+	store *storage.S3Store
+}
+
+func (p internalDownloadPresigner) PresignDownload(ctx context.Context, key string) (domain.PresignedRequest, error) {
+	return p.store.PresignInternalDownload(ctx, key)
+}
+
+func (s videoAudioStreamer) Stream(ctx context.Context, video domain.Video) (service.AudioStream, error) {
+	src, err := audioextract.PresignedSource(ctx, s.media, video.ObjectKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.extractor.Extract(ctx, src)
+}
+
+// preanalysisEngine assembles the engine fingerprint stamped on every stored
+// pre-analysis: what transcribed, what verified, and the retrieval posture at
+// run time, so the operator can judge whether a stored result predates a
+// relevant configuration change before re-analysing. The verify fields are
+// recorded only when the verify path is active; otherwise the run's verdicts
+// come from the legacy borrow-by-similarity path and the fields stay empty.
+func preanalysisEngine(transcription config.Transcription, pre config.Preanalysis, verifyCfg config.VerifyPath, political config.Political, gate config.FinalGate, match config.Match) service.EngineMetadata {
+	engine := service.EngineMetadata{
+		TranscriberModel: transcription.Model,
+		PacingFactor:     pre.PacingFactor,
+		HybridSearch:     match.HybridSearch,
+	}
+	if !verifyCfg.Active() {
+		return engine
+	}
+	engine.VerifyProvider = resolvedProvider(verifyCfg.Provider)
+	engine.VerifyModel = verifyCfg.Model
+	engine.RetrievalThreshold = verifyCfg.RetrievalThreshold
+	engine.Political = political.Active(true)
+	if gate.Active() {
+		engine.SecondPassModel = gate.Model
+	}
+	return engine
+}
+
+// resolvedProvider names the LLM backend an empty LLM_PROVIDER resolves to, so
+// the stored fingerprint records the effective provider, not the raw setting.
+func resolvedProvider(provider string) string {
+	if provider == "" {
+		return string(llm.ProviderDeepSeek)
+	}
+	return provider
+}
+
 // politicalVerifierAdapter adapts the verify client's two-axis VerifyPolitical to
 // the service PoliticalVerifier port: it maps the service's evidence passages onto
 // the verifier's, and the verifier's two-axis result (already citation-guarded)
@@ -818,7 +1135,7 @@ type politicalVerifierAdapter struct {
 func (v politicalVerifierAdapter) VerifyPolitical(ctx context.Context, claim string, passages []service.EvidencePassage) (service.PoliticalVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.VerifyPolitical(ctx, claim, in)
 	if err != nil {
@@ -844,8 +1161,13 @@ type decomposerAdapter struct {
 	client *claimdecomp.Client
 }
 
-func (d decomposerAdapter) Decompose(ctx context.Context, text, speaker, recentContext string) []string {
-	return d.client.Decompose(ctx, claimdecomp.Input{Text: text, Speaker: speaker, Context: recentContext})
+func (d decomposerAdapter) Decompose(ctx context.Context, text, speaker, recentContext string) []service.DecomposedClaim {
+	decomposed := d.client.Decompose(ctx, claimdecomp.Input{Text: text, Speaker: speaker, Context: recentContext})
+	claims := make([]service.DecomposedClaim, len(decomposed))
+	for i, c := range decomposed {
+		claims[i] = service.DecomposedClaim{Text: c.Text, Quote: c.Quote}
+	}
+	return claims
 }
 
 // verifierAdapter adapts the verify client to the service ClaimVerifier port: it
@@ -858,7 +1180,7 @@ type verifierAdapter struct {
 func (v verifierAdapter) Verify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.Verify(ctx, claim, in)
 	if err != nil {
@@ -890,7 +1212,7 @@ type reverifierAdapter struct {
 func (v reverifierAdapter) Reverify(ctx context.Context, claim string, passages []service.EvidencePassage) (service.ClaimVerdict, error) {
 	in := make([]verify.Passage, len(passages))
 	for i, p := range passages {
-		in[i] = verify.Passage{ID: p.ID, Text: p.Text}
+		in[i] = verify.Passage{ID: p.ID, Text: p.Text, Date: p.Date}
 	}
 	res, err := v.client.Reverify(ctx, claim, in)
 	if err != nil {

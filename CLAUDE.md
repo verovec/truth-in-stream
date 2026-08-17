@@ -25,13 +25,15 @@ lives under `stack/`.
   `terraform apply`. Never run `terraform apply` by hand, dispatch a `deploy-*.yml` workflow, push
   a deploy tag, or take any other production-affecting action on the user's behalf without explicit
   approval; an agent delivers to `main` but never tags a release or applies prod.
-- Merging a card's PR to `main` is automatic in this workspace once the PR's CI is green. After a
-  passing code-review and a green end-to-end check, the delivering agent rebases on `main`, opens
-  the PR, waits for CI to pass, merges, and moves the card to Done (see the `delivering-linear-cards`
-  skill and the `/pick` command). This project-scoped rule supersedes the global `ship-after-review`
-  skill's "merge stays human-gated" clause for this repo only. An auto-merge to `main` never
-  triggers a deploy; only a version tag does (the `deploy-*.yml` wrappers stay `workflow_dispatch`
-  for ad-hoc single-service rolls).
+- Two-branch flow: `main` is the stable branch and is **human-only**; `dev` is the agent's
+  integration branch. An agent delivers a card by branching off `dev`, opening the PR against
+  `dev`, and — after a passing code-review and green PR CI — **merging the PR to `dev`** and moving
+  the card to Done (see the `delivering-linear-cards` skill and the `/pick` command). The agent
+  NEVER merges to `main` and NEVER tags a release. The human tests locally from `dev`, promotes
+  `dev` -> `main` by hand when satisfied, and tags a `v*` release to deploy prod. This
+  project-scoped rule supersedes the global `ship-after-review` skill's "merge stays human-gated"
+  clause for the `dev` merge only; the `main` merge and the release tag stay the human's. A merge
+  to `dev` never triggers a deploy; only a version tag on a `main` commit does.
 - Best practice and long-term maintainability first.
 - Before integrating a new library/pattern/tool, verify current best practice and latest
   stable version via Context7 (web search if needed) before writing code.
@@ -94,7 +96,7 @@ roadmap-linear skill.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **truth-in-stream** (6224 symbols, 15283 relationships, 251 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **truth-in-stream** (24384 symbols, 68636 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

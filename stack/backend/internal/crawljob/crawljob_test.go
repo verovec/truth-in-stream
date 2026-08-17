@@ -26,9 +26,20 @@ func (f fakeEmbedder) EmbedDocuments(_ context.Context, _ []string) ([][]float32
 type fakeStore struct {
 	got domain.EvidenceChunk
 	err error
+
+	alreadyEmbedded bool  // ContentAlreadyEmbedded returns this
+	checkErr        error // ContentAlreadyEmbedded error
+	upserts         int
+	checks          int
+}
+
+func (f *fakeStore) ContentAlreadyEmbedded(_ context.Context, _ domain.EvidenceChunk) (bool, error) {
+	f.checks++
+	return f.alreadyEmbedded, f.checkErr
 }
 
 func (f *fakeStore) UpsertEmbeddedChunk(_ context.Context, c domain.EvidenceChunk) error {
+	f.upserts++
 	f.got = c
 	return f.err
 }
@@ -78,26 +89,26 @@ func TestProcessHappyPathUpserts(t *testing.T) {
 	}
 }
 
-func TestProcessMalformedIsDropped(t *testing.T) {
+func TestProcessMalformedIsDeadLettered(t *testing.T) {
 	w := NewWorker(fakeEmbedder{}, &fakeStore{}, nil, nil, nil, Config{})
-	if res := w.Process(t.Context(), []byte("{not json"), 0); res.Action != ActionAck {
-		t.Errorf("action = %v, want Ack (drop)", res.Action)
+	if res := w.Process(t.Context(), []byte("{not json"), 0); res.Action != ActionReject {
+		t.Errorf("action = %v, want Reject (dead-letter a poison message)", res.Action)
 	}
 }
 
-func TestProcessInvalidJobIsDropped(t *testing.T) {
+func TestProcessInvalidJobIsDeadLettered(t *testing.T) {
 	w := NewWorker(fakeEmbedder{}, &fakeStore{}, nil, nil, nil, Config{})
 	bad := validJob()
 	bad.Content = ""
-	if res := w.Process(t.Context(), mustBody(t, bad), 0); res.Action != ActionAck {
-		t.Errorf("action = %v, want Ack (drop)", res.Action)
+	if res := w.Process(t.Context(), mustBody(t, bad), 0); res.Action != ActionReject {
+		t.Errorf("action = %v, want Reject (dead-letter an invalid job)", res.Action)
 	}
 }
 
-func TestProcessWrongDimIsDropped(t *testing.T) {
+func TestProcessWrongDimIsDeadLettered(t *testing.T) {
 	w := NewWorker(fakeEmbedder{vec: [][]float32{{0.1, 0.2}}}, &fakeStore{}, nil, nil, nil, Config{MaxAttempts: 3})
-	if res := w.Process(t.Context(), mustBody(t, validJob()), 0); res.Action != ActionAck {
-		t.Errorf("action = %v, want Ack (drop)", res.Action)
+	if res := w.Process(t.Context(), mustBody(t, validJob()), 0); res.Action != ActionReject {
+		t.Errorf("action = %v, want Reject (dead-letter a provider-contract violation)", res.Action)
 	}
 }
 
@@ -127,13 +138,13 @@ func TestProcessShutdownRequeues(t *testing.T) {
 	}
 }
 
-func TestProcessExhaustedAttemptsDropped(t *testing.T) {
+func TestProcessExhaustedAttemptsDeadLettered(t *testing.T) {
 	st := &fakeStore{err: errors.New("db down")}
 	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{MaxAttempts: 2})
 	j := validJob()
 	j.Attempt = 1 // already at budget-1
-	if res := w.Process(t.Context(), mustBody(t, j), 0); res.Action != ActionAck {
-		t.Errorf("action = %v, want Ack (drop after retries)", res.Action)
+	if res := w.Process(t.Context(), mustBody(t, j), 0); res.Action != ActionReject {
+		t.Errorf("action = %v, want Reject (dead-letter after exhausting retries)", res.Action)
 	}
 }
 
@@ -260,6 +271,90 @@ func TestHandleNacksRequeueOnShutdown(t *testing.T) {
 	}
 }
 
+// fakeEnqueuer stands in for the re-enqueue publisher; err drives the
+// re-enqueue-failure paths.
+type fakeEnqueuer struct{ err error }
+
+func (f fakeEnqueuer) Enqueue(_ context.Context, _ []byte, _ uint8) error { return f.err }
+
+// cancelingEnqueuer cancels the context as its Enqueue fails, standing in for a
+// shutdown that races an in-flight re-enqueue.
+type cancelingEnqueuer struct{ cancel context.CancelFunc }
+
+func (e cancelingEnqueuer) Enqueue(_ context.Context, _ []byte, _ uint8) error {
+	e.cancel()
+	return context.Canceled
+}
+
+// TestHandleDeadLettersUnknownVersion proves a delivery stamped with a version the
+// worker does not understand is nacked WITHOUT requeue (dead-lettered), never
+// acked away.
+func TestHandleDeadLettersUnknownVersion(t *testing.T) {
+	t.Parallel()
+	d := &recDelivery{body: mustBody(t, validJob()), priority: 5, version: "999"}
+	w := NewWorker(fakeEmbedder{}, &fakeStore{}, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3, KnownVersions: []string{"1"}})
+
+	w.handle(t.Context(), d)
+
+	acked, nacked, requeue := d.state()
+	if acked || !nacked || requeue {
+		t.Fatalf("delivery acked=%v nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", acked, nacked, requeue)
+	}
+}
+
+// TestHandleDeadLettersExhaustedJob proves a job past its retry budget is
+// dead-lettered by the dispatch loop, not acked away.
+func TestHandleDeadLettersExhaustedJob(t *testing.T) {
+	t.Parallel()
+	j := validJob()
+	j.Attempt = 1
+	d := &recDelivery{body: mustBody(t, j), priority: 5}
+	st := &fakeStore{err: errors.New("db down")}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 2})
+
+	w.handle(t.Context(), d)
+
+	acked, nacked, requeue := d.state()
+	if acked || !nacked || requeue {
+		t.Fatalf("delivery acked=%v nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", acked, nacked, requeue)
+	}
+}
+
+// TestHandleDeadLettersWhenRepublishFails proves the infinite-loop fix: when the
+// re-enqueue itself fails for a non-shutdown reason the original is dead-lettered,
+// not requeued forever with an unadvanced attempt.
+func TestHandleDeadLettersWhenRepublishFails(t *testing.T) {
+	t.Parallel()
+	d := &recDelivery{body: mustBody(t, validJob()), priority: 5}
+	st := &fakeStore{err: errors.New("db down")} // transient, attempts remain
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, fakeEnqueuer{err: errors.New("broker down")}, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	w.handle(t.Context(), d)
+
+	acked, nacked, requeue := d.state()
+	if acked || !nacked || requeue {
+		t.Fatalf("delivery acked=%v nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", acked, nacked, requeue)
+	}
+}
+
+// TestHandleRequeuesWhenRepublishInterruptedByShutdown proves that a re-enqueue
+// cut short by a shutdown requeues the original (redelivered later) rather than
+// dead-lettering work the shutdown, not the message, interrupted.
+func TestHandleRequeuesWhenRepublishInterruptedByShutdown(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	d := &recDelivery{body: mustBody(t, validJob()), priority: 5}
+	st := &fakeStore{err: errors.New("db down")} // transient, attempts remain
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, cancelingEnqueuer{cancel: cancel}, nil, Config{Concurrency: 1, MaxAttempts: 3})
+
+	w.handle(ctx, d)
+
+	acked, nacked, requeue := d.state()
+	if acked || !nacked || !requeue {
+		t.Fatalf("delivery acked=%v nacked=%v requeue=%v, want requeued (nacked, requeue=true)", acked, nacked, requeue)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -286,5 +381,53 @@ func TestValidate(t *testing.T) {
 				t.Errorf("validate() err=%v, want ok=%v", err, tc.ok)
 			}
 		})
+	}
+}
+
+// TestProcessSkipsAlreadyEmbedded verifies the content-hash short-circuit
+// (VER-203, measure 1): a re-crawl whose content is already embedded acks with no
+// provider call or re-upsert and counts the skip. The embedder is armed to fail
+// so any embed attempt would republish instead of ack.
+func TestProcessSkipsAlreadyEmbedded(t *testing.T) {
+	st := &fakeStore{alreadyEmbedded: true}
+	w := NewWorker(fakeEmbedder{err: errors.New("must not embed")}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	res := w.Process(t.Context(), mustBody(t, validJob()), 5)
+	if res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 0 {
+		t.Errorf("upserts = %d, want 0 (short-circuited before write)", st.upserts)
+	}
+	if got := w.Stats().Skipped; got != 1 {
+		t.Errorf("Stats().Skipped = %d, want 1", got)
+	}
+}
+
+// TestProcessEmbedsWhenNotAlreadyEmbedded verifies a changed or new re-crawl
+// takes the normal embed+upsert path and counts no skip.
+func TestProcessEmbedsWhenNotAlreadyEmbedded(t *testing.T) {
+	st := &fakeStore{alreadyEmbedded: false}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	if res := w.Process(t.Context(), mustBody(t, validJob()), 5); res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 1 {
+		t.Errorf("upserts = %d, want 1", st.upserts)
+	}
+	if got := w.Stats().Skipped; got != 0 {
+		t.Errorf("Stats().Skipped = %d, want 0", got)
+	}
+}
+
+// TestProcessCheckErrorFallsThroughToEmbed verifies a short-circuit lookup error
+// is transient: the worker embeds anyway rather than dropping the job.
+func TestProcessCheckErrorFallsThroughToEmbed(t *testing.T) {
+	st := &fakeStore{checkErr: errors.New("lookup blip")}
+	w := NewWorker(fakeEmbedder{vec: [][]float32{fullVec()}}, st, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
+	if res := w.Process(t.Context(), mustBody(t, validJob()), 5); res.Action != ActionAck {
+		t.Fatalf("action = %v, want Ack", res.Action)
+	}
+	if st.upserts != 1 {
+		t.Errorf("upserts = %d, want 1 (embedded despite check error)", st.upserts)
 	}
 }

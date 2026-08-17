@@ -468,6 +468,246 @@
         {"id": "presse:plan:0", "text": "La ministre a annoncé un plan d'investissement de 10 milliards d'euros pour l'industrie verte.", "kind": "evidence"}
       ],
       "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "presse:plan:0", "quoted_span": "un plan d'investissement de 10 milliards d'euros"}], "rationale": "L'annonce du plan de 10 milliards est reproduite par le passage."}
+    },
+    {
+      "id": "rp-chomage-precis",
+      "statement": "Le taux de chômage s'élève à 7,3% ce trimestre.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval number-precision: le passage cible porte le chiffre exact (7,3%); les distracteurs partagent le sujet mais un autre nombre.",
+      "category": "number-precision",
+      "relevant": ["rp:chomage:0"],
+      "passages": [
+        {"id": "rp:chomage:0", "text": "L'INSEE mesure un taux de chômage de 7,3% au dernier trimestre en France métropolitaine.", "kind": "evidence"},
+        {"id": "rp:chomage:1", "text": "Le taux de chômage des jeunes atteint 17,2% selon la même enquête.", "kind": "evidence"},
+        {"id": "rp:chomage:2", "text": "Le taux d'emploi des seniors progresse de deux points sur un an.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.92, "citations": [{"evidence_id": "rp:chomage:0", "quoted_span": "taux de chômage de 7,3%"}], "rationale": "Le passage cible confirme le taux de 7,3%."}
+    },
+    {
+      "id": "rp-deficit-precis",
+      "statement": "Le déficit public atteint 5,5% du PIB.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval number-precision: le passage cible donne 5,5% du PIB; les distracteurs sont du même domaine budgétaire mais une autre métrique ou un autre nombre.",
+      "category": "number-precision",
+      "relevant": ["rp:deficit:0"],
+      "passages": [
+        {"id": "rp:deficit:0", "text": "Le déficit public de la France s'établit à 5,5% du produit intérieur brut sur l'exercice.", "kind": "evidence"},
+        {"id": "rp:deficit:1", "text": "La dette publique dépasse 110% du produit intérieur brut à la même date.", "kind": "evidence"},
+        {"id": "rp:deficit:2", "text": "Le déficit commercial se creuse de plusieurs milliards d'euros.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "rp:deficit:0", "quoted_span": "déficit public de la France s'établit à 5,5%"}], "rationale": "Le passage cible confirme un déficit de 5,5% du PIB."}
+    },
+    {
+      "id": "rp-smic-precis",
+      "statement": "Le SMIC net mensuel est d'environ 1 400 euros.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval number-precision: le passage cible porte le montant du SMIC net; les distracteurs mélangent un autre salaire ou le SMIC brut sans montant.",
+      "category": "number-precision",
+      "relevant": ["rp:smic:0"],
+      "passages": [
+        {"id": "rp:smic:0", "text": "Le SMIC net s'élève à près de 1 400 euros par mois après revalorisation.", "kind": "evidence"},
+        {"id": "rp:smic:1", "text": "Le salaire médian en France avoisine 2 100 euros nets par mois.", "kind": "evidence"},
+        {"id": "rp:smic:2", "text": "Le SMIC brut horaire est fixé par décret chaque année.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.88, "citations": [{"evidence_id": "rp:smic:0", "quoted_span": "SMIC net s'élève à près de 1 400 euros"}], "rationale": "Le passage cible confirme un SMIC net proche de 1 400 euros."}
+    },
+    {
+      "id": "ne-borne-49-3",
+      "statement": "Élisabeth Borne a engagé la responsabilité du gouvernement avec le 49.3.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval named-entity: le passage cible nomme l'entité exacte (Élisabeth Borne, 49.3); les distracteurs citent d'autres responsables sur le même contexte budgétaire.",
+      "category": "named-entity",
+      "relevant": ["ne:borne:0"],
+      "passages": [
+        {"id": "ne:borne:0", "text": "La Première ministre Élisabeth Borne a déclenché l'article 49.3 sur le budget.", "kind": "evidence"},
+        {"id": "ne:borne:1", "text": "Le ministre de l'Économie Bruno Le Maire a présenté le projet de loi de finances.", "kind": "evidence"},
+        {"id": "ne:borne:2", "text": "Le président de l'Assemblée a organisé le vote solennel du budget.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "ne:borne:0", "quoted_span": "Élisabeth Borne a déclenché l'article 49.3"}], "rationale": "Le passage cible attribue le 49.3 à Élisabeth Borne."}
+    },
+    {
+      "id": "ne-insee-croissance",
+      "statement": "L'INSEE publie les chiffres de la croissance.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval named-entity: le passage cible nomme l'INSEE; les distracteurs attribuent la publication à d'autres institutions (Banque de France, Eurostat).",
+      "category": "named-entity",
+      "relevant": ["ne:insee:0"],
+      "passages": [
+        {"id": "ne:insee:0", "text": "L'INSEE, institut national de la statistique, publie l'estimation de croissance du PIB.", "kind": "evidence"},
+        {"id": "ne:insee:1", "text": "La Banque de France révise sa prévision de croissance pour l'année.", "kind": "evidence"},
+        {"id": "ne:insee:2", "text": "Eurostat compile les données de croissance des États membres.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.87, "citations": [{"evidence_id": "ne:insee:0", "quoted_span": "publie l'estimation de croissance du PIB"}], "rationale": "Le passage cible attribue la publication à l'INSEE."}
+    },
+    {
+      "id": "ne-conseil-constit",
+      "statement": "Le Conseil constitutionnel a censuré une partie de la loi immigration.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval named-entity: le passage cible nomme le Conseil constitutionnel; le distracteur near-entity cite le Conseil d'État sur le même texte.",
+      "category": "named-entity",
+      "relevant": ["ne:conseil:0"],
+      "passages": [
+        {"id": "ne:conseil:0", "text": "Le Conseil constitutionnel a censuré plusieurs articles de la loi immigration.", "kind": "evidence"},
+        {"id": "ne:conseil:1", "text": "Le Conseil d'État a rendu un avis sur le projet de loi immigration.", "kind": "evidence"},
+        {"id": "ne:conseil:2", "text": "L'Assemblée nationale a adopté la loi immigration en lecture définitive.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.89, "citations": [{"evidence_id": "ne:conseil:0", "quoted_span": "Conseil constitutionnel a censuré plusieurs articles"}], "rationale": "Le passage cible attribue la censure au Conseil constitutionnel."}
+    },
+    {
+      "id": "da-retraites-2023",
+      "statement": "La réforme des retraites a été promulguée en 2023.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval date-anchored: le passage cible ancre l'année exacte (2023); le distracteur near-date cite une réforme de 2010.",
+      "category": "date-anchored",
+      "relevant": ["da:retraites:0"],
+      "passages": [
+        {"id": "da:retraites:0", "text": "La loi portant réforme des retraites a été promulguée en 2023 après le recours au 49.3.", "kind": "evidence"},
+        {"id": "da:retraites:1", "text": "Une précédente réforme des retraites avait été adoptée en 2010 sous une autre majorité.", "kind": "evidence"},
+        {"id": "da:retraites:2", "text": "Le débat sur l'âge de départ à la retraite a mobilisé les syndicats.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "da:retraites:0", "quoted_span": "réforme des retraites a été promulguée en 2023"}], "rationale": "Le passage cible ancre la promulgation en 2023."}
+    },
+    {
+      "id": "da-jo-2024",
+      "statement": "Les Jeux olympiques se sont tenus à Paris en 2024.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval date-anchored: le passage cible ancre Paris 2024; les distracteurs near-date citent 1924 et 2028.",
+      "category": "date-anchored",
+      "relevant": ["da:jo:0"],
+      "passages": [
+        {"id": "da:jo:0", "text": "Paris a accueilli les Jeux olympiques d'été en 2024.", "kind": "evidence"},
+        {"id": "da:jo:1", "text": "Paris avait organisé les Jeux olympiques en 1924, un siècle plus tôt.", "kind": "evidence"},
+        {"id": "da:jo:2", "text": "Los Angeles accueillera les Jeux olympiques en 2028.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.92, "citations": [{"evidence_id": "da:jo:0", "quoted_span": "Jeux olympiques d'été en 2024"}], "rationale": "Le passage cible ancre les Jeux à Paris en 2024."}
+    },
+    {
+      "id": "da-presidentielle-2022",
+      "statement": "Emmanuel Macron a été réélu président en 2022.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval date-anchored: le passage cible ancre 2022; le distracteur near-date cite l'élection de 2017 et un autre partage l'année sur un autre scrutin.",
+      "category": "date-anchored",
+      "relevant": ["da:presid:0"],
+      "passages": [
+        {"id": "da:presid:0", "text": "Emmanuel Macron a été réélu à la présidence de la République en 2022.", "kind": "evidence"},
+        {"id": "da:presid:1", "text": "Emmanuel Macron avait été élu pour la première fois en 2017.", "kind": "evidence"},
+        {"id": "da:presid:2", "text": "Les élections législatives se sont tenues en juin 2022.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "da:presid:0", "quoted_span": "Emmanuel Macron a été réélu à la présidence de la République en 2022"}], "rationale": "Le passage cible ancre la réélection en 2022."}
+    },
+    {
+      "id": "pp-retraites-64",
+      "statement": "L'âge légal de départ passe à 64 ans.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval paraphrase: le passage cible exprime le même fait avec d'autres mots (repousse le seuil à 64 ans); les distracteurs reprennent le vocabulaire de surface sans le fait.",
+      "category": "paraphrase",
+      "relevant": ["pp:retraites:0"],
+      "passages": [
+        {"id": "pp:retraites:0", "text": "La réforme repousse à 64 ans le seuil à partir duquel on peut liquider sa pension.", "kind": "evidence"},
+        {"id": "pp:retraites:1", "text": "L'âge légal de la retraite fait débat dans l'opinion publique.", "kind": "evidence"},
+        {"id": "pp:retraites:2", "text": "Le départ anticipé pour carrière longue reste possible sous conditions.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.86, "citations": [{"evidence_id": "pp:retraites:0", "quoted_span": "repousse à 64 ans"}], "rationale": "Le passage cible exprime le même seuil de 64 ans."}
+    },
+    {
+      "id": "pp-croissance-09",
+      "statement": "L'économie française a progressé de 0,9% l'an dernier.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval paraphrase: le passage cible reformule la croissance (le PIB a augmenté de 0,9%); les distracteurs partagent le vocabulaire économique sans le chiffre.",
+      "category": "paraphrase",
+      "relevant": ["pp:croissance:0"],
+      "passages": [
+        {"id": "pp:croissance:0", "text": "Le PIB de la France a augmenté de 0,9% sur l'année écoulée.", "kind": "evidence"},
+        {"id": "pp:croissance:1", "text": "L'économie française devrait ralentir selon les prévisionnistes.", "kind": "evidence"},
+        {"id": "pp:croissance:2", "text": "La croissance de la zone euro reste atone cette année.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.88, "citations": [{"evidence_id": "pp:croissance:0", "quoted_span": "augmenté de 0,9%"}], "rationale": "Le passage cible reformule la même croissance de 0,9%."}
+    },
+    {
+      "id": "pp-immigration-vote",
+      "statement": "Le Parlement a définitivement adopté la loi sur l'immigration.",
+      "claim_type": "attribution",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval paraphrase: le passage cible reformule le vote (Assemblée et Sénat ont voté le texte); les distracteurs partagent des mots de surface (Parlement, loi) sans le fait, le cas le plus dur pour un appariement lexical.",
+      "category": "paraphrase",
+      "relevant": ["pp:immigration:0"],
+      "passages": [
+        {"id": "pp:immigration:0", "text": "L'Assemblée et le Sénat ont voté le texte relatif à l'immigration en lecture finale.", "kind": "evidence"},
+        {"id": "pp:immigration:1", "text": "Le Parlement examinera prochainement plusieurs autres textes.", "kind": "evidence"},
+        {"id": "pp:immigration:2", "text": "La loi de finances a été adoptée avant la fin de l'année.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.82, "citations": [{"evidence_id": "pp:immigration:0", "quoted_span": "voté le texte relatif à l'immigration"}], "rationale": "Le passage cible reformule l'adoption de la loi immigration."}
+    },
+    {
+      "id": "nm-deficit-44",
+      "statement": "Le déficit public est de 4,4% du PIB.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval near-miss: distracteurs à bonne entité mais mauvais nombre (5,5%, 3%); seule la cible porte 4,4%.",
+      "category": "near-miss",
+      "relevant": ["nm:deficit:0"],
+      "passages": [
+        {"id": "nm:deficit:0", "text": "Le déficit public s'établit à 4,4% du PIB cette année.", "kind": "evidence"},
+        {"id": "nm:deficit:1", "text": "Le déficit public s'établissait à 5,5% du PIB l'an dernier.", "kind": "evidence"},
+        {"id": "nm:deficit:2", "text": "Le déficit public devrait revenir à 3% du PIB à moyen terme.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "nm:deficit:0", "quoted_span": "déficit public s'établit à 4,4%"}], "rationale": "Seul le passage cible porte le déficit de 4,4%."}
+    },
+    {
+      "id": "nm-chomage-73",
+      "statement": "Le taux de chômage est de 7,3%.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval near-miss: distracteurs à bonne entité mais nombre voisin (7,5%, 9,1%); seule la cible porte 7,3%.",
+      "category": "near-miss",
+      "relevant": ["nm:chomage:0"],
+      "passages": [
+        {"id": "nm:chomage:0", "text": "Le taux de chômage s'établit à 7,3% ce trimestre.", "kind": "evidence"},
+        {"id": "nm:chomage:1", "text": "Le taux de chômage s'établissait à 7,5% le trimestre précédent.", "kind": "evidence"},
+        {"id": "nm:chomage:2", "text": "Le taux de chômage atteignait 9,1% il y a cinq ans.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "nm:chomage:0", "quoted_span": "taux de chômage s'établit à 7,3%"}], "rationale": "Seul le passage cible porte le taux de 7,3%."}
+    },
+    {
+      "id": "nm-dette-112",
+      "statement": "La dette publique atteint 112% du PIB.",
+      "claim_type": "statistic",
+      "expected_literal": "accurate",
+      "expected_flags": [],
+      "provenance": "Retrieval near-miss: distracteurs à bonne entité mais mauvais nombre (98%, 120%); seule la cible porte 112%.",
+      "category": "near-miss",
+      "relevant": ["nm:dette:0"],
+      "passages": [
+        {"id": "nm:dette:0", "text": "La dette publique française atteint 112% du PIB.", "kind": "evidence"},
+        {"id": "nm:dette:1", "text": "La dette publique française atteignait 98% du PIB avant la crise.", "kind": "evidence"},
+        {"id": "nm:dette:2", "text": "La dette publique française pourrait atteindre 120% du PIB à terme.", "kind": "evidence"}
+      ],
+      "model_verdict": {"literal": "accurate", "basis": "evidence", "flags": [], "confidence": 0.9, "citations": [{"evidence_id": "nm:dette:0", "quoted_span": "dette publique française atteint 112%"}], "rationale": "Seul le passage cible porte la dette de 112%."}
     }
   ]
 }

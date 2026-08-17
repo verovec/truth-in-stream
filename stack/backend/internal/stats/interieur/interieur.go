@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 const (
@@ -49,23 +50,29 @@ const (
 // Config configures a Client. Every field is optional; the zero Config targets
 // the public data.gouv.fr resources with sane defaults.
 type Config struct {
-	// HTTPClient overrides the HTTP client (timeout, transport). It must follow
-	// redirects, since the stable resource permalink 302-redirects to the file.
+	// HTTPClient overrides the base HTTP client (timeout, transport); it is wrapped
+	// in a retrying doer. It must follow redirects, since the stable resource
+	// permalink 302-redirects to the file.
 	HTTPClient *http.Client
+	// Retry tunes the retry/backoff wrapper; a zero value uses the httpx defaults.
+	Retry httpx.RetryConfig
 }
 
 // Client downloads and parses interior-ministry open-data CSV resources.
 type Client struct {
-	httpClient *http.Client
+	httpClient httpx.Doer
 }
 
-// New builds a Client from cfg, applying a default HTTP client when unset.
+// New builds a Client from cfg, applying a default HTTP client when unset. The HTTP
+// client is wrapped in a retrying doer so a 429/5xx from the open-data portal is
+// backed off and retried (honoring Retry-After) rather than failing the run; the
+// base client still follows the resource permalink's 302 redirect.
 func New(cfg Config) *Client {
-	c := &Client{httpClient: cfg.HTTPClient}
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: defaultTimeout}
+	base := cfg.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: defaultTimeout}
 	}
-	return c
+	return &Client{httpClient: httpx.NewRetryClient(base, cfg.Retry)}
 }
 
 // APIError is a non-2xx response from the open-data portal; callers match it

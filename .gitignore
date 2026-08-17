@@ -57,3 +57,10 @@ note.txt
 
 # Datastore benchmark raw report (make bench-datastore); the written verdict is docs/datastore-scale-benchmark.md
 stack/backend/vectorbench-report.md
+
+# Local check-worthiness classifier (VER-225): training artifacts and the
+# native inference libraries stay out of git; only the pipeline code, the
+# annotated fixtures, and the committed eval fixture are tracked.
+stack/ml/checkworthy/out/
+stack/ml/checkworthy/.venv/
+stack/backend/.localworthy/

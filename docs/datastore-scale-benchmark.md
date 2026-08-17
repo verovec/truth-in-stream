@@ -223,6 +223,56 @@ Measured per-vector cost extrapolates linearly (HNSW is flat-structured):
   `hnsw.ef_search` default 100; `hnsw.iterative_scan` default `relaxed_order`;
   `hnsw.max_scan_tuples` at its 20000 default.
 
+## BQ default-on decision threshold (VER-203)
+
+The volume-control card (VER-203) needs a single, operable answer to "when should
+`EVIDENCE_BQ_MULTIPLIER` stop being zero?" so the choice is a documented number an
+operator can act on, not a judgement call. This section fixes that threshold and
+wires a warning to it.
+
+The threshold is a **RAM-working-set** threshold, not a recall one: on the global
+access pattern the single halfvec HNSW at `ef_search=100` already beats BQ+rerank
+on both recall and latency (0.980 / 1.47 ms vs BQ's 0.532 cap), so BQ is never
+about accuracy here - it is the fallback that keeps search fast once the halfvec
+HNSW index no longer fits in the instance's cache. From the measured footprint
+(**~2.67 KiB of halfvec HNSW index per vector**, section *Footprint*), the index
+alone crosses common instance memory classes at:
+
+| embedded evidence vectors | halfvec HNSW index | fits cache on | BQ posture |
+| --- | --- | --- | --- |
+| 10M | ~26 GiB | r7g/r8g.2xlarge (64 GiB) | leave off |
+| 50M | ~130 GiB | r7g/r8g.8xlarge (256 GiB) | **decision point** |
+| 100M | ~260 GiB | r8g.16xlarge (512 GiB) | on, or accept cold-tail |
+
+**Documented threshold: ~50M embedded evidence vectors.** Below it the halfvec
+HNSW indexes and hot table cache comfortably on the sized instance (per §4), so
+BQ's recall loss buys nothing. Approaching it, the index plus hot table plus
+headroom start to exceed the 256 GiB class, and the 6.3x-smaller bit index
+(41.4 MiB vs 260.4 MiB at 100k) becomes the lever that keeps the working set
+cached - so `EVIDENCE_BQ_MULTIPLIER` should be revisited there. This restates and
+makes numeric the VER-176 verdict's "roughly >= 50M vectors" guidance so it is an
+operable value rather than a footnote.
+
+The extrapolation is linear because HNSW is flat-structured; it reuses the same
+per-vector cost the VER-173 sizing table (§4) is built on, measured at 100k on
+pgvector 0.8.2. A re-run of `make bench-datastore` at representative sizes
+(`BENCH_FLAGS="-rows=..."`) refines the latency/footprint numbers, but the RAM
+crossover is set by the measured per-vector index cost, which does not move with
+row count.
+
+**Health warning.** `make pipeline-health` reads `EVIDENCE_BQ_THRESHOLD_VECTORS`
+(default 50000000) and prints a warning in the local corpus section once the
+embedded `evidence_chunks` count crosses it, pointing the operator at
+`EVIDENCE_BQ_MULTIPLIER` and this document. The threshold only drives that
+warning; it never enables BQ.
+
+**Still required before flipping BQ on:** binary-quantization recall is
+corpus-sensitive and the benchmark corpus is synthetic. As the *Caveats* and the
+VER-176 verdict state, the multiplier must be validated by re-running this harness
+over real voyage-4-large evidence embeddings before it is turned on - the size
+threshold says *when to look*, the real-corpus recall run says *whether to
+commit*.
+
 ## Caveats
 
 - The corpus is synthetic. Latencies and footprints transfer directly (they depend on

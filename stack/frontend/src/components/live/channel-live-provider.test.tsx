@@ -22,6 +22,7 @@ const analysis = (overrides: Partial<LiveAnalysis> = {}): LiveAnalysis => ({
   status: "live",
   summary: emptySummary(),
   claimsFor: () => [],
+  highlightsFor: () => [],
   speakers: [],
   ...overrides,
 });

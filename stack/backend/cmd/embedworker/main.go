@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
+	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/embedjob"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
@@ -58,6 +59,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	idle, err := config.LoadWorkerIdle()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -82,13 +87,7 @@ func run(logger *slog.Logger) error {
 		prefetch64 = maxPrefetch
 	}
 	prefetch := int(prefetch64)
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(prefetch))
 	if err != nil {
 		return err
 	}
@@ -97,15 +96,16 @@ func run(logger *slog.Logger) error {
 	worker := embedjob.NewWorker(
 		newEmbedder(logger, embedding, workerCfg),
 		store,
-		qStream{client: client},
+		qStream{client: client, idle: idle},
 		qEnqueuer{client: client},
 		logger,
 		embedjob.Config{
-			Concurrency:   workerCfg.Concurrency,
-			BatchSize:     workerCfg.BatchSize,
-			BatchWait:     workerCfg.BatchWait,
-			MaxAttempts:   workerCfg.MaxAttempts,
-			KnownVersions: queueCfg.KnownVersions,
+			Concurrency:    workerCfg.Concurrency,
+			BatchSize:      workerCfg.BatchSize,
+			BatchWait:      workerCfg.BatchWait,
+			MaxAttempts:    workerCfg.MaxAttempts,
+			MaxBatchTokens: workerCfg.MaxBatchTokens,
+			KnownVersions:  queueCfg.KnownVersions,
 		},
 	)
 
@@ -114,8 +114,20 @@ func run(logger *slog.Logger) error {
 		slog.Int("concurrency", workerCfg.Concurrency),
 		slog.Int("batch_size", workerCfg.BatchSize),
 		slog.Duration("batch_wait", workerCfg.BatchWait),
-		slog.Int("max_attempts", workerCfg.MaxAttempts))
-	if err := worker.Run(ctx); err != nil {
+		slog.Int("max_batch_tokens", workerCfg.MaxBatchTokens),
+		slog.Int("max_attempts", workerCfg.MaxAttempts),
+		slog.Duration("idle_timeout", idle))
+
+	// Announce the drain to Slack symmetrically to the producers (silent no-op when
+	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.
+	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	_, err = crawlnotify.RunConsumerWithAlerts(ctx, notifier, "embedding", queueCfg.VersionedName(),
+		func(ctx context.Context) (crawlnotify.ConsumerStats, error) {
+			runErr := worker.Run(ctx)
+			s := worker.Stats()
+			return crawlnotify.ConsumerStats{Processed: s.Processed, ParkedToDLQ: s.ParkedToDLQ}, runErr
+		})
+	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "embedding worker stopped")

@@ -57,6 +57,17 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive
 
+      # The metrics-poller lambda is provisioned by default (enable_metrics_lambda),
+      # so its bootstrap binary must exist for the data.archive_file to package it at
+      # plan/apply. Cross-compiled here (no build step otherwise runs in this job), so
+      # an automated dev apply / prod release does not need a manual pre-build.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: stack/backend/go.mod
+      - name: Build metrics-poller lambda bootstrap
+        working-directory: ${{ github.workspace }}/stack/backend
+        run: make lambda-mqmetrics
+
       # Offline validate, no backend access: any run that may not assume the
       # apply role (fork PRs and unbootstrapped accounts with no secret, and
       # every pull_request run — see CREDENTIALED above).

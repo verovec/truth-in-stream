@@ -63,12 +63,13 @@ func newTestClient(t *testing.T, cfg Config, handler http.HandlerFunc) *Client {
 }
 
 // claimsResponder returns a handler that always answers with the given claims as
-// a record_claims tool call.
-func claimsResponder(t *testing.T, claims []string) http.HandlerFunc {
+// a record_claims tool call, in the {claim, quote} object shape the tool schema
+// declares.
+func claimsResponder(t *testing.T, claims []Claim) http.HandlerFunc {
 	t.Helper()
 	items := make([]any, len(claims))
 	for i, c := range claims {
-		items[i] = c
+		items[i] = map[string]any{"claim": c.Text, "quote": c.Quote}
 	}
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -101,39 +102,55 @@ func TestDecompose(t *testing.T) {
 	tests := []struct {
 		name     string
 		maxic    int
-		modelOut []string
-		want     []string
+		modelOut []Claim
+		want     []Claim
 	}{
 		{
-			name:     "multi-claim splitting",
-			modelOut: []string{"Unemployment fell to four percent last quarter.", "The deficit doubled in 2023."},
-			want:     []string{"Unemployment fell to four percent last quarter.", "The deficit doubled in 2023."},
+			name: "multi-claim splitting carries each quote",
+			modelOut: []Claim{
+				{Text: "Unemployment fell to four percent last quarter.", Quote: "unemployment fell to four percent"},
+				{Text: "The deficit doubled in 2023.", Quote: "the deficit doubled"},
+			},
+			want: []Claim{
+				{Text: "Unemployment fell to four percent last quarter.", Quote: "unemployment fell to four percent"},
+				{Text: "The deficit doubled in 2023.", Quote: "the deficit doubled"},
+			},
 		},
 		{
 			name:     "coreference resolution",
-			modelOut: []string{"Senator Smith voted against the bill in 2022."},
-			want:     []string{"Senator Smith voted against the bill in 2022."},
+			modelOut: []Claim{{Text: "Senator Smith voted against the bill in 2022.", Quote: "he voted against it"}},
+			want:     []Claim{{Text: "Senator Smith voted against the bill in 2022.", Quote: "he voted against it"}},
 		},
 		{
 			name:     "opinion dropping leaves only the factual claim",
-			modelOut: []string{"The factory employs two thousand workers."},
-			want:     []string{"The factory employs two thousand workers."},
+			modelOut: []Claim{{Text: "The factory employs two thousand workers.", Quote: "the factory employs two thousand workers"}},
+			want:     []Claim{{Text: "The factory employs two thousand workers.", Quote: "the factory employs two thousand workers"}},
 		},
 		{
 			name:     "empty list is valid",
-			modelOut: []string{},
-			want:     []string{},
+			modelOut: []Claim{},
+			want:     []Claim{},
 		},
 		{
 			name:     "blanks and surrounding whitespace are dropped",
-			modelOut: []string{"  GDP grew three percent.  ", "", "   "},
-			want:     []string{"GDP grew three percent."},
+			modelOut: []Claim{{Text: "  GDP grew three percent.  ", Quote: " GDP grew "}, {Text: ""}, {Text: "   "}},
+			want:     []Claim{{Text: "GDP grew three percent.", Quote: "GDP grew"}},
 		},
 		{
-			name:     "claims past the cap are dropped as a backstop",
-			maxic:    2,
-			modelOut: []string{"Claim one.", "Claim two.", "Claim three.", "Claim four."},
-			want:     []string{"Claim one.", "Claim two."},
+			name:     "missing quote keeps the claim unanchored",
+			modelOut: []Claim{{Text: "GDP grew three percent."}},
+			want:     []Claim{{Text: "GDP grew three percent.", Quote: ""}},
+		},
+		{
+			name:  "claims past the cap are dropped as a backstop",
+			maxic: 2,
+			modelOut: []Claim{
+				{Text: "Claim one.", Quote: "one"},
+				{Text: "Claim two.", Quote: "two"},
+				{Text: "Claim three.", Quote: "three"},
+				{Text: "Claim four.", Quote: "four"},
+			},
+			want: []Claim{{Text: "Claim one.", Quote: "one"}, {Text: "Claim two.", Quote: "two"}},
 		},
 	}
 	for _, tt := range tests {
@@ -155,7 +172,7 @@ func TestDecomposeForcesStructuredToolCall(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{"A claim."}}))
+		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{map[string]any{"claim": "A claim.", "quote": "a claim"}}}))
 	})
 
 	c.Decompose(context.Background(), Input{Text: "anything"})
@@ -185,7 +202,7 @@ func TestDecomposeSendsSpeakerAndContext(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{"A claim."}}))
+		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{map[string]any{"claim": "A claim.", "quote": "a claim"}}}))
 	})
 
 	c.Decompose(context.Background(), Input{
@@ -215,8 +232,9 @@ func TestDecomposeErrorFallsBackToSingleClaim(t *testing.T) {
 	})
 
 	got := c.Decompose(context.Background(), Input{Text: unit})
-	if !reflect.DeepEqual(got, []string{unit}) {
-		t.Errorf("Decompose() on error = %#v, want single-claim fallback %#v", got, []string{unit})
+	want := []Claim{{Text: unit, Quote: unit}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Decompose() on error = %#v, want single-claim fallback %#v", got, want)
 	}
 }
 
@@ -231,7 +249,7 @@ func TestDecomposeBlankInputReturnsEmptyListWithoutCallingModel(t *testing.T) {
 			c := newTestClient(t, Config{}, func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{"A hallucinated claim."}}))
+				_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{map[string]any{"claim": "A hallucinated claim.", "quote": "hallucinated"}}}))
 			})
 
 			got := c.Decompose(context.Background(), Input{Text: text})
@@ -254,8 +272,9 @@ func TestDecomposeMissingToolCallFallsBackToSingleClaim(t *testing.T) {
 	})
 
 	got := c.Decompose(context.Background(), Input{Text: unit})
-	if !reflect.DeepEqual(got, []string{unit}) {
-		t.Errorf("Decompose() on missing tool call = %#v, want single-claim fallback %#v", got, []string{unit})
+	want := []Claim{{Text: unit, Quote: unit}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Decompose() on missing tool call = %#v, want single-claim fallback %#v", got, want)
 	}
 }
 
@@ -269,10 +288,11 @@ func TestDecomposeRealisticUnit(t *testing.T) {
 	t.Parallel()
 	// The model resolves "he"/"that" against the context, drops the opinion
 	// ("I think it's a great deal") and the hedge ("maybe"), and emits the two
-	// verifiable assertions as standalone sentences.
-	modelClaims := []string{
-		"Senator Smith voted for the 2023 infrastructure bill.",
-		"The 2023 infrastructure bill allocated one trillion dollars.",
+	// verifiable assertions as standalone sentences, each quoting the exact
+	// statement words it came from.
+	modelClaims := []Claim{
+		{Text: "Senator Smith voted for the 2023 infrastructure bill.", Quote: "He voted for it"},
+		{Text: "The 2023 infrastructure bill allocated one trillion dollars.", Quote: "a trillion dollars"},
 	}
 	c := newTestClient(t, Config{MaxClaimsPerUnit: 4}, claimsResponder(t, modelClaims))
 
@@ -284,6 +304,19 @@ func TestDecomposeRealisticUnit(t *testing.T) {
 
 	if !reflect.DeepEqual(got, modelClaims) {
 		t.Fatalf("Decompose() = %#v, want resolved atomic claims %#v", got, modelClaims)
+	}
+}
+
+// TestPromptsDemandTightQuotes pins the quote-minimality contract: both prompts
+// instruct the model to quote only the claim's core rather than whole sentences,
+// so highlights cover the checked words, not the full statement.
+func TestPromptsDemandTightQuotes(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(systemPrompt, "Keep the quote tight") {
+		t.Error("English prompt lacks the tight-quote instruction")
+	}
+	if !strings.Contains(systemPromptFR, "Garde le quote serre") {
+		t.Error("French prompt lacks the tight-quote instruction")
 	}
 }
 
@@ -336,7 +369,7 @@ func TestDecomposeFrenchUserMessageLabels(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{"Le Senateur Dupont a vote pour la loi."}}))
+		_, _ = io.WriteString(w, toolUseResponse(t, map[string]any{"claims": []any{map[string]any{"claim": "Le Senateur Dupont a vote pour la loi.", "quote": "Il a vote pour cette loi"}}}))
 	})
 
 	c.Decompose(context.Background(), Input{
@@ -365,10 +398,11 @@ func TestDecomposeFrenchUserMessageLabels(t *testing.T) {
 func TestDecomposeFrenchMultiClaimSplit(t *testing.T) {
 	t.Parallel()
 	// The model resolves "il" against the context, drops the opinion, and emits
-	// two French atomic claims; the adapter returns them verbatim.
-	modelClaims := []string{
-		"Le Senateur Dupont a vote pour la loi de finances de 2023.",
-		"La loi de finances de 2023 a alloue mille milliards d'euros.",
+	// two French atomic claims with their verbatim quotes; the adapter returns
+	// them verbatim.
+	modelClaims := []Claim{
+		{Text: "Le Senateur Dupont a vote pour la loi de finances de 2023.", Quote: "Il a vote pour"},
+		{Text: "La loi de finances de 2023 a alloue mille milliards d'euros.", Quote: "mille milliards d'euros"},
 	}
 	c := newTestClient(t, Config{Locale: domain.LocaleFrench, MaxClaimsPerUnit: 4}, claimsResponder(t, modelClaims))
 
@@ -395,7 +429,8 @@ func TestDecomposeFrenchErrorFallsBackToSingleClaim(t *testing.T) {
 	})
 
 	got := c.Decompose(context.Background(), Input{Text: unit})
-	if !reflect.DeepEqual(got, []string{unit}) {
-		t.Errorf("Decompose() on error = %#v, want single-claim fallback %#v", got, []string{unit})
+	want := []Claim{{Text: unit, Quote: unit}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Decompose() on error = %#v, want single-claim fallback %#v", got, want)
 	}
 }

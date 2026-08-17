@@ -72,8 +72,12 @@ ENV ?= prod
 # from the environment and forwarded; secrets come from Secrets Manager.
 SOURCE ?= wikipedia
 ACTION ?= up
+# Extra flags forwarded to scripts/ingest-host.sh: --stop-after (stop a crawler
+# host after its one-shot run) or --stop-when-idle (consumer: drain to idle, then
+# self-stop the host). Empty by default.
+INGEST_FLAGS ?=
 
-.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify reingest bench-datastore crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer insee-idempotency-check secret-scan install-hooks
+.PHONY: help doctor bootstrap up down reset reset-hard backup restore db-tunnel db-push seed seed-claims seed-wiki seed-videos stats-ingest refresh-embeddings fleet-up fleet-down wiki-populate wiki-update wiki-cluster wiki-verify evidence-retention reingest bench-datastore eval crawl crawl-workers factcheck-crawl factcheck-workers scrutins-crawl scrutins-workers prime keycloak migrate logs ps digest tf-main-account-plan tf-main-account-apply push-secrets crawler consumer pipeline-health insee-idempotency-check secret-scan install-hooks
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-20s %s\n", $$1, $$2}'
@@ -101,7 +105,7 @@ bootstrap: ## Generate .env on a fresh checkout (operator email, argon2id hash, 
 	BOOTSTRAP_EMAIL="$$email" BOOTSTRAP_PASSWORD="$$password" \
 	  $(GO) -C stack/backend run ./cmd/bootstrap -root "$(CURDIR)"
 
-up: ## Bring up the full stack: Postgres+pgvector, migrate, seed (offline), backend, frontend, and local Keycloak (imports stack/keycloak/realm.json on :8081)
+up: ## Bring up the full stack: Postgres+pgvector, migrate, backend, frontend, and local Keycloak (imports stack/keycloak/realm.json on :8081). Never seeds; run `make seed` for the offline fixtures
 	@sh scripts/doctor.sh --quiet
 	$(COMPOSE) up --build
 
@@ -111,16 +115,15 @@ keycloak: ## Bring up only the local Keycloak IdP on :8081, importing stack/keyc
 down: ## Stop the stack, keeping the Postgres volume
 	$(COMPOSE) down --remove-orphans
 
-reset: ## Soft reset: drop the schema, re-migrate, and reseed (container stays up)
+reset: ## Soft reset: drop the schema and re-migrate to an empty database (container stays up); run `make seed` for the offline fixtures
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" drop -f
 	$(COMPOSE) run --rm migrate -path=/migrations -database "$(COMPOSE_DB)" up
-	$(COMPOSE) run --rm seed
-	@echo "reset complete: schema rebuilt and dataset reseeded"
+	@echo "reset complete: schema rebuilt empty; run 'make seed' for the offline fixtures"
 
-reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch
+reset-hard: ## Hard reset: discard the Postgres volume and rebuild everything from scratch; run `make seed` for the offline fixtures
 	$(COMPOSE) down -v --remove-orphans
 	$(COMPOSE) up --build
-	@echo "hard reset complete: fresh volume, migrated and seeded"
+	@echo "hard reset complete: fresh volume, migrated empty; run 'make seed' for the offline fixtures"
 
 backup: ## Snapshot the database to a timestamped dump under backups/ and upload it to S3 (set DB_BACKUP_BUCKET); preserves embeddings so a reset needs no re-embed
 	./scripts/db-backup.sh
@@ -178,6 +181,9 @@ wiki-cluster: ## Cluster the embedded corpus into topics and score importance so
 wiki-verify: ## Report the live corpus's embedded coverage and verify consistency over the embedded rows (chunks present, no zero vectors, 1024-dim, metadata populated, HNSW index live); exits non-zero on a real defect. It no longer requires 100% embedded - a bulk-into-live corpus fills in over time, so coverage is reported, not gated.
 	$(COMPOSE) --profile tools run --rm wiki-verify
 
+evidence-retention: ## Per-source evidence retention sweep (VER-203): dry-run by default, pass -apply to delete. e.g. make evidence-retention ARGS="-source insee-emploi -max-age 720h" then re-run with -apply. Removes chunks of one source last synced before now-max-age; re-ingest restores them.
+	$(COMPOSE) --profile tools run --rm evidence-retention go run ./cmd/evidenceretention $(ARGS)
+
 reingest: ## Full local corpus reingest: reset corpus+checkpoint, then an ATOMIC bulk rebuild (build in staging, the fleet drains it, swap live) so the corpus is complete before clustering, then cluster and verify. Brings up the broker and one worker; resumable, reuses the on-disk dump; needs EMBEDDING_API_KEY and WIKI_* tuning from .env. Long (paid embed) - run it unattended; a green verify means the corpus is built and consistent.
 	$(COMPOSE) --profile wiki up -d rabbitmq embedworker
 	$(COMPOSE) --profile tools run --rm wiki-reset
@@ -191,7 +197,10 @@ bench-datastore: ## Run the datastore scale benchmark (VER-173): spin a throwawa
 	$(COMPOSE) --profile bench down
 	@echo "bench complete: report at stack/backend/vectorbench-report.md"
 
-crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live wiki_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
+eval: ## Run the French political retrieval eval gate (VER-191): score the deterministic lexical retrieval oracle's recall@1/recall@3 per category over the committed golden set and print pass/fail against the reviewed baseline (stack/backend/internal/eval/testdata/baseline.json). Fully offline - no model API, no database, no Docker. Exits non-zero on a recall regression. Needs the Go toolchain (override with GO=). The two-axis verdict accuracy gate runs alongside as `go test ./internal/eval/...`; see stack/backend/internal/eval/README.md
+	cd stack/backend && $(GO) run ./cmd/eval
+
+crawl-workers: ## Start N category-crawl consumers that drain the crawl queue into live evidence_chunks (CRAWLWORKER_REPLICAS=2, overridable). Run `make crawl` afterwards to fill the queue; the running fleet drains it. Paid worker, opt-in (wiki profile)
 	$(COMPOSE) --profile wiki up --scale crawlworker=$(CRAWLWORKER_REPLICAS) rabbitmq crawlworker
 	@echo "crawl fleet up: rabbitmq + $(CRAWLWORKER_REPLICAS) crawlworker(s) running; run 'make crawl CRAWL_CATEGORIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
@@ -216,7 +225,7 @@ scrutins-crawl: ## Run the scrutins-archive producer: conditionally download the
 # a single worker first so a bare `make crawl` still drains. CRAWL_SHARDS>1 fans
 # the one CRAWL_CATEGORIES list out across N parallel producers (each a disjoint
 # round-robin slice), running them to completion and removing each on exit.
-crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
+crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live evidence_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
 	@case "$(CRAWL_SHARDS)" in ''|*[!0-9]*) echo "CRAWL_SHARDS must be a positive integer, got '$(CRAWL_SHARDS)'" >&2; exit 1 ;; esac
 	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up rabbitmq crawlworker
 	@if [ "$(CRAWL_SHARDS)" -le 1 ]; then \
@@ -238,11 +247,14 @@ prime: ## Bring up the paid wiki stack and auto-prime the broker: starts the bro
 push-secrets: ## Push the allowlisted app secrets from the local .env into AWS Secrets Manager under <project>/<ENV>/app/ (ENV=prod default; ENV=dev for dev). Idempotent (describe-then-create-or-put), reads .env at runtime only, and never echoes a value: each is handed to the CLI as a chmod-600 file:// reference and shredded. Pushes only the runtime app keys (EMBEDDING_API_KEY, TRANSCRIPTION_API_KEY, AUTH_EMAIL, AUTH_PASSWORD_HASH, SESSION_SECRET, DEEPSEEK_API_KEY, GEMINI_API_KEY, SLACK_WEBHOOK_URL); the terraform-owned DATABASE_URL and RABBITMQ_URL are never touched. Run after `terraform apply` creates the empty secret containers; prod asks you to type the env name to confirm.
 	./scripts/push-secrets.sh $(ENV)
 
-crawler: ## Run a source's producer on the crawler EC2 host over SSM (SOURCE=wikipedia default; ACTION=up|down|status). Starts the host if stopped, fills the queue, streams output, surfaces the exit code; add --stop-after to stop the host after the run. Non-secret producer config (CRAWL_CATEGORIES, FACTCHECK_QUERIES) comes from the environment. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
-	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh crawler $(SOURCE) $(ACTION)
+crawler: ## Run a source's producer on the crawler EC2 host over SSM (SOURCE=wikipedia default; ACTION=up|down|status). Starts the host if stopped, fills the queue, streams output, surfaces the exit code; pass INGEST_FLAGS=--stop-after to stop the host after the run. Non-secret producer config (CRAWL_CATEGORIES, FACTCHECK_QUERIES) comes from the environment. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
+	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh crawler $(SOURCE) $(ACTION) $(INGEST_FLAGS)
 
-consumer: ## Bring a source's worker up on the consumer EC2 host over SSM to drain its queue into the DB (SOURCE=wikipedia default; ACTION=up|down|status). `down` stops the host for cost control; `status` reports state + queue depth. Secrets come from Secrets Manager on the host. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
-	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh consumer $(SOURCE) $(ACTION)
+consumer: ## Bring a source's worker up on the consumer EC2 host over SSM to drain its queue into the DB (SOURCE=wikipedia default; ACTION=up|down|status). `down` stops the host for cost control; `status` reports state + queue depth; INGEST_FLAGS=--stop-when-idle drains to idle then self-stops the host. Secrets come from Secrets Manager on the host. DRY_RUN=1 prints the AWS calls. Hosts live in dev, so pass ENV=dev
+	ENVIRONMENT=$(ENV) ./scripts/ingest-host.sh consumer $(SOURCE) $(ACTION) $(INGEST_FLAGS)
+
+pipeline-health: ## Read-only end-to-end pipeline health snapshot: local corpus counts + fleet containers, and (per ENV, hosts live in dev so pass ENV=dev) the crawler/consumer instance states, per-queue and per-DLQ backlog, and each source's last-successful-run recency. Degrades section-by-section when the stack, database, or account guard is unavailable; never mutates anything.
+	ENVIRONMENT=$(ENV) ./scripts/pipeline-health.sh
 
 insee-idempotency-check: ## INSEE re-run idempotency checkpoint against the real RDS: count INSEE passages, re-run statsingest, assert the count did not grow (no duplicate passages). Proves the VER-123/124 provenance key is idempotent on real RDS. Run over an open `make db-tunnel` tunnel (psql to localhost). SKIP_INGEST=1 counts back-to-back without re-ingesting; DRY_RUN=1 dry-runs the re-ingest. ENV=prod default
 	ENVIRONMENT=$(ENV) ./scripts/insee-idempotency-check.sh

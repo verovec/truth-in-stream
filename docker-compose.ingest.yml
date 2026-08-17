@@ -13,10 +13,24 @@
 #   /consumer <source> -> `docker compose -f docker-compose.ingest.yml up -d <worker>`
 #
 # Source -> producer / queue / worker:
-#   wikipedia  wikicrawl      / crawl.chunks     / crawlworker
-#   stats      statsingest    / embedding.jobs   / embedworker
-#   factcheck  factcheckcrawl / factcheck.claims / factcheckworker
-#   scrutins   scrutinscrawl  / scrutins.votes   / scrutinsworker
+#   wikipedia         wikicrawl        / crawl.chunks     / crawlworker
+#   stats             statsingest      / embedding.jobs   / embedworker
+#   sdmx              sdmxcrawl        / embedding.jobs   / embedworker
+#   ods               odsingest        / embedding.jobs   / embedworker
+#   factcheck         factcheckcrawl   / factcheck.claims / factcheckworker
+#   scrutins          scrutinscrawl    / scrutins.votes   / scrutinsworker
+#   an-amendements    parliamentcrawl  / evidence.chunks  / evidenceworker
+#   an-questions      parliamentcrawl  / evidence.chunks  / evidenceworker
+#   an-comptesrendus  parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-questions   parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-dosleg      parliamentcrawl  / evidence.chunks  / evidenceworker
+#   senat-scrutins    parliamentcrawl  / scrutins.votes   / scrutinsworker
+#   datacommons       datacommonscrawl / factcheck.claims / factcheckworker
+#   claimreview       claimreviewcrawl / factcheck.claims / factcheckworker
+#   claimskg          claimskgseed     / factcheck.claims / factcheckworker  (one-shot seed)
+#   viepublique       viepubliquecrawl / evidence.chunks  / evidenceworker
+#   hatvp             hatvpcrawl       / evidence.chunks  / evidenceworker
+#   legifrance        legifrancecrawl  / evidence.chunks  / evidenceworker
 #
 # Container logs ship to CloudWatch Logs under /truth-in-stream/<env>/ingest/*,
 # the exact prefix the host instance profile is scoped to write; the operator
@@ -47,6 +61,9 @@ services:
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       CRAWL_CATEGORIES: "${CRAWL_CATEGORIES:-}"
       CRAWL_PROJECT: "${CRAWL_PROJECT:-}"
       WIKI_CORPUS: "${WIKI_CORPUS:-}"
@@ -56,6 +73,9 @@ services:
       CRAWL_INCLUDE_BODY: "${CRAWL_INCLUDE_BODY:-}"
       CRAWL_SHARDS: "${CRAWL_SHARDS:-}"
       CRAWL_SHARD_INDEX: "${CRAWL_SHARD_INDEX:-}"
+      CRAWL_CHECKPOINT_PATH: "${CRAWL_CHECKPOINT_PATH-/state/crawl-checkpoint.json}"
+      CRAWL_ERROR_BUDGET: "${CRAWL_ERROR_BUDGET:-}"
+      CRAWL_GATE_FAIL_MODE: "${CRAWL_GATE_FAIL_MODE:-}"
       CRAWL_CHECKWORTHY: "${CRAWL_CHECKWORTHY:-}"
       CHECKWORTHY_API_KEY: "${CHECKWORTHY_API_KEY:-}"
       CRAWL_CHECKWORTHY_MODEL: "${CRAWL_CHECKWORTHY_MODEL:-}"
@@ -64,6 +84,8 @@ services:
       LLM_PROVIDER: "${LLM_PROVIDER:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    volumes:
+      - crawl-state:/state
     logging:
       driver: awslogs
       options:
@@ -82,6 +104,9 @@ services:
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
       WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
       INSEE_API_KEY: "${INSEE_API_KEY:-}"
@@ -92,10 +117,62 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/statsingest"
         awslogs-stream-prefix: "statsingest"
 
+  # sdmx: fetch the curated macro series from the anonymous SDMX institutions
+  # (ECB, OECD), render each observation into a French evidence passage, upsert it
+  # un-embedded and publish one embed job each to embedding.jobs. Writes to the DB,
+  # so it needs DATABASE_URL. Keyless. SDMX_SOURCES / SDMX_START_PERIOD /
+  # SDMX_END_PERIOD are optional non-secret knobs the operator command forwards.
+  sdmxcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/sdmxcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      SDMX_SOURCES: "${SDMX_SOURCES:-}"
+      SDMX_START_PERIOD: "${SDMX_START_PERIOD:-}"
+      SDMX_END_PERIOD: "${SDMX_END_PERIOD:-}"
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/sdmxcrawl"
+        awslogs-stream-prefix: "sdmxcrawl"
+
+  # ods: fetch the OpenDataSoft portals (DREES/DARES/URSSAF) and the SSMSI
+  # delinquency CSV bases, upsert un-embedded passages, and publish embedding jobs
+  # to embedding.jobs (drained by embedworker, like stats). Keyless open data, so
+  # no secret; needs the broker and the database. WIKI_ENQUEUE_BATCH_SIZE tunes the
+  # publish page size (forwarded by the operator command).
+  odsingest:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/odsingest"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      WIKI_ENQUEUE_BATCH_SIZE: "${WIKI_ENQUEUE_BATCH_SIZE:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/odsingest"
+        awslogs-stream-prefix: "odsingest"
+
   # factcheck: read already-checked French claims from the Google Fact Check Tools
-  # API for FACTCHECK_QUERIES and publish curated-claim jobs to factcheck.claims.
-  # DB-free. FACTCHECK_QUERIES is required (forwarded by the operator command);
-  # FACTCHECK_API_KEY comes from the materialized env.
+  # API and publish curated-claim jobs to factcheck.claims. DB-free.
+  # FACTCHECK_QUERIES is OPTIONAL (a broadened French topic rotation is the default
+  # when it is unset); publisher-scoped streams over the outlet allowlist run
+  # alongside it. FACTCHECK_API_KEY comes from the materialized env.
   factcheckcrawl:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/factcheckcrawl"]
@@ -103,16 +180,100 @@ services:
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       FACTCHECK_API_KEY: "${FACTCHECK_API_KEY:-}"
       FACTCHECK_QUERIES: "${FACTCHECK_QUERIES:-}"
+      FACTCHECK_PUBLISHER_SITES: "${FACTCHECK_PUBLISHER_SITES:-}"
       FACTCHECK_LANGUAGE: "${FACTCHECK_LANGUAGE:-}"
       FACTCHECK_MAX_PAGES: "${FACTCHECK_MAX_PAGES:-}"
+      FACTCHECK_MAX_AGE_DAYS: "${FACTCHECK_MAX_AGE_DAYS:-}"
+      FACTCHECK_CHECKPOINT_PATH: "${FACTCHECK_CHECKPOINT_PATH-/state/factcheck-checkpoint.json}"
+    volumes:
+      - factcheck-state:/state
     logging:
       driver: awslogs
       options:
         <<: *awslogs-options
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/factcheckcrawl"
         awslogs-stream-prefix: "factcheckcrawl"
+
+  # datacommons: read the DataCommons ClaimReview daily feed, keep the records
+  # from the DATACOMMONS_OUTLET_ALLOWLIST of vetted French outlets, and publish
+  # curated-claim jobs to the same factcheck.claims queue the factcheck source
+  # uses (drained by factcheckworker). DB-free and keyless: the feed is a public
+  # object, so no API key and no new worker. All DATACOMMONS_* have defaults.
+  datacommonscrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/datacommonscrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATACOMMONS_FEED_URL: "${DATACOMMONS_FEED_URL:-}"
+      DATACOMMONS_OUTLET_ALLOWLIST: "${DATACOMMONS_OUTLET_ALLOWLIST:-}"
+      DATACOMMONS_MAX_ITEMS: "${DATACOMMONS_MAX_ITEMS:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/datacommonscrawl"
+        awslogs-stream-prefix: "datacommonscrawl"
+
+  # claimreview: read schema.org ClaimReview JSON-LD directly from the allowlisted
+  # French outlets (sitemap-discovered, robots- and pacing-respecting), extract only
+  # claim/rating/URL/date, and publish to factcheck.claims (drained by
+  # factcheckworker). DB-free and keyless. All CLAIMREVIEW_* have defaults.
+  claimreviewcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/claimreviewcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      CLAIMREVIEW_USER_AGENT: "${CLAIMREVIEW_USER_AGENT:-}"
+      CLAIMREVIEW_MIN_DELAY_MS: "${CLAIMREVIEW_MIN_DELAY_MS:-}"
+      CLAIMREVIEW_MAX_URLS: "${CLAIMREVIEW_MAX_URLS:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/claimreviewcrawl"
+        awslogs-stream-prefix: "claimreviewcrawl"
+
+  # claimskg: one-shot historical seed. Imports a ClaimsKG CSV/TSV export (mounted at
+  # CLAIMSKG_SEED_FILE) into political_claims via factcheck.claims. Does nothing
+  # unless CLAIMSKG_SEED_ENABLED=true, so the large 2023 snapshot is only ingested on
+  # a deliberate operator run. DB-free and keyless.
+  claimskgseed:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/claimskgseed"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      CLAIMSKG_SEED_ENABLED: "${CLAIMSKG_SEED_ENABLED:-}"
+      CLAIMSKG_SEED_FILE: "${CLAIMSKG_SEED_FILE:-/state/claimskg-export.csv}"
+      CLAIMSKG_SEED_VINTAGE: "${CLAIMSKG_SEED_VINTAGE:-}"
+      CLAIMSKG_SEED_TSV: "${CLAIMSKG_SEED_TSV:-}"
+    volumes:
+      - factcheck-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/claimskgseed"
+        awslogs-stream-prefix: "claimskgseed"
 
   # scrutins: conditionally download the Assemblee Nationale Scrutins archive
   # (skipped when unchanged via the persisted ETag marker) and publish one job per
@@ -124,6 +285,9 @@ services:
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       SCRUTINS_LEGISLATURE: "${SCRUTINS_LEGISLATURE:-}"
       SCRUTINS_MARKER_PATH: "${SCRUTINS_MARKER_PATH:-/state/scrutins-marker.json}"
       SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
@@ -136,6 +300,123 @@ services:
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinscrawl"
         awslogs-stream-prefix: "scrutinscrawl"
 
+  # parliament: the one producer for every parliament dataset, selected by
+  # PARLIAMENT_DATASET (an-amendements | an-questions | an-comptesrendus |
+  # senat-questions | senat-dosleg | senat-scrutins). It conditionally downloads the
+  # dataset's bulk dump (skipped when unchanged via the persisted ETag marker), diffs
+  # it against a per-dataset manifest, and publishes only new or changed records: the
+  # textual datasets emit generic evidence jobs to evidence.chunks, and senat-scrutins
+  # emits chamber-aware scrutin jobs to scrutins.votes. DB-free. Keyless (public
+  # Licence Ouverte / Senat open data). PARLIAMENT_DATASET is required (the operator
+  # command forwards it); state files are derived per dataset under /state.
+  parliamentcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/parliamentcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      PARLIAMENT_DATASET: "${PARLIAMENT_DATASET:-}"
+      PARLIAMENT_LEGISLATURE: "${PARLIAMENT_LEGISLATURE:-}"
+      PARLIAMENT_SINCE_YEAR: "${PARLIAMENT_SINCE_YEAR:-}"
+      PARLIAMENT_MAX_ITEMS: "${PARLIAMENT_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - parliament-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/parliamentcrawl"
+        awslogs-stream-prefix: "parliamentcrawl"
+
+  # viepublique: download the DILA "Discours publics" metadata dump, diff it, and
+  # publish one generic evidence job per speech metadata record to evidence.chunks
+  # (drained by evidenceworker). DB-free. Keyless open data (Licence Ouverte v2.0).
+  # VIEPUBLIQUE_MAX_ITEMS bounds a backfill run; state under /state.
+  viepubliquecrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/viepubliquecrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      VIEPUBLIQUE_MAX_ITEMS: "${VIEPUBLIQUE_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - viepublique-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/viepubliquecrawl"
+        awslogs-stream-prefix: "viepubliquecrawl"
+
+  # hatvp: diff the HATVP declarations open-data index, fetch each new or changed
+  # declaration's XML, and publish one generic evidence job per structured summary
+  # to evidence.chunks (drained by evidenceworker). DB-free. Keyless open data.
+  # HATVP_MAX_ITEMS bounds a backfill run; state under /state.
+  hatvpcrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/hatvpcrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      HATVP_MAX_ITEMS: "${HATVP_MAX_ITEMS:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - hatvp-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/hatvpcrawl"
+        awslogs-stream-prefix: "hatvpcrawl"
+
+  # legifrance: fetch the configured narrow corpus of code articles from the DILA
+  # Legifrance API via the PISTE OAuth2 gateway, diff each, and publish one generic
+  # evidence job per article to evidence.chunks (drained by evidenceworker). DB-free.
+  # PISTE credentials (LEGIFRANCE_CLIENT_ID / LEGIFRANCE_CLIENT_SECRET) come from the
+  # materialized env (Secrets Manager on the host), never forwarded; absent
+  # credentials degrade to a clean skip. LEGIFRANCE_ARTICLES is the corpus; state
+  # under /state.
+  legifrancecrawl:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/legifrancecrawl"]
+    restart: "no"
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      LEGIFRANCE_CLIENT_ID: "${LEGIFRANCE_CLIENT_ID:-}"
+      LEGIFRANCE_CLIENT_SECRET: "${LEGIFRANCE_CLIENT_SECRET:-}"
+      LEGIFRANCE_ARTICLES: "${LEGIFRANCE_ARTICLES:-}"
+      LEGIFRANCE_MAX_ITEMS: "${LEGIFRANCE_MAX_ITEMS:-}"
+      LEGIFRANCE_MIN_INTERVAL_MS: "${LEGIFRANCE_MIN_INTERVAL_MS:-}"
+      LEGIFRANCE_TOKEN_URL: "${LEGIFRANCE_TOKEN_URL:-}"
+      LEGIFRANCE_API_BASE_URL: "${LEGIFRANCE_API_BASE_URL:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    volumes:
+      - legifrance-state:/state
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/legifrancecrawl"
+        awslogs-stream-prefix: "legifrancecrawl"
+
   # --- Workers (run by /consumer; long-running, drain the queue into the DB) ---
   #
   # stop_grace_period is 120s so that on `docker compose down` / host stop the
@@ -147,17 +428,23 @@ services:
   crawlworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/crawlworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
       CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
       CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -170,17 +457,23 @@ services:
   embedworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/embedworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       EMBED_WORKER_CONCURRENCY: "${EMBED_WORKER_CONCURRENCY:-}"
       EMBED_WORKER_MAX_ATTEMPTS: "${EMBED_WORKER_MAX_ATTEMPTS:-}"
       EMBED_WORKER_RPM: "${EMBED_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -193,17 +486,23 @@ services:
   factcheckworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/factcheckworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
       CRAWL_WORKER_CONCURRENCY: "${CRAWL_WORKER_CONCURRENCY:-}"
       CRAWL_WORKER_MAX_ATTEMPTS: "${CRAWL_WORKER_MAX_ATTEMPTS:-}"
       CRAWL_WORKER_RPM: "${CRAWL_WORKER_RPM:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
@@ -216,20 +515,54 @@ services:
   scrutinsworker:
     image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
     entrypoint: ["/scrutinsworker"]
-    restart: unless-stopped
+    restart: on-failure
     stop_grace_period: 120s
     environment:
       RABBITMQ_URL: "${RABBITMQ_URL:-}"
       RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
       SCRUTINS_WORKER_CONCURRENCY: "${SCRUTINS_WORKER_CONCURRENCY:-}"
       SCRUTINS_WORKER_MAX_ATTEMPTS: "${SCRUTINS_WORKER_MAX_ATTEMPTS:-}"
+      # Drain-to-idle: exit cleanly after this window with an empty queue so the
+      # consumer host can self-stop. Empty leaves the worker running until SIGTERM.
+      WORKER_IDLE_TIMEOUT: "${WORKER_IDLE_TIMEOUT:-}"
     logging:
       driver: awslogs
       options:
         <<: *awslogs-options
         awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/scrutinsworker"
         awslogs-stream-prefix: "scrutinsworker"
+
+  # generic evidence consumer: drain evidence.chunks, embed each chunk, and upsert
+  # it into the live evidence corpus. Source-neutral: it serves every connector
+  # that targets evidence_chunks (an-amendements today).
+  evidenceworker:
+    image: "${INGEST_IMAGE:?set INGEST_IMAGE to the backend ECR image ref}"
+    entrypoint: ["/evidenceworker"]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      RABBITMQ_URL: "${RABBITMQ_URL:-}"
+      RABBITMQ_QUEUE_VERSIONS: "${RABBITMQ_QUEUE_VERSIONS:-}"
+      RABBITMQ_DLQ_ENABLED: "${RABBITMQ_DLQ_ENABLED:-}"
+      RABBITMQ_RECONNECT_MIN_BACKOFF: "${RABBITMQ_RECONNECT_MIN_BACKOFF:-}"
+      RABBITMQ_RECONNECT_MAX_BACKOFF: "${RABBITMQ_RECONNECT_MAX_BACKOFF:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+      EVIDENCE_WORKER_CONCURRENCY: "${EVIDENCE_WORKER_CONCURRENCY:-}"
+      EVIDENCE_WORKER_MAX_ATTEMPTS: "${EVIDENCE_WORKER_MAX_ATTEMPTS:-}"
+      EVIDENCE_WORKER_RPM: "${EVIDENCE_WORKER_RPM:-}"
+      EVIDENCE_NEAR_DUP_SIMILARITY: "${EVIDENCE_NEAR_DUP_SIMILARITY:-}"
+    logging:
+      driver: awslogs
+      options:
+        <<: *awslogs-options
+        awslogs-group: "/truth-in-stream/${INGEST_ENV:-dev}/ingest/evidenceworker"
+        awslogs-stream-prefix: "evidenceworker"
 
   # tv capture: long-running headless viewer. Reconciles the enabled TV channels
   # against running capture pipelines (streamlink|ffmpeg), feeds PCM to the
@@ -269,6 +602,26 @@ volumes:
   # Persists the scrutins-archive conditional-GET marker across producer runs on
   # the same host, so an unchanged archive is a 304 and re-runs skip the download.
   scrutins-state:
+  # Persists the parliament conditional-GET marker and per-identifier manifest
+  # across producer runs on the same host, so an unchanged dump is a 304 and a
+  # changed dump reprocesses only the records whose fingerprint moved.
+  parliament-state:
   # Holds in-progress TV capture segments before upload, so a host restart leaves
   # partial .ts for the worker's startup salvage pass.
   tv-capture-work:
+  # Persists the wikipedia crawl checkpoint across producer runs on the same host,
+  # so a killed crawl resumes from its last completed batch instead of restarting.
+  crawl-state:
+  # Persists the fact-check per-stream checkpoint (and holds a mounted ClaimsKG seed
+  # export) across producer runs on the same host, so a killed broadened Google run
+  # resumes at the next undrained query stream instead of re-paging finished ones.
+  factcheck-state:
+  # Persists the vie-publique conditional-GET marker and per-identifier manifest, so
+  # an unchanged dump is a 304 and a changed dump reprocesses only what moved.
+  viepublique-state:
+  # Persists the HATVP index conditional-GET marker and per-declaration manifest, so
+  # an unchanged index is a 304 and only changed declarations are re-fetched.
+  hatvp-state:
+  # Persists the Legifrance per-article manifest, so an unchanged article is skipped
+  # and only a re-consolidated article is republished.
+  legifrance-state:

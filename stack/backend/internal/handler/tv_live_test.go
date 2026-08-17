@@ -131,7 +131,7 @@ func tvHubMuxServer(t *testing.T) string {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	mux := NewMux(hc, &fakeVideoService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
+	mux := NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, nil, nil, false, nil, "", globalTestAuth, logger)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
