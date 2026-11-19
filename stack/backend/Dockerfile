@@ -6,9 +6,9 @@
 # arm64, e.g. Apple Silicon local dev) with one pinned checksum each. Bump the
 # version and both checksums together (yt-dlp ships frequently). ffmpeg is
 # required for yt-dlp to remux the downloaded streams into a single mp4.
-ARG YTDLP_VERSION=2026.06.09
-ARG YTDLP_SHA256_AMD64=bf8aac79b72287a6d2043074415132558b43743a8f9461a22b0141e90f16ce66
-ARG YTDLP_SHA256_ARM64=cabd246445bdfde0eda0dfe68bbe90354be83f3fdbbf077df11a2ea55f41cdbd
+ARG YTDLP_VERSION=2026.10.26
+ARG YTDLP_SHA256_AMD64=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+ARG YTDLP_SHA256_ARM64=e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483
 
 # streamlink resolves official YouTube live simulcasts for the tvcapture worker
 # (it pipes the stream into ffmpeg). Debian's apt package lags well behind
