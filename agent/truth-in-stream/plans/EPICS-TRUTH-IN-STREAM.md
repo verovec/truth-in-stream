@@ -18,6 +18,9 @@ Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Ep
 
 Status 2026-08-16 (end of day): Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first verdicts) COMPLETE: all seven cards Done via one epic run - VER-224 (PR #268), VER-226 (PR #269, live recall@1 93.3%->100%), VER-227 (PR #270), VER-229 (PRs #271+#272), VER-225 (PR #273, corpus ingested locally 12->4,743 claims, gate agreement 99.4%), VER-228 (PR #274, 53.9% verdicts decided locally at 100% decided accuracy), VER-230 (PR #275, vector-first defaults on, measured 83% fewer generative calls at identical accuracy, 0.65 calls/claim budget enforced in CI). Defaults are now vector-first; docs/vector-first-defaults.md records the reconciled set.
 
+Status 2026-11-19: Epic G (debate recap, G1..G3) authored and open, all three cards `Todo`.
+It is tracked locally in `CARDS-DEBATE-RECAP.md`, not in Linear.
+
 ---
 
 ## Epic A - Ingestion robustness & source expansion (VER-188..204, 17 cards)
@@ -228,6 +231,42 @@ adds flags/wiring; second-to-merge rebases, never rewrites); the committed eval 
 `verify_path.go` is contended by VER-227 (fast-borrow age guard) and VER-228 (NLI
 insertion) - VER-227 merges first or the later branch rebases. One agent owns the whole
 epic; the ordering above is intra-epic scheduling, not a license to split it.
+
+---
+
+## Epic G - Debate recap (G1..G3, 3 cards, tracked locally)
+
+**Scope for its agent.** Turn a finished video analysis into a report: name each diarized
+speaker after the analysis completes, present the analysis as a recap page (cover, recap of
+every speaker, one sheet per politician with sourced statements), and export that recap as a
+PDF.
+
+**Context.** A report built by hand on a real 2h51 five-candidate debate fixed the layout and
+exposed two gaps: speakers carry diarization letters with no names, and no screen presents an
+analysis as a report. The cards are tracked locally by decision of the operator, not in Linear;
+full bodies live in `CARDS-DEBATE-RECAP.md` beside this file, label `epic:debate-recap`. Names
+are stored in an additive table and applied at read time; the versioned analysis snapshot is
+never rewritten. One backend recap read model feeds both the page and the PDF.
+
+**Cards & internal order:**
+- `G1 (speaker naming post-analysis step) -> G2 (recap page) -> G3 (PDF export)`.
+- The chain is serial: G2 renders G1's names and roles, G3 exports G2's page and read model.
+
+**Entry cards (no deps, start immediately):** G1.
+
+**Owns / touches:** `stack/backend/migrations/` (one additive migration), `stack/backend/queries/`,
+`stack/backend/internal/store/`, `stack/backend/internal/service/{video_analyzer,stored_analysis}.go`
+plus new speaker-naming and recap files, `stack/backend/internal/export/`,
+`stack/backend/internal/handler/{handler,video_analysis,export}.go`, `stack/backend/cmd/server/main.go`,
+`stack/frontend/src/lib/video/`, `stack/frontend/src/app/app/_components/` (speaker display),
+a new recap route under `stack/frontend/src/app/`, `stack/frontend/src/components/export/`,
+`stack/frontend/src/lib/i18n/dictionaries/`, `docs/`.
+
+**Cross-epic dependencies:** none - Epics A..F are delivered. `internal/handler/handler.go` (the
+single route registry) stays append-only, as for every epic.
+
+**Parallelism:** the epic can start now; internally strictly serial (G1 -> G2 -> G3, delivered
+merge-then-next on `dev`). No other epic is open, so nothing runs beside it.
 
 ---
 
