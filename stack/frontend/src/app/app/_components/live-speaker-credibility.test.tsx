@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
+import { SpeakerNamesProvider } from "@/components/live/speaker-names";
 import type { SpeakerTally } from "@/lib/live/speakers";
 import { SpeakerCredibilityView } from "./live-speaker-credibility";
 
@@ -111,5 +112,23 @@ describe("SpeakerCredibilityView", () => {
     expect(list?.className).toContain("max-h-[4.5rem]");
     // The capped scroll region must stay reachable by keyboard, not mouse only.
     expect(list?.getAttribute("tabindex")).toBe("0");
+  });
+
+  test("shows the resolved name of a speaker, and the letter of an unnamed one", () => {
+    render(
+      <SpeakerNamesProvider names={{ A: "Marine Durand" }}>
+        <SpeakerCredibilityView
+          speakers={[
+            speaker({ speaker: "A", credible: 3, disputed: 2 }),
+            speaker({ speaker: "B", credible: 1, disputed: 0 }),
+          ]}
+        />
+      </SpeakerNamesProvider>,
+    );
+
+    const named = screen.getByLabelText(/^Marine Durand, 5 affirmations vérifiables/);
+    expect(named).toHaveTextContent("Marine Durand");
+    expect(screen.queryByLabelText(/Intervenant A/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Intervenant B, /)).toHaveTextContent("B");
   });
 });

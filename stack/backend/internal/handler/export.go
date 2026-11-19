@@ -25,11 +25,14 @@ const noSnapshotMessage = "no stored or cached analysis for this video; run an a
 // the video for its filename, loads the cached snapshot through the replayer, and
 // never triggers transcription or an LLM call. A missing video or missing snapshot
 // is a 404; a disabled replay cache is a 503; the handler owns transport only.
+// The formatter receives the video's resolved speaker names, empty when there
+// are none, so an export names a speaker exactly where the analysis view does.
 func renderExport(
 	videos VideoService,
 	replayer AnalysisReplayer,
+	speakers speakerLister,
 	contentType, extension string,
-	render func(events []service.LiveEvent) []byte,
+	render func(events []service.LiveEvent, names map[string]string) []byte,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if replayer == nil {
@@ -58,21 +61,22 @@ func renderExport(
 		}
 
 		filename := exportFilename(playable.Video, extension)
+		names := speakerNames(r.Context(), speakers, id)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(render(events))
+		_, _ = w.Write(render(events, names))
 	}
 }
 
 // exportTranscriptHandler streams the SRT subtitle track of a video's transcript.
-func exportTranscriptHandler(videos VideoService, replayer AnalysisReplayer) http.HandlerFunc {
-	return renderExport(videos, replayer, "application/x-subrip; charset=utf-8", ".srt", export.SRT)
+func exportTranscriptHandler(videos VideoService, replayer AnalysisReplayer, speakers speakerLister) http.HandlerFunc {
+	return renderExport(videos, replayer, speakers, "application/x-subrip; charset=utf-8", ".srt", export.SRT)
 }
 
 // exportClaimsHandler streams the CSV decision trace of a video's fact-check.
-func exportClaimsHandler(videos VideoService, replayer AnalysisReplayer) http.HandlerFunc {
-	return renderExport(videos, replayer, "text/csv; charset=utf-8", ".csv", export.CSV)
+func exportClaimsHandler(videos VideoService, replayer AnalysisReplayer, speakers speakerLister) http.HandlerFunc {
+	return renderExport(videos, replayer, speakers, "text/csv; charset=utf-8", ".csv", export.CSV)
 }
 
 // exportFilename builds a safe download filename from the video's title, falling

@@ -87,12 +87,29 @@ type EngineMetadata struct {
 // starts hold the analysing lock with zero progress until a slot frees.
 // ProgressInterval paces the periodic progress writes and defaults sensibly
 // when zero. Engine is the fingerprint stamped on every stored result.
+//
+// AfterComplete, when set, runs once a completed analysis is durably stored. It
+// is an enrichment of a finished result, never part of the run: it starts on
+// its own goroutine and its own AfterCompleteTimeout-bounded context after the
+// run's slot is free, and its failure is logged without touching the analysis.
 type VideoAnalyzerConfig struct {
-	Timeout          time.Duration
-	MaxConcurrent    int
-	ProgressInterval time.Duration
-	Engine           EngineMetadata
+	Timeout              time.Duration
+	MaxConcurrent        int
+	ProgressInterval     time.Duration
+	Engine               EngineMetadata
+	AfterComplete        PostAnalysisStep
+	AfterCompleteTimeout time.Duration
 }
+
+// PostAnalysisStep is work that enriches a stored analysis after the run that
+// produced it has completed, such as naming its speakers.
+type PostAnalysisStep interface {
+	Run(ctx context.Context, videoID string) error
+}
+
+// defaultAfterCompleteTimeout bounds a post-analysis step when the config does
+// not say otherwise.
+const defaultAfterCompleteTimeout = 2 * time.Minute
 
 // VideoAnalyzer runs a ready video's stored media through the live fact-check
 // pipeline as an in-process background job, mirroring DocumentAnalyzer: Start
@@ -108,6 +125,9 @@ type VideoAnalyzer struct {
 	engine           json.RawMessage
 	timeout          time.Duration
 	progressInterval time.Duration
+	// afterComplete is the optional post-analysis step; nil when none is wired.
+	afterComplete        PostAnalysisStep
+	afterCompleteTimeout time.Duration
 	// slots is the global concurrency semaphore: a run holds one slot for its
 	// whole duration and releases it on every exit path.
 	slots  chan struct{}
@@ -150,6 +170,13 @@ func NewVideoAnalyzer(store videoAnalysisJobStore, audio AudioStreamer, analyzer
 	if progressInterval < 0 {
 		return nil, fmt.Errorf("video analyzer: progress interval must be positive, got %s", cfg.ProgressInterval)
 	}
+	afterCompleteTimeout := cfg.AfterCompleteTimeout
+	if afterCompleteTimeout == 0 {
+		afterCompleteTimeout = defaultAfterCompleteTimeout
+	}
+	if afterCompleteTimeout < 0 {
+		return nil, fmt.Errorf("video analyzer: after-complete timeout must be positive, got %s", cfg.AfterCompleteTimeout)
+	}
 	engine, err := json.Marshal(cfg.Engine)
 	if err != nil {
 		return nil, fmt.Errorf("video analyzer: marshaling engine metadata: %w", err)
@@ -158,16 +185,18 @@ func NewVideoAnalyzer(store videoAnalysisJobStore, audio AudioStreamer, analyzer
 		logger = slog.Default()
 	}
 	return &VideoAnalyzer{
-		store:            store,
-		audio:            audio,
-		analyzer:         analyzer,
-		persister:        persister,
-		engine:           engine,
-		timeout:          cfg.Timeout,
-		progressInterval: progressInterval,
-		slots:            make(chan struct{}, maxConcurrent),
-		logger:           logger,
-		spawn:            func(f func()) { go f() },
+		store:                store,
+		audio:                audio,
+		analyzer:             analyzer,
+		persister:            persister,
+		engine:               engine,
+		timeout:              cfg.Timeout,
+		progressInterval:     progressInterval,
+		afterComplete:        cfg.AfterComplete,
+		afterCompleteTimeout: afterCompleteTimeout,
+		slots:                make(chan struct{}, maxConcurrent),
+		logger:               logger,
+		spawn:                func(f func()) { go f() },
 	}, nil
 }
 
@@ -279,6 +308,20 @@ func (a *VideoAnalyzer) complete(id string, events []LiveEvent) {
 		return
 	}
 	a.logger.Info("video pre-analysis complete", slog.String("video_id", id), slog.Int("events", len(events)))
+	if a.afterComplete != nil {
+		a.spawn(func() { a.runAfterComplete(id) })
+	}
+}
+
+// runAfterComplete runs the post-analysis step on a fresh bounded context. The
+// analysis is already stored and complete, so a failure here is only logged.
+func (a *VideoAnalyzer) runAfterComplete(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.afterCompleteTimeout)
+	defer cancel()
+	if err := a.afterComplete.Run(ctx, id); err != nil {
+		a.logger.WarnContext(ctx, "post-analysis step failed; the analysis stays complete",
+			slog.String("video_id", id), slog.Any("err", err))
+	}
 }
 
 // failRun records a terminal failure with a clear reason on a fresh context,

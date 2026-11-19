@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { usePlayback } from "@/components/playback/playback-provider";
+import { useSpeakerNames } from "@/components/live/speaker-names";
 import { useTranscriptDisplay } from "@/components/live/transcript-display";
 import { findActiveSegmentIndex } from "@/lib/fact-check/segments";
 import {
@@ -233,6 +234,7 @@ function TurnParagraph({
   registerSentence: (id: string, el: HTMLElement | null) => void;
 }) {
   const { t } = useAppI18n();
+  const speakerNames = useSpeakerNames();
   const active = turn.sentences.some(
     (sentence) => sentence.id === activeSentenceId,
   );
@@ -246,7 +248,7 @@ function TurnParagraph({
       <span className="flex items-baseline gap-2 text-[11px]">
         {turn.speaker ? (
           <span className="font-semibold uppercase tracking-wide text-ink/70 dark:text-paper/70">
-            {`${t.subtitles.speaker} ${turn.speaker}`}
+            {speakerNames[turn.speaker] ?? `${t.subtitles.speaker} ${turn.speaker}`}
           </span>
         ) : null}
         <span

@@ -174,6 +174,19 @@ type VideoAnalysis struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type VideoSpeaker struct {
+	VideoID     uuid.UUID
+	Label       string
+	DisplayName string
+	Role        string
+	Confidence  float64
+	Method      string
+	Evidence    []byte
+	OperatorSet bool
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type VotingRecord struct {
 	PersonID   string
 	PersonName string

@@ -389,6 +389,42 @@ export const fr = {
       reconnecting: "Reconnexion",
       interrupted: "Interrompue",
     },
+    speakerNaming: {
+      heading: "Identification des intervenants",
+      voice: "Voix {label}",
+      unnamed: "Non identifié",
+      empty: "Aucun intervenant identifié pour cette analyse.",
+      confidence: "Confiance {pct} %",
+      confirmed: "Confirmé par un opérateur",
+      roles: {
+        principal: "Intervenant principal",
+        moderator: "Animation",
+        guest: "Invité",
+        unknown: "Rôle inconnu",
+      },
+      evidence: {
+        summary: "Indices dans la transcription ({count})",
+        kinds: {
+          handoff: "Passage de parole",
+          vocative: "Interpellation",
+          self_reference: "Présentation",
+          tie_break: "Départage",
+        },
+      },
+      form: {
+        name: "Nom de la voix {label}",
+        namePlaceholder: "Nom",
+        role: "Rôle de la voix {label}",
+        confirm: "Confirmer",
+        saving: "Enregistrement…",
+      },
+      rerun: "Relancer l'identification",
+      rerunning: "Identification…",
+      errors: {
+        save: "Le nom n'a pas pu être enregistré.",
+        rerun: "L'identification a échoué ; les noms précédents sont conservés.",
+      },
+    },
     speakers: {
       heading: "Fiabilité des intervenants",
       speaker: "Intervenant",

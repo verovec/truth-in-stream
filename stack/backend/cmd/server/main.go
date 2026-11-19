@@ -38,6 +38,7 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/source/stats"
 	"github.com/verovec/truth-in-stream/backend/internal/source/voting"
 	"github.com/verovec/truth-in-stream/backend/internal/source/websearch"
+	"github.com/verovec/truth-in-stream/backend/internal/speakername"
 	"github.com/verovec/truth-in-stream/backend/internal/stance"
 	"github.com/verovec/truth-in-stream/backend/internal/storage"
 	"github.com/verovec/truth-in-stream/backend/internal/store"
@@ -190,6 +191,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	preanalysisCfg, err := config.LoadPreanalysis()
+	if err != nil {
+		return err
+	}
+	speakerNamingCfg, err := config.LoadSpeakerNaming()
 	if err != nil {
 		return err
 	}
@@ -468,10 +473,27 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Speaker naming reads a stored analysis and writes its own mapping, never
+	// the analysis. It always serves the read, re-run, and correction
+	// endpoints; the automatic run after each completed pre-analysis is what
+	// SPEAKER_NAMING_ENABLED gates.
+	speakerNameModel, err := buildSpeakerNameModel(speakerNamingCfg, logger)
+	if err != nil {
+		return err
+	}
+	speakerNamer, err := service.NewSpeakerNamer(pgStore, storedAnalysisReader, pgStore, speakerNameModel, logger)
+	if err != nil {
+		return err
+	}
+	var afterAnalysis service.PostAnalysisStep
+	if speakerNamingCfg.Enabled {
+		afterAnalysis = speakerNamer
+	}
 	videoAnalyzer, err := service.NewVideoAnalyzer(pgStore, videoAudioStreamer{extractor: audioExtractor, media: internalDownloadPresigner{store: mediaStore}}, liveAnalyzer, storedAnalysisPersister, service.VideoAnalyzerConfig{
 		Timeout:       preanalysisCfg.RunTimeout,
 		MaxConcurrent: preanalysisCfg.MaxConcurrent,
 		Engine:        preanalysisEngine(transcription, preanalysisCfg, verifyPathCfg, politicalCfg, finalGateCfg, matchCfg),
+		AfterComplete: afterAnalysis,
 	}, logger)
 	if err != nil {
 		return err
@@ -486,7 +508,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, speakerNamer, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
@@ -812,6 +834,22 @@ func buildStanceClassifier(cfg config.Consistency, logger *slog.Logger) (service
 	}
 	logger.Info("intra-speaker consistency enabled", slog.String("model", cfg.Model))
 	return client, nil
+}
+
+// buildSpeakerNameModel wires the generative edge of speaker naming, or returns
+// a nil model (interface, not a typed nil) when the selected provider has no
+// key: the naming step then classifies roles and leaves every speaker unnamed.
+// The API key is never logged.
+func buildSpeakerNameModel(cfg config.SpeakerNaming, logger *slog.Logger) (service.SpeakerNameModel, error) {
+	if !cfg.ModelActive() {
+		logger.Info("speaker naming has no model key: speakers stay unnamed until an operator names them")
+		return nil, nil
+	}
+	model, err := speakername.NewModel(speakername.Config{Provider: llm.ProviderName(cfg.Provider), APIKey: cfg.APIKey, GeminiAPIKey: cfg.GeminiAPIKey, DeepSeekAPIKey: cfg.DeepSeekAPIKey, ModelName: cfg.Model})
+	if err != nil {
+		return nil, err
+	}
+	return model, nil
 }
 
 // buildClaimGate assembles the retrieve-then-verify path's coverage-free gate:

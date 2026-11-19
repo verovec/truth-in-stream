@@ -62,7 +62,7 @@ func TestCSVHeaderAndVerifiedClaimRow(t *testing.T) {
 		},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	if len(rows) != 2 {
 		t.Fatalf("want header + 1 row, got %d rows", len(rows))
 	}
@@ -122,7 +122,7 @@ func TestCSVSkippedClaimRowHasReasonAndNoVerdict(t *testing.T) {
 		},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	if len(rows) != 2 {
 		t.Fatalf("want header + 1 row, got %d", len(rows))
 	}
@@ -166,7 +166,7 @@ func TestCSVLegacyStatementResultRow(t *testing.T) {
 		},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	idx := headerIndex(t, rows[0])
 	row := rows[1]
 	if got := row[idx["claim_status"]]; got != "checked" {
@@ -195,7 +195,7 @@ func TestCSVErrorClaimRow(t *testing.T) {
 		},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	idx := headerIndex(t, rows[0])
 	row := rows[1]
 	if got := row[idx["claim_status"]]; got != "error" {
@@ -225,7 +225,7 @@ func TestCSVEscapesSpecialCharacters(t *testing.T) {
 		},
 	}
 
-	raw := export.CSV(events)
+	raw := export.CSV(events, nil)
 	rows := parseCSV(t, raw)
 	idx := headerIndex(t, rows[0])
 	row := rows[1]
@@ -257,7 +257,7 @@ func TestCSVDropsNonTerminalClaimPlaceholders(t *testing.T) {
 		},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	if len(rows) != 2 {
 		t.Fatalf("want header + 1 terminal row (checking placeholder dropped), got %d rows", len(rows))
 	}
@@ -275,7 +275,7 @@ func TestCSVIgnoresNonResultEvents(t *testing.T) {
 		{Kind: service.LiveEventSpeakerTally, SpeakerTally: &service.SpeakerTally{Speaker: "S"}},
 	}
 
-	rows := parseCSV(t, export.CSV(events))
+	rows := parseCSV(t, export.CSV(events, nil))
 	if len(rows) != 1 {
 		t.Fatalf("want header only, got %d rows: %v", len(rows), rows)
 	}

@@ -382,6 +382,42 @@ export const en: Dictionary = {
       reconnecting: "Reconnecting",
       interrupted: "Interrupted",
     },
+    speakerNaming: {
+      heading: "Speaker identification",
+      voice: "Voice {label}",
+      unnamed: "Unidentified",
+      empty: "No speaker identified for this analysis.",
+      confidence: "Confidence {pct}%",
+      confirmed: "Confirmed by an operator",
+      roles: {
+        principal: "Main speaker",
+        moderator: "Moderator",
+        guest: "Guest",
+        unknown: "Unknown role",
+      },
+      evidence: {
+        summary: "Transcript evidence ({count})",
+        kinds: {
+          handoff: "Handoff",
+          vocative: "Address",
+          self_reference: "Self-introduction",
+          tie_break: "Tie-break",
+        },
+      },
+      form: {
+        name: "Name of voice {label}",
+        namePlaceholder: "Name",
+        role: "Role of voice {label}",
+        confirm: "Confirm",
+        saving: "Saving…",
+      },
+      rerun: "Re-run identification",
+      rerunning: "Identifying…",
+      errors: {
+        save: "The name could not be saved.",
+        rerun: "Identification failed; the previous names are kept.",
+      },
+    },
     speakers: {
       heading: "Speaker reliability",
       speaker: "Speaker",

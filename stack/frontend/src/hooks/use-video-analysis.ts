@@ -9,6 +9,11 @@ import {
   type VideoAnalysis,
   type VideoAnalysisStatus,
 } from "@/lib/video/analysis";
+import type { VideoSpeaker } from "@/lib/video/speakers";
+
+// NO_SPEAKERS is the stable empty mapping, so an unnamed video never hands a
+// fresh array identity to consumers on every render.
+const NO_SPEAKERS: VideoSpeaker[] = [];
 
 // DEFAULT_POLL_MS is the cadence the player re-checks a running pre-analysis,
 // matching the documents pattern: the run is server-driven and persisted, so
@@ -45,6 +50,13 @@ export type VideoAnalysisTrack = {
   // re-analysis poll that reports "analysing" without frames, so the previous
   // result never vanishes mid-run.
   frames: LiveFrame[] | null;
+  // The names of the stored session's diarized speakers, as fetched with the
+  // frames; empty until then or when the naming step has not run.
+  speakers: VideoSpeaker[];
+  // True once this session has watched a run complete. The speakers delivered
+  // with that completing response predate the naming step, which only starts
+  // after the analysis is stored, so a consumer must keep looking for them.
+  completedWhileWatching: boolean;
   // True when the analysis of a complete video could not be fetched (or
   // carried no decodable frames), so the control can offer a reload.
   loadFailed: boolean;
@@ -97,6 +109,8 @@ export function useVideoAnalysis({
   const [progressMs, setProgressMs] = useState(0);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [frames, setFrames] = useState<LiveFrame[] | null>(null);
+  const [speakers, setSpeakers] = useState<VideoSpeaker[]>(NO_SPEAKERS);
+  const [completedWhileWatching, setCompletedWhileWatching] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<StartAnalysisError | null>(null);
@@ -114,6 +128,8 @@ export function useVideoAnalysis({
     setProgressMs(0);
     setAnalysisError(null);
     setFrames(null);
+    setSpeakers(NO_SPEAKERS);
+    setCompletedWhileWatching(false);
     setLoadFailed(false);
     setStarting(false);
     setStartError(null);
@@ -154,6 +170,7 @@ export function useVideoAnalysis({
       }
       if (analysis.frames !== null) {
         setFrames(analysis.frames);
+        setSpeakers(analysis.speakers);
         setLoadFailed(false);
       }
       if (analysis.analysisStatus !== status) {
@@ -203,6 +220,8 @@ export function useVideoAnalysis({
         applyAnalysis(analysis);
         if (analysis.analysisStatus === "analysing") {
           handle = setTimeout(() => void poll(), pollIntervalMs);
+        } else if (analysis.analysisStatus === "complete") {
+          setCompletedWhileWatching(true);
         }
       } catch (err) {
         if (cancelled || controller.signal.aborted) {
@@ -298,6 +317,8 @@ export function useVideoAnalysis({
     progressMs,
     analysisError,
     frames,
+    speakers,
+    completedWhileWatching,
     loadFailed,
     starting,
     startError,

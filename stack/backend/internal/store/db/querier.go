@@ -62,6 +62,9 @@ type Querier interface {
 	// another source safe.
 	DeleteEvidenceByTitle(ctx context.Context, arg DeleteEvidenceByTitleParams) error
 	DeleteEvidenceDocument(ctx context.Context, arg DeleteEvidenceDocumentParams) error
+	// Clear the naming step's previous proposals before a re-run writes new ones.
+	// Rows an operator confirmed or overrode are kept.
+	DeleteProposedVideoSpeakers(ctx context.Context, videoID uuid.UUID) error
 	// Remove one channel by id. The affected-row count lets the store map an unknown
 	// id (0 rows) to ErrTVChannelNotFound without a prior existence query. Its
 	// recordings survive: the videos.channel_id FK is ON DELETE SET NULL.
@@ -101,6 +104,10 @@ type Querier interface {
 	// column, preserving insertion order within the sentence.
 	InsertDocumentClaim(ctx context.Context, arg []InsertDocumentClaimParams) *InsertDocumentClaimBatchResults
 	InsertDocumentSentence(ctx context.Context, arg []InsertDocumentSentenceParams) *InsertDocumentSentenceBatchResults
+	// Write one proposal of the naming step. The caller holds the video row lock
+	// and has just deleted the step's own rows, so a conflict can only be an
+	// operator-set row, and that row wins.
+	InsertProposedVideoSpeaker(ctx context.Context, arg InsertProposedVideoSpeakerParams) error
 	// Lexical half of hybrid retrieval (VER-195): the top result_limit claims whose
 	// French-folded search_vector matches the query terms, ranked by cover density
 	// (ts_rank_cd weighs term proximity, which favours exact-figure and named-entity
@@ -147,6 +154,7 @@ type Querier interface {
 	// returns uploads, imports, or a still-pending capture; an orphaned recording
 	// (channel_id nulled by a channel delete) is excluded by the equality match.
 	ListTVRecordingsByChannel(ctx context.Context, channelID uuid.NullUUID) ([]Video, error)
+	ListVideoSpeakers(ctx context.Context, videoID uuid.UUID) ([]VideoSpeaker, error)
 	// The consumption library (GET /api/videos, the /app grid) excludes kind 'tv':
 	// archived channel recordings are surfaced per-channel on /tv, not mixed into the
 	// general video library. Individual recordings remain fetchable by id for replay.
@@ -170,6 +178,10 @@ type Querier interface {
 	// stored analysis is NOT wiped here: it stays readable until the new run
 	// completes and overwrites it.
 	LockVideoForAnalysis(ctx context.Context, id uuid.UUID) (Video, error)
+	// Serialize the writers of one video's speaker mapping: a naming run holds the
+	// video row for its whole replace, so two overlapping runs cannot interleave
+	// their delete and insert steps and leave a mix of both.
+	LockVideoForSpeakerNaming(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// The voting adapter answers "how did person X vote on bill Y around date Z". The
 	// predicate order matches voting_records_person_bill_date_idx. The date is an
 	// exact match on the recorded scrutin date; a caller resolves the scrutin date
@@ -243,6 +255,9 @@ type Querier interface {
 	// Delta sync writes embeddings straight into the live table: at delta volume the
 	// HNSW index absorbs the inserts incrementally, so no staging swap is needed.
 	SetEvidenceChunkEmbedding(ctx context.Context, arg []SetEvidenceChunkEmbeddingParams) *SetEvidenceChunkEmbeddingBatchResults
+	// Record an operator's decision for one label. The step's evidence is kept
+	// beside the override so the operator still sees what the proposal rested on.
+	SetOperatorVideoSpeaker(ctx context.Context, arg SetOperatorVideoSpeakerParams) (VideoSpeaker, error)
 	// Advance the run's audio position. Progress is database state, so it
 	// survives a refresh and a restart.
 	SetVideoAnalysisProgress(ctx context.Context, arg SetVideoAnalysisProgressParams) error

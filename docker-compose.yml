@@ -1179,6 +1179,15 @@ services:
       PREANALYSIS_PACING_FACTOR: "${PREANALYSIS_PACING_FACTOR:-}"
       PREANALYSIS_MAX_CONCURRENT: "${PREANALYSIS_MAX_CONCURRENT:-}"
       PREANALYSIS_RUN_TIMEOUT: "${PREANALYSIS_RUN_TIMEOUT:-}"
+      # Speaker naming: after a completed pre-analysis, map each diarized
+      # label to a person. On by default; it lists participants and breaks
+      # ties through the selected LLM_PROVIDER (SPEAKER_NAMING_API_KEY is the
+      # Anthropic key, read only under LLM_PROVIDER=anthropic). With no
+      # provider key the step still classifies roles and leaves every speaker
+      # unnamed. Empty keeps the backend defaults.
+      SPEAKER_NAMING_ENABLED: "${SPEAKER_NAMING_ENABLED:-}"
+      SPEAKER_NAMING_API_KEY: "${SPEAKER_NAMING_API_KEY:-}"
+      SPEAKER_NAMING_MODEL: "${SPEAKER_NAMING_MODEL:-}"
       # YouTube ingest (POST /api/videos/youtube). The dev image bundles a pinned
       # yt-dlp and ffmpeg, so the defaults work as-is for a clip. A multi-hour
       # video needs both bounds raised: YOUTUBE_DOWNLOAD_TIMEOUT (default 15m)
