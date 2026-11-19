@@ -5,12 +5,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/scrutinsjob"
@@ -342,5 +349,251 @@ func TestRunFailsOnUnexpectedStatus(t *testing.T) {
 	c := newClient(t, ts.URL, filepath.Join(t.TempDir(), "marker.json"), &recordingPublisher{})
 	if _, err := c.Run(t.Context()); err == nil {
 		t.Fatal("Run over a 410 returned nil error, want error")
+	}
+}
+
+// scriptedTransport answers each request from a fixed script with no network, so
+// the retry waits run on synctest's fake clock. A request past the end of the
+// script gets the last response again.
+type scriptedTransport struct {
+	mu        sync.Mutex
+	script    []scriptedResponse
+	userAgent []string
+}
+
+type scriptedResponse struct {
+	status     int
+	retryAfter string
+	body       []byte
+}
+
+func (s *scriptedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	next := s.script[min(len(s.userAgent), len(s.script)-1)]
+	s.userAgent = append(s.userAgent, r.Header.Get("User-Agent"))
+	s.mu.Unlock()
+
+	header := http.Header{}
+	if next.retryAfter != "" {
+		header.Set("Retry-After", next.retryAfter)
+	}
+	return &http.Response{
+		StatusCode: next.status,
+		Status:     fmt.Sprintf("%d %s", next.status, http.StatusText(next.status)),
+		Header:     header,
+		Body:       io.NopCloser(bytes.NewReader(next.body)),
+		Request:    r,
+	}, nil
+}
+
+func (s *scriptedTransport) requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.userAgent)
+}
+
+func newScriptedClient(t *testing.T, transport *scriptedTransport, pub Publisher) *Client {
+	t.Helper()
+	c, err := New(Config{
+		Legislature: "17",
+		MaxPriority: 10,
+		URLTemplate: "http://archive.test/%s/Scrutins.json.zip",
+		HTTPClient:  &http.Client{Transport: transport},
+	}, pub, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c
+}
+
+func TestRunSendsDescriptiveUserAgent(t *testing.T) {
+	t.Parallel()
+	transport := &scriptedTransport{script: []scriptedResponse{
+		{status: http.StatusOK, body: buildArchive(t, "VTANR5L17V1")},
+	}}
+	c := newScriptedClient(t, transport, &recordingPublisher{})
+	if _, err := c.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := transport.userAgent[0]; got != userAgent {
+		t.Errorf("User-Agent = %q, want %q", got, userAgent)
+	}
+}
+
+func TestRunRetriesThrottledDownload(t *testing.T) {
+	t.Parallel()
+	throttled := func(status int, retryAfter string) scriptedResponse {
+		return scriptedResponse{status: status, retryAfter: retryAfter}
+	}
+	tests := []struct {
+		name         string
+		throttles    []scriptedResponse
+		wantWait     time.Duration
+		wantRequests int
+	}{
+		{
+			name:         "429 with Retry-After seconds waits exactly that long",
+			throttles:    []scriptedResponse{throttled(http.StatusTooManyRequests, "7")},
+			wantWait:     7 * time.Second,
+			wantRequests: 2,
+		},
+		{
+			name: "throttles without Retry-After back off exponentially",
+			throttles: []scriptedResponse{
+				throttled(http.StatusServiceUnavailable, ""),
+				throttled(http.StatusTooManyRequests, ""),
+			},
+			wantWait:     downloadRetryBase + 2*downloadRetryBase,
+			wantRequests: 3,
+		},
+		{
+			name: "succeeds on the last allowed retry",
+			throttles: []scriptedResponse{
+				throttled(http.StatusTooManyRequests, "1"),
+				throttled(http.StatusTooManyRequests, "1"),
+				throttled(http.StatusTooManyRequests, "1"),
+				throttled(http.StatusTooManyRequests, "1"),
+			},
+			wantWait:     4 * time.Second,
+			wantRequests: 5,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			archive := buildArchive(t, "VTANR5L17V1", "VTANR5L17V2")
+			synctest.Test(t, func(t *testing.T) {
+				script := append(slices.Clone(tc.throttles), scriptedResponse{status: http.StatusOK, body: archive})
+				transport := &scriptedTransport{script: script}
+				pub := &recordingPublisher{}
+				c := newScriptedClient(t, transport, pub)
+
+				start := time.Now()
+				stats, err := c.Run(t.Context())
+				if err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				if got := time.Since(start); got != tc.wantWait {
+					t.Errorf("waited %s, want %s", got, tc.wantWait)
+				}
+				if got := transport.requests(); got != tc.wantRequests {
+					t.Errorf("requests = %d, want %d", got, tc.wantRequests)
+				}
+				if stats.New != 2 || pub.count() != 2 {
+					t.Errorf("published stats.New=%d jobs=%d, want 2 and 2", stats.New, pub.count())
+				}
+			})
+		})
+	}
+}
+
+func TestRunFailsWhenThrottlingPersists(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		retryAfter   string
+		wantWait     time.Duration
+		wantRequests int
+		wantInError  string
+	}{
+		{
+			name:         "gives up after the retry budget",
+			retryAfter:   "",
+			wantWait:     (1 + 2 + 4 + 8) * downloadRetryBase,
+			wantRequests: downloadMaxRetries + 1,
+			wantInError:  "gave up after 4 retries",
+		},
+		{
+			name:         "refuses a Retry-After beyond the wait limit without retrying",
+			retryAfter:   "3600",
+			wantWait:     0,
+			wantRequests: 1,
+			wantInError:  "host asked to wait 1h0m0s",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				transport := &scriptedTransport{script: []scriptedResponse{
+					{status: http.StatusTooManyRequests, retryAfter: tc.retryAfter},
+				}}
+				pub := &recordingPublisher{}
+				c := newScriptedClient(t, transport, pub)
+
+				start := time.Now()
+				_, err := c.Run(t.Context())
+				if err == nil {
+					t.Fatal("Run over a persistent 429 returned nil error, want error")
+				}
+				for _, want := range []string{tc.wantInError, "429 Too Many Requests"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not contain %q", err, want)
+					}
+				}
+				if got := time.Since(start); got != tc.wantWait {
+					t.Errorf("waited %s, want %s", got, tc.wantWait)
+				}
+				if got := transport.requests(); got != tc.wantRequests {
+					t.Errorf("requests = %d, want %d", got, tc.wantRequests)
+				}
+				if pub.count() != 0 {
+					t.Errorf("published %d jobs from a failed download, want 0", pub.count())
+				}
+			})
+		})
+	}
+}
+
+func TestRunStopsWaitingWhenCanceled(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		transport := &scriptedTransport{script: []scriptedResponse{
+			{status: http.StatusTooManyRequests, retryAfter: "60"},
+		}}
+		c := newScriptedClient(t, transport, &recordingPublisher{})
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		time.AfterFunc(10*time.Second, cancel)
+
+		start := time.Now()
+		_, err := c.Run(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+		if got := time.Since(start); got != 10*time.Second {
+			t.Errorf("returned after %s, want 10s (the cancellation, not the 60s Retry-After)", got)
+		}
+		if got := transport.requests(); got != 1 {
+			t.Errorf("requests = %d, want 1", got)
+		}
+	})
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "empty", header: "", want: 0},
+		{name: "whole seconds", header: "120", want: 2 * time.Minute},
+		{name: "padded seconds", header: " 5 ", want: 5 * time.Second},
+		{name: "zero seconds", header: "0", want: 0},
+		{name: "negative seconds", header: "-3", want: 0},
+		{name: "future HTTP-date", header: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90 * time.Second},
+		{name: "past HTTP-date", header: now.Add(-time.Hour).Format(http.TimeFormat), want: 0},
+		{name: "garbage", header: "soon", want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseRetryAfter(tc.header, now); got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.header, got, tc.want)
+			}
+		})
 	}
 }
