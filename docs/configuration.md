@@ -28,6 +28,8 @@ tuning knobs lives in `stack/backend/internal/config`. The essentials:
 | `PREANALYSIS_PACING_FACTOR` | no (default `1.0`) | Multiple of realtime at which a video pre-analysis submits extracted audio; must be in `(0, 1]`. See [Video pre-analysis](#video-pre-analysis) |
 | `PREANALYSIS_MAX_CONCURRENT` | no (default `1`) | Global cap on simultaneous pre-analysis runs; must be a positive integer |
 | `PREANALYSIS_RUN_TIMEOUT` | no (default `4h`) | Bounds one whole pre-analysis run; must be a positive Go duration exceeding the longest video to analyse at the configured pacing |
+| `YOUTUBE_DOWNLOAD_TIMEOUT` | no (default `15m`) | Bounds one whole YouTube download-upload run; must be a positive Go duration. Raise it for a multi-hour video, whose download alone can exceed the default |
+| `YOUTUBE_MAX_DOWNLOAD_BYTES` | no (default 2 GiB) | Largest YouTube download accepted, in bytes; must be a positive integer. A larger file fails the import after the download completes |
 
 ## Analysis cache (instant replay)
 
