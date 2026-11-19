@@ -113,7 +113,7 @@ echo "TEST: the env file is written 0600"
 
 echo "TEST: a secret the profile cannot read fails loudly, naming the variable, without a value"
 (
-  SECRET_FAIL="factcheck-api-key" make_sandbox
+  SECRET_FAIL="factcheck-api-key"; make_sandbox
   out="$(bash "$FETCH" crawler dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when a secret cannot be read" || fail "non-zero exit when a secret cannot be read (got $rc)"
   assert_contains "$out" "FACTCHECK_API_KEY" "names the variable that failed"
@@ -122,7 +122,7 @@ echo "TEST: a secret the profile cannot read fails loudly, naming the variable, 
 
 echo "TEST: DRY_RUN lists the mappings without calling aws or writing the file"
 (
-  DRY_RUN=1 make_sandbox
+  DRY_RUN=1; make_sandbox
   out="$(bash "$FETCH" crawler dev 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 under DRY_RUN" || fail "exit 0 under DRY_RUN (got $rc)"
   assert_contains "$out" "RABBITMQ_URL <- truth-in-stream/dev/rabbitmq/url" "lists a mapping"

@@ -59,7 +59,7 @@ AWS
 
 echo "TEST: opens the tunnel with the parsed RDS host/port and default local port (prod default)"
 (
-  RDS_DSN="postgres://app:s3cret@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require" make_sandbox
+  RDS_DSN="postgres://app:s3cret@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require"; make_sandbox
   out="$(bash "$PF" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on the happy path" || fail "exit 0 on the happy path (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
@@ -76,7 +76,7 @@ echo "TEST: opens the tunnel with the parsed RDS host/port and default local por
 
 echo "TEST: --port overrides the local listen port only"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream?sslmode=require" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream?sslmode=require"; make_sandbox
   out="$(bash "$PF" prod --port 5440 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 with -p" || fail "exit 0 with -p (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
@@ -85,7 +85,7 @@ echo "TEST: --port overrides the local listen port only"
 
 echo "TEST: a non-standard RDS port in the secret is honoured (parse, not hardcode)"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5499/truthinstream" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5499/truthinstream"; make_sandbox
   bash "$PF" prod >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "portNumber=5499" "uses the port from the secret DSN"
@@ -93,7 +93,7 @@ echo "TEST: a non-standard RDS port in the secret is honoured (parse, not hardco
 
 echo "TEST: a DSN with no explicit port defaults the remote port to 5432"
 (
-  RDS_DSN="postgres://app:pw@db.internal/truthinstream" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal/truthinstream"; make_sandbox
   bash "$PF" prod >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "host=db.internal,portNumber=5432,localPortNumber=5432" "defaults the remote port when the DSN omits it"
@@ -101,7 +101,7 @@ echo "TEST: a DSN with no explicit port defaults the remote port to 5432"
 
 echo "TEST: env selects the SSO profile, bastion name, and secret (dev)"
 (
-  RDS_DSN="postgres://app:pw@dev-db:5432/truthinstream" make_sandbox
+  RDS_DSN="postgres://app:pw@dev-db:5432/truthinstream"; make_sandbox
   bash "$PF" dev >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "--profile verovec-dev" "keys off the dev SSO profile"
@@ -111,7 +111,7 @@ echo "TEST: env selects the SSO profile, bastion name, and secret (dev)"
 
 echo "TEST: AWS_PROFILE overrides the env-derived profile"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" AWS_PROFILE=custom-sso make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" AWS_PROFILE=custom-sso; make_sandbox
   bash "$PF" prod >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "--profile custom-sso" "honours an explicit AWS_PROFILE"
@@ -119,7 +119,7 @@ echo "TEST: AWS_PROFILE overrides the env-derived profile"
 
 echo "TEST: fails clearly when no running bastion is found"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" INSTANCE_ID="None" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" INSTANCE_ID="None"; make_sandbox
   out="$(bash "$PF" prod 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when no bastion" || fail "non-zero exit when no bastion (got $rc)"
   assert_contains "$out" "truth-in-stream-prod-bastion" "names the bastion it looked for"
@@ -129,7 +129,7 @@ echo "TEST: fails clearly when no running bastion is found"
 
 echo "TEST: fails clearly when EC2 cannot be queried (e.g. expired SSO)"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" DESCRIBE_FAIL=1 make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" DESCRIBE_FAIL=1; make_sandbox
   out="$(bash "$PF" prod 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the EC2 query fails" || fail "non-zero exit when the EC2 query fails (got $rc)"
   assert_contains "$out" "aws sso login --profile verovec-prod" "points at the SSO login to fix it"
@@ -139,7 +139,7 @@ echo "TEST: fails clearly when EC2 cannot be queried (e.g. expired SSO)"
 
 echo "TEST: rejects a non-numeric --port before touching AWS"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream"; make_sandbox
   out="$(bash "$PF" prod -p abc 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on a bad port" || fail "non-zero exit on a bad port (got $rc)"
   assert_contains "$out" "Invalid --port" "explains the port is invalid"
@@ -149,7 +149,7 @@ echo "TEST: rejects a non-numeric --port before touching AWS"
 
 echo "TEST: fails clearly when the RDS DSN secret is missing"
 (
-  INSTANCE_ID="i-0abc123def456" SECRET_MISSING=1 make_sandbox
+  INSTANCE_ID="i-0abc123def456" SECRET_MISSING=1; make_sandbox
   out="$(bash "$PF" prod 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the secret is missing" || fail "non-zero exit when the secret is missing (got $rc)"
   assert_contains "$out" "truth-in-stream/prod/rds/dsn" "names the secret it expected"
@@ -159,7 +159,7 @@ echo "TEST: fails clearly when the RDS DSN secret is missing"
 
 echo "TEST: an unknown environment is rejected"
 (
-  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream" make_sandbox
+  RDS_DSN="postgres://app:pw@db.internal:5432/truthinstream"; make_sandbox
   out="$(bash "$PF" staging 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on an unknown env" || fail "non-zero exit on an unknown env (got $rc)"
   assert_contains "$out" "staging" "names the offending environment"
