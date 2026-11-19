@@ -3,7 +3,7 @@
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import { formatTemplate } from "@/lib/i18n/text";
 import type { RecapSpeaker } from "@/lib/video/recap";
-import { speakerDisplayName } from "./speaker-display-name";
+import { speakerDisplayName } from "@/lib/video/speaker-display-name";
 
 const BUTTON_CLASS =
   "rounded border border-black/10 bg-white px-1.5 py-0.5 text-xs text-ink/80 hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bleu-flag dark:border-white/15 dark:bg-white/5 dark:text-paper/80 dark:hover:bg-white/10 dark:focus-visible:outline-paper/60";

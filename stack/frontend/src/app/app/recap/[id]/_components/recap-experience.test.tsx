@@ -188,4 +188,72 @@ describe("RecapExperience", () => {
     ).toBeInTheDocument();
     await waitFor(() => expect(loadRecap).toHaveBeenCalledTimes(2));
   });
+
+  test("the PDF export button is unavailable, with a reason, until there is a report", async () => {
+    let resolve: (recap: Recap) => void = () => {};
+    const loadRecap = vi.fn(
+      () =>
+        new Promise<Recap>((res) => {
+          resolve = res;
+        }),
+    );
+    const exportPdf = vi.fn(async () => {});
+    render(
+      <RecapExperience
+        videoId="vid-1"
+        brandName="jeminforme.fr"
+        loadRecap={loadRecap}
+        exportPdf={exportPdf}
+      />,
+    );
+
+    const loading = screen.getByRole("button", { name: t.pdf.export });
+    expect(loading).toBeDisabled();
+    expect(loading).toHaveAccessibleDescription(t.pdf.unavailableLoading);
+
+    resolve(debateRecap());
+    await screen.findByRole("heading", { level: 2, name: "Le grand débat" });
+    expect(screen.getByRole("button", { name: t.pdf.export })).toBeEnabled();
+  });
+
+  test("the PDF export is unavailable when the analysis is not complete", async () => {
+    const loadRecap = vi.fn(async (): Promise<Recap> => {
+      throw new ApiError("no completed analysis", 409);
+    });
+    render(
+      <RecapExperience videoId="vid-1" brandName="jeminforme.fr" loadRecap={loadRecap} />,
+    );
+
+    await screen.findByRole("alert");
+    const button = screen.getByRole("button", { name: t.pdf.export });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(t.pdf.unavailableNotReady);
+  });
+
+  test("the PDF export carries the recap and the sheet order shown on the page", async () => {
+    const recap = debateRecap();
+    const exportPdf = vi.fn(async () => {});
+    render(
+      <RecapExperience
+        videoId="vid-1"
+        brandName="jeminforme.fr"
+        loadRecap={async () => recap}
+        exportPdf={exportPdf}
+      />,
+    );
+    await screen.findByRole("heading", { level: 2, name: "Le grand débat" });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Descendre la fiche de Marine Durand" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: t.pdf.export }));
+
+    expect(exportPdf).toHaveBeenCalledTimes(1);
+    const [props] = exportPdf.mock.calls[0] as unknown as [
+      { recap: Recap; sheets: { label: string }[]; brandName: string },
+    ];
+    expect(props.recap).toBe(recap);
+    expect(props.sheets.map((speaker) => speaker.label)).toEqual(["B", "A"]);
+    expect(props.brandName).toBe("jeminforme.fr");
+  });
 });

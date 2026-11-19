@@ -11,7 +11,7 @@ import {
   type RecapSpeaker,
   REPORT_TIME_ZONE,
 } from "@/lib/video/recap";
-import { speakerDisplayName } from "./speaker-display-name";
+import { speakerDisplayName } from "@/lib/video/speaker-display-name";
 
 // RecapCover is the first block of the report: the brand lockup, the title,
 // who takes part, four key figures for the whole analysis, and its date. The

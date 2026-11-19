@@ -42,3 +42,6 @@ next-env.d.ts
 
 # pdf.js worker copied by scripts/copy-pdf-worker.mjs (keyed to the pinned pdfjs-dist version)
 public/pdf.worker.min.mjs
+
+# typefaces copied by scripts/copy-recap-fonts.mjs for the recap PDF (keyed to the pinned font packages)
+public/fonts/recap/

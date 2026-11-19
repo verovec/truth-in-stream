@@ -120,3 +120,20 @@ Next 16 removed implicit caching: every `fetch` is dynamic by default. Standardi
   a valid link (native validation would also reject scheme-less links the backend accepts). The
   ready-poll effect keys on a `hasPendingYoutube` boolean so it starts only while a row is
   downloading and tears down its interval the moment the last pending row resolves.
+- Recap PDF export (G3): `@react-pdf/renderer` **4.9.0**, pinned exactly (the 4.x line releases
+  fast), generating the file in the browser. Verified 2026-11-19 against react-pdf.org, the npm
+  registry and Context7: latest stable 4.9.0 (2026-08-27), peer `react ^16.8 || ^17 || ^18 || ^19`.
+  Chosen over a print stylesheet (opens the print dialog, so no one-press file), `pdf-lib` and
+  `jsPDF` (no layout engine), `pdfmake` (fallback) and server-side rendering (headless browser in
+  the backend image). Rules that keep it sound: import the library and the document with
+  `await import(...)` inside the click handler, never statically (about 440 kB gzipped); fonts are
+  static TTF/WOFF files from the pinned `geist` 1.9.2 and `@fontsource/spectral` 5.3.0 packages,
+  copied to `public/fonts/recap/` by `scripts/copy-recap-fonts.mjs` (predev/prebuild, gitignored)
+  and listed once in `src/lib/recap-pdf/font-files.json`; fetch the font files yourself and
+  register them as data URIs once all have loaded, never as URLs (the library caches a rejected
+  font download permanently); never set `lineHeight` on a `<Page>`
+  (per-page `render` texts vanish in 4.9.0) and give a `fixed` text with a `render` prop both
+  `left` and `right`; test PDF output in a `// @vitest-environment node` file with
+  `renderToBuffer` and read it back with `pdfjs-dist/legacy/build/pdf.mjs`. A new client
+  dependency of this weight is justified only because no platform or server alternative meets
+  the one-press, selectable-text, embedded-font requirements.
