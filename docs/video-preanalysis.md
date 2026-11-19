@@ -38,6 +38,7 @@ the video holds `analysing` at zero progress until a slot frees.
 |----------|--------|-----------|
 | `POST /api/videos/{id}/analyse` | admin | Start or re-run the pre-analysis. `202` accepted; `404` unknown video; `409` a run is already in progress; `422` the video is not `ready`. |
 | `GET /api/videos/{id}/analysis` | any authenticated | The lifecycle (`analysis_status`, `analysis_error`, `analyzed_at`, `analysis_runs`, `analysis_progress_ms`) plus, once a completed result is readable, `engine`, `counters` (total/credible/disputed/unverifiable), and `frames` - the whole stored session in the exact wire shapes the live WebSocket emits, with absolute video-time timestamps. |
+| `GET /api/videos/{id}/speakers`, `POST .../speakers/name`, `PATCH .../speakers/{label}` | read: any authenticated; write: admin | The names of the diarized speakers, produced by a post-analysis step and correctable by an operator. The mapping is also embedded in the analysis read as `speakers`. See [speaker naming](speaker-naming.md). |
 | `GET /api/videos` | any authenticated | List items carry `analysis_status` and `analyzed_at` so tiles and the backoffice badge state without per-video calls. |
 | `GET /api/videos/{id}/export/transcript.srt` / `.../export/claims.csv` | admin | SRT transcript and CSV decision trace, served from the stored analysis (Postgres first, then the 24 h Redis replay cache). |
 

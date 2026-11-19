@@ -73,6 +73,11 @@ func (s *Store) SetVideoAnalysisProgress(ctx context.Context, id string, progres
 // per-video analysis row. A failure of either leaves both untouched, so the
 // lifecycle can never claim a result that is not stored (nor the reverse). An
 // unknown video maps to domain.ErrVideoNotFound.
+//
+// The same transaction clears the speaker names proposed for the previous
+// run: diarization labels are assigned afresh on every run, so a name inferred
+// for the old "A" must never label the new one. Operator-set names are kept;
+// the naming step re-proposes the rest.
 func (s *Store) CompleteVideoAnalysis(ctx context.Context, a domain.VideoAnalysis) (domain.VideoAnalysis, error) {
 	uid, err := uuid.Parse(a.VideoID)
 	if err != nil {
@@ -107,6 +112,9 @@ func (s *Store) CompleteVideoAnalysis(ctx context.Context, a domain.VideoAnalysi
 		})
 		if err != nil {
 			return fmt.Errorf("upsert analysis: %w", err)
+		}
+		if err := q.DeleteProposedVideoSpeakers(ctx, uid); err != nil {
+			return fmt.Errorf("clear stale speaker names: %w", err)
 		}
 		stored = row
 		return nil

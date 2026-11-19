@@ -66,7 +66,7 @@ func TestGetVideoAnalysisHandlerStatusCodes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rec, req := analysisRequest(t)
-			getVideoAnalysisHandler(tc.svc, false)(rec, req)
+			getVideoAnalysisHandler(tc.svc, nil, false)(rec, req)
 			if rec.Code != tc.wantCode {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
 			}
@@ -89,7 +89,7 @@ func TestGetVideoAnalysisHandlerLifecycleOnly(t *testing.T) {
 		AnalysisProgressMS: 15000,
 	}}}
 	rec, req := analysisRequest(t)
-	getVideoAnalysisHandler(svc, false)(rec, req)
+	getVideoAnalysisHandler(svc, nil, false)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -118,7 +118,7 @@ func TestGetVideoAnalysisHandlerFailedCarriesError(t *testing.T) {
 		AnalysisError:  "interrupted by restart",
 	}}}
 	rec, req := analysisRequest(t)
-	getVideoAnalysisHandler(svc, false)(rec, req)
+	getVideoAnalysisHandler(svc, nil, false)(rec, req)
 
 	var got videoAnalysisResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -166,7 +166,7 @@ func TestGetVideoAnalysisHandlerCompleteFrames(t *testing.T) {
 	analyzedAt := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 	svc := &fakeVideoAnalysisService{view: completedAnalysisView(analyzedAt)}
 	rec, req := analysisRequest(t)
-	getVideoAnalysisHandler(svc, false)(rec, req)
+	getVideoAnalysisHandler(svc, nil, false)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -255,7 +255,7 @@ func TestGetVideoAnalysisHandlerDebugDetailGate(t *testing.T) {
 			if tc.admin {
 				req = req.WithContext(adminContext(req.Context()))
 			}
-			getVideoAnalysisHandler(&fakeVideoAnalysisService{view: view}, tc.debug)(rec, req)
+			getVideoAnalysisHandler(&fakeVideoAnalysisService{view: view}, nil, tc.debug)(rec, req)
 			hasDetail := strings.Contains(rec.Body.String(), "secret detail")
 			if hasDetail != tc.wantDetail {
 				t.Errorf("evidence detail present = %v, want %v", hasDetail, tc.wantDetail)

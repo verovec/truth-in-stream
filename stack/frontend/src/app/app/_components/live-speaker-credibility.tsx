@@ -1,6 +1,7 @@
 "use client";
 
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
+import { useSpeakerNames } from "@/components/live/speaker-names";
 import { plural } from "@/lib/i18n/text";
 import type { SpeakerTally } from "@/lib/live/speakers";
 import { useAppI18n } from "@/components/i18n/app-i18n";
@@ -60,6 +61,8 @@ export function SpeakerCredibilityView({
 // speaker can make credible claims yet repeatedly frame true facts dishonestly.
 function SpeakerRow({ speaker }: { speaker: SpeakerTally }) {
   const { locale, t } = useAppI18n();
+  // A resolved name stands alone; an unnamed voice keeps its diarized letter.
+  const name = useSpeakerNames()[speaker.speaker];
   const checkable =
     speaker.credible + speaker.disputed + speaker.unverifiable;
   const parts = [
@@ -80,13 +83,13 @@ function SpeakerRow({ speaker }: { speaker: SpeakerTally }) {
   // Comma-joined so the assembled aria-label reads naturally in both locales;
   // the earlier ' : ' baked French space-before-colon spacing into the English
   // screen-reader announcement.
-  const label = [`${t.speakers.speaker} ${speaker.speaker}`, claimsLabel, breakdown]
+  const label = [name ?? `${t.speakers.speaker} ${speaker.speaker}`, claimsLabel, breakdown]
     .concat(framing ? [framing] : [])
     .join(", ");
   return (
     <li aria-label={label} className="flex items-baseline gap-2">
       <span className="text-xs font-semibold text-ink/80 dark:text-paper/80">
-        {speaker.speaker}
+        {name ?? speaker.speaker}
       </span>
       <span className="text-xs text-ink/50 dark:text-paper/50">
         {claimsLabel}

@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveAnalysisProvider } from "@/components/live/live-analysis-provider";
+import { SpeakerNamesProvider } from "@/components/live/speaker-names";
 import { TranscriptDisplayProvider } from "@/components/live/transcript-display";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
 import { VideoPlayer } from "@/components/playback/video-player";
 import { useVideoAnalysis } from "@/hooks/use-video-analysis";
+import { useVideoSpeakers } from "@/hooks/use-video-speakers";
 import { getVideo, type LibraryVideo, type PlayableVideo } from "@/lib/video/api";
 import {
   type AnalysedLibraryVideo,
@@ -15,6 +17,14 @@ import {
   type VideoAnalysis,
   type VideoAnalysisStatus,
 } from "@/lib/video/analysis";
+import {
+  getVideoSpeakers,
+  rerunSpeakerNaming,
+  speakerNamesByLabel,
+  type SpeakerUpdate,
+  updateVideoSpeaker,
+  type VideoSpeaker,
+} from "@/lib/video/speakers";
 import { ExportControls } from "@/components/export/export-controls";
 import type { Role } from "@/lib/auth/token";
 import type { AudioCaptureFactory, LiveSocketFactory } from "@/lib/live/ports";
@@ -24,6 +34,7 @@ import { AnalysisControl } from "./analysis-control";
 import { ClaimTimelineStrip } from "./claim-timeline-strip";
 import { LiveFactCheckPanel } from "./live-fact-check-panel";
 import { LiveSpeakerCredibility } from "./live-speaker-credibility";
+import { SpeakerNamingPanel } from "./speaker-naming-panel";
 import { LiveSummaryStrip } from "./live-summary-strip";
 import { GALLERY_GRID_CLASS, VideoGallery } from "./video-gallery";
 
@@ -75,13 +86,16 @@ function firstReadyId(videos: LibraryVideo[]): string | null {
 // the admin backoffice, not here. The library is fetched on the client (like the
 // rest of this app's data) so it rides the same-origin proxy that makes the
 // backend session cookie first-party; loadVideos, loadAnalysis, startAnalysis,
-// pollIntervalMs, socketFactory, and captureFactory are injection seams for
-// tests.
+// loadSpeakers, updateSpeaker, rerunNaming, pollIntervalMs, socketFactory, and captureFactory
+// are injection seams for tests.
 export function LibraryExperience({
   role = "guest",
   loadVideos = listVideosWithAnalysis,
   loadAnalysis = getVideoAnalysis,
   startAnalysis = startVideoAnalysis,
+  loadSpeakers = getVideoSpeakers,
+  updateSpeaker = updateVideoSpeaker,
+  rerunNaming = rerunSpeakerNaming,
   pollIntervalMs,
   socketFactory,
   captureFactory,
@@ -90,6 +104,16 @@ export function LibraryExperience({
   loadVideos?: (signal?: AbortSignal) => Promise<AnalysedLibraryVideo[]>;
   loadAnalysis?: (id: string, signal?: AbortSignal) => Promise<VideoAnalysis>;
   startAnalysis?: (id: string, signal?: AbortSignal) => Promise<void>;
+  loadSpeakers?: (
+    videoId: string,
+    signal?: AbortSignal,
+  ) => Promise<VideoSpeaker[]>;
+  updateSpeaker?: (
+    videoId: string,
+    label: string,
+    update: SpeakerUpdate,
+  ) => Promise<VideoSpeaker>;
+  rerunNaming?: (videoId: string) => Promise<VideoSpeaker[]>;
   pollIntervalMs?: number;
   socketFactory?: LiveSocketFactory;
   captureFactory?: AudioCaptureFactory;
@@ -187,6 +211,26 @@ export function LibraryExperience({
   const analysed =
     track.frames !== null || selectedVideo?.analysisStatus === "complete";
 
+  // The names of the stored session's diarized voices, with the admin
+  // corrections. Frames keep their letters; the lookup below is what every
+  // speaker-printing surface under the provider renders from.
+  const naming = useVideoSpeakers({
+    videoId: selectedId,
+    loaded: track.speakers,
+    awaitNaming: track.completedWhileWatching,
+    load: loadSpeakers,
+    update: updateSpeaker,
+    rerunNaming,
+    pollIntervalMs,
+  });
+  // Memoized so the provider value keeps its identity across the frequent
+  // re-renders of this component (progress polls, list refreshes); a fresh
+  // object each time would re-render every transcript turn.
+  const speakerNames = useMemo(
+    () => speakerNamesByLabel(naming.speakers),
+    [naming.speakers],
+  );
+
   // Keyed on selectedId (a stable string), not the selectedVideo object, so
   // rebuilding the videos array does not re-fetch and flicker the currently-
   // playing video. Also keyed on the selected video's status so a row that
@@ -250,44 +294,51 @@ export function LibraryExperience({
         {/* The transcript display preference (the strip's unverified toggle)
             is shared by the strip and the transcript, so it wraps both. */}
         <TranscriptDisplayProvider>
-          <div className="flex flex-col gap-4">
-            <LiveSummaryStrip />
-            <LiveSpeakerCredibility />
-            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-              <div className="flex flex-col gap-4">
-                <PlayerStage active={active} />
-                {/* The claim timeline mounts only alongside the hydrated stored
-                    analysis (the same condition that mounts the analysed driver),
-                    so a live or never-analysed video can never grow a strip from
-                    the frames a live session streams into the shared store. */}
-                {track.frames !== null ? <ClaimTimelineStrip /> : null}
-                <AnalysisControl role={role} video={selectedVideo} track={track} />
-                <ExportControls role={role} videoId={activeVideoId} />
-                <section className="flex flex-col gap-3">
-                  {nowPlayingTitle ? (
-                    <h2 className="font-display text-xl font-semibold tracking-tight text-ink dark:text-paper">
-                      {nowPlayingTitle}
-                    </h2>
+          <SpeakerNamesProvider names={speakerNames}>
+            <div className="flex flex-col gap-4">
+              <LiveSummaryStrip />
+              <LiveSpeakerCredibility />
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+                <div className="flex flex-col gap-4">
+                  <PlayerStage active={active} />
+                  {/* The claim timeline mounts only alongside the hydrated stored
+                      analysis (the same condition that mounts the analysed driver),
+                      so a live or never-analysed video can never grow a strip from
+                      the frames a live session streams into the shared store. */}
+                  {track.frames !== null ? <ClaimTimelineStrip /> : null}
+                  <AnalysisControl role={role} video={selectedVideo} track={track} />
+                  <ExportControls role={role} videoId={activeVideoId} />
+                  {/* Mounted with the hydrated stored analysis only: a live or
+                      never-analysed video has no diarized voices to name yet. */}
+                  {track.frames !== null ? (
+                    <SpeakerNamingPanel role={role} naming={naming} />
                   ) : null}
-                  <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
-                    {t.library.heading}
-                  </h2>
-                  <LibrarySection
-                    listState={listState}
-                    onRetry={retryLibrary}
-                    videos={videos}
-                    selectedId={selectedId}
-                    onSelect={(video) => setSelectedId(video.id)}
-                  />
-                </section>
+                  <section className="flex flex-col gap-3">
+                    {nowPlayingTitle ? (
+                      <h2 className="font-display text-xl font-semibold tracking-tight text-ink dark:text-paper">
+                        {nowPlayingTitle}
+                      </h2>
+                    ) : null}
+                    <h2 className="text-sm font-semibold uppercase tracking-wide text-ink/60 dark:text-paper/60">
+                      {t.library.heading}
+                    </h2>
+                    <LibrarySection
+                      listState={listState}
+                      onRetry={retryLibrary}
+                      videos={videos}
+                      selectedId={selectedId}
+                      onSelect={(video) => setSelectedId(video.id)}
+                    />
+                  </section>
+                </div>
+                {active.status === "ready" ? (
+                  <LiveFactCheckPanel key={active.playable.id} />
+                ) : (
+                  <FactCheckPlaceholder />
+                )}
               </div>
-              {active.status === "ready" ? (
-                <LiveFactCheckPanel key={active.playable.id} />
-              ) : (
-                <FactCheckPlaceholder />
-              )}
             </div>
-          </div>
+          </SpeakerNamesProvider>
         </TranscriptDisplayProvider>
       </LiveAnalysisProvider>
     </PlaybackProvider>

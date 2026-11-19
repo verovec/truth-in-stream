@@ -50,6 +50,7 @@ function analysisDetail(
     engine: null,
     counters: null,
     frames: null,
+    speakers: [],
     ...overrides,
   };
 }

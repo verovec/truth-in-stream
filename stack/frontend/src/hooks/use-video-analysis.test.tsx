@@ -23,6 +23,7 @@ function analysis(overrides: Partial<VideoAnalysis> = {}): VideoAnalysis {
     engine: null,
     counters: null,
     frames: [FRAME],
+    speakers: [],
     ...overrides,
   };
 }
@@ -69,6 +70,9 @@ describe("useVideoAnalysis", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(h.result.current.frames).toEqual([FRAME]);
+    expect(h.result.current.speakers).toEqual([]);
+    // A result that was already stored was not watched completing.
+    expect(h.result.current.completedWhileWatching).toBe(false);
     expect(h.result.current.loadFailed).toBe(false);
 
     await act(async () => {
@@ -150,6 +154,8 @@ describe("useVideoAnalysis", () => {
       "complete",
       "2026-07-17T09:00:00Z",
     );
+    // This session watched the run finish: the naming step starts only now.
+    expect(h.result.current.completedWhileWatching).toBe(true);
 
     // Terminal: the completing response schedules no further tick.
     const calls = loadAnalysis.mock.calls.length;
@@ -295,5 +301,29 @@ describe("useVideoAnalysis", () => {
     h.rerender({ video: { id: "vid-2", analysisStatus: "none" } });
     expect(h.result.current.frames).toBeNull();
     expect(h.result.current.progressMs).toBe(0);
+  });
+
+  test("surfaces the stored speakers with the frames and drops them when the video changes", async () => {
+    const named = {
+      label: "A",
+      name: "Marine Durand",
+      role: "principal" as const,
+      confidence: 0.9,
+      method: "signals" as const,
+      evidence: [],
+      operatorSet: false,
+    };
+    const loadAnalysis = vi.fn(async (id: string) =>
+      id === "vid-1" ? analysis({ speakers: [named] }) : analysis({ frames: null }),
+    );
+    const h = harness({
+      video: { id: "vid-1", analysisStatus: "complete" },
+      loadAnalysis,
+    });
+
+    await waitFor(() => expect(h.result.current.speakers).toEqual([named]));
+
+    h.rerender({ video: { id: "vid-2", analysisStatus: "complete" } });
+    expect(h.result.current.speakers).toEqual([]);
   });
 });

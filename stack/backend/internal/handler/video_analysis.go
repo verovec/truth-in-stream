@@ -85,6 +85,7 @@ type videoAnalysisResponse struct {
 	Engine             json.RawMessage       `json:"engine,omitempty"`
 	Counters           *analysisCountersJSON `json:"counters,omitempty"`
 	Frames             []any                 `json:"frames,omitempty"`
+	Speakers           []videoSpeakerJSON    `json:"speakers,omitempty"`
 }
 
 // getVideoAnalysisHandler serves a video's analysis lifecycle and stored
@@ -93,7 +94,13 @@ type videoAnalysisResponse struct {
 // detail inside claim_result frames is gated exactly as it is on the live
 // socket - the debug flag AND a verified admin claim - so a cached frame is
 // shaped identically to its live original for the same caller.
-func getVideoAnalysisHandler(svc VideoAnalysisService, debugFactCheckEnabled bool) http.HandlerFunc {
+//
+// Frames keep the diarized speaker labels the analysis was stored with;
+// speakers carries the mapping from those labels to people, for the client to
+// apply at render time. It accompanies the frames only, and is omitted when no
+// speaker service is wired, the naming step has not run, or the mapping cannot
+// be read: names are an enrichment and never fail the analysis read.
+func getVideoAnalysisHandler(svc VideoAnalysisService, speakers speakerLister, debugFactCheckEnabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		view, err := svc.Get(r.Context(), r.PathValue("id"))
 		switch {
@@ -130,6 +137,11 @@ func getVideoAnalysisHandler(svc VideoAnalysisService, debugFactCheckEnabled boo
 				}
 			}
 			resp.Frames = frames
+			if speakers != nil {
+				if list, err := speakers.List(r.Context(), view.Video.ID); err == nil {
+					resp.Speakers = toVideoSpeakersJSON(list)
+				}
+			}
 		}
 		httpx.JSON(w, http.StatusOK, resp)
 	}

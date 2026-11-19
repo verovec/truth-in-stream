@@ -29,7 +29,7 @@ func TestSRTFormatsCuesInOrder(t *testing.T) {
 		subtitle("b", 3*time.Second, 5*time.Second, "Speaker 1", "Second line"),
 	}
 
-	got := string(export.SRT(events))
+	got := string(export.SRT(events, nil))
 
 	want := strings.Join([]string{
 		"1",
@@ -56,7 +56,7 @@ func TestSRTSkipsInterimAndNonSubtitleEvents(t *testing.T) {
 		{Kind: service.LiveEventClaims, ID: "a"},
 	}
 
-	got := string(export.SRT(events))
+	got := string(export.SRT(events, nil))
 
 	if strings.Contains(got, "partial") {
 		t.Fatalf("interim caption leaked into SRT:\n%s", got)
@@ -77,7 +77,7 @@ func TestSRTTimestampZeroPaddingAndHours(t *testing.T) {
 			"", "Late cue"),
 	}
 
-	got := string(export.SRT(events))
+	got := string(export.SRT(events, nil))
 
 	if want := "01:02:03,040 --> 01:02:04,005"; !strings.Contains(got, want) {
 		t.Fatalf("timestamp formatting wrong, want %q in:\n%s", want, got)
@@ -89,7 +89,7 @@ func TestSRTPreservesMultilineTextAndAccents(t *testing.T) {
 		subtitle("a", 0, time.Second, "Élu", "Première ligne\nDeuxième ligne"),
 	}
 
-	got := string(export.SRT(events))
+	got := string(export.SRT(events, nil))
 
 	if !strings.Contains(got, "Élu: Première ligne\nDeuxième ligne") {
 		t.Fatalf("accented multiline text not preserved:\n%s", got)
@@ -101,7 +101,7 @@ func TestSRTEmptyWhenNoFinalizedSegments(t *testing.T) {
 		{Kind: service.LiveEventInterim, Segment: domain.Segment{Text: "still typing"}},
 	}
 
-	if got := export.SRT(events); len(got) != 0 {
+	if got := export.SRT(events, nil); len(got) != 0 {
 		t.Fatalf("expected empty SRT, got %q", got)
 	}
 }

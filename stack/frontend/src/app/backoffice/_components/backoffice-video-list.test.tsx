@@ -39,6 +39,7 @@ function detail(over: Partial<VideoAnalysis> = {}): VideoAnalysis {
     engine: null,
     counters: null,
     frames: null,
+    speakers: [],
     ...over,
   };
 }

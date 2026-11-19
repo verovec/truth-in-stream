@@ -6,6 +6,7 @@
 package export
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"time"
@@ -17,9 +18,11 @@ import (
 // track: one block per LiveEventSubtitle event, in the order they were emitted,
 // with a 1-based index, an HH:MM:SS,mmm cue range and the segment text. Interim
 // captions and every non-subtitle event are skipped, so only committed
-// transcript reaches the file. A speaker label, when present, prefixes the text.
-// The result is empty when the snapshot holds no finalized segments.
-func SRT(events []service.LiveEvent) []byte {
+// transcript reaches the file. The speaker, when known, prefixes the text: the
+// resolved name from names (diarized label to person) or, when the label has
+// none, the label itself. The result is empty when the snapshot holds no
+// finalized segments.
+func SRT(events []service.LiveEvent, names map[string]string) []byte {
 	var b strings.Builder
 	index := 0
 	for _, ev := range events {
@@ -28,8 +31,8 @@ func SRT(events []service.LiveEvent) []byte {
 		}
 		index++
 		text := ev.Segment.Text
-		if ev.Segment.Speaker != "" {
-			text = ev.Segment.Speaker + ": " + text
+		if speaker := cmp.Or(names[ev.Segment.Speaker], ev.Segment.Speaker); speaker != "" {
+			text = speaker + ": " + text
 		}
 		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n\n",
 			index,

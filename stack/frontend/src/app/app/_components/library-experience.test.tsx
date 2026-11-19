@@ -491,4 +491,111 @@ describe("LibraryExperience", () => {
       screen.queryByRole("button", { name: fr.app.analysis.analyse }),
     ).not.toBeInTheDocument();
   });
+
+  test("a pre-analysed video shows its speakers by name, and an admin correction renames them on screen", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-1",
+        playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
+      ),
+      analysisRoute("vid-1", {
+        ...completeAnalysisBody,
+        speakers: [
+          {
+            label: "A",
+            name: "Marine Durand",
+            role: "principal",
+            confidence: 0.92,
+            method: "signals",
+            operator_set: false,
+            evidence: [],
+          },
+        ],
+      }),
+    ]);
+    const { socketFactory, captureFactory } = liveSeams();
+    const updateSpeaker = vi.fn(async () => ({
+      label: "A",
+      name: "Sophie Garnier",
+      role: "guest" as const,
+      confidence: 1,
+      method: "operator" as const,
+      operatorSet: true,
+      evidence: [],
+    }));
+
+    render(
+      <LibraryExperience
+        role="admin"
+        loadVideos={async () => [
+          videoRecord({
+            analysisStatus: "complete",
+            analyzedAt: "2026-07-17T09:00:00Z",
+          }),
+        ]}
+        updateSpeaker={updateSpeaker}
+        socketFactory={socketFactory}
+        captureFactory={captureFactory}
+      />,
+    );
+
+    await screen.findByText("the stored transcript line");
+    const transcript = screen.getByRole("list", {
+      name: fr.app.subtitles.transcriptAria,
+    });
+    // The stored frame says "A"; the transcript prints the resolved name.
+    expect(transcript).toHaveTextContent("Marine Durand");
+    expect(transcript).not.toHaveTextContent(`${fr.app.subtitles.speaker} A`);
+
+    const nameField = screen.getByRole("textbox", { name: "Nom de la voix A" });
+    await userEvent.clear(nameField);
+    await userEvent.type(nameField, "Sophie Garnier");
+    await userEvent.click(
+      screen.getByRole("button", { name: fr.app.speakerNaming.form.confirm }),
+    );
+
+    expect(updateSpeaker).toHaveBeenCalledWith("vid-1", "A", {
+      name: "Sophie Garnier",
+      role: "principal",
+    });
+    await waitFor(() => expect(transcript).toHaveTextContent("Sophie Garnier"));
+    expect(transcript).not.toHaveTextContent("Marine Durand");
+    expect(
+      screen.getByText(fr.app.speakerNaming.confirmed),
+    ).toBeInTheDocument();
+  });
+
+  test("a guest sees speaker names without any naming control", async () => {
+    stubBackend([
+      getVideoRoute(
+        "vid-1",
+        playableWire("vid-1", "Common Myths", "sample", "https://storage/play/vid-1"),
+      ),
+      analysisRoute("vid-1", completeAnalysisBody),
+    ]);
+    const { socketFactory, captureFactory } = liveSeams();
+
+    render(
+      <LibraryExperience
+        loadVideos={async () => [
+          videoRecord({
+            analysisStatus: "complete",
+            analyzedAt: "2026-07-17T09:00:00Z",
+          }),
+        ]}
+        socketFactory={socketFactory}
+        captureFactory={captureFactory}
+      />,
+    );
+
+    await screen.findByText("the stored transcript line");
+    // No mapping: the transcript falls back to the letter and a guest gets no
+    // naming panel at all.
+    expect(
+      screen.getByRole("list", { name: fr.app.subtitles.transcriptAria }),
+    ).toHaveTextContent(`${fr.app.subtitles.speaker} A`);
+    expect(
+      screen.queryByRole("region", { name: fr.app.speakerNaming.heading }),
+    ).not.toBeInTheDocument();
+  });
 });

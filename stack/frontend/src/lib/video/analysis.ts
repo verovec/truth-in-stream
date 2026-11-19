@@ -6,6 +6,7 @@
 import { API_BASE, toApiError } from "@/lib/http";
 import { type LiveFrame, parseLiveFrameValue } from "@/lib/live/frames";
 import type { LibraryVideo, VideoKind, VideoStatus } from "@/lib/video/api";
+import { parseVideoSpeakers, type VideoSpeaker } from "@/lib/video/speakers";
 
 // VideoAnalysisStatus is the pre-analysis lifecycle: never analysed, a headless
 // run in flight, a stored result available, or the last run failed (re-runnable).
@@ -42,7 +43,9 @@ export type AnalysisCounters = {
 // not on status alone, because a re-analysis poll reports "analysing" without
 // frames while the previous result must stay on screen. Each frame is the
 // exact wire shape the live WebSocket emits, with absolute video-time
-// timestamps, validated through the shared live-frame parser.
+// timestamps, validated through the shared live-frame parser. Frames keep the
+// diarized speaker labels; speakers maps those labels to people and is empty
+// until the naming step has run.
 export type VideoAnalysis = {
   analysisStatus: VideoAnalysisStatus;
   analysisError: string | null;
@@ -52,6 +55,7 @@ export type VideoAnalysis = {
   engine: unknown;
   counters: AnalysisCounters | null;
   frames: LiveFrame[] | null;
+  speakers: VideoSpeaker[];
 };
 
 // AnalysedLibraryVideo is a library row plus its analysis state from the list
@@ -95,6 +99,7 @@ type AnalysisWire = {
     unverifiable?: number;
   };
   frames?: unknown[];
+  speakers?: unknown;
 };
 
 function normalizeAnalysedVideo(wire: VideoWire): AnalysedLibraryVideo {
@@ -168,6 +173,7 @@ export async function getVideoAnalysis(
           .map(parseLiveFrameValue)
           .filter((frame): frame is LiveFrame => frame !== null)
       : null,
+    speakers: parseVideoSpeakers(wire.speakers),
   };
 }
 

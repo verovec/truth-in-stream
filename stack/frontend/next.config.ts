@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
       canvas: "./scripts/empty-module.js",
     },
   },
+  // The local-dev proxy below drops a proxied request after 30 s by default.
+  // Re-running speaker naming answers synchronously within 55 s (backend
+  // speakerNamingDeadline), so the proxy must outlast it.
+  experimental: {
+    proxyTimeout: 60_000,
+  },
   // Same-origin proxy to the Go backend so its HttpOnly SameSite=Strict
   // session cookie is first-party, for the API and the demo media the player
   // streams. This is the local-dev path only: deployed environments route

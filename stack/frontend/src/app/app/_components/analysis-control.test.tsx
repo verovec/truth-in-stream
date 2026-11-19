@@ -31,6 +31,8 @@ function track(overrides: Partial<VideoAnalysisTrack> = {}): VideoAnalysisTrack 
     progressMs: 0,
     analysisError: null,
     frames: null,
+    speakers: [],
+    completedWhileWatching: false,
     loadFailed: false,
     starting: false,
     startError: null,

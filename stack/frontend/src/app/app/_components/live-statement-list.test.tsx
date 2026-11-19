@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback/playback-provider";
+import { SpeakerNamesProvider } from "@/components/live/speaker-names";
 import {
   TranscriptDisplayProvider,
   useTranscriptDisplay,
@@ -291,6 +292,24 @@ describe("LiveStatementList", () => {
     expect(turns[1].textContent).toContain("Autre voix.");
     // One speaker label per turn, not one per sentence.
     expect(screen.getAllByText(`${t.speaker} A`)).toHaveLength(1);
+  });
+
+  test("a turn carries the resolved name, and an unnamed voice keeps its letter", () => {
+    renderWithPlayback(
+      <SpeakerNamesProvider names={{ A: "Marine Durand" }}>
+        <LiveStatementList
+          statements={[
+            { ...checked("0", 0, "Première phrase."), speaker: "A" },
+            { ...checked("1", 3, "Autre voix."), speaker: "B" },
+          ]}
+          selectedStatementId={null}
+        />
+      </SpeakerNamesProvider>,
+    );
+    const turns = screen.getAllByRole("listitem");
+    expect(turns[0].textContent).toContain("Marine Durand");
+    expect(turns[0].textContent).not.toContain(`${t.speaker} A`);
+    expect(turns[1].textContent).toContain(`${t.speaker} B`);
   });
 
   test("unattributed statements flow as one unlabelled paragraph", () => {

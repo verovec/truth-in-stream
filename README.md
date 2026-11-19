@@ -151,6 +151,7 @@ Slack; see [Infrastructure -> Observability](docs/infrastructure.md#observabilit
 | Live TV capture (on-demand cloud recorder, channels, retention, legal posture) | [`docs/tv-live.md`](docs/tv-live.md) |
 | PDF fact-check (upload in the backoffice -> analyse -> read on the Documents surface with in-PDF highlights) | [`docs/pdf-fact-check.md`](docs/pdf-fact-check.md) |
 | Video pre-analysis (durable one-shot fact-check, analysed playback, claim timeline, e2e runbook) | [`docs/video-preanalysis.md`](docs/video-preanalysis.md) |
+| Speaker naming (who the diarized voices are: signals, confidence floor, operator corrections, limits) | [`docs/speaker-naming.md`](docs/speaker-naming.md) |
 | Backoffice (admin-only ingestion area, access model) | [`docs/backoffice.md`](docs/backoffice.md) |
 | Data dictionary (Postgres + pgvector) | `.claude/skills/data-map/SKILL.md` |
 | Always-on rules and engineering standards | [`CLAUDE.md`](CLAUDE.md) |

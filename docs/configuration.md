@@ -71,6 +71,10 @@ decision path, and the end-to-end verification runbook are in
 | `PREANALYSIS_MAX_CONCURRENT` | `1` | Global cap on simultaneous runs; a queued start holds the `analysing` status at zero progress until a slot frees. Positive integer |
 | `PREANALYSIS_RUN_TIMEOUT` | `4h` | Bounds one whole run; a run that overruns is failed and stays re-runnable. Must exceed the longest video to analyse at the configured pacing. Positive Go duration |
 
+After a pre-analysis completes, a post-analysis step names the diarized speakers
+(`SPEAKER_NAMING_ENABLED`, default `true`; `SPEAKER_NAMING_MODEL`; `SPEAKER_NAMING_API_KEY` under
+`LLM_PROVIDER=anthropic`). See [Speaker naming](speaker-naming.md).
+
 The verdicts a pre-analysis stores are produced by whatever fact-check path is configured at run
 time (the `FACTCHECK_VERIFY_*` and `FACTCHECK_POLITICAL` variables above), and each stored result
 carries an `engine` fingerprint (transcriber model, verifier provider and model, retrieval
