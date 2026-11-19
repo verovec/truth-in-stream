@@ -24,6 +24,10 @@ __pycache__/
 # Database backups (local pg_dump archives; the durable copy lives in S3)
 /backups/
 
+# Local card queue (scripts/cards.sh): shared by every session on this machine,
+# never committed. Root-anchored so a nested directory named cards is unaffected.
+/cards/
+
 # Env files (secrets)
 .env
 .env.*

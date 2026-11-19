@@ -123,6 +123,14 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
       - run: terraform fmt -check -recursive
         working-directory: stack/terraform/main-account
+  # Unit-test the local card queue (ordering, dependencies, atomic claim under
+  # concurrent picks) against a throwaway queue directory.
+  cards-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/cards.test.sh
   # Unit-test the local-stack preflight (make doctor) with a stubbed docker CLI
   # (no Docker daemon required).
   doctor-script:
