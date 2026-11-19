@@ -8,6 +8,7 @@ Tests, continuous integration, and the Claude-assisted delivery workflow.
 cd stack/backend  && go test -race ./...
 cd stack/frontend && npm test
 ./scripts/doctor.test.sh            # local-stack preflight (stubs the docker CLI)
+./scripts/ingest-workers.test.sh    # ingestion targets start their queue worker (stubs the docker CLI)
 ./scripts/secrets_test.sh           # operator secrets tool (stubs AWS + editor)
 ./scripts/iam-apply-guard.test.sh   # pre-apply IAM guard (stubs the aws CLI)
 ```

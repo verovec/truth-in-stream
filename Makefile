@@ -26,6 +26,15 @@ EMBEDWORKER_REPLICAS ?= 2
 # `make crawl-workers CRAWLWORKER_REPLICAS=4`.
 CRAWLWORKER_REPLICAS ?= 2
 
+# ensure-worker starts the broker and one worker of service $(2) (compose profile
+# $(1)), detached, unless a $(2) container is already running. The check is on
+# the worker, not the broker: `make up` always runs the broker, so its presence
+# says nothing about whether anything is consuming the queue. A fleet already up
+# is left as it is, at whatever scale it was started with.
+define ensure-worker
+@$(COMPOSE) --profile $(1) ps -q $(2) | grep -q . || $(COMPOSE) --profile $(1) up -d rabbitmq $(2)
+endef
+
 # Number of parallel crawl producers for `make crawl`. 1 (default) runs a single
 # foreground producer over the whole CRAWL_CATEGORIES list (the original
 # behavior). N > 1 fans the one list out across N detached producers, each
@@ -147,7 +156,7 @@ seed-videos: ## Seed only the curated sample videos (records + best-effort media
 	$(COMPOSE) run --rm seed go run ./cmd/seed -videos
 
 stats-ingest: ## Bulk-into-live ingest of the official statistical sources (Eurostat + interior-ministry open-data CSV + INSEE): render French passages, upsert them un-embedded under one corpus per source, and enqueue one embedding job per passage; the running worker fleet fills the vectors in place (no inline Voyage call), so the passages are searchable as they embed. Publishes and exits. Idempotent (re-run to refresh, no duplicates; only un-embedded rows republished). Reuses a fleet from `make fleet-up`, or brings up the broker and one worker; scale throughput with `make fleet-up EMBEDWORKER_REPLICAS=N` first. Sources need no key; optional INSEE_API_KEY from .env
-	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq embedworker
+	$(call ensure-worker,wiki,embedworker)
 	$(COMPOSE) --profile tools run --rm --no-deps stats-ingest
 
 refresh-embeddings: ## Regenerate the committed embedding cache from fixtures via Voyage (needs EMBEDDING_API_KEY)
@@ -163,10 +172,10 @@ fleet-down: ## Stop the ingestion broker and worker fleet (removes just those co
 
 # `docker compose run` reconciles its dependencies back to their file-defined scale,
 # so a plain `run wiki-populate` would shrink a fleet that `make fleet-up` scaled up.
-# When the broker is already running (a fleet is up), connect with --no-deps and leave
-# the fleet untouched; otherwise start the broker and a single worker first.
+# When a worker fleet is already running, connect with --no-deps and leave it
+# untouched; otherwise start the broker and a single worker first.
 wiki-populate: ## Bulk-into-live ingest: write the Wikipedia corpus straight into the live table and enqueue embedding jobs; the running worker fleet fills the vectors in place, so the corpus is searchable as it embeds (no swap). Publishes and exits - watch coverage with `make wiki-verify`. Resumable, reuses an on-disk dump. Reuses a fleet from `make fleet-up`, or brings up the broker and one worker; scale throughput with `make fleet-up EMBEDWORKER_REPLICAS=N` first
-	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up -d rabbitmq embedworker
+	$(call ensure-worker,wiki,embedworker)
 	$(COMPOSE) --profile tools run --rm --no-deps wiki-populate
 
 wiki-update: ## Incrementally update the embedded Wikipedia corpus via the MediaWiki API (delta sync, foreground; keys/tuning from .env)
@@ -200,7 +209,7 @@ factcheck-workers: ## Start N fact-check-archive consumers that drain the fact-c
 	@echo "factcheck fleet up: rabbitmq + $(FACTCHECKWORKER_REPLICAS) factcheckworker(s) running; run 'make factcheck-crawl FACTCHECK_QUERIES=...' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
 factcheck-crawl: ## Run the fact-check-archive producer: read already-checked French claims from the Google Fact Check Tools API for FACTCHECK_QUERIES and publish curated-claim jobs, then exit (DB-free). Requires FACTCHECK_API_KEY and FACTCHECK_QUERIES (e.g. `make factcheck-crawl FACTCHECK_QUERIES="retraites,chômage"`); the factcheckworker fleet embeds and upserts them. Reuses a fleet from `make factcheck-workers`, or brings up the broker and one worker
-	@$(COMPOSE) --profile factcheck ps -q rabbitmq | grep -q . || $(COMPOSE) --profile factcheck up rabbitmq factcheckworker
+	$(call ensure-worker,factcheck,factcheckworker)
 	$(COMPOSE) --profile tools run --rm --no-deps factcheckcrawl
 
 scrutins-workers: ## Start N scrutins consumers that drain the scrutins queue into the voting store (SCRUTINSWORKER_REPLICAS=2, overridable). Run `make scrutins-crawl` afterwards to fill the queue; the running fleet drains it. No API key (parse + upsert only), opt-in (scrutins profile)
@@ -208,7 +217,7 @@ scrutins-workers: ## Start N scrutins consumers that drain the scrutins queue in
 	@echo "scrutins fleet up: rabbitmq + $(SCRUTINSWORKER_REPLICAS) scrutinsworker(s) running; run 'make scrutins-crawl' to fill the queue, watch the drain at http://localhost:15672 (app/dev)"
 
 scrutins-crawl: ## Run the scrutins-archive producer: conditionally download the Assemblee Nationale Scrutins.json.zip (skipped when unchanged via a persisted ETag/Last-Modified marker), discover each scrutin, and publish one job per scrutin, then exit (DB-free). No required env (SCRUTINS_LEGISLATURE defaults to 17); the scrutinsworker fleet parses and upserts them. Reuses a fleet from `make scrutins-workers`, or brings up the broker and one worker
-	@$(COMPOSE) --profile scrutins ps -q rabbitmq | grep -q . || $(COMPOSE) --profile scrutins up rabbitmq scrutinsworker
+	$(call ensure-worker,scrutins,scrutinsworker)
 	$(COMPOSE) --profile tools run --rm --no-deps scrutinscrawl
 
 # Like wiki-populate: when a crawl fleet is already up, connect with --no-deps so
@@ -218,7 +227,7 @@ scrutins-crawl: ## Run the scrutins-archive producer: conditionally download the
 # round-robin slice), running them to completion and removing each on exit.
 crawl: ## Run the category-crawl producer: walk CRAWL_CATEGORIES over the Action API and publish chunk jobs, then exit (DB-free). Requires CRAWL_CATEGORIES (e.g. `make crawl CRAWL_CATEGORIES="Category:Physics"`); the crawl worker fleet embeds and upserts them into live wiki_chunks. Reuses a fleet from `make crawl-workers`, or brings up the broker and one worker. CRAWL_SHARDS=N runs N producers in parallel over disjoint slices of the same list (e.g. `make crawl CRAWL_SHARDS=4`)
 	@case "$(CRAWL_SHARDS)" in ''|*[!0-9]*) echo "CRAWL_SHARDS must be a positive integer, got '$(CRAWL_SHARDS)'" >&2; exit 1 ;; esac
-	@$(COMPOSE) --profile wiki ps -q rabbitmq | grep -q . || $(COMPOSE) --profile wiki up rabbitmq crawlworker
+	$(call ensure-worker,wiki,crawlworker)
 	@if [ "$(CRAWL_SHARDS)" -le 1 ]; then \
 		$(COMPOSE) --profile tools run --rm --no-deps wikicrawl; \
 	else \
