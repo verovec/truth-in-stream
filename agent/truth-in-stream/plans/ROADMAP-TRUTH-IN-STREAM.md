@@ -108,9 +108,9 @@
 | VER-228 | NLI stance scorer resolves clear verdicts from retrieved evidence before any LLM call | Done | High | VER-225 |
 | VER-229 | Per-claim pipeline telemetry table for threshold calibration and classifier training | Done | Medium | VER-227 |
 | VER-230 | Vector-first defaults: enable the verify path with local gates and hold an LLM-call budget | Done | Medium | VER-228, VER-226 |
-| G1 | Post-analysis step names each diarized speaker | Todo | High | |
-| G2 | Recap page presents an analysed video as a report | Todo | High | G1 |
-| G3 | Export the recap as a PDF | Todo | High | G2 |
+| G1 | Post-analysis step names each diarized speaker | Done | High | |
+| G2 | Recap page presents an analysed video as a report | Done | High | G1 |
+| G3 | Export the recap as a PDF | Done | High | G2 |
 
 ## Dependency graph
 
@@ -132,10 +132,10 @@ G2 -> G3
 
 ## Ready queue
 
-1. G1 - Post-analysis step names each diarized speaker (High, no dependency, branches off
-   `dev`). G2 becomes ready when G1 is `In Review` or `Done`, G3 when G2 is.
+Empty.
 
-Epic G (debate recap) opened 2026-11-19 with G1..G3 tracked locally; bodies in
+Epic G (debate recap) COMPLETE 2026-11-19: G1..G3 delivered to `dev` in one `/pick` run (PRs
+#287-#289). It opened the same day with G1..G3 tracked locally; bodies in
 `CARDS-DEBATE-RECAP.md`. From this epic on, the live queue is the local `cards/ROADMAP.md`
 managed by `scripts/cards.sh` (see the `local-cards` skill); this file is no longer the
 source `/pick` reads and is updated only at an epic's close-out.

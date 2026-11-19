@@ -18,8 +18,12 @@ Status 2026-07-17: Epics A, B, C, and D are fully delivered (all cards Done). Ep
 
 Status 2026-08-16 (end of day): Epic E delivered 2026-07-21 (PRs #261-#263). Epic F (vector-first verdicts) COMPLETE: all seven cards Done via one epic run - VER-224 (PR #268), VER-226 (PR #269, live recall@1 93.3%->100%), VER-227 (PR #270), VER-229 (PRs #271+#272), VER-225 (PR #273, corpus ingested locally 12->4,743 claims, gate agreement 99.4%), VER-228 (PR #274, 53.9% verdicts decided locally at 100% decided accuracy), VER-230 (PR #275, vector-first defaults on, measured 83% fewer generative calls at identical accuracy, 0.65 calls/claim budget enforced in CI). Defaults are now vector-first; docs/vector-first-defaults.md records the reconciled set.
 
-Status 2026-11-19: Epic G (debate recap, G1..G3) authored and open, all three cards `Todo`.
-It is tracked locally in `CARDS-DEBATE-RECAP.md`, not in Linear.
+Status 2026-11-19 (end of day): Epic G (debate recap) COMPLETE, all three cards Done via one
+`/pick` run and merged to `dev`: G1 speaker naming (PR #287), G2 recap page (PR #288), G3 PDF
+export (PR #289). Docs in `docs/speaker-naming.md` and `docs/recap.md`. It was tracked locally in
+`CARDS-DEBATE-RECAP.md`, not in Linear. Still open for a human: the live multi-speaker run
+(analyse, read the named speakers, reconcile the recap with the CSV, export the PDF in a real
+browser) and the migration `0023` check on a populated database with rollback.
 
 ---
 

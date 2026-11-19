@@ -104,6 +104,13 @@ by verdict, with click-to-seek. Re-analysing after the evidence corpus evolves i
 backoffice; videos that are not pre-analysed keep the live flow (see
 [video pre-analysis](docs/video-preanalysis.md)).
 
+A pre-analysed video also becomes a report. Its diarized voices are named from the transcript
+itself, with the evidence shown and an operator able to correct any of them
+([speaker naming](docs/speaker-naming.md)). A **recap** page then presents the analysis as a
+cover, a per-speaker table and one sheet per main speaker with the disputed and the credible
+statements and their sources, stating how many statements could not be verified, and exports as
+a PDF in one press ([recap](docs/recap.md)).
+
 Fact-checking also extends beyond live streams to documents. An admin uploads a PDF (a press
 article, report, or official publication) from the **backoffice**; the same retrieve-then-verify
 pipeline analyses its sentences once and persists the verdicts, so any authenticated user can read
