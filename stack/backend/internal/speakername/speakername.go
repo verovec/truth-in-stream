@@ -71,15 +71,20 @@ type Proposal struct {
 
 // Turns rebuilds speaker turns from finalized transcript segments, in order:
 // consecutive segments of one label merge into a single turn. A segment with no
-// label or no text carries no attribution and is skipped.
+// label or no text carries no attribution and is skipped; unlabeled speech
+// still ends the turn before it, since someone else held the floor.
 func Turns(segments []domain.Segment) []Turn {
 	turns := make([]Turn, 0, len(segments))
+	interrupted := false
 	for _, seg := range segments {
 		text := strings.TrimSpace(seg.Text)
 		if seg.Speaker == "" || text == "" {
+			interrupted = interrupted || text != ""
 			continue
 		}
-		if n := len(turns); n > 0 && turns[n-1].Label == seg.Speaker {
+		merge := !interrupted
+		interrupted = false
+		if n := len(turns); merge && n > 0 && turns[n-1].Label == seg.Speaker {
 			turns[n-1].End = seg.End
 			turns[n-1].Text += " " + text
 			continue
@@ -148,7 +153,7 @@ func containsWords(haystack, needle []string) bool {
 // Resolve decides a name and a role for every label in turns, given the
 // grounded participant names. Proposals are ordered by label.
 func Resolve(turns []Turn, names []string) []Proposal {
-	roles := inferRoles(turns)
+	roles := Roles(turns)
 	board := score(turns, newNameIndex(names))
 
 	labels := make([]string, 0, len(roles))

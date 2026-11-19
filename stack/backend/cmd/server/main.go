@@ -485,6 +485,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	recapReader, err := service.NewRecapReader(pgStore, storedAnalysisReader, pgStore)
+	if err != nil {
+		return err
+	}
 	var afterAnalysis service.PostAnalysisStep
 	if speakerNamingCfg.Enabled {
 		afterAnalysis = speakerNamer
@@ -508,7 +512,7 @@ func run(logger *slog.Logger) error {
 			slog.String("cors_allowed_origin", cfg.CORSAllowedOrigin))
 	}
 
-	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, speakerNamer, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
+	apiHandler := handler.NewMux(health, videoSvc, storedAnalysisReader, videoAnalyzer, speakerNamer, recapReader, documentSvc, documentAnalyzer, youtubeSvc, tvChannelSvc, tvRecordingSvc, tvHub, liveAnalyzer, snapshotPersister, analysisReplayer, liveOrigins, debugFactCheck, debugSearch, cfg.DemoMediaDir, authConfig, logger)
 	if cfg.CORSAllowedOrigin != "" {
 		apiHandler = middleware.CORS(cfg.CORSAllowedOrigin)(apiHandler)
 	}
