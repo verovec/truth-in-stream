@@ -62,7 +62,7 @@ AWS
 
 echo "TEST: opens the tunnel with the parsed broker host/port and default local port"
 (
-  BROKER_URL="amqps://app:s3cret@b-1234.mq.eu-west-3.amazonaws.com:5671/" make_sandbox
+  BROKER_URL="amqps://app:s3cret@b-1234.mq.eu-west-3.amazonaws.com:5671/"; make_sandbox
   out="$(bash "$PF" dev 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on the happy path" || fail "exit 0 on the happy path (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
@@ -78,7 +78,7 @@ echo "TEST: opens the tunnel with the parsed broker host/port and default local 
 
 echo "TEST: --port overrides the local listen port only"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/"; make_sandbox
   out="$(bash "$PF" dev --port 5673 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 with -p" || fail "exit 0 with -p (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
@@ -87,7 +87,7 @@ echo "TEST: --port overrides the local listen port only"
 
 echo "TEST: a non-standard broker port in the secret is honoured (parse, not hardcode)"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5999/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5999/"; make_sandbox
   bash "$PF" dev >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "portNumber=5999" "uses the port from the secret URL"
@@ -95,7 +95,7 @@ echo "TEST: a non-standard broker port in the secret is honoured (parse, not har
 
 echo "TEST: a URL with no explicit port defaults the remote port to 5671"
 (
-  BROKER_URL="amqps://app:pw@broker.internal/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal/"; make_sandbox
   bash "$PF" dev >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "host=broker.internal,portNumber=5671,localPortNumber=5671" "defaults the remote port when the URL omits it"
@@ -103,7 +103,7 @@ echo "TEST: a URL with no explicit port defaults the remote port to 5671"
 
 echo "TEST: env selects the SSO profile, bastion name, and secret"
 (
-  BROKER_URL="amqps://app:pw@prod-broker:5671/" make_sandbox
+  BROKER_URL="amqps://app:pw@prod-broker:5671/"; make_sandbox
   bash "$PF" prod >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "--profile verovec-prod" "keys off the prod SSO profile"
@@ -113,7 +113,7 @@ echo "TEST: env selects the SSO profile, bastion name, and secret"
 
 echo "TEST: dev is the default environment"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/"; make_sandbox
   bash "$PF" >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "--profile verovec-dev" "defaults to the dev SSO profile"
@@ -122,7 +122,7 @@ echo "TEST: dev is the default environment"
 
 echo "TEST: AWS_PROFILE overrides the env-derived profile"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" AWS_PROFILE=custom-sso make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/" AWS_PROFILE=custom-sso; make_sandbox
   bash "$PF" dev >/dev/null 2>&1
   log="$(cat "$AWS_CALL_LOG")"
   assert_contains "$log" "--profile custom-sso" "honours an explicit AWS_PROFILE"
@@ -130,7 +130,7 @@ echo "TEST: AWS_PROFILE overrides the env-derived profile"
 
 echo "TEST: fails clearly when no running bastion is found"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" INSTANCE_ID="None" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/" INSTANCE_ID="None"; make_sandbox
   out="$(bash "$PF" dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when no bastion" || fail "non-zero exit when no bastion (got $rc)"
   assert_contains "$out" "truth-in-stream-dev-bastion" "names the bastion it looked for"
@@ -140,7 +140,7 @@ echo "TEST: fails clearly when no running bastion is found"
 
 echo "TEST: fails clearly when EC2 cannot be queried (e.g. expired SSO)"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" DESCRIBE_FAIL=1 make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/" DESCRIBE_FAIL=1; make_sandbox
   out="$(bash "$PF" dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the EC2 query fails" || fail "non-zero exit when the EC2 query fails (got $rc)"
   assert_contains "$out" "aws sso login --profile verovec-dev" "points at the SSO login to fix it"
@@ -150,7 +150,7 @@ echo "TEST: fails clearly when EC2 cannot be queried (e.g. expired SSO)"
 
 echo "TEST: rejects a non-numeric --port before touching AWS"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/"; make_sandbox
   out="$(bash "$PF" dev -p abc 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on a bad port" || fail "non-zero exit on a bad port (got $rc)"
   assert_contains "$out" "Invalid --port" "explains the port is invalid"
@@ -160,7 +160,7 @@ echo "TEST: rejects a non-numeric --port before touching AWS"
 
 echo "TEST: fails clearly when the broker secret is missing"
 (
-  INSTANCE_ID="i-0abc123def456" SECRET_MISSING=1 make_sandbox
+  INSTANCE_ID="i-0abc123def456" SECRET_MISSING=1; make_sandbox
   out="$(bash "$PF" dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the secret is missing" || fail "non-zero exit when the secret is missing (got $rc)"
   assert_contains "$out" "truth-in-stream/dev/rabbitmq/url" "names the secret it expected"
@@ -170,7 +170,7 @@ echo "TEST: fails clearly when the broker secret is missing"
 
 echo "TEST: an unknown environment is rejected"
 (
-  BROKER_URL="amqps://app:pw@broker.internal:5671/" make_sandbox
+  BROKER_URL="amqps://app:pw@broker.internal:5671/"; make_sandbox
   out="$(bash "$PF" staging 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on an unknown env" || fail "non-zero exit on an unknown env (got $rc)"
   assert_contains "$out" "staging" "names the offending environment"

@@ -81,7 +81,7 @@ DSN_OK="postgres://rdsuser:rdsSEKRET@db-1.abc.eu-west-3.rds.amazonaws.com:5432/t
 
 echo "TEST: dumps the local DB, fetches RDS creds, and restores over the tunnel (prod default)"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   out="$(bash "$PUSH" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on the happy path" || fail "exit 0 on the happy path (got $rc)"
   dlog="$(cat "$DOCKER_CALL_LOG")"
@@ -109,7 +109,7 @@ echo "TEST: dumps the local DB, fetches RDS creds, and restores over the tunnel 
 
 echo "TEST: the RDS password is passed by env name only (PGPASSWORD), never an argv or a log"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   out="$(bash "$PUSH" prod 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0" || fail "exit 0 (got $rc)"
   dlog="$(cat "$DOCKER_CALL_LOG")"
@@ -125,7 +125,7 @@ echo "TEST: the RDS password is passed by env name only (PGPASSWORD), never an a
 
 echo "TEST: --port routes the restore to the matching tunnel port"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   bash "$PUSH" prod --port 5440 >/dev/null 2>&1
   dlog="$(cat "$DOCKER_CALL_LOG")"
   assert_contains "$dlog" "--host localhost --port 5440" "restore connects to the overridden local port"
@@ -133,7 +133,7 @@ echo "TEST: --port routes the restore to the matching tunnel port"
 
 echo "TEST: --file reuses an existing dump and takes no fresh dump"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   existing="$SANDBOX/preexisting.dump"; printf 'PGDMP-existing' >"$existing"
   bash "$PUSH" prod --file "$existing" >/dev/null 2>&1
   dlog="$(cat "$DOCKER_CALL_LOG")"
@@ -143,7 +143,7 @@ echo "TEST: --file reuses an existing dump and takes no fresh dump"
 
 echo "TEST: env selects the RDS DSN secret and profile (dev)"
 (
-  RDS_DSN="postgres://u:p@dev-db:5432/truthinstream?sslmode=require" make_sandbox
+  RDS_DSN="postgres://u:p@dev-db:5432/truthinstream?sslmode=require"; make_sandbox
   bash "$PUSH" dev >/dev/null 2>&1
   alog="$(cat "$AWS_CALL_LOG")"
   assert_contains "$alog" "truth-in-stream/dev/rds/dsn" "fetches the dev DSN secret"
@@ -152,7 +152,7 @@ echo "TEST: env selects the RDS DSN secret and profile (dev)"
 
 echo "TEST: fails clearly when the RDS DSN secret is missing"
 (
-  SECRET_MISSING=1 make_sandbox
+  SECRET_MISSING=1; make_sandbox
   existing="$SANDBOX/some.dump"; printf 'PGDMP-x' >"$existing"
   out="$(bash "$PUSH" prod --file "$existing" 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the secret is missing" || fail "non-zero exit when the secret is missing (got $rc)"
@@ -163,7 +163,7 @@ echo "TEST: fails clearly when the RDS DSN secret is missing"
 
 echo "TEST: a password containing '@' still parses host/user/dbname correctly"
 (
-  RDS_DSN="postgres://rdsuser:p@ss@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require" make_sandbox
+  RDS_DSN="postgres://rdsuser:p@ss@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require"; make_sandbox
   out="$(bash "$PUSH" prod 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 with an '@' in the password" || fail "exit 0 with an '@' in the password (got $rc)"
   dlog="$(cat "$DOCKER_CALL_LOG")"
@@ -175,7 +175,7 @@ echo "TEST: a password containing '@' still parses host/user/dbname correctly"
 
 echo "TEST: rejects a DSN with no password in its userinfo (would otherwise send db_user as the password)"
 (
-  RDS_DSN="postgres://rdsuser@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require" make_sandbox
+  RDS_DSN="postgres://rdsuser@db-1.abc.eu-west-3.rds.amazonaws.com:5432/truthinstream?sslmode=require"; make_sandbox
   out="$(bash "$PUSH" prod 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on a password-less DSN" || fail "non-zero exit on a password-less DSN (got $rc)"
   assert_contains "$out" "no password" "explains the DSN has no password"
@@ -185,7 +185,7 @@ echo "TEST: rejects a DSN with no password in its userinfo (would otherwise send
 
 echo "TEST: leaves the dump and points at --file when pg_restore fails"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   # Make the restore (docker run) fail while the dump (docker compose exec) still
   # succeeds, by failing any `docker run` invocation.
   cat >"$BIN/docker" <<'DOCKER'
@@ -210,7 +210,7 @@ DOCKER
 
 echo "TEST: rejects a non-numeric --port before any work"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   out="$(bash "$PUSH" prod -p abc 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on a bad port" || fail "non-zero exit on a bad port (got $rc)"
   assert_contains "$out" "Invalid --port" "explains the port is invalid"
@@ -220,7 +220,7 @@ echo "TEST: rejects a non-numeric --port before any work"
 
 echo "TEST: an unknown environment is rejected"
 (
-  RDS_DSN="$DSN_OK" make_sandbox
+  RDS_DSN="$DSN_OK"; make_sandbox
   out="$(bash "$PUSH" staging 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on an unknown env" || fail "non-zero exit on an unknown env (got $rc)"
   assert_contains "$out" "staging" "names the offending environment"

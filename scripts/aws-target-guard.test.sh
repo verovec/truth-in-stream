@@ -79,7 +79,7 @@ echo "TEST: a matching account passes --check and emits the preflight summary"
 
 echo "TEST: a mismatched account refuses, prints expected vs actual, makes no mutation"
 (
-  LIVE_ACCOUNT=222222222222 make_sandbox
+  LIVE_ACCOUNT=222222222222; make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on account mismatch" || fail "non-zero exit on account mismatch (got $rc)"
   assert_contains "$out" "222222222222" "prints the actual (live) account"
@@ -92,7 +92,7 @@ echo "TEST: a mismatched account refuses, prints expected vs actual, makes no mu
 
 echo "TEST: the guard distinguishes dev from prod by ENVIRONMENT"
 (
-  LIVE_ACCOUNT=111111111111 ENVIRONMENT=dev make_sandbox
+  LIVE_ACCOUNT=111111111111 ENVIRONMENT=dev; make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "dev account matches the dev entry" || fail "dev account matches the dev entry (got $rc)"
   assert_contains "$out" "dev" "summary shows the dev environment"
@@ -100,7 +100,7 @@ echo "TEST: the guard distinguishes dev from prod by ENVIRONMENT"
 
 echo "TEST: a dev account hitting the prod entry refuses"
 (
-  LIVE_ACCOUNT=111111111111 ENVIRONMENT=prod make_sandbox
+  LIVE_ACCOUNT=111111111111 ENVIRONMENT=prod; make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero when a dev account targets prod" || fail "non-zero when a dev account targets prod (got $rc)"
   assert_contains "$out" "111111111111" "prints the wrong live account"
@@ -108,7 +108,7 @@ echo "TEST: a dev account hitting the prod entry refuses"
 
 echo "TEST: failed/missing credentials abort before any compare"
 (
-  STS_FAIL=1 make_sandbox
+  STS_FAIL=1; make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when sts fails" || fail "non-zero exit when sts fails (got $rc)"
   assert_contains "$out" "not authenticated" "explains credentials are missing/expired"
@@ -116,7 +116,7 @@ echo "TEST: failed/missing credentials abort before any compare"
 
 echo "TEST: an unknown environment in targets.json aborts clearly"
 (
-  ENVIRONMENT=staging make_sandbox
+  ENVIRONMENT=staging; make_sandbox
   out="$(bash "$GUARD" --check 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit for an environment not in targets.json" || fail "non-zero exit for unknown environment (got $rc)"
   assert_contains "$out" "staging" "names the unknown environment"
@@ -125,7 +125,7 @@ echo "TEST: an unknown environment in targets.json aborts clearly"
 echo "TEST: a placeholder expected id refuses (guard is not bypassable by all-zeros)"
 (
   # targets.json with a placeholder dev id; a real live account must not match it.
-  LIVE_ACCOUNT=999999999999 ENVIRONMENT=dev make_sandbox
+  LIVE_ACCOUNT=999999999999 ENVIRONMENT=dev; make_sandbox
   # overwrite the dev entry with the all-zeros placeholder
   cat >"$TARGETS_FILE" <<'JSON'
 { "dev": { "account_id": "000000000000", "region": "eu-west-3" } }
@@ -137,7 +137,7 @@ JSON
 
 echo "TEST: a missing region in the targets entry aborts clearly"
 (
-  ENVIRONMENT=prod make_sandbox
+  ENVIRONMENT=prod; make_sandbox
   cat >"$TARGETS_FILE" <<'JSON'
 { "prod": { "account_id": "999999999999" } }
 JSON

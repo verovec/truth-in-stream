@@ -77,7 +77,7 @@ PY
 
 echo "TEST: passes when the apply role holds every required action"
 (
-  DENY_ACTIONS="" make_sandbox
+  DENY_ACTIONS=""; make_sandbox
   plan="$(plan_with_actions ec2:CreateVpc ecs:CreateCluster mq:CreateBroker)"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 when all granted" || fail "exit 0 when all granted (got $rc)"
@@ -89,7 +89,7 @@ echo "TEST: passes when the apply role holds every required action"
 
 echo "TEST: fails fast and lists the missing actions when the role lacks them"
 (
-  DENY_ACTIONS="mq:CreateBroker lambda:CreateFunction" make_sandbox
+  DENY_ACTIONS="mq:CreateBroker lambda:CreateFunction"; make_sandbox
   plan="$(plan_with_actions ec2:CreateVpc mq:CreateBroker lambda:CreateFunction)"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when permissions are missing" || fail "non-zero exit when missing (got $rc)"
@@ -102,7 +102,7 @@ echo "TEST: fails fast and lists the missing actions when the role lacks them"
 
 echo "TEST: an empty required set is a clean no-op"
 (
-  DENY_ACTIONS="" make_sandbox
+  DENY_ACTIONS=""; make_sandbox
   plan="$(plan_with_actions)"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 when nothing is declared" || fail "exit 0 when nothing declared (got $rc)"
@@ -112,13 +112,13 @@ echo "TEST: an empty required set is a clean no-op"
 
 echo "TEST: missing arguments are rejected"
 (
-  DENY_ACTIONS="" make_sandbox
+  DENY_ACTIONS=""; make_sandbox
   bash "$GUARD" >/dev/null 2>&1 && fail "rejects missing args" || ok "rejects missing args"
 )
 
 echo "TEST: more than 100 actions are simulated in batches (API limit)"
 (
-  DENY_ACTIONS="" make_sandbox
+  DENY_ACTIONS=""; make_sandbox
   actions=(); for i in $(seq 1 130); do actions+=("svc:Action$i"); done
   plan="$(plan_with_actions "${actions[@]}")"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
@@ -129,7 +129,7 @@ echo "TEST: more than 100 actions are simulated in batches (API limit)"
 
 echo "TEST: a simulate failure (role cannot self-simulate) is reported clearly"
 (
-  DENY_ACTIONS="" FAIL_SIMULATE=1 make_sandbox
+  DENY_ACTIONS="" FAIL_SIMULATE=1; make_sandbox
   plan="$(plan_with_actions ec2:CreateVpc)"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when simulate fails" || fail "non-zero exit when simulate fails (got $rc)"
@@ -138,7 +138,7 @@ echo "TEST: a simulate failure (role cannot self-simulate) is reported clearly"
 
 echo "TEST: fails closed when the simulate response is not valid JSON"
 (
-  DENY_ACTIONS="" BAD_JSON=1 make_sandbox
+  DENY_ACTIONS="" BAD_JSON=1; make_sandbox
   plan="$(plan_with_actions ec2:CreateVpc mq:CreateBroker)"
   out="$(bash "$GUARD" "$plan" "$ROLE" stack/terraform/dev 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on unparseable response (fails closed)" || fail "fails closed on bad JSON (got $rc)"
