@@ -247,7 +247,7 @@ echo "TEST: --stop-after stops the host after the run"
 
 echo "TEST: consumer --stop-when-idle hands the workers a drain window and a host-side drain-wait"
 (
-  DRY_RUN=1 make_sandbox
+  DRY_RUN=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 under a dry-run stop-when-idle" || fail "exit 0 under a dry-run stop-when-idle (got $rc)"
   assert_contains "$out" "up -d" "still brings the worker up detached"
@@ -259,7 +259,7 @@ echo "TEST: consumer --stop-when-idle hands the workers a drain window and a hos
 
 echo "TEST: a plain consumer up neither sets an idle window nor waits to drain"
 (
-  DRY_RUN=1 make_sandbox
+  DRY_RUN=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up 2>&1)"
   assert_contains "$out" "WORKER_IDLE_TIMEOUT=''" "leaves the idle window empty (runs until SIGTERM)"
   assert_not_contains "$out" "ps --status running --services" "no drain-wait without --stop-when-idle"
@@ -279,7 +279,7 @@ echo "TEST: --stop-when-idle stops the host after the drain, and only after the 
 
 echo "TEST: --stop-when-idle leaves the host running when the drain does not complete"
 (
-  CMD_STATUS=Failed CMD_CODE=1 make_sandbox
+  CMD_STATUS=Failed CMD_CODE=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the drain does not complete" || fail "non-zero exit when the drain does not complete (got $rc)"
   assert_contains "$out" "left running for inspection" "leaves an undrained host up for inspection"

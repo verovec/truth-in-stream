@@ -117,7 +117,7 @@ echo "TEST: the report never issues a mutating AWS call (read-only)"
 
 echo "TEST: the local section degrades when the database is unreachable"
 (
-  DB_DOWN=1 make_sandbox
+  DB_DOWN=1; make_sandbox
   out="$(bash "$RUN" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "still exits 0 with the database down" || fail "still exits 0 with the database down (got $rc)"
   assert_contains "$out" "corpus (local database): unavailable" "reports the database is unavailable"
@@ -127,14 +127,14 @@ echo "TEST: the local section degrades when the database is unreachable"
 
 echo "TEST: the fleet line notes when no worker is running"
 (
-  DOCKER_RUNNING="scheduler" make_sandbox
+  DOCKER_RUNNING="scheduler"; make_sandbox
   out="$(bash "$RUN" 2>&1)"
   assert_contains "$out" "workers running: none" "reports no workers running"
 )
 
 echo "TEST: the cloud section degrades when the account guard cannot resolve"
 (
-  LIVE_ACCOUNT=222222222222 make_sandbox
+  LIVE_ACCOUNT=222222222222; make_sandbox
   out="$(bash "$RUN" 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "still exits 0 on a guard mismatch" || fail "still exits 0 on a guard mismatch (got $rc)"
   assert_contains "$out" "CLOUD PIPELINE" "still prints the cloud header"
@@ -153,7 +153,7 @@ echo "TEST: the cloud section degrades to an actionable note when targets.json i
 
 echo "TEST: queue and run metrics degrade to n/a when the metric is absent"
 (
-  METRICS_ABSENT=1 make_sandbox
+  METRICS_ABSENT=1; make_sandbox
   out="$(bash "$RUN" 2>&1)"
   assert_contains "$out" "backlog=n/a" "backlog degrades to n/a without a metric"
   assert_contains "$out" "dlq=n/a" "DLQ degrades to n/a without a metric"
@@ -182,7 +182,7 @@ AWS
 echo "TEST: the BQ warning fires when embedded evidence crosses the threshold"
 (
   # The stub psql reports 20 embedded evidence vectors; a threshold of 10 crosses.
-  EVIDENCE_BQ_THRESHOLD_VECTORS=10 make_sandbox
+  EVIDENCE_BQ_THRESHOLD_VECTORS=10; make_sandbox
   out="$(bash "$RUN" 2>&1)"
   assert_contains "$out" "crossed the BQ threshold" "warns when the corpus crosses the BQ threshold"
   assert_contains "$out" "EVIDENCE_BQ_MULTIPLIER" "points the operator at the BQ knob"
