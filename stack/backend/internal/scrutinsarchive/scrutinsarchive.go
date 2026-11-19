@@ -24,11 +24,13 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,20 @@ const defaultURLTemplate = "https://data.assemblee-nationale.fr/static/openData/
 // fails the run rather than hanging the fleet. The archive is tens of MB, so the
 // bound is generous.
 const defaultHTTPTimeout = 5 * time.Minute
+
+// userAgent identifies the crawler to the open-data host: a descriptive client
+// name with version and project URL. An anonymous library default is the first
+// traffic a public host throttles.
+const userAgent = "truth-in-stream-scrutinscrawl/1.0 (https://github.com/verovec/truth-in-stream; bot) Go-http-client"
+
+// Throttling backoff bounds. A 429 or 503 is retried downloadMaxRetries times;
+// absent a Retry-After the wait starts at downloadRetryBase and doubles per
+// attempt, and no single wait exceeds downloadMaxRetryWait.
+const (
+	downloadMaxRetries   = 4
+	downloadRetryBase    = 5 * time.Second
+	downloadMaxRetryWait = 2 * time.Minute
+)
 
 // maxArchiveBytes caps the downloaded archive so a misconfigured or hostile URL
 // cannot fill the disk; the real archive is well under this.
@@ -181,15 +197,97 @@ func (c *Client) Run(ctx context.Context) (crawlnotify.Stats, error) {
 	return crawlnotify.Stats{New: published}, nil
 }
 
-// download issues a conditional GET against the archive, replaying prev's
+// download fetches the archive, retrying an attempt the host throttled (429 or
+// 503) up to downloadMaxRetries times. It waits out the server's Retry-After
+// when one is given and an exponential backoff otherwise; a Retry-After longer
+// than downloadMaxRetryWait fails the run rather than retrying early. Its
+// results are those of the first attempt the host did not throttle.
+func (c *Client) download(ctx context.Context, prev marker) (path string, next marker, changed bool, err error) {
+	for attempt := 0; ; attempt++ {
+		path, next, changed, err = c.fetchArchive(ctx, prev)
+		throttled, ok := errors.AsType[*throttledError](err)
+		if !ok {
+			return path, next, changed, err
+		}
+		wait, werr := throttled.wait(attempt)
+		if werr != nil {
+			return "", marker{}, false, fmt.Errorf("scrutinsarchive: download %q: %w", c.url, werr)
+		}
+		if attempt >= downloadMaxRetries {
+			return "", marker{}, false, fmt.Errorf("scrutinsarchive: download %q: gave up after %d retries: %w", c.url, downloadMaxRetries, err)
+		}
+		c.logger.WarnContext(ctx, "scrutins archive host throttled the download, retrying",
+			slog.String("status", throttled.status),
+			slog.Duration("wait", wait),
+			slog.Int("attempt", attempt+1))
+		if serr := sleepCtx(ctx, wait); serr != nil {
+			return "", marker{}, false, fmt.Errorf("scrutinsarchive: download %q: %w", c.url, serr)
+		}
+	}
+}
+
+// throttledError reports that the host refused one download attempt with a
+// throttling status. retryAfter is the server-requested delay, zero when the
+// response carried no usable Retry-After.
+type throttledError struct {
+	status     string
+	retryAfter time.Duration
+}
+
+func (e *throttledError) Error() string { return "throttled: " + e.status }
+
+// wait returns how long to pause before retry number attempt (zero-based): the
+// server's Retry-After when it gave one, else downloadRetryBase doubled per
+// attempt and capped at downloadMaxRetryWait. A Retry-After beyond that cap is
+// an error, because honoring it would stall the run and ignoring it would break
+// the host's stated limit.
+func (e *throttledError) wait(attempt int) (time.Duration, error) {
+	if e.retryAfter > downloadMaxRetryWait {
+		return 0, fmt.Errorf("%w: host asked to wait %s, over the %s limit", e, e.retryAfter, downloadMaxRetryWait)
+	}
+	if e.retryAfter > 0 {
+		return e.retryAfter, nil
+	}
+	return min(downloadRetryBase<<attempt, downloadMaxRetryWait), nil
+}
+
+// parseRetryAfter reads a Retry-After header in either standard form - a delay
+// in whole seconds or an HTTP-date - as the delay from now. An empty, malformed,
+// or past value yields zero, meaning the server gave no usable delay.
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	header = strings.TrimSpace(header)
+	if secs, err := strconv.Atoi(header); err == nil {
+		return max(time.Duration(secs)*time.Second, 0)
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		return max(t.Sub(now), 0)
+	}
+	return 0
+}
+
+// sleepCtx waits for d or until ctx is canceled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// fetchArchive issues one conditional GET against the archive, replaying prev's
 // validators. It returns the temp-file path of the downloaded archive and the
 // new validators when the server answers 200, or changed=false (and an empty
-// path) when it answers 304 Not Modified. The caller removes the temp file.
-func (c *Client) download(ctx context.Context, prev marker) (path string, next marker, changed bool, err error) {
+// path) when it answers 304 Not Modified. A 429 or 503 is a *throttledError.
+// The caller removes the temp file.
+func (c *Client) fetchArchive(ctx context.Context, prev marker) (path string, next marker, changed bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return "", marker{}, false, fmt.Errorf("scrutinsarchive: build request: %w", err)
 	}
+	req.Header.Set("User-Agent", userAgent)
 	if !prev.empty() {
 		if prev.ETag != "" {
 			req.Header.Set("If-None-Match", prev.ETag)
@@ -209,6 +307,11 @@ func (c *Client) download(ctx context.Context, prev marker) (path string, next m
 	case http.StatusNotModified:
 		return "", prev, false, nil
 	case http.StatusOK:
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return "", marker{}, false, &throttledError{
+			status:     resp.Status,
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	default:
 		return "", marker{}, false, fmt.Errorf("scrutinsarchive: download %q: unexpected status %s", c.url, resp.Status)
 	}

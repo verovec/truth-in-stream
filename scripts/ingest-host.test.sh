@@ -105,7 +105,7 @@ line_of() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
 
 echo "TEST: crawler up on a stopped host runs the full lifecycle in order (guard, resolve, start, send)"
 (
-  INSTANCE_STATE=stopped make_sandbox
+  INSTANCE_STATE=stopped; make_sandbox
   out="$(CRAWL_CATEGORIES='Category:Climate' bash "$RUN" crawler wikipedia up 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on a clean crawler run" || fail "exit 0 on a clean crawler run (got $rc)"
   log="$AWS_CALL_LOG"
@@ -133,7 +133,7 @@ echo "TEST: crawler up sends the source's producer with run --rm and forwards CR
 
 echo "TEST: a running crawler host is not started again"
 (
-  INSTANCE_STATE=running make_sandbox
+  INSTANCE_STATE=running; make_sandbox
   CRAWL_CATEGORIES='Category:Physics' bash "$RUN" crawler wikipedia up >/dev/null 2>&1
   assert_not_contains "$(cat "$AWS_CALL_LOG")" "ec2 start-instances" "a running host is not re-started"
 )
@@ -215,7 +215,7 @@ echo "TEST: factcheck runs with FACTCHECK_QUERIES unset (it is optional, not req
 
 echo "TEST: a wrong account refuses before any start or send"
 (
-  LIVE_ACCOUNT=222222222222 make_sandbox
+  LIVE_ACCOUNT=222222222222; make_sandbox
   out="$(CRAWL_CATEGORIES='C' bash "$RUN" crawler wikipedia up 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit on wrong account" || fail "non-zero exit on wrong account (got $rc)"
   assert_contains "$out" "111111111111" "prints the expected account"
@@ -227,7 +227,7 @@ echo "TEST: a wrong account refuses before any start or send"
 
 echo "TEST: a failed host command surfaces a non-zero exit and reports the status"
 (
-  CMD_STATUS=Failed CMD_CODE=7 make_sandbox
+  CMD_STATUS=Failed CMD_CODE=7; make_sandbox
   out="$(CRAWL_CATEGORIES='C' bash "$RUN" crawler wikipedia up 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the host command fails" || fail "non-zero exit when the host command fails (got $rc)"
   assert_contains "$out" "Failed" "reports the failed status"
@@ -247,7 +247,7 @@ echo "TEST: --stop-after stops the host after the run"
 
 echo "TEST: consumer --stop-when-idle hands the workers a drain window and a host-side drain-wait"
 (
-  DRY_RUN=1 make_sandbox
+  DRY_RUN=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 under a dry-run stop-when-idle" || fail "exit 0 under a dry-run stop-when-idle (got $rc)"
   assert_contains "$out" "up -d" "still brings the worker up detached"
@@ -259,7 +259,7 @@ echo "TEST: consumer --stop-when-idle hands the workers a drain window and a hos
 
 echo "TEST: a plain consumer up neither sets an idle window nor waits to drain"
 (
-  DRY_RUN=1 make_sandbox
+  DRY_RUN=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up 2>&1)"
   assert_contains "$out" "WORKER_IDLE_TIMEOUT=''" "leaves the idle window empty (runs until SIGTERM)"
   assert_not_contains "$out" "ps --status running --services" "no drain-wait without --stop-when-idle"
@@ -279,7 +279,7 @@ echo "TEST: --stop-when-idle stops the host after the drain, and only after the 
 
 echo "TEST: --stop-when-idle leaves the host running when the drain does not complete"
 (
-  CMD_STATUS=Failed CMD_CODE=1 make_sandbox
+  CMD_STATUS=Failed CMD_CODE=1; make_sandbox
   out="$(bash "$RUN" consumer wikipedia up --stop-when-idle 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the drain does not complete" || fail "non-zero exit when the drain does not complete (got $rc)"
   assert_contains "$out" "left running for inspection" "leaves an undrained host up for inspection"
@@ -305,7 +305,7 @@ echo "TEST: without --stop-after the host is left running for the operator to do
 
 echo "TEST: down stops a running host and sends no command"
 (
-  INSTANCE_STATE=running make_sandbox
+  INSTANCE_STATE=running; make_sandbox
   out="$(bash "$RUN" consumer wikipedia down 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on down" || fail "exit 0 on down (got $rc)"
   log="$(cat "$AWS_CALL_LOG")"
@@ -316,14 +316,14 @@ echo "TEST: down stops a running host and sends no command"
 
 echo "TEST: down on an already-stopped host is a no-op"
 (
-  INSTANCE_STATE=stopped make_sandbox
+  INSTANCE_STATE=stopped; make_sandbox
   bash "$RUN" crawler wikipedia down >/dev/null 2>&1
   assert_not_contains "$(cat "$AWS_CALL_LOG")" "ec2 stop-instances" "already-stopped host is not stopped again"
 )
 
 echo "TEST: status is read-only and reports the host state and queue depth"
 (
-  INSTANCE_STATE=running DEPTH=42 make_sandbox
+  INSTANCE_STATE=running DEPTH=42; make_sandbox
   out="$(bash "$RUN" consumer wikipedia status 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 on status" || fail "exit 0 on status (got $rc)"
   assert_contains "$out" "111111111111" "status shows the account"
@@ -337,14 +337,14 @@ echo "TEST: status is read-only and reports the host state and queue depth"
 
 echo "TEST: status degrades clearly when the queue metric is absent"
 (
-  METRICS_ABSENT=1 make_sandbox
+  METRICS_ABSENT=1; make_sandbox
   out="$(bash "$RUN" consumer stats status 2>&1)"
   assert_contains "$out" "depth unavailable" "reports the depth is unavailable"
 )
 
 echo "TEST: an absent host instance fails with an actionable message and no mutation"
 (
-  INSTANCE_MISSING=1 make_sandbox
+  INSTANCE_MISSING=1; make_sandbox
   out="$(CRAWL_CATEGORIES='C' bash "$RUN" crawler wikipedia up 2>&1)"; rc=$?
   [[ $rc -ne 0 ]] && ok "non-zero exit when the host is absent" || fail "non-zero exit when the host is absent (got $rc)"
   assert_contains "$out" "enable_ingestion_hosts" "points at the terraform toggle"
@@ -372,7 +372,7 @@ echo "TEST: an unknown source is rejected"
 
 echo "TEST: DRY_RUN drives the whole path without a real start or send"
 (
-  INSTANCE_STATE=stopped DRY_RUN=1 make_sandbox
+  INSTANCE_STATE=stopped DRY_RUN=1; make_sandbox
   out="$(CRAWL_CATEGORIES='C' bash "$RUN" crawler wikipedia up 2>&1)"; rc=$?
   [[ $rc -eq 0 ]] && ok "exit 0 under DRY_RUN" || fail "exit 0 under DRY_RUN (got $rc)"
   assert_contains "$out" "DRY-RUN aws ec2 start-instances" "dry-runs the host start"

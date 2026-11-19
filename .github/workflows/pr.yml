@@ -131,6 +131,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/doctor.test.sh
+  # Unit-test the Makefile guard that starts a queue worker before an ingestion
+  # producer publishes, with a stubbed docker CLI (no Docker daemon required).
+  ingest-workers-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ingest-workers.test.sh
   # Unit-test the Secrets Manager bulk-push helper with a stubbed aws CLI and a
   # synthetic .env (no AWS account; proves no secret value reaches an argv/log).
   push-secrets-script:
