@@ -300,6 +300,9 @@ export function moveSheet(labels: string[], index: number, offset: number): stri
   return next;
 }
 
+// QUOTE_LIMIT bounds a printed quote, on the page and in the PDF alike.
+export const QUOTE_LIMIT = 280;
+
 // truncateQuote shortens a verbatim quote to at most limit characters, cutting
 // on a word boundary and marking the cut with an ellipsis. The words kept are
 // never altered.

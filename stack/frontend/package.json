@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "copy-pdf-worker": "node scripts/copy-pdf-worker.mjs",
-    "predev": "node scripts/copy-pdf-worker.mjs",
+    "predev": "node scripts/copy-pdf-worker.mjs && node scripts/copy-recap-fonts.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/copy-pdf-worker.mjs",
+    "prebuild": "node scripts/copy-pdf-worker.mjs && node scripts/copy-recap-fonts.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -14,7 +14,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@fontsource/spectral": "5.3.0",
+    "@react-pdf/renderer": "4.9.0",
     "client-only": "^0.0.1",
+    "geist": "1.9.2",
     "next": "16.2.7",
     "oauth4webapi": "^3.8.6",
     "react": "19.2.7",

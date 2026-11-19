@@ -10,7 +10,7 @@ import {
   unverifiedShare,
 } from "@/lib/video/recap";
 import { DistributionBar, DistributionLegend } from "./distribution-bar";
-import { speakerDisplayName } from "./speaker-display-name";
+import { speakerDisplayName } from "@/lib/video/speaker-display-name";
 
 const NUMERIC = "px-3 py-2 text-right tabular-nums";
 

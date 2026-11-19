@@ -1,0 +1,6 @@
+[
+  { "family": "Geist", "weight": 400, "style": "normal", "file": "Geist-Regular.ttf", "source": "geist/dist/fonts/geist-sans/Geist-Regular.ttf" },
+  { "family": "Geist", "weight": 400, "style": "italic", "file": "Geist-Italic.ttf", "source": "geist/dist/fonts/geist-sans/Geist-Italic.ttf" },
+  { "family": "Geist", "weight": 600, "style": "normal", "file": "Geist-SemiBold.ttf", "source": "geist/dist/fonts/geist-sans/Geist-SemiBold.ttf" },
+  { "family": "Spectral", "weight": 600, "style": "normal", "file": "spectral-latin-600-normal.woff", "source": "@fontsource/spectral/files/spectral-latin-600-normal.woff" }
+]

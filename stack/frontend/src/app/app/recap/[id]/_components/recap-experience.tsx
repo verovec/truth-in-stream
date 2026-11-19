@@ -13,6 +13,8 @@ import {
   type Recap,
   serializeSheetOrder,
 } from "@/lib/video/recap";
+import type { RecapDocumentProps } from "@/lib/recap-pdf/recap-document";
+import { ExportPdfButton } from "./export-pdf-button";
 import { RecapCover } from "./recap-cover";
 import { RecapTable } from "./recap-table";
 import { SheetOrderControl } from "./sheet-order-control";
@@ -53,18 +55,22 @@ function writeOrderToUrl(labels: string[], isDefault: boolean) {
  * RecapExperience loads the recap of a video and renders it as a report: the
  * cover, the recap table, then one sheet per principal, in that order. The
  * sheet order starts from the URL (initialOrder, read by the page) and every
- * change is written back to it. loadRecap is an injection seam for tests.
+ * change is written back to it. The PDF export button is present in every
+ * state: it exports what the page shows once there is a report, and says why
+ * it cannot before. loadRecap and exportPdf are injection seams for tests.
  */
 export function RecapExperience({
   videoId,
   brandName,
   initialOrder = null,
   loadRecap = getVideoRecap,
+  exportPdf,
 }: {
   videoId: string;
   brandName: string;
   initialOrder?: string | null;
   loadRecap?: (id: string, signal?: AbortSignal) => Promise<Recap>;
+  exportPdf?: (props: RecapDocumentProps) => Promise<void>;
 }) {
   const { t } = useAppI18n();
   const [state, setState] = useState<LoadState>({ status: "loading" });
@@ -89,9 +95,16 @@ export function RecapExperience({
 
   if (state.status === "loading") {
     return (
-      <p role="status" className="text-sm text-ink/70 dark:text-paper/70">
-        {t.recap.loading}
-      </p>
+      <div className="flex flex-col items-start gap-3">
+        <p role="status" className="text-sm text-ink/70 dark:text-paper/70">
+          {t.recap.loading}
+        </p>
+        <ExportPdfButton
+          availability={{ status: "unavailable", reason: "loading" }}
+          brandName={brandName}
+          exportPdf={exportPdf}
+        />
+      </div>
     );
   }
   if (state.status === "error") {
@@ -115,6 +128,14 @@ export function RecapExperience({
           ) : null}
           <BackLink />
         </div>
+        <ExportPdfButton
+          availability={{
+            status: "unavailable",
+            reason: state.error === "notReady" ? "notReady" : "failed",
+          }}
+          brandName={brandName}
+          exportPdf={exportPdf}
+        />
       </div>
     );
   }
@@ -137,8 +158,13 @@ export function RecapExperience({
 
   return (
     <article className="flex flex-col gap-4">
-      <div className="print:hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
         <BackLink />
+        <ExportPdfButton
+          availability={{ status: "ready", recap, sheets }}
+          brandName={brandName}
+          exportPdf={exportPdf}
+        />
       </div>
       <RecapCover recap={recap} principals={sheets} brandName={brandName} />
       <RecapTable recap={recap} principals={sheets} />

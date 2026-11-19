@@ -460,6 +460,16 @@ export const en: Dictionary = {
         noSource: "No direct source",
         flags: "Flags",
       },
+      pdf: {
+        export: "Export PDF",
+        exporting: "Generating the PDF…",
+        failed: "The PDF could not be generated.",
+        unavailableLoading: "Available once the recap has loaded.",
+        unavailableNotReady: "Unavailable: this video's analysis is not complete.",
+        unavailable: "Unavailable: the recap could not be loaded.",
+        continued: "{name} (continued)",
+        page: "Page {page} / {total}",
+      },
       order: {
         heading: "Sheet order",
         up: "Move the sheet for {name} up",

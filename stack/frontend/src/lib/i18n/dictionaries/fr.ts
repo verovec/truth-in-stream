@@ -468,6 +468,16 @@ export const fr = {
         noSource: "Sans source directe",
         flags: "Signalements",
       },
+      pdf: {
+        export: "Exporter en PDF",
+        exporting: "Génération du PDF…",
+        failed: "Le PDF n'a pas pu être généré.",
+        unavailableLoading: "Disponible une fois le récapitulatif chargé.",
+        unavailableNotReady: "Indisponible : l'analyse de cette vidéo n'est pas terminée.",
+        unavailable: "Indisponible : le récapitulatif n'a pas pu se charger.",
+        continued: "{name} (suite)",
+        page: "Page {page} / {total}",
+      },
       order: {
         heading: "Ordre des fiches",
         up: "Monter la fiche de {name}",

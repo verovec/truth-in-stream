@@ -5,16 +5,13 @@ import { formatTemplate } from "@/lib/i18n/text";
 import { formatTime } from "@/lib/playback/format-time";
 import {
   formatDuration,
+  QUOTE_LIMIT,
   type RecapSpeaker,
   type RecapStatement,
   truncateQuote,
 } from "@/lib/video/recap";
 import { DistributionBar } from "./distribution-bar";
-import { speakerDisplayName } from "./speaker-display-name";
-
-// QUOTE_LIMIT bounds a printed quote. Longer quotes are cut on a word boundary
-// with an ellipsis and never rewritten.
-const QUOTE_LIMIT = 280;
+import { speakerDisplayName } from "@/lib/video/speaker-display-name";
 
 // SpeakerSheet is one principal's page of the report: the same figures as the
 // recap row, the distribution, then the disputed and the credible statements
