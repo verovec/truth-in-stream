@@ -13,7 +13,9 @@ import { LogoutButton } from "./logout-button";
 // AppSection identifies which product area is showing so the header marks the
 // current nav link. Add a section here and a NAV entry to grow the navigation
 // by data, not by copying markup.
-export type AppSection = "videos" | "documents" | "tv" | "backoffice";
+// "recap" is a sub-page of Videos with no NAV entry of its own: no link is
+// marked current there, so Videos stays a working link back to the library.
+export type AppSection = "videos" | "documents" | "tv" | "backoffice" | "recap";
 
 // NAV is the data the header renders. adminOnly entries appear only for an admin
 // caller; the backoffice is operator-only, so a guest never sees it (the backend

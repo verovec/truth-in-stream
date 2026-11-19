@@ -106,6 +106,43 @@ describe("AnalysisControl", () => {
     expect(screen.getByText(fr.app.analysis.complete)).toBeInTheDocument();
   });
 
+  test("only a completed, readable analysis links to its recap", () => {
+    const { rerender } = render(
+      <AnalysisControl
+        role="guest"
+        video={video({ id: "vid 1", analysisStatus: "complete" })}
+        track={track({ frames: [] })}
+      />,
+    );
+    expect(
+      screen.getByRole("link", { name: fr.app.recap.open }),
+    ).toHaveAttribute("href", "/app/recap/vid%201");
+
+    for (const analysisStatus of ["none", "analysing", "failed"] as const) {
+      rerender(
+        <AnalysisControl
+          role="admin"
+          video={video({ analysisStatus })}
+          track={track()}
+        />,
+      );
+      expect(
+        screen.queryByRole("link", { name: fr.app.recap.open }),
+      ).not.toBeInTheDocument();
+    }
+
+    rerender(
+      <AnalysisControl
+        role="guest"
+        video={video({ analysisStatus: "complete" })}
+        track={track({ loadFailed: true })}
+      />,
+    );
+    expect(
+      screen.queryByRole("link", { name: fr.app.recap.open }),
+    ).not.toBeInTheDocument();
+  });
+
   test("a complete video whose stored result failed to load offers a reload", async () => {
     const t = track({ loadFailed: true });
     render(

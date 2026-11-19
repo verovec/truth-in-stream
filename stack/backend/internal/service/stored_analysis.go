@@ -183,6 +183,24 @@ func (r *StoredAnalysisReader) Snapshot(ctx context.Context, videoID string) ([]
 	return events, true, nil
 }
 
+// StoredEvents returns the events of the video's stored analysis for a caller
+// that has no fallback and must tell "nothing to read" from "could not read".
+// Unlike Snapshot it surfaces a backend failure as an error. A missing row, an
+// unsupported snapshot version and a corrupt or empty payload are all
+// domain.ErrVideoAnalysisNotFound: no usable analysis is stored, and
+// re-analysing is the recovery in every case.
+func (r *StoredAnalysisReader) StoredEvents(ctx context.Context, videoID string) ([]LiveEvent, error) {
+	analysis, err := r.analyses.GetVideoAnalysis(ctx, videoID)
+	if err != nil {
+		return nil, fmt.Errorf("service: stored events of %q: %w", videoID, err)
+	}
+	events, ok := r.decode(ctx, videoID, analysis)
+	if !ok {
+		return nil, domain.ErrVideoAnalysisNotFound
+	}
+	return events, nil
+}
+
 // Get returns the video's analysis lifecycle plus, when the latest run
 // completed, the stored result and its decoded events. An unknown video is
 // domain.ErrVideoNotFound. A completed lifecycle whose stored row is missing

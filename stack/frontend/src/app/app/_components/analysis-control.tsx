@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import type { VideoAnalysisTrack } from "@/hooks/use-video-analysis";
@@ -71,6 +72,14 @@ export function AnalysisControl({
         <span className="inline-flex items-center rounded-full bg-verdict-credible/10 px-3 py-1 text-xs font-semibold text-verdict-credible">
           {t.analysis.complete}
         </span>
+        {/* The recap exists only for a completed, readable analysis, so the
+            entry appears here and nowhere else. */}
+        <Link
+          href={`/app/recap/${encodeURIComponent(video.id)}`}
+          className="text-sm font-medium text-bleu underline underline-offset-2 hover:no-underline dark:text-sky-300"
+        >
+          {t.recap.open}
+        </Link>
       </ControlRow>
     );
   }

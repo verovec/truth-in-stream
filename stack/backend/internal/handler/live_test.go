@@ -1144,7 +1144,7 @@ func liveMuxServer(t *testing.T, analyzer LiveAnalyzer, debugFactCheck bool) str
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	hc := service.NewHealthChecker(fakePinger{})
-	mux := NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeVideoSpeakerService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), analyzer, nil, nil, nil, debugFactCheck, nil, "", globalTestAuth, logger)
+	mux := NewMux(hc, &fakeVideoService{}, &fakeVideoAnalysisService{}, &fakeVideoAnalysisStarter{}, &fakeVideoSpeakerService{}, &fakeVideoRecapService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), analyzer, nil, nil, nil, debugFactCheck, nil, "", globalTestAuth, logger)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/videos/vid1/live"

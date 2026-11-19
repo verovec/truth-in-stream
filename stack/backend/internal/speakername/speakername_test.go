@@ -56,6 +56,14 @@ func TestTurns(t *testing.T) {
 			want:     []Turn{{Label: "A", Start: 4 * time.Second, End: 6 * time.Second, Text: "Oui."}},
 		},
 		{
+			name:     "unlabeled speech ends the turn before it",
+			segments: []domain.Segment{seg("A", 0, 2, "Un."), seg("", 2, 60, "Un extrait diffusé."), seg("A", 60, 62, "Deux.")},
+			want: []Turn{
+				{Label: "A", Start: 0, End: 2 * time.Second, Text: "Un."},
+				{Label: "A", Start: 60 * time.Second, End: 62 * time.Second, Text: "Deux."},
+			},
+		},
+		{
 			name:     "a label returning after another voice opens a new turn",
 			segments: []domain.Segment{seg("A", 0, 2, "Un."), seg("B", 2, 4, "Deux."), seg("A", 4, 6, "Trois.")},
 			want: []Turn{
@@ -436,7 +444,7 @@ func TestResolveOffersContendersForAnOpenTie(t *testing.T) {
 	}
 }
 
-func TestInferRoles(t *testing.T) {
+func TestRoles(t *testing.T) {
 	t.Parallel()
 	turn := func(label string, start, length int) Turn {
 		return Turn{Label: label, Start: time.Duration(start) * time.Second, End: time.Duration(start+length) * time.Second, Text: "x"}
@@ -480,7 +488,7 @@ func TestInferRoles(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if diff := cmp.Diff(tc.want, inferRoles(tc.turns)); diff != "" {
+			if diff := cmp.Diff(tc.want, Roles(tc.turns)); diff != "" {
 				t.Errorf("roles mismatch (-want +got):\n%s", diff)
 			}
 		})

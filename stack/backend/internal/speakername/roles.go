@@ -34,11 +34,11 @@ func (s speakingStats) meanTurn() time.Duration {
 	return s.total / time.Duration(s.turns)
 }
 
-// inferRoles classifies every label from the structure of the conversation:
+// Roles classifies every label from the structure of the conversation:
 // principals hold long turns and most of the time, moderators speak less and in
 // short turns, a guest is marginal and occasional. A transcript with no usable timing yields
 // unknown roles rather than a guess.
-func inferRoles(turns []Turn) map[string]domain.SpeakerRole {
+func Roles(turns []Turn) map[string]domain.SpeakerRole {
 	stats := make(map[string]speakingStats)
 	var longest time.Duration
 	var mostTurns int

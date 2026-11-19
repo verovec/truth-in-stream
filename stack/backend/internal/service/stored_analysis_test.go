@@ -383,3 +383,47 @@ func TestStoredAnalysisReaderGet(t *testing.T) {
 		}
 	})
 }
+
+// TestStoredAnalysisReaderStoredEvents pins the contract of the read that has
+// no fallback: a backend fault is an error, and every "nothing usable is
+// stored" outcome is ErrVideoAnalysisNotFound.
+func TestStoredAnalysisReaderStoredEvents(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(storedEvents())
+	if err != nil {
+		t.Fatalf("marshal events: %v", err)
+	}
+	boom := errors.New("connection refused")
+	tests := []struct {
+		name     string
+		analysis domain.VideoAnalysis
+		getErr   error
+		wantIs   error
+	}{
+		{name: "stored", analysis: domain.VideoAnalysis{VideoID: "v1", SnapshotVersion: SnapshotVersion, Events: payload}},
+		{name: "no row", getErr: domain.ErrVideoAnalysisNotFound, wantIs: domain.ErrVideoAnalysisNotFound},
+		{name: "unsupported version", analysis: domain.VideoAnalysis{VideoID: "v1", SnapshotVersion: SnapshotVersion + 1, Events: payload}, wantIs: domain.ErrVideoAnalysisNotFound},
+		{name: "corrupt payload", analysis: domain.VideoAnalysis{VideoID: "v1", SnapshotVersion: SnapshotVersion, Events: []byte("{")}, wantIs: domain.ErrVideoAnalysisNotFound},
+		{name: "backend fault", getErr: boom, wantIs: boom},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := &fakeAnalysisStore{stored: tc.analysis, getErr: tc.getErr}
+			reader, err := NewStoredAnalysisReader(fakeSpeakerVideos{}, store, discardLogger())
+			if err != nil {
+				t.Fatalf("NewStoredAnalysisReader: %v", err)
+			}
+			events, err := reader.StoredEvents(t.Context(), "v1")
+			if !errors.Is(err, tc.wantIs) {
+				t.Fatalf("StoredEvents error = %v, want %v", err, tc.wantIs)
+			}
+			if tc.wantIs == nil && len(events) != len(storedEvents()) {
+				t.Errorf("got %d events, want %d", len(events), len(storedEvents()))
+			}
+			if errors.Is(tc.wantIs, boom) && errors.Is(err, domain.ErrVideoAnalysisNotFound) {
+				t.Errorf("a backend fault was reported as a missing analysis: %v", err)
+			}
+		})
+	}
+}

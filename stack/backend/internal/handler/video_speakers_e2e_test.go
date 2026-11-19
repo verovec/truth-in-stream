@@ -121,7 +121,7 @@ func TestSpeakerNamingEndToEnd(t *testing.T) {
 		t.Fatalf("NewSpeakerNamer: %v", err)
 	}
 	videos := &fakeVideoService{playable: service.PlayableVideo{Video: video}}
-	srv := NewMux(service.NewHealthChecker(fakePinger{}), videos, reader, &fakeVideoAnalysisStarter{}, namer, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, reader, nil, false, nil, "", globalTestAuth, logger)
+	srv := NewMux(service.NewHealthChecker(fakePinger{}), videos, reader, &fakeVideoAnalysisStarter{}, namer, &fakeVideoRecapService{}, &fakeDocumentService{}, &fakeDocumentAnalyzer{}, &fakeYouTubeService{}, &fakeTVChannelService{}, &fakeTVRecordingService{}, testTVHub(), stubLiveAnalyzer{}, nil, reader, nil, false, nil, "", globalTestAuth, logger)
 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
