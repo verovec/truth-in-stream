@@ -136,7 +136,9 @@ G2 -> G3
    `dev`). G2 becomes ready when G1 is `In Review` or `Done`, G3 when G2 is.
 
 Epic G (debate recap) opened 2026-11-19 with G1..G3 tracked locally; bodies in
-`CARDS-DEBATE-RECAP.md`.
+`CARDS-DEBATE-RECAP.md`. From this epic on, the live queue is the local `cards/ROADMAP.md`
+managed by `scripts/cards.sh` (see the `local-cards` skill); this file is no longer the
+source `/pick` reads and is updated only at an epic's close-out.
 
 Epic F (vector-first verdicts) COMPLETE 2026-08-16: all seven cards delivered to `dev`
 in one epic run (PRs #268-#275).

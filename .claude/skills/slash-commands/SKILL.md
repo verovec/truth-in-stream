@@ -55,9 +55,9 @@ It deliberately does NOT scan the codebase.
 |---|---|
 | `/mayday` | Menu and router - map intent to the right command, no logic of its own |
 | `/setup` | Bootstrap a new project from this template: detach, scaffold the stack, link a GitHub repo |
-| `/roadmap` | Sync the roadmap state file from Linear (card list, dependency graph, ready queue) |
-| `/pick` | Claim the next ready card (parallel-safe) and deliver it in an isolated worktree |
-| `/card` | Create or update a Linear card following the workspace card rules |
+| `/roadmap` | Show the local card queue: in flight, next, blocked |
+| `/pick` | Claim the next eligible local card (parallel-safe), deliver it in an isolated worktree, then chain |
+| `/card` | Create or update a local card following the workspace card rules |
 | `/research` | Verify current best practice and latest version before integrating a pattern |
 | `/version` | Compare the local `VERSION` file with the Linear version card |
 | `/reconcile` | Rebase card branches onto latest main, resolving conflicts per branch |

@@ -5,6 +5,13 @@ description: Use when creating, updating, or syncing Linear cards / the roadmap 
 
 # Roadmap & Linear Rules
 
+> **Cards are local (2026-11-19).** New cards are created, claimed and updated in local
+> Markdown files through `scripts/cards.sh`; see the `local-cards` skill, which wins wherever
+> it differs from this file. Do not create or update cards in Linear. What still applies from
+> here: the card structure (seven sections), the tone and confidentiality rules, the sizing
+> rules that keep parallel cards off the same files, and the epic map. The Linear MCP usage,
+> the claim comments and the synced ready queue below are historical.
+
 Identity comes from `.factory-state.json`: `linear_team_id`, `linear_project` (and its id).
 
 ## Fetching

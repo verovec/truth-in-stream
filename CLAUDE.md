@@ -24,7 +24,7 @@ lives under `stack/`.
   role lacks (the pre-apply guard names them) — remains a separate, deliberate human
   `terraform apply`. Never run `terraform apply` by hand, dispatch a `deploy-*.yml` workflow, push
   a deploy tag, or take any other production-affecting action on the user's behalf without explicit
-  approval; an agent delivers to `main` but never tags a release or applies prod.
+  approval; an agent delivers to `dev` and never merges to `main`, tags a release or applies prod.
 - Two-branch flow: `main` is the stable branch and is **human-only**; `dev` is the agent's
   integration branch. An agent delivers a card by branching off `dev`, opening the PR against
   `dev`, and — after a passing code-review and green PR CI — **merging the PR to `dev`** and moving
@@ -63,7 +63,7 @@ lives under `stack/`.
 - Acceptance criteria met; tests green (`-race` for Go); an end-to-end check of the feature passes;
   lint and format clean.
 - A code review has been run on the change and every correctness finding resolved.
-- The branch is rebased on latest `main`, the PR's CI is green, and the PR is merged to `main`; the
+- The branch is rebased on latest `dev`, the PR's CI is green, and the PR is merged to `dev`; the
   card is then moved to Done. Deploys still require explicit human approval.
 
 ## Code review (mandatory, every card)
@@ -79,7 +79,9 @@ changes. A card is not Done until its review passes.
 - Committing, or handling secrets / infra identifiers on this public repo -> public-repo-hygiene skill.
 - Writing/reviewing code -> coding-philosophy skill.
 - Updating the README / `docs/` after an epic completes -> maintaining-documentation skill.
-- Linear cards / roadmap -> roadmap-linear skill; commands `/roadmap`, `/card`.
+- Cards, the queue, picking or claiming a card -> local-cards skill; commands `/roadmap`, `/card`, `/pick`.
+  Cards are local Markdown files under `cards/` (gitignored, changed only via `scripts/cards.sh`), not Linear.
+- Card structure, sizing, epics -> roadmap-linear skill.
 - Implementing a card / parallel card delivery -> delivering-linear-cards skill; commands `/pick`, `/reconcile`.
 - Integrating a new pattern -> research-patterns skill; command `/research`.
 

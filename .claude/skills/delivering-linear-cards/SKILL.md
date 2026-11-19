@@ -5,6 +5,14 @@ description: Use when implementing a Linear card or feature, when opening a PR f
 
 # Delivering Linear Cards
 
+> **Cards are local (2026-11-19).** Cards and their queue live in local Markdown files, not in
+> Linear; the `local-cards` skill owns where a card lives, its statuses and the claim. The
+> workflow below is unchanged, but every Linear state change, `CLAIM` comment, card fetch and
+> card comment it describes is replaced by `scripts/cards.sh`: `In Progress` is `claimed`,
+> `In Review` is `in-review`, `Done` is `done`. A dependent card waits for its dependency to be
+> `done` and branches off `dev`; the stacked-branch flow described below is not used. Where
+> this file and `local-cards` disagree, `local-cards` wins.
+
 > **Merge target: `dev`, not `main` (2026-07-13).** This workspace uses a two-branch flow. `main`
 > is the STABLE branch and is human-only: the agent never merges to `main` and never tags a
 > release. `dev` is the agent's integration branch. Everywhere below that says branch off / rebase

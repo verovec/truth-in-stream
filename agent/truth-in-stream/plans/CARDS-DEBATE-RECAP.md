@@ -4,6 +4,10 @@ Authored 2026-11-19. These cards are tracked locally in this file by decision of
 operator, not in Linear. Ids are G1..G3, state `Todo`, priority High, label
 `epic:debate-recap`. The chain is serial: `G1 -> G2 -> G3`.
 
+This file is the authored record of the epic. The live queue, statuses and claims are in the
+local `cards/` directory, managed by `scripts/cards.sh`; the card bodies there are the working
+copies.
+
 The epic turns a finished video analysis into a readable report. Its reference is a report
 produced by hand on a real 2h51 five-candidate debate: a cover, a recap of every speaker, then
 one sheet per politician with sourced statements. That exercise set the layout and exposed the
