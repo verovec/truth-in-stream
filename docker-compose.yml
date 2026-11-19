@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: dev
       POSTGRES_DB: truthinstream
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -218,7 +218,7 @@ services:
   # the backend talks to both through one storage abstraction selected by config
   # (STORAGE_* env). Console on :9001, S3 API on :9000.
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    image: cgr.dev/chainguard/minio:latest@sha256:16b824a0016ffad3dfa8b059755f83800aa42ca68fe86f1782cabd0c5a16d322
     command: server /data --console-address ":9001"
     environment:
       # Dev-only root credentials; production uses the ECS task role, no keys.
@@ -233,7 +233,7 @@ services:
   # One-shot: waits for MinIO, then creates the media bucket and exits.
   # Idempotent (mc mb --ignore-existing), so repeated up cycles are safe.
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: cgr.dev/chainguard/minio-client:latest-dev@sha256:f93f177ab9970e4ddec6fb393e29b7f12d0ce706a9bff7fb637332c27bce2df7
     depends_on:
       - minio
     entrypoint:
