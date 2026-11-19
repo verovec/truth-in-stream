@@ -47,9 +47,9 @@ const defaultURLTemplate = "https://data.assemblee-nationale.fr/static/openData/
 const defaultHTTPTimeout = 5 * time.Minute
 
 // userAgent identifies the crawler to the open-data host: a descriptive client
-// name with version and project URL. An anonymous library default is the first
-// traffic a public host throttles.
-const userAgent = "truth-in-stream-scrutinscrawl/1.0 (https://github.com/verovec/truth-in-stream; bot) Go-http-client"
+// name with version and project URL. It must not contain "Go-http-client": the
+// host answers any User-Agent carrying that token with 429, whatever precedes it.
+const userAgent = "truth-in-stream-scrutinscrawl/1.0 (https://github.com/verovec/truth-in-stream; bot)"
 
 // Throttling backoff bounds. A 429 or 503 is retried downloadMaxRetries times;
 // absent a Retry-After the wait starts at downloadRetryBase and doubles per
