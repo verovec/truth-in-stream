@@ -6,6 +6,10 @@ on:
   pull_request:
     paths: ['stack/terraform/**', '.github/workflows/terraform.yml', '.github/workflows/_terraform.yml']
 jobs:
+  # Plan-only, like prod below: a merge to main never applies anything. The dev
+  # root is applied by a deliberate human `terraform apply`
+  # (scripts/ci-apply-gate.test.sh pins the rule that release.yml is the only
+  # workflow allowed to apply).
   dev:
     uses: ./.github/workflows/_terraform.yml
     # The reusable job requests id-token: write to assume the AWS OIDC role.
@@ -17,7 +21,7 @@ jobs:
       contents: read
     with:
       path: stack/terraform/dev
-      apply: ${{ github.ref == 'refs/heads/main' }}
+      apply: false
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
   # Validate the prod root on every relevant PR (offline) and plan it with the

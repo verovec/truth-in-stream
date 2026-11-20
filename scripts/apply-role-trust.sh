@@ -12,8 +12,8 @@
 #
 # Trusted subjects (least-privilege: literal values, matched with StringEquals,
 # never a wildcard):
-#   repo:<repo>:ref:refs/heads/main      terraform.yml plan + dev apply on merge
-#                                        to main
+#   repo:<repo>:ref:refs/heads/main      terraform.yml plan (dev and prod, never
+#                                        an apply) on merge to main
 #   repo:<repo>:environment:production   release.yml prod apply; the job binds
 #                                        the `production` GitHub Environment, so
 #                                        GitHub issues the environment subject,

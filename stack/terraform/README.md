@@ -443,8 +443,9 @@ terraform apply
 
 ## CI
 
-`.github/workflows/terraform.yml` runs fmt/validate/plan on PRs and plan+apply for
-`dev` on merge to `main`; the `prod` root is plan-only there and is applied by the
+`.github/workflows/terraform.yml` runs fmt/validate on PRs and a plan of both roots
+on merge to `main`, never an apply; the `dev` root is applied by hand
+(`cd stack/terraform/dev && terraform apply`) and the `prod` root by the
 tag-triggered release (`release.yml` calls `_terraform.yml` with `apply: true`,
 bound to the `production` GitHub Environment approval). CI authenticates to AWS
 via GitHub OIDC; set the `AWS_ROLE_ARN` repository secret to the CI apply role and
@@ -464,7 +465,7 @@ the `iam` module. See `.github/workflows/_terraform.yml`, the reusable
 
 Two CI roles, each least-privilege and scoped per concern:
 
-- **Apply role** (`AWS_ROLE_ARN`) — assumed by `terraform.yml` to plan/apply and
+- **Apply role** (`AWS_ROLE_ARN`) — assumed by `terraform.yml` to plan and
   by the release's prod apply. Bootstrapped out of band (it cannot be managed by
   the terraform it runs without a chicken-and-egg), so its policy lives next to
   the bootstrap procedure, not in a module it would have to create before it can
@@ -511,8 +512,8 @@ cd stack/terraform/dev
 terraform apply
 ```
 
-When the change needs no new permissions, the guard passes and the normal
-auto-apply proceeds — no false positives. It runs on every credentialed plan
+When the change needs no new permissions, the guard passes and the run goes on
+(to the apply on a release; a merge to `main` stops at the plan) — no false positives. It runs on every credentialed plan
 (push to `main`, and the release's prod apply), so a missing permission surfaces
 when the change lands on `main`, before any tag is cut. PR runs validate offline
 — the prod-writing apply role deliberately does not trust the ungated

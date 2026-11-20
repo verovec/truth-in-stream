@@ -9,6 +9,7 @@ cd stack/backend  && go test -race ./...
 cd stack/frontend && npm test
 ./scripts/doctor.test.sh            # local-stack preflight (stubs the docker CLI)
 ./scripts/cards.test.sh             # local card queue (ordering, dependencies, concurrent claims)
+./scripts/ci-apply-gate.test.sh     # only the tag release may apply terraform (reads the workflows)
 ./scripts/ingest-workers.test.sh    # ingestion targets start their queue worker (stubs the docker CLI)
 ./scripts/secrets_test.sh           # operator secrets tool (stubs AWS + editor)
 ./scripts/iam-apply-guard.test.sh   # pre-apply IAM guard (stubs the aws CLI)
@@ -20,8 +21,8 @@ pass under `-race`; the frontend uses Vitest. See the `testing` skill for the fu
 ## CI
 
 - `pr.yml` - lint + test for frontend (Node) and backend (Go) on every PR.
-- `terraform.yml` - fmt/validate/plan on PRs touching `stack/terraform/**`; applies `dev` on merge to
-  `main` (GitHub OIDC, `AWS_ROLE_ARN`).
+- `terraform.yml` - fmt/validate on PRs touching `stack/terraform/**`; plans `dev` and `prod` on
+  merge to `main` (GitHub OIDC, `AWS_ROLE_ARN`) and never applies.
 - Per-service deploy workflows (`deploy-backend.yml`, `deploy-frontend.yml`, `deploy-backup.yml`),
   each `workflow_dispatch`-only (human-gated) and calling the reusable `_deploy.yml`. A pipeline
   builds, Trivy-scans, and pushes one service's image to ECR with an immutable `sha-<short>` tag,

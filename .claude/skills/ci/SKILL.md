@@ -32,8 +32,8 @@ guarded triggers.
 | `pr.yml` | `pull_request` | Merge gate. Fans out lint+test for node+go, ~13 bash script unit tests, fmt + python gates. No path filters. |
 | `_lint.yml` | `workflow_call` | gofmt + `go vet` + conditional `sqlc diff` + golangci-lint (go); eslint (node). |
 | `_test.yml` | `workflow_call` | Spins `pgvector/pgvector:pg16`; `go test -race ./...` (go); `npm ci && npm test` (node). |
-| `terraform.yml` | `push`/`pull_request` on `stack/terraform/**` | Path-filtered trigger that calls `_terraform.yml` for the `dev` env. |
-| `_terraform.yml` | `workflow_call` | fmt-check, validate, plan, IAM apply-guard, `apply tfplan` on main only. |
+| `terraform.yml` | `push`/`pull_request` on `stack/terraform/**` | Path-filtered trigger that calls `_terraform.yml` for the `dev` and `prod` roots, plan-only. |
+| `_terraform.yml` | `workflow_call` | fmt-check, validate, plan, IAM apply-guard, `apply tfplan` only when the caller passes `apply: true` (the release). |
 | `_deploy.yml` | `workflow_call` | Deploy engine: OIDC -> ECR -> build -> Trivy scan -> push immutable `sha-` tag -> roll. |
 | `deploy-{backend,frontend,backup}.yml` | `workflow_dispatch` only | Thin per-service wrappers around `_deploy.yml`. Human-gated. |
 
@@ -87,8 +87,10 @@ that file (see the `go` skill). node path: `npm run lint --if-present`.
 
 `terraform.yml` is path-filtered to `stack/terraform/**` plus the two workflow
 files, and triggers on both `pull_request` and `push` to main. It calls
-`_terraform.yml` for `dev` with `apply: ${{ github.ref == 'refs/heads/main' }}`.
-prod is NOT auto-applied -- it is promoted by hand. NEVER wire a prod auto-apply.
+`_terraform.yml` for `dev` and for `prod`, both with `apply: false`: a merge to
+main plans and never applies. `dev` is applied by hand, `prod` by the tag release
+(`release.yml`, the only workflow allowed to pass `apply: true`;
+`scripts/ci-apply-gate.test.sh` enforces it). NEVER wire an apply to a branch push.
 
 The caller MUST grant `permissions: { id-token: write, contents: read }`
 explicitly: a called workflow only receives permissions the caller already holds

@@ -27,7 +27,7 @@ Each root holds its own `versions.tf`/`providers.tf`/`backend.tf`/`variables.tf`
 
 | Root | Purpose | CI |
 |---|---|---|
-| `dev/` | Full app stack, single NAT, gated extras off by default | plan on PR, **auto-apply** on merge to main |
+| `dev/` | Full app stack, single NAT, gated extras off by default | validate on PR, plan on merge to main, **manual apply** only |
 | `prod/` | Full app stack, dual NAT, gated extras on | plan on PR, **manual apply** only |
 | `main-account/` | DNS root in the **main account** (`<main-account-id>`, zone `jeminforme.fr`): ACM DNS-validation CNAMEs + apex/`www` CloudFront alias records | **excluded from CI** - fmt-checked only |
 

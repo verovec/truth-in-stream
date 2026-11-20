@@ -6,7 +6,7 @@ covers getting fact-check data flowing (crawling and ingestion). Each step links
 the runbook that owns its detail — this page owns only the ordering.
 
 Production stays human-gated by design: PRs only validate, a merge to `main`
-auto-applies only the `dev` root, and the first applies, the DNS publication, every
+only plans, and the first applies, every `dev` apply, the DNS publication, every
 production apply, and every deploy are deliberate human actions. Local development
 needs none of this — see the [README quick start](../README.md#quick-start).
 
@@ -94,8 +94,8 @@ Detail: [First deploy of an environment](../stack/terraform/README.md#first-depl
    rules the first time a workflow references it — create it deliberately.
 
 From here terraform CI is live: PRs validate offline (no plan, no credentials),
-merges to `main` plan and auto-apply `dev`, and the pre-apply IAM guard fails CI
-before any apply the role cannot complete, printing the one elevated apply to run.
+merges to `main` plan `dev` and `prod` without applying either, and the pre-apply IAM
+guard fails CI on any plan the role could not apply, printing the one elevated apply to run.
 Detail: [CI/CD roles and the pre-apply IAM guard](../stack/terraform/README.md#cicd-roles-and-the-pre-apply-iam-guard).
 
 ### 5. First apply of `prod` (human, elevated credentials)
