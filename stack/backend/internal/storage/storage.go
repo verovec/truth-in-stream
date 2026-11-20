@@ -53,9 +53,15 @@ type Config struct {
 type S3Store struct {
 	client    *s3.Client
 	presigner *s3.PresignClient
-	bucket    string
-	putTTL    time.Duration
-	getTTL    time.Duration
+	// internalPresigner signs against the internal Endpoint for URLs a
+	// backend-side consumer (the pre-analysis ffmpeg fetch) will dereference:
+	// inside the backend's network horizon the browser-facing PublicEndpoint
+	// may be unreachable (local dev's localhost:9000 is the container's own
+	// loopback). With no PublicEndpoint the two presigners are identical.
+	internalPresigner *s3.PresignClient
+	bucket            string
+	putTTL            time.Duration
+	getTTL            time.Duration
 }
 
 var _ domain.MediaStore = (*S3Store)(nil)
@@ -106,11 +112,12 @@ func New(ctx context.Context, cfg Config) (*S3Store, error) {
 	}
 
 	return &S3Store{
-		client:    client,
-		presigner: s3.NewPresignClient(presignClient),
-		bucket:    cfg.Bucket,
-		putTTL:    cfg.PutTTL,
-		getTTL:    cfg.GetTTL,
+		client:            client,
+		presigner:         s3.NewPresignClient(presignClient),
+		internalPresigner: s3.NewPresignClient(client),
+		bucket:            cfg.Bucket,
+		putTTL:            cfg.PutTTL,
+		getTTL:            cfg.GetTTL,
 	}, nil
 }
 
@@ -179,6 +186,24 @@ func (s *S3Store) PresignDownload(ctx context.Context, key string) (domain.Presi
 	}, s3.WithPresignExpires(s.getTTL))
 	if err != nil {
 		return domain.PresignedRequest{}, fmt.Errorf("storage: presign download %q: %w", key, err)
+	}
+	return toPresigned(req), nil
+}
+
+// PresignInternalDownload returns a presigned GET request signed against the
+// internal Endpoint, for a consumer running inside the backend's network
+// horizon - the pre-analysis job's ffmpeg fetch. SigV4 binds the host into the
+// signature, so the audience must be chosen at signing time: a browser-facing
+// URL (PresignDownload) dereferenced from inside a container resolves the
+// public host to the wrong place in local dev. With no PublicEndpoint
+// configured both methods sign identical URLs.
+func (s *S3Store) PresignInternalDownload(ctx context.Context, key string) (domain.PresignedRequest, error) {
+	req, err := s.internalPresigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(s.getTTL))
+	if err != nil {
+		return domain.PresignedRequest{}, fmt.Errorf("storage: presign internal download %q: %w", key, err)
 	}
 	return toPresigned(req), nil
 }

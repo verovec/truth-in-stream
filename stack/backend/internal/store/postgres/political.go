@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/pgvector/pgvector-go"
 
@@ -121,6 +122,46 @@ func (s *Store) UpsertVotingRecord(ctx context.Context, record domain.VotingReco
 		return fmt.Errorf("postgres: upsert voting record %q/%q: %w", record.PersonID, record.ScrutinID, err)
 	}
 	return nil
+}
+
+// UpsertVotingRecords inserts or replaces every recorded position of one scrutin
+// in a single transaction, so a concurrent reader never observes a partial vote
+// set: either all of this scrutin's per-deputy rows are visible together or none
+// of this apply's are. Each record's chamber and position are validated before
+// the transaction opens, so an invalid record fails fast without opening (and
+// rolling back) a transaction. An empty slice is a no-op. It is the scrutins
+// worker's atomic apply; the singular UpsertVotingRecord stays for the one-record
+// callers.
+func (s *Store) UpsertVotingRecords(ctx context.Context, records []domain.VotingRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	for _, record := range records {
+		if !record.Chamber.Valid() {
+			return fmt.Errorf("postgres: upsert voting records: %q/%q: invalid chamber %q", record.PersonID, record.ScrutinID, record.Chamber)
+		}
+		if !record.Position.Valid() {
+			return fmt.Errorf("postgres: upsert voting records: %q/%q: invalid position %q", record.PersonID, record.ScrutinID, record.Position)
+		}
+	}
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := s.queries.WithTx(tx)
+		for _, record := range records {
+			if err := q.UpsertVotingRecord(ctx, db.UpsertVotingRecordParams{
+				PersonID:   record.PersonID,
+				PersonName: record.PersonName,
+				Chamber:    string(record.Chamber),
+				ScrutinID:  record.ScrutinID,
+				BillTitle:  record.BillTitle,
+				VotedOn:    pgtype.Date{Time: record.VotedOn, Valid: true},
+				Position:   string(record.Position),
+				SourceUrl:  record.SourceURL,
+			}); err != nil {
+				return fmt.Errorf("postgres: upsert voting record %q/%q: %w", record.PersonID, record.ScrutinID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // LookupVotingRecords returns every recorded position for one person on one bill

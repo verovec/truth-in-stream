@@ -133,8 +133,8 @@ func TestProcessDropsMalformedJSON(t *testing.T) {
 	w := NewWorker(fakeEmbedder{}, store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
 
 	res := w.Process(t.Context(), []byte("{not json"), 5)
-	if res.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (drop poison)", res.Action)
+	if res.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (dead-letter poison)", res.Action)
 	}
 	if len(store.claims) != 0 {
 		t.Fatalf("malformed job must not be stored")
@@ -159,8 +159,8 @@ func TestProcessDropsInvalidJob(t *testing.T) {
 			job := validJob()
 			mut(&job)
 			res := w.Process(t.Context(), mustEncode(t, job), 5)
-			if res.Action != ActionAck {
-				t.Fatalf("action = %v, want ActionAck", res.Action)
+			if res.Action != ActionReject {
+				t.Fatalf("action = %v, want ActionReject (dead-letter invalid)", res.Action)
 			}
 			if len(store.claims) != 0 {
 				t.Fatalf("invalid job must not be stored")
@@ -175,8 +175,8 @@ func TestProcessDropsOnUnexpectedEmbeddingShape(t *testing.T) {
 	w := NewWorker(fakeEmbedder{dims: 7}, store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
 
 	res := w.Process(t.Context(), mustEncode(t, validJob()), 5)
-	if res.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck", res.Action)
+	if res.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (dead-letter a provider-contract violation)", res.Action)
 	}
 	if len(store.claims) != 0 {
 		t.Fatalf("wrong-dim embedding must not be stored")
@@ -204,7 +204,7 @@ func TestProcessRepublishesOnTransientEmbedError(t *testing.T) {
 	}
 }
 
-func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
+func TestProcessDeadLettersAfterExhaustingRetries(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{}
 	w := NewWorker(fakeEmbedder{err: errors.New("boom")}, store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 2})
@@ -212,8 +212,8 @@ func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
 	job.Attempt = 1 // already on the last allowed attempt
 
 	res := w.Process(t.Context(), mustEncode(t, job), 5)
-	if res.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (exhausted)", res.Action)
+	if res.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (dead-letter after exhausting retries)", res.Action)
 	}
 }
 

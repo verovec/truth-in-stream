@@ -213,21 +213,32 @@ func (s *Store) Search(ctx context.Context, query []float32, topK, efSearch int)
 
 	matches := make([]domain.ClaimMatch, 0, len(rows))
 	for _, r := range rows {
-		sources, err := unmarshalSources(r.Sources)
+		m, err := toClaimMatch(r.ID, r.Content, r.Verdict, r.Sources, r.Distance)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: search: claim %q: %w", r.ID, err)
+			return nil, fmt.Errorf("postgres: search: %w", err)
 		}
-		matches = append(matches, domain.ClaimMatch{
-			ID:      r.ID,
-			Text:    r.Content,
-			Verdict: domain.Verdict(r.Verdict),
-			Sources: sources,
-			// Cosine distance is in [0,2]; the float32 narrowing is deliberate
-			// to match domain.ClaimMatch and is plenty precise for ranking.
-			Distance: float32(r.Distance),
-		})
+		matches = append(matches, m)
 	}
 	return matches, nil
+}
+
+// toClaimMatch maps the shared claim search columns (the identical projection of
+// SearchClaims and LexicalSearchClaims) to a domain match, so the vector and
+// lexical hybrid branches decode a row exactly as the pure vector search does.
+// Cosine distance is in [0,2]; the float32 narrowing matches domain.ClaimMatch
+// and is plenty precise for ranking.
+func toClaimMatch(id, content, verdict string, sourcesJSON []byte, distance float64) (domain.ClaimMatch, error) {
+	sources, err := unmarshalSources(sourcesJSON)
+	if err != nil {
+		return domain.ClaimMatch{}, fmt.Errorf("claim %q: %w", id, err)
+	}
+	return domain.ClaimMatch{
+		ID:       id,
+		Text:     content,
+		Verdict:  domain.Verdict(verdict),
+		Sources:  sources,
+		Distance: float32(distance),
+	}, nil
 }
 
 // Close releases the pool, waiting for in-flight queries to finish.

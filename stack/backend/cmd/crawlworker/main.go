@@ -19,6 +19,7 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/crawljob"
+	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
 	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
@@ -57,6 +58,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	idle, err := config.LoadWorkerIdle()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -67,13 +72,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer store.Close()
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    workerCfg.Concurrency,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(workerCfg.Concurrency))
 	if err != nil {
 		return err
 	}
@@ -82,7 +81,7 @@ func run(logger *slog.Logger) error {
 	worker := crawljob.NewWorker(
 		newEmbedder(logger, embedding, workerCfg),
 		store,
-		qStream{client: client},
+		qStream{client: client, idle: idle},
 		qEnqueuer{client: client},
 		logger,
 		crawljob.Config{Concurrency: workerCfg.Concurrency, MaxAttempts: workerCfg.MaxAttempts, KnownVersions: queueCfg.KnownVersions},
@@ -91,8 +90,19 @@ func run(logger *slog.Logger) error {
 	logger.InfoContext(ctx, "crawl worker started",
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("concurrency", workerCfg.Concurrency),
-		slog.Int("max_attempts", workerCfg.MaxAttempts))
-	if err := worker.Run(ctx); err != nil {
+		slog.Int("max_attempts", workerCfg.MaxAttempts),
+		slog.Duration("idle_timeout", idle))
+
+	// Announce the drain to Slack symmetrically to the producers (silent no-op when
+	// SLACK_WEBHOOK_URL is unset), reporting processed and DLQ-parked counts on stop.
+	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	_, err = crawlnotify.RunConsumerWithAlerts(ctx, notifier, "crawl", queueCfg.VersionedName(),
+		func(ctx context.Context) (crawlnotify.ConsumerStats, error) {
+			runErr := worker.Run(ctx)
+			s := worker.Stats()
+			return crawlnotify.ConsumerStats{Processed: s.Processed, ParkedToDLQ: s.ParkedToDLQ}, runErr
+		})
+	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "crawl worker stopped")

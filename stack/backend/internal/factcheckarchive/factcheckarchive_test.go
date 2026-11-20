@@ -8,10 +8,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 	"github.com/verovec/truth-in-stream/backend/internal/factcheckjob"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 func TestMapVerdict(t *testing.T) {
@@ -110,7 +113,10 @@ func fixtureServer(t *testing.T) *httptest.Server {
 
 func newTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
-	c, err := New(Config{BaseURL: baseURL, APIKey: "test-key", LanguageCode: "fr", MaxPriority: 10})
+	// Retries disabled so the HTTP-failure test asserts the first outcome without
+	// backoff waits; retry behavior is covered by TestRunRetriesOnThrottle and the
+	// httpx helper's own tests.
+	c, err := New(Config{BaseURL: baseURL, APIKey: "test-key", LanguageCode: "fr", MaxPriority: 10, Retry: httpx.RetryConfig{MaxRetries: -1}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -282,6 +288,35 @@ func TestRunSendsAPIKeyAndLanguage(t *testing.T) {
 	}
 	if gotLang != "fr" {
 		t.Errorf("languageCode = %q, want fr", gotLang)
+	}
+}
+
+// TestRunRetriesOnThrottle proves the fetcher backs off and retries a 429 from the
+// Fact Check Tools API instead of failing the run: the first request is throttled,
+// the retry returns an empty page, and Run completes. A tiny base delay keeps it fast.
+func TestRunRetriesOnThrottle(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"claims":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(Config{BaseURL: srv.URL, APIKey: "test-key", LanguageCode: "fr", MaxPriority: 10, Retry: httpx.RetryConfig{MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := c.Run(t.Context(), nil, &recordingPublisher{}, RunConfig{Query: "x"}); err != nil {
+		t.Fatalf("Run after a throttled first attempt: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("server hit %d times, want 2 (one throttle + one retry)", calls.Load())
 	}
 }
 

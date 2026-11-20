@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -68,7 +69,7 @@ func (s *Store) EnsureSource(ctx context.Context, source string) error {
 		case err != nil:
 			return fmt.Errorf("check source: %w", err)
 		default:
-			return fmt.Errorf("store already holds source %q; the encyclopedic corpus is single-source, use a fresh database for %q", other, source)
+			return fmt.Errorf("store already holds source %q; the encyclopedic corpus is single-source, use a fresh database for %q: %w", other, source, domain.ErrEvidenceSourceConflict)
 		}
 		if err := q.ClaimEvidenceSource(ctx, source); err != nil {
 			return fmt.Errorf("claim source: %w", err)
@@ -141,30 +142,59 @@ func (s *Store) SearchEvidence(ctx context.Context, query []float32, topK, efSea
 
 	hits := make([]domain.EvidenceHit, 0, len(rows))
 	for _, r := range rows {
-		meta, err := unmarshalMetadata(r.Metadata)
+		h, err := toEvidenceHit(r.Source, r.ExternalID, r.ChunkIndex, r.Title, r.Url, r.Content, r.Kind, r.Metadata, r.PublishedAt, r.Distance)
 		if err != nil {
-			return nil, fmt.Errorf("postgres: search evidence: chunk %s/%s#%d: %w", r.Source, r.ExternalID, r.ChunkIndex, err)
+			return nil, fmt.Errorf("postgres: search evidence: %w", err)
 		}
-		// Only the section is surfaced on a hit, so extract it leniently rather
-		// than full-parsing wiki metadata: a source-extensible corpus can carry a
-		// source whose metadata is not wiki-shaped, and one such row must not fail
-		// the whole search. A missing or non-string section is simply empty.
-		section, _ := meta["section"].(string)
-		hits = append(hits, domain.EvidenceHit{
-			Source:     r.Source,
-			ExternalID: r.ExternalID,
-			ChunkIndex: int(r.ChunkIndex),
-			Title:      r.Title,
-			URL:        r.Url,
-			Content:    r.Content,
-			Kind:       domain.EvidenceChunkKind(r.Kind),
-			Section:    section,
-			// Cosine distance is in [0,2]; the float32 narrowing matches
-			// domain.EvidenceHit and is plenty precise for ranking.
-			Distance: float32(r.Distance),
-		})
+		hits = append(hits, h)
 	}
 	return hits, nil
+}
+
+// toEvidenceHit maps the shared evidence search columns (the identical
+// projection of SearchEvidenceChunks and LexicalSearchEvidenceChunks) to a
+// domain hit, so the vector and lexical hybrid branches decode a row exactly as
+// the pure vector search does. Only the section is surfaced, so it is extracted
+// leniently: a source-extensible corpus can carry a source whose metadata is not
+// wiki-shaped, and one such row must not fail the whole search - a missing or
+// non-string section is simply empty. Cosine distance is in [0,2]; the float32
+// narrowing matches domain.EvidenceHit and is plenty precise for ranking.
+func toEvidenceHit(source, externalID string, chunkIndex int32, title, url, content, kind string, metadata []byte, publishedAt pgtype.Timestamptz, distance float64) (domain.EvidenceHit, error) {
+	meta, err := unmarshalMetadata(metadata)
+	if err != nil {
+		return domain.EvidenceHit{}, fmt.Errorf("chunk %s/%s#%d: %w", source, externalID, chunkIndex, err)
+	}
+	section, _ := meta["section"].(string)
+	return domain.EvidenceHit{
+		Source:      source,
+		ExternalID:  externalID,
+		ChunkIndex:  int(chunkIndex),
+		Title:       title,
+		URL:         url,
+		Content:     content,
+		Kind:        domain.EvidenceChunkKind(kind),
+		Section:     section,
+		Distance:    float32(distance),
+		PublishedAt: ptrFromTimestamptz(publishedAt),
+	}, nil
+}
+
+// timestamptzFromPtr and ptrFromTimestamptz translate the domain's nullable
+// publication date to and from the generated pgtype column: nil means SQL NULL
+// (an undated source), never the zero time.
+func timestamptzFromPtr(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
+func ptrFromTimestamptz(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
 }
 
 // hnswEfSearchMax is pgvector's upper bound for hnsw.ef_search (valid range
@@ -253,14 +283,15 @@ func (s *Store) UpsertChunks(ctx context.Context, chunks []domain.EvidenceChunk)
 			return fmt.Errorf("postgres: upsert evidence chunk %s/%s: %w", c.Source, c.ExternalID, err)
 		}
 		params[i] = db.UpsertEvidenceChunkParams{
-			Source:     c.Source,
-			ExternalID: c.ExternalID,
-			ChunkIndex: int32(c.ChunkIndex),
-			Title:      c.Title,
-			Url:        c.URL,
-			Content:    c.Content,
-			Kind:       string(c.Kind),
-			Metadata:   meta,
+			Source:      c.Source,
+			ExternalID:  c.ExternalID,
+			ChunkIndex:  int32(c.ChunkIndex),
+			Title:       c.Title,
+			Url:         c.URL,
+			Content:     c.Content,
+			Kind:        string(c.Kind),
+			Metadata:    meta,
+			PublishedAt: timestamptzFromPtr(c.PublishedAt),
 		}
 	}
 
@@ -408,15 +439,16 @@ func (s *Store) UpsertEmbeddedChunk(ctx context.Context, c domain.EvidenceChunk)
 	}
 	hv := pgvector.NewHalfVector(c.Embedding)
 	if err := s.queries.UpsertEmbeddedEvidenceChunk(ctx, db.UpsertEmbeddedEvidenceChunkParams{
-		Source:     c.Source,
-		ExternalID: c.ExternalID,
-		ChunkIndex: int32(c.ChunkIndex),
-		Title:      c.Title,
-		Url:        c.URL,
-		Content:    c.Content,
-		Kind:       string(c.Kind),
-		Metadata:   meta,
-		Embedding:  &hv,
+		Source:      c.Source,
+		ExternalID:  c.ExternalID,
+		ChunkIndex:  int32(c.ChunkIndex),
+		Title:       c.Title,
+		Url:         c.URL,
+		Content:     c.Content,
+		Kind:        string(c.Kind),
+		Metadata:    meta,
+		PublishedAt: timestamptzFromPtr(c.PublishedAt),
+		Embedding:   &hv,
 	}); err != nil {
 		return fmt.Errorf("postgres: upsert embedded chunk %s/%s#%d: %w", c.Source, c.ExternalID, c.ChunkIndex, err)
 	}

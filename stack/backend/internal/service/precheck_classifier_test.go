@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"testing"
+
+	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 func TestHeuristicClassifierCheckable(t *testing.T) {
 	t.Parallel()
-	c := NewHeuristicClassifier(defaultTestMinWords)
+	c := NewHeuristicClassifier(defaultTestMinWords, domain.LocaleEnglish)
 
 	tests := []struct {
 		name string
@@ -68,10 +70,10 @@ func TestHeuristicClassifierMinWordsConfigurable(t *testing.T) {
 	// A higher minimum rejects a sentence a lower minimum would accept, proving
 	// the threshold is honored rather than hard-coded.
 	short := "Cats are mammals."
-	if got, _ := NewHeuristicClassifier(3).Classify(context.Background(), short); !got {
+	if got, _ := NewHeuristicClassifier(3, domain.LocaleEnglish).Classify(context.Background(), short); !got {
 		t.Errorf("with minWords=3, Classify(%q) = false, want true", short)
 	}
-	if got, _ := NewHeuristicClassifier(5).Classify(context.Background(), short); got {
+	if got, _ := NewHeuristicClassifier(5, domain.LocaleEnglish).Classify(context.Background(), short); got {
 		t.Errorf("with minWords=5, Classify(%q) = true, want false", short)
 	}
 }

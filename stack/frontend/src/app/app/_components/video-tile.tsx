@@ -1,19 +1,24 @@
 "use client";
 
 import { useVideoThumbnail } from "@/hooks/use-video-thumbnail";
-import type { LibraryVideo } from "@/lib/video/api";
+import type { AnalysedLibraryVideo } from "@/lib/video/analysis";
 import { VideoPoster } from "./video-poster";
-import { VideoKindBadge, VideoStatusBadge } from "./video-status-badge";
+import {
+  VideoAnalysedBadge,
+  VideoKindBadge,
+  VideoStatusBadge,
+} from "./video-status-badge";
 
 // VideoTile is one selectable library item. Only ready videos are playable, so a
 // pending or failed video renders disabled with its status shown. A ready tile
-// lazily captures a real poster frame once it scrolls into view.
+// lazily captures a real poster frame once it scrolls into view. A video with a
+// stored pre-analysis carries an "Analysed" badge from the list payload.
 export function VideoTile({
   video,
   selected,
   onSelect,
 }: {
-  video: LibraryVideo;
+  video: AnalysedLibraryVideo;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -39,6 +44,11 @@ export function VideoTile({
         <span className="pointer-events-none absolute right-2 top-2">
           <VideoStatusBadge status={video.status} />
         </span>
+        {video.analysisStatus === "complete" && (
+          <span className="pointer-events-none absolute bottom-2 left-2">
+            <VideoAnalysedBadge />
+          </span>
+        )}
       </VideoPoster>
       <span className="truncate px-3 py-2 text-sm font-medium text-ink dark:text-paper">
         {video.title}

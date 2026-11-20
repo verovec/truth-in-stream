@@ -1,0 +1,142 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<compteRendu xmlns="http://schemas.assemblee-nationale.fr/referentiel">
+  <uid>CRSANR5L17S2026O1N002</uid>
+  <seanceRef>RUANR5L17S2026IDS29799</seanceRef>
+  <sessionRef>SCR5A2026O1</sessionRef>
+  <metadonnees>
+    <dateSeance>20251002090000000</dateSeance>
+    <dateSeanceJour>jeudi 02 octobre 2025</dateSeanceJour>
+    <numSeanceJour>Unique</numSeanceJour>
+    <numSeance>2</numSeance>
+    <typeAssemblee>AN</typeAssemblee>
+    <legislature>17</legislature>
+    <session>Session ordinaire 2025 -2026</session>
+    <nomFichierJo>20250002</nomFichierJo>
+    <validite>valide</validite>
+    <etat>complet</etat>
+    <diffusion>public</diffusion>
+    <version>avant_JO</version>
+    <environnement>PROD</environnement>
+    <heureGeneration>2025-10-04T12:57:53.000+02:00</heureGeneration>
+    <sommaire>
+      <presidentSeance id_syceron="3846460">Présidence de Mme Yaël Braun-Pivet</presidentSeance>
+      <sommaire1 valeur_pts_odj="1">
+        <titreStruct id_syceron="3846464">
+          <intitule>Nomination des douze secrétaires de l’Assemblée nationale</intitule>
+          <sousIntitule>0</sousIntitule>
+        </titreStruct>
+      </sommaire1>
+      <sommaire3>
+        <titreStruct id_syceron="3846473">
+          <intitule>
+            <italique>Suspension et reprise de la séance<br/></italique>
+          </intitule>
+        </titreStruct>
+      </sommaire3>
+      <sommaire1 valeur_pts_odj="2">
+        <titreStruct id_syceron="3846481">
+          <intitule>Installation du bureau</intitule>
+          <sousIntitule>0</sousIntitule>
+        </titreStruct>
+      </sommaire1>
+    </sommaire>
+  </metadonnees>
+  <contenu>
+    <quantiemes>
+      <journee>Séance du jeudi 02 octobre 2025</journee>
+      <session>Session ordinaire 2025 -2026</session>
+    </quantiemes>
+    <ouvertureSeance nivpoint="1" valeur_ptsodj="0" ordinal_prise="1" id_preparation="0" ordre_absolu_seance="1" code_grammaire="OUV_SEAN_1_1" code_style="Présidence" code_parole="" sommaire="1" id_syceron="3846460" valeur="">
+      <orateurs/>
+      <texte>Présidence de Mme Yaël Braun-Pivet</texte>
+      <paragraphe valeur_ptsodj="0" ordinal_prise="1" id_preparation="0" ordre_absolu_seance="2" id_acteur="PA721908" id_mandat="PM843467" id_nomination_oe="0" id_nomination_op="PM845400" code_grammaire="OUV_SEAN_2_1" code_style="NORMAL" code_parole="" sommaire="0" id_syceron="3846461" valeur="" roledebat="president">
+        <orateurs>
+          <orateur>
+            <nom>Mme la présidente</nom>
+            <id>721908</id>
+            <qualite/>
+          </orateur>
+        </orateurs>
+        <texte stime="617.82">La séance est ouverte.</texte>
+      </paragraphe>
+      <paragraphe valeur_ptsodj="0" ordinal_prise="1" id_preparation="0" ordre_absolu_seance="3" code_grammaire="OUV_SEAN_2_2" code_style="Info Italiques" code_parole="" sommaire="0" id_syceron="3846462" valeur="">
+        <orateurs/>
+        <texte>
+          <italique>(La séance est ouverte à neuf heures.)</italique>
+        </texte>
+      </paragraphe>
+    </ouvertureSeance>
+    <point nivpoint="1" valeur_ptsodj="1" ordinal_prise="1" id_preparation="0" ordre_absolu_seance="5" code_grammaire="TITRE_TEXTE_DISCUSSION" code_style="Titre" code_parole="" sommaire="1" id_syceron="3846464" valeur="">
+      <orateurs/>
+      <texte>Nomination des douze secrétaires de l’Assemblée nationale</texte>
+      <paragraphe valeur_ptsodj="1" ordinal_prise="1" id_preparation="0" ordre_absolu_seance="6" id_acteur="PA721908" id_mandat="PM843467" id_nomination_oe="0" id_nomination_op="PM845400" code_grammaire="ODJ_APPEL_DISCUSSION" code_style="NORMAL" code_parole="" sommaire="0" id_syceron="3846465" valeur="" roledebat="president">
+        <orateurs>
+          <orateur>
+            <nom>Mme la présidente</nom>
+            <id>721908</id>
+            <qualite/>
+          </orateur>
+        </orateurs>
+        <texte stime="621.31">L’ordre du jour appelle la nomination des douze secrétaires de l’Assemblée nationale.<br/>Pour les fonctions de secrétaire, je suis saisie des candidatures de M. Xavier Breton, de Mme Blandine Brocard, de M. Gaëtan Dussausaye<italique> (Applaudissements sur les bancs des groupes RN et UDR),</italique> de M. Inaki Echaniz<italique> (Applaudissements sur plusieurs bancs du groupe SOC)</italique>, de Mme Marine Hamelet<italique> (Applaudissements sur les bancs des groupes RN et UDR)</italique>, de M. Pierre Henriet<italique> (Applaudissements sur les bancs du groupe HOR)</italique>, de M. Laurent Mazaury, de M. Maxime Michelet<italique> (Applaudissements sur les bancs du groupe UDR et sur plusieurs bancs du groupe RN)</italique>, de M. Sébastien Peytavie<italique> (Applaudissements sur plusieurs bancs des groupes LFI-NFP et EcoS)</italique>, de Mme Mereana Reid Arbelot<italique> (Applaudissements sur les bancs du groupe GDR)</italique>, de Mme Eva Sas, de Mme Sabrina Sebaihi, de M. Bertrand Sorre et de M. David Taupiac<italique> (Applaudissements sur les bancs du groupe LIOT et sur plusieurs bancs du groupe Dem).</italique><br/>Le nombre de candidats étant supérieur au nombre de sièges à pourvoir, il y a lieu de procéder à un scrutin.<br/>Je vous rappelle que le scrutin est secret.<br/>Au premier et au deuxième tours sont élus, dans l’ordre des suffrages, les candidats ayant obtenu la majorité absolue des suffrages exprimés. Au troisième tour, la majorité relative suffit. En cas d’égalité des suffrages, le plus âgé est élu. Le scrutin sera dépouillé par les scrutateurs tirés au sort hier avant l’élection des vice-présidents et des questeurs.<br/>Le vote se déroule dans les salles voisines de la salle des séances. Des bulletins imprimés sont à votre disposition. Toutefois, les bulletins manuscrits sont valables. Tout bulletin doit être mis dans l’urne sous enveloppe. Les enveloppes devront être remises aux personnels de l’Assemblée participant à la tenue des bureaux de vote avant d’être déposées dans les urnes par les scrutateurs. Je rappelle enfin que seuls sont valables les suffrages exprimés dans les enveloppes ne contenant pas, au total, plus de douze noms.<br/>À l’issue du scrutin, les scrutateurs se rendront au cinquième bureau pour procéder au dépouillement.<br/>J’ouvre le scrutin, qui est annoncé dans l’enceinte de l’Assemblée nationale, pour trente minutes. Il sera donc clos à 9 h 30.</texte>
+      </paragraphe>
+      <point nivpoint="99" valeur_ptsodj="1" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="14" code_grammaire="SUSP_SEANCE_1_1" code_style="Suspension rappel" code_parole="" sommaire="1" id_syceron="3846473" valeur="">
+        <orateurs/>
+        <texte>
+          <italique>Suspension et reprise de la séance</italique>
+        </texte>
+        <paragraphe valeur_ptsodj="1" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="15" id_acteur="PA721908" id_mandat="PM843467" id_nomination_oe="0" id_nomination_op="PM845400" code_grammaire="SUSP_SEANCE_2_1" code_style="NORMAL" code_parole="" sommaire="0" id_syceron="3846474" valeur="" roledebat="president">
+          <orateurs>
+            <orateur>
+              <nom>Mme la présidente</nom>
+              <id>721908</id>
+              <qualite/>
+            </orateur>
+          </orateurs>
+          <texte stime="710.71">La séance est suspendue.</texte>
+        </paragraphe>
+        <paragraphe valeur_ptsodj="1" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="16" code_grammaire="SUSP_SEANCE_2_2" code_style="Info Italiques" code_parole="" sommaire="0" id_syceron="3846475" valeur="">
+          <orateurs/>
+          <texte>
+            <italique>(La séance, suspendue à neuf heures deux, est reprise à dix heures cinquante.)</italique>
+          </texte>
+        </paragraphe>
+        <paragraphe valeur_ptsodj="1" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="17" id_acteur="PA721908" id_mandat="PM843467" id_nomination_oe="0" id_nomination_op="PM845400" code_grammaire="SUSP_SEANCE_2_3" code_style="NORMAL" code_parole="" sommaire="0" id_syceron="3846476" valeur="" roledebat="president">
+          <orateurs>
+            <orateur>
+              <nom>Mme la présidente</nom>
+              <id>721908</id>
+              <qualite/>
+            </orateur>
+          </orateurs>
+          <texte stime="7212.80">La séance est reprise.<br/>Voici les résultats du premier tour de scrutin pour l’élection des secrétaires.<br/> Nombre de votants : 530<br/> Bulletins blancs ou nuls : 1<br/> Suffrages exprimés : 529<br/> Majorité absolue : 265<br/> Ont obtenu :<br/> M. Xavier Breton : 340 voix<italique> (Applaudissements sur les bancs du groupe DR et sur quelques bancs des groupes EPR et Dem)</italique> ;<br/> Mme Blandine Brocard : 343 voix<italique> (Applaudissements sur les bancs du groupe Dem et sur quelques bancs du groupe EPR)</italique> ;<br/> M. Gaëtan Dussausaye : 329 voix<italique> (Applaudissements sur les bancs des groupes RN et UDR. – Mme Josiane Corneloup et M. Philippe Vigier applaudissent également)</italique> ;<br/> M. Inaki Echaniz : 482 voix<italique> (Applaudissements sur les bancs du groupe SOC)</italique> ;<br/> Mme Marine Hamelet : 331 voix<italique> (Applaudissements sur les bancs des groupes RN et UDR)</italique> ;<br/> M. Pierre Henriet : 341 voix<italique> (Applaudissements sur les bancs du groupe HOR et sur quelques bancs du groupe EPR)</italique> ;<br/> M. Laurent Mazaury : 80 voix ;<br/> M. Maxime Michelet : 328 voix<italique> (Applaudissements sur les bancs des groupes UDR et RN)</italique> ;<br/> M. Sébastien Peytavie : 509 voix<italique> (Applaudissements sur les bancs des groupes EcoS et SOC ainsi que sur quelques bancs du groupe Dem)</italique> ;<br/> Mme Mereana Reid Arbelot : 498 voix<italique> (Applaudissements sur les bancs du groupe GDR) </italique> ;<br/> Mme Eva Sas : 174 voix<italique> (Applaudissements sur quelques bancs du groupe EcoS)</italique> ;<br/> Mme Sabrina Sebaihi : 494 voix<italique> (Applaudissements sur les bancs du groupe EcoS)</italique> ;<br/> M. Bertrand Sorre : 343 voix<italique> (Applaudissements sur les bancs des groupes EPR et Dem)</italique> ;<br/> M. David Taupiac : 418 voix<italique> (Applaudissements sur les bancs du groupe LIOT)</italique> ;<br/> Autres suffrages : 2.<br/>M. Xavier Breton, Mme Blandine Brocard, M. Gaëtan Dussausaye, M. Inaki Echaniz, Mme Marine Hamelet, M. Pierre Henriet, M. Maxime Michelet, M. Sébastien Peytavie, Mme Mereana Reid Arbelot, Mme Sabrina Sebaihi, M. Bertrand Sorre et M. David Taupiac ayant obtenu la majorité absolue des suffrages exprimés, je les proclame secrétaires de l’Assemblée nationale. Bravo à eux !<italique> (Applaudissements sur tous les bancs.)</italique><br/>Tous les sièges de secrétaires ayant été pourvus, il n’y a pas lieu de procéder à un autre tour de scrutin.</texte>
+        </paragraphe>
+      </point>
+    </point>
+    <point nivpoint="1" valeur_ptsodj="2" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="22" code_grammaire="TITRE_TEXTE_DISCUSSION" code_style="Titre" code_parole="" sommaire="1" id_syceron="3846481" valeur="">
+      <orateurs/>
+      <texte>Installation du bureau</texte>
+      <paragraphe valeur_ptsodj="2" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="23" id_acteur="PA721908" id_mandat="PM843467" id_nomination_oe="0" id_nomination_op="PM845400" code_grammaire="PAROLE_GENERIQUE" code_style="NORMAL" code_parole="" sommaire="0" id_syceron="3846482" valeur="">
+        <orateurs>
+          <orateur>
+            <nom>Mme la présidente</nom>
+            <id>721908</id>
+            <qualite/>
+          </orateur>
+        </orateurs>
+        <texte stime="7339.04">Je constate que le bureau de l’Assemblée nationale est entièrement constitué. Sa composition sera notifiée au président de la République, au premier ministre ainsi qu’au président du Sénat et publiée au<italique> Journal officiel</italique>.<br/>Je veux remercier chacun d’entre vous pour sa participation à ces élections qui se sont déroulées de façon apaisée et en bon ordre.<italique> (MM. Philippe Gosselin et Philippe Vigier applaudissent.)</italique><br/>Le bureau se réunira le mercredi 8 octobre à 10 heures.<br/>La séance est levée.</texte>
+      </paragraphe>
+      <paragraphe valeur_ptsodj="2" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="27" code_grammaire="FIN_SEAN_2_4" code_style="Info Italiques" code_parole="" sommaire="0" id_syceron="3846486" valeur="">
+        <orateurs/>
+        <texte>
+          <italique>(La séance est levée à dix heures cinquante-cinq.)</italique>
+        </texte>
+      </paragraphe>
+      <paragraphe valeur_ptsodj="2" ordinal_prise="2" id_preparation="0" ordre_absolu_seance="28" code_grammaire="FIN_SEAN_2_5" code_style="Signature droite" code_parole="" sommaire="0" id_syceron="3846487" valeur="">
+        <orateurs/>
+        <texte>
+          <italique>Le directeur des comptes rendus<br/> Serge Ezdra</italique>
+        </texte>
+      </paragraphe>
+    </point>
+  </contenu>
+</compteRendu>

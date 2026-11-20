@@ -1,0 +1,110 @@
+{
+  "@context" : "http://schema.org",
+  "@type" : "DataFeed",
+  "dataFeedElement" :
+  [
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2019-04-04T14:17:38.714046+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "AFP Factuel", "url" : "https://factuel.afp.com/" },
+          "claimReviewed" : "Un entrepôt volant ou un dirigeable d'Amazon",
+          "datePublished" : "2019-04-04",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "Faux", "bestRating" : "5", "ratingValue" : "1", "worstRating" : "1" },
+          "sdPublisher" : { "@type" : "Organization", "name" : "Google Fact Check Tools", "url" : "https://g.co/factchecktools" },
+          "url" : "https://factuel.afp.com/un-dirigeable-amazon-non-une-realisation-3d"
+        }
+      ],
+      "url" : "https://factuel.afp.com/un-dirigeable-amazon-non-une-realisation-3d"
+    },
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2019-11-28T09:10:59.900266+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "Le Monde", "url" : "https://www.lemonde.fr/" },
+          "claimReviewed" : "Paris, Lyon, Marseille, votre maire va être élu sans vous",
+          "datePublished" : "2019-11-21T00:00:00+00:00",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "faux" },
+          "url" : "https://www.lemonde.fr/les-decodeurs/article/2019/11/21/mode-de-scrutin_6020046_4355770.html"
+        }
+      ],
+      "url" : "https://www.lemonde.fr/les-decodeurs/article/2019/11/21/mode-de-scrutin_6020046_4355770.html"
+    },
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2024-01-10T09:10:59.900266+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "franceinfo", "url" : "https://www.francetvinfo.fr/vrai-ou-faux/" },
+          "claimReviewed" : "La citation attribuée au ministre est authentique",
+          "datePublished" : "2024-01-10",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "Authentique et vérifié", "bestRating" : "5", "ratingValue" : "5", "worstRating" : "1" },
+          "url" : "https://www.francetvinfo.fr/vrai-ou-faux/citation-ministre_6100001.html"
+        }
+      ],
+      "url" : "https://www.francetvinfo.fr/vrai-ou-faux/citation-ministre_6100001.html"
+    },
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2024-02-02T09:10:59.900266+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "20 Minutes", "url" : "https://www.20minutes.fr/" },
+          "claimReviewed" : "Un chiffre sur les migrations",
+          "datePublished" : "2024-02-02",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "Non catégorisé" },
+          "url" : "https://www.20minutes.fr/fake-off/migrations_5000123.html"
+        }
+      ],
+      "url" : "https://www.20minutes.fr/fake-off/migrations_5000123.html"
+    },
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2025-05-05T09:10:59.900266+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "PolitiFact", "url" : "https://www.politifact.com/" },
+          "claimReviewed" : "A claim reviewed by a non-allowlisted outlet",
+          "datePublished" : "2025-05-05",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "Mostly False" },
+          "url" : "https://www.politifact.com/factchecks/2025/may/05/example/"
+        }
+      ],
+      "url" : "https://www.politifact.com/factchecks/2025/may/05/example/"
+    },
+    {
+      "@type" : "DataFeedItem",
+      "dateCreated" : "2025-06-06T09:10:59.900266+00:00",
+      "item" :
+      [
+        {
+          "@context" : "http://schema.org",
+          "@type" : "ClaimReview",
+          "author" : { "@type" : "Organization", "name" : "AFP Factuel", "url" : "https://factuel.afp.com/" },
+          "claimReviewed" : "",
+          "datePublished" : "2025-06-06",
+          "reviewRating" : { "@type" : "Rating", "alternateName" : "Faux" },
+          "url" : "https://factuel.afp.com/no-claim-text"
+        }
+      ],
+      "url" : "https://factuel.afp.com/no-claim-text"
+    }
+  ]
+}

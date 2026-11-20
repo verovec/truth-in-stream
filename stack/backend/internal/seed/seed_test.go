@@ -1,6 +1,9 @@
 package seed
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +11,37 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
+
+// conflictedWikiStore refuses the corpus claim the way a store already holding
+// another encyclopedic source does.
+type conflictedWikiStore struct{}
+
+func (conflictedWikiStore) EnsureSource(context.Context, string) error {
+	return fmt.Errorf("postgres: ensure evidence source: %w", domain.ErrEvidenceSourceConflict)
+}
+
+func (conflictedWikiStore) UpsertChunks(context.Context, []domain.EvidenceChunk) error {
+	return errors.New("unreachable: claim was refused")
+}
+
+func (conflictedWikiStore) SetChunkEmbeddings(context.Context, []domain.EvidenceChunk) error {
+	return errors.New("unreachable: claim was refused")
+}
+
+// TestInsertWikiChunksSurfacesSourceConflict pins the contract the seed command
+// relies on to skip the wiki fixture instead of failing the whole seed when the
+// store already holds a real corpus: the claim refusal must stay identifiable
+// through the wrapping.
+func TestInsertWikiChunksSurfacesSourceConflict(t *testing.T) {
+	chunks, err := LoadWikiChunks(strings.NewReader(validWikiJSON))
+	if err != nil {
+		t.Fatalf("LoadWikiChunks: %v", err)
+	}
+	err = InsertWikiChunks(t.Context(), conflictedWikiStore{}, nil, chunks)
+	if !errors.Is(err, domain.ErrEvidenceSourceConflict) {
+		t.Fatalf("InsertWikiChunks: err = %v, want ErrEvidenceSourceConflict", err)
+	}
+}
 
 const validWikiJSON = `[
   {"page_id": 1, "chunk_index": 0, "title": "Earth", "url": "https://simple.wikipedia.org/wiki/Earth", "revision_id": 100, "corpus": "simplewiki", "content": "The Earth is the third planet from the Sun."},

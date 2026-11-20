@@ -65,21 +65,46 @@ type Datum struct {
 	Unit       string
 }
 
+// dlqSuffix is appended to a logical base name to measure its dead-letter queue:
+// embedding.jobs -> embedding.jobs.dlq, whose .dlq.v<version> queues carry the
+// same three metrics under their own QueueBase, so a DLQ-depth alarm can search
+// for a *.dlq QueueBase without hard-coding versions.
+const dlqSuffix = ".dlq"
+
 // Options configures shaping. Broker is the value of the Broker dimension on
-// every datum; Base is the versioned-queue base name (e.g. "embedding.jobs")
-// whose .v<version> queues are measured.
+// every datum; Bases is the set of versioned-queue base names (e.g.
+// "embedding.jobs") whose .v<version> queues are measured. Each base's companion
+// dead-letter queue base (<base>.dlq) is measured too, so DLQ backlog surfaces
+// without listing the DLQs explicitly.
 type Options struct {
 	Broker string
-	Base   string
+	Bases  []string
 }
 
 // ShapeMetrics turns the queues reported by the management API into CloudWatch
-// datums. Only queues named <Base>.v<version> (version a run of letters, digits,
-// '_' or '-') are measured; everything else is ignored. Each matched queue emits
-// Backlog, ConsumerCount and PublishRate under the Queue dimension, and the same
-// three metrics are summed across all matched versions into a version-stripped
-// rollup under the QueueBase dimension. No matched queues yields no datums.
+// datums. For every configured base it measures both the base's versioned queues
+// (<base>.v<version>) and its dead-letter queues (<base>.dlq.v<version>): each
+// matched queue emits Backlog, ConsumerCount and PublishRate under the Queue
+// dimension, and the same three metrics are summed across a base's versions into a
+// version-stripped rollup under the QueueBase dimension. A base with no matched
+// queues yields no datums, so absent (e.g. not-yet-created DLQ) queues stay silent.
 func ShapeMetrics(queues []APIQueue, opts Options) []Datum {
+	// Rough hint: each base and its DLQ emit three per-queue datums per matched
+	// version plus a three-datum rollup.
+	datums := make([]Datum, 0, len(opts.Bases)*8)
+	for _, base := range opts.Bases {
+		datums = append(datums, shapeBase(queues, opts.Broker, base)...)
+		datums = append(datums, shapeBase(queues, opts.Broker, base+dlqSuffix)...)
+	}
+	if len(datums) == 0 {
+		return nil
+	}
+	return datums
+}
+
+// shapeBase measures one base's versioned queues, emitting per-queue datums plus a
+// QueueBase rollup. No matched queues yields no datums.
+func shapeBase(queues []APIQueue, broker, base string) []Datum {
 	var (
 		datums                    []Datum
 		sumMessages, sumConsumers int64
@@ -88,7 +113,7 @@ func ShapeMetrics(queues []APIQueue, opts Options) []Datum {
 	)
 
 	for _, q := range queues {
-		if !isVersionedQueue(q.Name, opts.Base) {
+		if !isVersionedQueue(q.Name, base) {
 			continue
 		}
 		rate := 0.0
@@ -96,7 +121,7 @@ func ShapeMetrics(queues []APIQueue, opts Options) []Datum {
 			rate = q.MessageStats.PublishDetails.Rate
 		}
 		dims := []Dimension{
-			{Name: DimensionBroker, Value: opts.Broker},
+			{Name: DimensionBroker, Value: broker},
 			{Name: DimensionQueue, Value: q.Name},
 		}
 		datums = append(datums,
@@ -116,8 +141,8 @@ func ShapeMetrics(queues []APIQueue, opts Options) []Datum {
 	}
 
 	rollup := []Dimension{
-		{Name: DimensionBroker, Value: opts.Broker},
-		{Name: DimensionQueueBase, Value: opts.Base},
+		{Name: DimensionBroker, Value: broker},
+		{Name: DimensionQueueBase, Value: base},
 	}
 	datums = append(datums,
 		Datum{MetricName: MetricBacklog, Dimensions: rollup, Value: float64(sumMessages), Unit: UnitCount},

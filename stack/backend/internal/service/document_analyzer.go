@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
@@ -21,10 +22,17 @@ var ErrAnalysisDisabled = errors.New("document analysis is disabled: the verify 
 // still record the failure.
 const failRecordTimeout = 10 * time.Second
 
+// batchContextSentences caps how many preceding sentences ride along as a
+// sentence's decomposition context, mirroring the live path's unit cap
+// (defaultMaxSentences); contextTail bounds the words on top.
+const batchContextSentences = 4
+
 // BatchVerifier analyses one text unit outside the live socket and returns the
-// resolved per-claim verdicts. *VerifyPath satisfies it via AnalyzeText.
+// resolved per-claim verdicts. recentContext is the prior text the decomposer
+// resolves references against (the preceding group of sentences); it is never
+// analyzed itself. *VerifyPath satisfies it via AnalyzeText.
 type BatchVerifier interface {
-	AnalyzeText(ctx context.Context, gate SegmentPrechecker, text, anchorID string) (BatchUnitResult, error)
+	AnalyzeText(ctx context.Context, gate SegmentPrechecker, text, recentContext, anchorID string) (BatchUnitResult, error)
 }
 
 // analyzerStore is the persistence slice the analyzer needs: the transactional
@@ -131,8 +139,20 @@ func (a *DocumentAnalyzer) run(id string) {
 		return
 	}
 
+	// Each sentence decomposes with the preceding group of sentences as
+	// reference context - mirroring the live path's previous-unit window - so a
+	// sentence opening with a pronoun still yields self-contained claims even
+	// when the referent sits a few sentences back; the context is never
+	// analyzed itself. contextTail bounds the window's words, keeping the most
+	// recent.
+	var window []string
 	for _, sentence := range sentences {
-		result, err := a.verify.AnalyzeText(ctx, a.gate, sentence.Text, strconv.Itoa(sentence.Seq))
+		recentContext := contextTail("", strings.Join(window, " "))
+		result, err := a.verify.AnalyzeText(ctx, a.gate, sentence.Text, recentContext, strconv.Itoa(sentence.Seq))
+		window = append(window, sentence.Text)
+		if len(window) > batchContextSentences {
+			window = window[1:]
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				// The run's own context is done (timeout or shutdown): the whole run

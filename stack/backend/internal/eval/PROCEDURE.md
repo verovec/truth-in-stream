@@ -14,6 +14,10 @@ citation/flag logic, not live model quality. This document records how to run th
 Both are operator-run, cost credit, and are decided on real-model numbers, never on
 the faked CI gate.
 
+This document covers the **verdict** axis. The **retrieval recall** axis (the
+per-category recall gate over the same golden set, run offline with `make eval`)
+and the vectorbench index-level hand-off are documented in `README.md`.
+
 ## What the offline gate proves (and does not)
 
 `TestGoldenEvalAccuracyGate` runs every case in `testdata/golden.json` through the

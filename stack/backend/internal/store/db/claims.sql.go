@@ -11,6 +11,66 @@ import (
 	pgvector "github.com/pgvector/pgvector-go"
 )
 
+const lexicalSearchClaims = `-- name: LexicalSearchClaims :many
+SELECT id, content, verdict, sources,
+       (embedding <=> $1)::float8 AS distance
+FROM claims, websearch_to_tsquery('french', immutable_unaccent($2::text)) AS q
+WHERE search_vector @@ q
+ORDER BY ts_rank_cd(search_vector, q) DESC, id
+LIMIT $3
+`
+
+type LexicalSearchClaimsParams struct {
+	QueryEmbedding pgvector.HalfVector
+	QueryText      string
+	ResultLimit    int32
+}
+
+type LexicalSearchClaimsRow struct {
+	ID       string
+	Content  string
+	Verdict  string
+	Sources  []byte
+	Distance float64
+}
+
+// Lexical half of hybrid retrieval (VER-195): the top result_limit claims whose
+// French-folded search_vector matches the query terms, ranked by cover density
+// (ts_rank_cd weighs term proximity, which favours exact-figure and named-entity
+// overlap over raw term frequency). The GIN index on search_vector drives the @@
+// filter, so this is a bounded index scan, never a seq scan. The same
+// immutable_unaccent wrapper the generated column uses folds the query terms, so
+// accent matching is symmetric. The row also carries the cosine distance to
+// query_embedding so a fused lexical hit exposes the same wire-visible similarity
+// a vector hit does; the ORDER BY is the lexical rank, so the vector distance is
+// a carried attribute here and the HNSW index is not consulted. Ties break on id
+// for a stable ranking.
+func (q *Queries) LexicalSearchClaims(ctx context.Context, arg LexicalSearchClaimsParams) ([]LexicalSearchClaimsRow, error) {
+	rows, err := q.db.Query(ctx, lexicalSearchClaims, arg.QueryEmbedding, arg.QueryText, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LexicalSearchClaimsRow{}
+	for rows.Next() {
+		var i LexicalSearchClaimsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Content,
+			&i.Verdict,
+			&i.Sources,
+			&i.Distance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchClaims = `-- name: SearchClaims :many
 SELECT id, content, verdict, sources, (embedding <=> $1)::float8 AS distance
 FROM claims

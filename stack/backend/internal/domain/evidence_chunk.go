@@ -1,9 +1,18 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrEvidenceSourceConflict reports that the store already holds a different
+// encyclopedic corpus. The corpus is single-source per database (the delta
+// sync's change-fraction denominator and page-id keys depend on it), so a
+// claimant for another source must not proceed. Callers whose corpus work is
+// optional (the dev seed) detect this with errors.Is and skip; the wiki sync
+// itself treats it as fatal.
+var ErrEvidenceSourceConflict = errors.New("evidence corpus already claimed by another source")
 
 // EvidenceChunkKind classifies a chunk by the region of its source document it
 // was extracted from. Ingestion extracts only lead sections today, so almost
@@ -55,6 +64,11 @@ type EvidenceChunk struct {
 	Kind       EvidenceChunkKind
 	Embedding  []float32
 	Metadata   map[string]any
+	// PublishedAt is the passage's real-world publication (or document) date,
+	// nil when the source is genuinely undated (encyclopedic content). It is a
+	// typed column, not a metadata key, because retrieval filters and orders on
+	// it; ingestion sets it only from a date the source exposes, never a guess.
+	PublishedAt *time.Time
 }
 
 // EvidenceHit is a retrieval hit from the evidence corpus: a chunk's source
@@ -75,6 +89,9 @@ type EvidenceHit struct {
 	Kind       EvidenceChunkKind
 	Section    string
 	Distance   float32
+	// PublishedAt mirrors the chunk's publication date so downstream judging
+	// can label a passage with when it was true; nil for undated sources.
+	PublishedAt *time.Time
 }
 
 // EvidenceTrim marks the chunks of a document that a sync run did not
@@ -142,6 +159,31 @@ const (
 	metaClusterID  = "cluster_id"
 	metaImportance = "importance"
 )
+
+// Metadata keys the near-duplicate gate (VER-203) writes on a chunk it withholds
+// from search. MetaDuplicate flags the chunk; MetaDuplicateSimilarity records the
+// cosine similarity to the nearest same-source neighbor that tripped the gate,
+// so the flag and the evidence that produced it travel together. A flagged chunk
+// is stored for provenance but carries no embedding, so every search (all filter
+// embedding IS NOT NULL) skips it and the HNSW index never holds it.
+const (
+	MetaDuplicate           = "duplicate"
+	MetaDuplicateSimilarity = "duplicate_similarity"
+)
+
+// WithDuplicateFlag returns a copy of metadata marked as a near-duplicate at the
+// measured cosine similarity. It copies rather than mutates so the caller's map
+// is left untouched, and it always returns a non-nil map so the store's jsonb
+// marshaling never sees SQL NULL.
+func WithDuplicateFlag(metadata map[string]any, similarity float64) map[string]any {
+	out := make(map[string]any, len(metadata)+2)
+	for k, v := range metadata {
+		out[k] = v
+	}
+	out[MetaDuplicate] = true
+	out[MetaDuplicateSimilarity] = similarity
+	return out
+}
 
 // WikiMetadata is the typed view of a wiki/crawl chunk's EvidenceChunk.Metadata:
 // the source revision the text came from, the section heading it sits under (""

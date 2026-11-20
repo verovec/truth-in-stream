@@ -54,75 +54,81 @@ func TestWikiProducerPropagatesError(t *testing.T) {
 	}
 }
 
-// fakeArchive is a fake archiveRunner that records each query and returns a fixed
-// per-query result, optionally erroring on a chosen query to exercise the
-// stop-at-first-error path.
+// fakeArchive is a fake streamRunner that records how many streams it ran and
+// returns a fixed aggregate result, optionally erroring to exercise the
+// keep-checkpoint-on-error path.
 type fakeArchive struct {
-	seen    []string
-	stats   factcheckarchive.Stats
-	errOn   string
-	failErr error
+	ranStreams int
+	stats      factcheckarchive.Stats
+	failErr    error
 }
 
-func (f *fakeArchive) Run(_ context.Context, _ *slog.Logger, _ factcheckarchive.Publisher, cfg factcheckarchive.RunConfig) (factcheckarchive.Stats, error) {
-	f.seen = append(f.seen, cfg.Query)
-	if cfg.Query == f.errOn {
-		return f.stats, f.failErr
-	}
-	return f.stats, nil
+func (f *fakeArchive) RunStreams(_ context.Context, _ *slog.Logger, _ factcheckarchive.Publisher, streams []factcheckarchive.RunConfig, _ factcheckarchive.StreamCheckpoint) (factcheckarchive.Stats, error) {
+	f.ranStreams = len(streams)
+	return f.stats, f.failErr
 }
 
-func TestFactcheckProducerSumsQueries(t *testing.T) {
+// clearSpy records whether Clear ran, so a test can assert the checkpoint is only
+// cleared on a fully successful run.
+type clearSpy struct {
+	factcheckarchive.NoStreamCheckpoint
+	cleared bool
+}
+
+func (c *clearSpy) Clear() error { c.cleared = true; return nil }
+
+func TestFactcheckProducerRunsStreamsAndClears(t *testing.T) {
 	t.Parallel()
-	archive := &fakeArchive{stats: factcheckarchive.Stats{Published: 4, Skipped: 1}}
+	archive := &fakeArchive{stats: factcheckarchive.Stats{Published: 12, Skipped: 3}}
+	cp := &clearSpy{}
 	producer := factcheckProducer{
-		client:  archive,
-		queries: []string{"macron", "le pen", "melenchon"},
+		client:     archive,
+		streams:    []factcheckarchive.RunConfig{{Query: "macron"}, {Query: "le pen"}, {PublisherSite: "lemonde.fr"}},
+		checkpoint: cp,
 	}
 
 	if got := producer.Name(); got != "factcheck" {
 		t.Fatalf("Name() = %q, want factcheck", got)
 	}
-	if got := producer.Scope(); got != "macron, le pen, melenchon" {
-		t.Fatalf("Scope() = %q, want the joined queries", got)
+	if got := producer.Scope(); got != "2 topics + 1 publisher streams" {
+		t.Fatalf("Scope() = %q", got)
 	}
 
 	stats, err := producer.Run(t.Context())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Three queries, each 4 published + 1 skipped.
 	if stats.New != 12 || stats.Skipped != 3 {
 		t.Fatalf("stats = %+v, want {New:12 Skipped:3}", stats)
 	}
-	if len(archive.seen) != 3 {
-		t.Fatalf("ran %d queries, want 3", len(archive.seen))
+	if archive.ranStreams != 3 {
+		t.Fatalf("ran %d streams, want 3", archive.ranStreams)
+	}
+	if !cp.cleared {
+		t.Fatal("checkpoint not cleared after a full successful run")
 	}
 }
 
-func TestFactcheckProducerStopsAtFirstError(t *testing.T) {
+func TestFactcheckProducerKeepsCheckpointOnError(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("api down")
-	archive := &fakeArchive{
-		stats:   factcheckarchive.Stats{Published: 5},
-		errOn:   "le pen",
-		failErr: wantErr,
-	}
+	archive := &fakeArchive{stats: factcheckarchive.Stats{Published: 10}, failErr: wantErr}
+	cp := &clearSpy{}
 	producer := factcheckProducer{
-		client:  archive,
-		queries: []string{"macron", "le pen", "melenchon"},
+		client:     archive,
+		streams:    []factcheckarchive.RunConfig{{Query: "macron"}, {Query: "le pen"}},
+		checkpoint: cp,
 	}
 
 	stats, err := producer.Run(t.Context())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
-	// macron (5) then le pen (5, errors); melenchon never runs.
 	if stats.New != 10 {
-		t.Fatalf("stats.New = %d, want 10 (stopped after the failing query)", stats.New)
+		t.Fatalf("stats.New = %d, want the partial count 10", stats.New)
 	}
-	if len(archive.seen) != 2 {
-		t.Fatalf("ran %d queries, want 2 (stopped at the error)", len(archive.seen))
+	if cp.cleared {
+		t.Fatal("checkpoint cleared despite an error; a rerun must resume")
 	}
 }
 

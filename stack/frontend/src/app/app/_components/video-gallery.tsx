@@ -1,13 +1,13 @@
 "use client";
 
-import type { LibraryVideo } from "@/lib/video/api";
+import type { AnalysedLibraryVideo } from "@/lib/video/analysis";
 import { useAppI18n } from "@/components/i18n/app-i18n";
 import { VideoTile } from "./video-tile";
 
 type VideoGalleryProps = {
-  videos: LibraryVideo[];
+  videos: AnalysedLibraryVideo[];
   selectedId: string | null;
-  onSelect: (video: LibraryVideo) => void;
+  onSelect: (video: AnalysedLibraryVideo) => void;
 };
 
 // GALLERY_GRID_CLASS is the library grid layout, shared so the loading skeleton

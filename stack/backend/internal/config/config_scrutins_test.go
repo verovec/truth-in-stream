@@ -64,7 +64,7 @@ func TestLoadScrutinsQueue(t *testing.T) {
 	if q.Name != "scrutins.votes" {
 		t.Fatalf("queue name = %q, want scrutins.votes", q.Name)
 	}
-	if got, want := q.VersionedName(), "scrutins.votes.v1"; got != want {
+	if got, want := q.VersionedName(), "scrutins.votes.v2"; got != want {
 		t.Fatalf("VersionedName() = %q, want %q", got, want)
 	}
 }

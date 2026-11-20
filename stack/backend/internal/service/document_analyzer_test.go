@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ type fakeBatchVerifier struct {
 	err    map[string]error
 }
 
-func (f fakeBatchVerifier) AnalyzeText(_ context.Context, _ SegmentPrechecker, text, _ string) (BatchUnitResult, error) {
+func (f fakeBatchVerifier) AnalyzeText(_ context.Context, _ SegmentPrechecker, text, _, _ string) (BatchUnitResult, error) {
 	if err := f.err[text]; err != nil {
 		return BatchUnitResult{}, err
 	}
@@ -217,6 +218,56 @@ func TestDocumentAnalyzerStartPropagatesLockErrors(t *testing.T) {
 				t.Error("a lock rejection should not spawn a run")
 			}
 		})
+	}
+}
+
+// contextRecordingBatchVerifier records the recent context passed per sentence,
+// so a test asserts each sentence decomposes with the preceding group of
+// sentences as context.
+type contextRecordingBatchVerifier struct {
+	mu       sync.Mutex
+	contexts []string
+}
+
+func (f *contextRecordingBatchVerifier) AnalyzeText(_ context.Context, _ SegmentPrechecker, _, recentContext, _ string) (BatchUnitResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.contexts = append(f.contexts, recentContext)
+	return BatchUnitResult{Checkable: false, SkipReason: domain.SkipReasonNotAClaim}, nil
+}
+
+func TestDocumentAnalyzerPassesPrecedingSentencesAsContext(t *testing.T) {
+	t.Parallel()
+	// Six sentences: each decomposes with the group of preceding sentences as
+	// context, and the window slides once it holds batchContextSentences, so the
+	// sixth sentence sees sentences two through five but not the first.
+	store := &fakeAnalyzerStore{sentences: []domain.DocumentSentence{
+		{Seq: 0, Page: 1, Text: "Premiere phrase.", Occurrence: 1},
+		{Seq: 1, Page: 1, Text: "Elle est fausse.", Occurrence: 1},
+		{Seq: 2, Page: 1, Text: "Troisieme phrase.", Occurrence: 1},
+		{Seq: 3, Page: 1, Text: "Quatrieme phrase.", Occurrence: 1},
+		{Seq: 4, Page: 1, Text: "Cinquieme phrase.", Occurrence: 1},
+		{Seq: 5, Page: 1, Text: "Sixieme phrase.", Occurrence: 1},
+	}}
+	verify := &contextRecordingBatchVerifier{}
+	a := syncAnalyzer(t, store, verify)
+
+	if err := a.Start(t.Context(), "doc-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	want := []string{
+		"",
+		"Premiere phrase.",
+		"Premiere phrase. Elle est fausse.",
+		"Premiere phrase. Elle est fausse. Troisieme phrase.",
+		"Premiere phrase. Elle est fausse. Troisieme phrase. Quatrieme phrase.",
+		"Elle est fausse. Troisieme phrase. Quatrieme phrase. Cinquieme phrase.",
+	}
+	verify.mu.Lock()
+	defer verify.mu.Unlock()
+	if !slices.Equal(verify.contexts, want) {
+		t.Errorf("contexts = %q, want the sliding preceding group %q", verify.contexts, want)
 	}
 }
 

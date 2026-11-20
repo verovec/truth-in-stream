@@ -371,16 +371,90 @@ func TestRouterUnknownTypeFallsBackToWeb(t *testing.T) {
 	}
 }
 
+// TestRouterWithoutWebPackDegrades pins the unkeyed-deployment contract: with no
+// web-search pack the router still answers the claim types its keyless packs
+// cover, and the ones that would have broadened to web retrieve nothing instead of
+// erroring or panicking on a nil fallback.
+func TestRouterWithoutWebPackDegrades(t *testing.T) {
+	t.Parallel()
+
+	t.Run("routed claim still resolves from a keyless pack", func(t *testing.T) {
+		t.Parallel()
+
+		stats := &fakeRetriever{kind: source.KindStats, evidence: []source.Evidence{ev(source.KindStatsINSEE, "S1", "serie")}}
+		r := newRouterT(t, []source.Retriever{stats}, RouterConfig{MinResults: 1})
+
+		out, err := r.Retrieve(t.Context(), "le chomage baisse", claimtype.Statistic, nil)
+		if err != nil {
+			t.Fatalf("Retrieve: %v", err)
+		}
+		if len(out) != 1 || out[0].ID.Kind != source.KindStatsINSEE {
+			t.Fatalf("stats claim did not resolve from the keyless pack: %+v", out)
+		}
+	})
+
+	t.Run("open-ended claim retrieves nothing without erroring", func(t *testing.T) {
+		t.Parallel()
+
+		stats := &fakeRetriever{kind: source.KindStats}
+		r := newRouterT(t, []source.Retriever{stats}, RouterConfig{MinResults: 1})
+
+		out, err := r.Retrieve(t.Context(), "l'immigration cause le chomage", claimtype.Causal, nil)
+		if err != nil {
+			t.Fatalf("open-ended claim without a web pack should be evidence-free, not an error: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("out = %+v, want no evidence", out)
+		}
+		if len(stats.calls) != 0 {
+			t.Fatalf("a causal claim must not be routed to the stats pack (calls: %d)", len(stats.calls))
+		}
+	})
+
+	t.Run("thin preferred result stands with nothing to broaden to", func(t *testing.T) {
+		t.Parallel()
+
+		stats := &fakeRetriever{kind: source.KindStats, evidence: []source.Evidence{ev(source.KindStatsINSEE, "S1", "serie")}}
+		r := newRouterT(t, []source.Retriever{stats}, RouterConfig{MinResults: 5})
+
+		out, err := r.Retrieve(t.Context(), "le chomage baisse", claimtype.Statistic, nil)
+		if err != nil {
+			t.Fatalf("Retrieve: %v", err)
+		}
+		if len(out) != 1 {
+			t.Fatalf("out = %+v, want the thin result to stand", out)
+		}
+	})
+
+	t.Run("failed preferred pack still surfaces a total failure", func(t *testing.T) {
+		t.Parallel()
+
+		stats := &fakeRetriever{kind: source.KindStats, err: errors.New("insee down")}
+		r := newRouterT(t, []source.Retriever{stats}, RouterConfig{MinResults: 1})
+
+		if _, err := r.Retrieve(t.Context(), "le chomage baisse", claimtype.Statistic, nil); err == nil {
+			t.Fatal("a failing sole pack with no fallback should surface the error")
+		}
+	})
+}
+
 func TestNewRouterValidation(t *testing.T) {
 	t.Parallel()
 
 	web := &fakeRetriever{kind: source.KindWebSearch}
 
-	t.Run("requires a web retriever for the fallback", func(t *testing.T) {
+	t.Run("builds without a web retriever", func(t *testing.T) {
 		t.Parallel()
 		stats := &fakeRetriever{kind: source.KindStats}
-		if _, err := NewRouter([]source.Retriever{stats}, RouterConfig{MinResults: 1}); err == nil {
-			t.Fatal("NewRouter without a web retriever should fail")
+		if _, err := NewRouter([]source.Retriever{stats}, RouterConfig{MinResults: 1}); err != nil {
+			t.Fatalf("NewRouter without a web retriever should degrade, not fail: %v", err)
+		}
+	})
+
+	t.Run("rejects an empty retriever set", func(t *testing.T) {
+		t.Parallel()
+		if _, err := NewRouter(nil, RouterConfig{MinResults: 1}); err == nil {
+			t.Fatal("NewRouter with no retrievers should fail")
 		}
 	})
 

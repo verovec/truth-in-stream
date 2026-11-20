@@ -415,8 +415,12 @@ func TestRunSendsDescriptiveUserAgent(t *testing.T) {
 	if _, err := c.Run(t.Context()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := transport.userAgent[0]; got != userAgent {
+	got := transport.userAgent[0]
+	if got != userAgent {
 		t.Errorf("User-Agent = %q, want %q", got, userAgent)
+	}
+	if strings.Contains(got, "Go-http-client") {
+		t.Errorf("User-Agent %q carries the Go-http-client token the archive host throttles", got)
 	}
 }
 

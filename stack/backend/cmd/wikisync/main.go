@@ -7,9 +7,12 @@
 // re-enqueues only the still-unembedded chunks. Embedding throughput scales with
 // the worker replica count, not with this process. Delta mode asks the MediaWiki
 // RecentChanges API what changed since the stored checkpoint, refetches and
-// re-embeds only those articles in place (still inline, via the Voyage API and
-// EMBEDDING_API_KEY), removes deleted pages, and advances the checkpoint. The
-// corpus comes from WIKI_CORPUS (default simplewiki) and the database from
+// re-chunks only those articles, publishes one embedding job per changed chunk to
+// the same RabbitMQ fleet queue (RABBITMQ_URL) the bulk path uses, removes
+// deleted pages, and advances the checkpoint; the fleet embeds the published
+// chunks, so a mid-window failure resumes from the last confirmed batch rather
+// than re-embedding the whole window. The corpus comes from WIKI_CORPUS (default
+// simplewiki) and the database from
 // DATABASE_URL. With -dry-run, bulk ingests and reports the embedding cost
 // estimate without enqueuing or swapping anything, so it needs no broker. Reset
 // mode clears the live corpus and its checkpoint so the next bulk run rebuilds it
@@ -31,17 +34,9 @@ import (
 
 	"github.com/verovec/truth-in-stream/backend/internal/config"
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
-	"github.com/verovec/truth-in-stream/backend/internal/embed"
 	"github.com/verovec/truth-in-stream/backend/internal/queue"
 	"github.com/verovec/truth-in-stream/backend/internal/store/postgres"
 	"github.com/verovec/truth-in-stream/backend/internal/wiki"
-)
-
-// Embedding-retry backoff bounds: a rate-limited request waits at least a
-// second and at most a minute between attempts.
-const (
-	embedRetryBaseDelay = 1 * time.Second
-	embedRetryMaxDelay  = 60 * time.Second
 )
 
 func main() {
@@ -254,13 +249,7 @@ func runBulkLive(ctx context.Context, logger *slog.Logger, store *postgres.Store
 		return err
 	}
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    queueCfg.Prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(queueCfg.Prefetch))
 	if err != nil {
 		return err
 	}
@@ -335,13 +324,7 @@ func runBulkAtomic(ctx context.Context, logger *slog.Logger, store *postgres.Sto
 	// The producer publishes to the active versioned queue resolved from the same
 	// configuration the worker consumes, so both bind to the same queue without
 	// touching the enqueue logic.
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-		Prefetch:    queueCfg.Prefetch,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(queueCfg.Prefetch))
 	if err != nil {
 		return err
 	}
@@ -393,7 +376,9 @@ func logEstimate(ctx context.Context, logger *slog.Logger, corpus string, est wi
 }
 
 // runDelta catches the corpus up to the live wiki incrementally via the
-// MediaWiki API, embedding only what changed.
+// MediaWiki API, publishing the changed chunks to the worker fleet to embed
+// rather than embedding them inline, so a mid-window failure resumes from the
+// last confirmed batch instead of re-embedding the whole window.
 func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, wikiCfg config.Wiki, dryRun bool) error {
 	if dryRun {
 		return errors.New("wikisync: -dry-run is only supported for bulk mode")
@@ -402,23 +387,29 @@ func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, w
 	if err != nil {
 		return err
 	}
-	embedCfg, err := config.LoadWikiEmbed()
+	queueCfg, err := config.LoadQueue()
 	if err != nil {
 		return err
 	}
-	embProvider, err := config.LoadEmbedding()
+	producerCfg, err := config.LoadWikiProducer()
 	if err != nil {
 		return err
 	}
 
+	client, err := queue.New(queueCfg.ClientConfig(queueCfg.Prefetch))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
 	api := &wiki.APIClient{Corpus: wikiCfg.Corpus}
 	logger.InfoContext(ctx, "starting delta sync", slog.String("corpus", wikiCfg.Corpus))
-	stats, err := wiki.RunDelta(ctx, store, api, newEmbedder(logger, embProvider, embedCfg), wiki.DeltaConfig{
-		Corpus:        wikiCfg.Corpus,
-		RetentionDays: deltaCfg.RetentionDays,
-		BulkFraction:  deltaCfg.BulkFraction,
-		BatchSize:     embedCfg.BatchSize,
-		Concurrency:   embedCfg.Concurrency,
+	stats, err := wiki.RunDelta(ctx, logger, store, api, qPublisher{client: client}, wiki.DeltaConfig{
+		Corpus:           wikiCfg.Corpus,
+		RetentionDays:    deltaCfg.RetentionDays,
+		BulkFraction:     deltaCfg.BulkFraction,
+		MaxPriority:      queueCfg.MaxPriority,
+		EnqueueBatchSize: producerCfg.EnqueueBatchSize,
 	}, time.Now().UTC())
 	if err != nil {
 		return err
@@ -427,32 +418,11 @@ func runDelta(ctx context.Context, logger *slog.Logger, store *postgres.Store, w
 		logger.WarnContext(ctx, "change set exceeds the bulk threshold; a -mode=bulk re-run would rebuild the index more cleanly",
 			slog.String("corpus", wikiCfg.Corpus))
 	}
-	logger.InfoContext(ctx, "delta sync complete",
+	logger.InfoContext(ctx, "delta sync complete; the fleet embeds the published chunks",
 		slog.String("corpus", wikiCfg.Corpus),
 		slog.Int("pages_changed", stats.Changed),
 		slog.Int("pages_skipped", stats.Skipped),
 		slog.Int("pages_deleted", stats.Deleted),
-		slog.Int("embedded_chunks", stats.Embedded))
+		slog.Int("published_chunks", stats.Published))
 	return nil
-}
-
-// newEmbedder builds the Voyage embedding client wrapped in the shared retry
-// decorator both sync modes use, optionally paced to a per-minute request budget
-// for a constrained tier. The rate limiter sits beneath the retry decorator so
-// every attempt - including retries - is paced; the logger lets the retry
-// decorator surface backoffs, so a throttled or stalled run is visible rather
-// than silently waiting.
-func newEmbedder(logger *slog.Logger, p config.Embedding, embedCfg config.WikiEmbed) *embed.RetryClient {
-	return embed.WithRetry(
-		embed.WithRateLimit(
-			embed.New(embed.Config{
-				APIKey:     p.APIKey,
-				Model:      p.Model,
-				Dim:        p.Dim,
-				HTTPClient: &http.Client{Timeout: embedCfg.HTTPTimeout},
-			}),
-			embedCfg.RequestsPerMinute,
-		),
-		embed.RetryConfig{MaxAttempts: embedCfg.MaxRetries, BaseDelay: embedRetryBaseDelay, MaxDelay: embedRetryMaxDelay, Logger: logger},
-	)
 }

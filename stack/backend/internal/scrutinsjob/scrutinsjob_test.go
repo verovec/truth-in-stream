@@ -39,20 +39,28 @@ func jobBody(t *testing.T, payload string, attempt int) []byte {
 // recordingStore captures every upsert and can fail a configured number of times
 // to exercise the retry path.
 type recordingStore struct {
-	mu       sync.Mutex
-	records  []domain.VotingRecord
-	failN    int
-	failWith error
+	mu        sync.Mutex
+	records   []domain.VotingRecord
+	calls     int
+	lastBatch int
+	failN     int
+	failWith  error
 }
 
-func (s *recordingStore) UpsertVotingRecord(_ context.Context, r domain.VotingRecord) error {
+// UpsertVotingRecords models the real store's atomic apply: on failure it records
+// nothing (a rolled-back transaction), and on success it appends the whole batch.
+// It counts calls and the last batch size so a test can prove the worker applies
+// a scrutin's records in one call, not one per record.
+func (s *recordingStore) UpsertVotingRecords(_ context.Context, records []domain.VotingRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.calls++
+	s.lastBatch = len(records)
 	if s.failN > 0 {
 		s.failN--
 		return s.failWith
 	}
-	s.records = append(s.records, r)
+	s.records = append(s.records, records...)
 	return nil
 }
 
@@ -88,6 +96,66 @@ func TestProcessParsesAndUpserts(t *testing.T) {
 	}
 }
 
+// senatPayload is a self-contained Senat scrutin the parliament producer publishes
+// (the chamber-aware branch), naming two senators.
+const senatPayload = `{
+  "scrutin_id": "senat-2026-15",
+  "objet": "sur l'ensemble du projet de loi X",
+  "date": "2026-02-10",
+  "source_url": "https://www.senat.fr/scrutin-public/2026/scr2026-15.html",
+  "votes": [
+    {"person_id": "98046X", "person_name": "François MARC", "position": "contre"},
+    {"person_id": "98047Y", "person_name": "Yves FRÉVILLE", "position": "pour"}
+  ]
+}`
+
+// TestProcessSenatChamberWritesSenatRecords proves the chamber-aware dispatch: a job
+// stamped chamber=senat is parsed by the Senat parser and written with
+// domain.ChamberSenat, while the existing Assemblee path (empty chamber) is
+// unchanged.
+func TestProcessSenatChamberWritesSenatRecords(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{}
+	w := newTestWorker(store)
+
+	body, err := json.Marshal(ScrutinJob{ID: "senat-2026-15", Chamber: "senat", Scrutin: json.RawMessage(senatPayload)})
+	if err != nil {
+		t.Fatalf("marshal senat job: %v", err)
+	}
+	if res := w.Process(t.Context(), body, 5); res.Action != ActionAck {
+		t.Fatalf("Action = %v, want ActionAck", res.Action)
+	}
+	if store.count() != 2 {
+		t.Fatalf("upserted %d records, want 2", store.count())
+	}
+	for _, r := range store.records {
+		if r.Chamber != domain.ChamberSenat {
+			t.Errorf("record %q chamber = %q, want senat", r.PersonID, r.Chamber)
+		}
+		if r.ScrutinID != "senat-2026-15" {
+			t.Errorf("record scrutin id = %q", r.ScrutinID)
+		}
+	}
+}
+
+// TestProcessUnknownChamberIsDeadLettered proves a job stamped with a chamber the
+// worker does not know is dead-lettered, never written under the wrong parser.
+func TestProcessUnknownChamberIsDeadLettered(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{}
+	w := newTestWorker(store)
+	body, err := json.Marshal(ScrutinJob{ID: "x", Chamber: "bundestag", Scrutin: json.RawMessage(`{"scrutin_id":"x"}`)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if res := w.Process(t.Context(), body, 5); res.Action != ActionReject {
+		t.Fatalf("Action = %v, want ActionReject for an unknown chamber", res.Action)
+	}
+	if store.count() != 0 {
+		t.Fatalf("wrote %d records for an unknown chamber, want 0", store.count())
+	}
+}
+
 func TestProcessIsIdempotent(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{}
@@ -112,7 +180,7 @@ func TestProcessIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestProcessDropsBadJobs(t *testing.T) {
+func TestProcessDeadLettersBadJobs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -134,8 +202,8 @@ func TestProcessDropsBadJobs(t *testing.T) {
 			t.Parallel()
 			store := &recordingStore{}
 			w := newTestWorker(store)
-			if res := w.Process(t.Context(), tc.body, 5); res.Action != ActionAck {
-				t.Fatalf("Action = %v, want ActionAck (drop)", res.Action)
+			if res := w.Process(t.Context(), tc.body, 5); res.Action != ActionReject {
+				t.Fatalf("Action = %v, want ActionReject (dead-letter a bad job)", res.Action)
 			}
 			if store.count() != 0 {
 				t.Fatalf("wrote %d records for a bad job, want 0", store.count())
@@ -166,7 +234,7 @@ func TestProcessRepublishesOnTransientFailure(t *testing.T) {
 	}
 }
 
-func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
+func TestProcessDeadLettersAfterExhaustingRetries(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{failN: 1, failWith: errors.New("db down")}
 	w := NewWorker(store, nil, nil, nil, Config{Concurrency: 1, MaxAttempts: 3})
@@ -174,8 +242,8 @@ func TestProcessDropsAfterExhaustingRetries(t *testing.T) {
 	// Attempt 2 (zero-indexed) is the last allowed attempt for MaxAttempts 3.
 	res := w.Process(t.Context(), jobBody(t, scrutinPayload, 2), 7)
 
-	if res.Action != ActionAck {
-		t.Fatalf("Action = %v, want ActionAck (drop after retries)", res.Action)
+	if res.Action != ActionReject {
+		t.Fatalf("Action = %v, want ActionReject (dead-letter after retries)", res.Action)
 	}
 }
 
@@ -263,6 +331,65 @@ func TestRunAcksAfterUpsertAndReturns(t *testing.T) {
 	}
 	if store.count() != 2 {
 		t.Fatalf("upserts did not run before ack: stored %d records, want 2", store.count())
+	}
+}
+
+// TestProcessAppliesRecordsInOneAtomicCall proves the worker hands a scrutin's
+// whole record set to the store in a single call rather than one call per record,
+// so the store can apply them atomically and a reader never sees a partial vote
+// set. The per-row-in-a-transaction visibility itself is covered by the postgres
+// store's concurrent-read integration test.
+func TestProcessAppliesRecordsInOneAtomicCall(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{}
+	w := newTestWorker(store)
+
+	if res := w.Process(t.Context(), jobBody(t, scrutinPayload, 0), 5); res.Action != ActionAck {
+		t.Fatalf("Action = %v, want ActionAck", res.Action)
+	}
+	if store.calls != 1 {
+		t.Fatalf("store calls = %d, want 1 (one atomic apply, not one per record)", store.calls)
+	}
+	if store.lastBatch != 2 {
+		t.Fatalf("apply batch = %d records, want 2 (the whole scrutin in one call)", store.lastBatch)
+	}
+}
+
+// TestFailedApplyRecordsNothing proves the modeled atomic apply leaves no partial
+// state when it fails, and the worker re-enqueues the job for a bounded retry.
+func TestFailedApplyRecordsNothing(t *testing.T) {
+	t.Parallel()
+	store := &recordingStore{failN: 1, failWith: errors.New("db down")}
+	w := newTestWorker(store)
+
+	if res := w.Process(t.Context(), jobBody(t, scrutinPayload, 0), 5); res.Action != ActionRepublish {
+		t.Fatalf("Action = %v, want ActionRepublish (transient failure retries)", res.Action)
+	}
+	if store.count() != 0 {
+		t.Fatalf("stored %d records after a failed apply, want 0 (no partial vote set)", store.count())
+	}
+}
+
+// TestStatsCountsProcessedAndParked proves the drain counters separate acked
+// (processed) deliveries from dead-lettered (parked) ones - the counts the
+// consumer run alert reports - across a good delivery and a poison one.
+func TestStatsCountsProcessedAndParked(t *testing.T) {
+	t.Parallel()
+	good := &recDelivery{body: jobBody(t, scrutinPayload, 0), priority: 5, version: "1"}
+	poison := &recDelivery{body: []byte("{not json"), priority: 5, version: "1"}
+	store := &recordingStore{}
+	w := NewWorker(store, &sliceStream{[]Delivery{good, poison}}, nil, nil,
+		Config{Concurrency: 1, MaxAttempts: 3, KnownVersions: []string{"1"}})
+
+	if err := w.Run(t.Context()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	stats := w.Stats()
+	if stats.Processed != 1 {
+		t.Errorf("Stats.Processed = %d, want 1 (the good delivery acked)", stats.Processed)
+	}
+	if stats.ParkedToDLQ != 1 {
+		t.Errorf("Stats.ParkedToDLQ = %d, want 1 (the malformed delivery dead-lettered)", stats.ParkedToDLQ)
 	}
 }
 

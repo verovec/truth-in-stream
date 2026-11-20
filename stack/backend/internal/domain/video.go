@@ -104,8 +104,20 @@ type Video struct {
 	// RecordedAt is the wall-clock start of a kind `tv` recording's captured
 	// segment; the zero time for every other kind.
 	RecordedAt time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// AnalysisStatus tracks the durable pre-analysis lifecycle, orthogonal to
+	// the upload lifecycle; playback and live analysis work regardless of it.
+	AnalysisStatus VideoAnalysisStatus
+	// AnalysisError is the reason the latest run failed; empty otherwise.
+	AnalysisError string
+	// AnalyzedAt is when the latest run completed; zero when never completed.
+	AnalyzedAt time.Time
+	// AnalysisRuns counts completed runs, so a re-analysis is observable.
+	AnalysisRuns int
+	// AnalysisProgressMS is the audio position the current run has reached, in
+	// milliseconds; it drives the progress indicator while analysing.
+	AnalysisProgressMS int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // DownloadResult is the outcome of fetching a video from a source: the path to

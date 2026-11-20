@@ -108,24 +108,45 @@ export type ManipulationFlag =
   | "misattributed"
   | "misleading-causation";
 
+// ClaimSpan locates the verbatim words a claim was extracted from inside one
+// transcript segment: the segment's correlation id (the subtitle id statement
+// rows key on) and the [start, end) offsets of the quoted words within that
+// segment's text. Offsets count Unicode code points, not UTF-16 units - the
+// backend counts runes - so a renderer must slice by code point.
+export type ClaimSpan = {
+  segmentId: string;
+  start: number;
+  end: number;
+};
+
 // AtomicClaim is one self-contained claim a unit decomposed into, announced on a
 // claims frame with its stable per-claim id (shared across that claim's
 // pending/checking/verified results so the client replaces it in place) and its
-// coreference-resolved text.
+// coreference-resolved text. quote is the verbatim run of statement words the
+// claim came from and spans locates those words inside the unit's segments, so
+// the transcript can highlight the exact words that were checked; both are
+// absent when the backend could not anchor the claim.
 export type AtomicClaim = {
   claimId: string;
   text: string;
   status: "pending";
+  quote?: string;
+  spans?: ClaimSpan[];
 };
 
 // ClaimsFrame announces the atomic claims a checkable unit decomposed into
 // (retrieve-then-verify path). id is the unit's correlation id, shared with the
 // unit's subtitle so the client groups the claims under the statement they came
 // from; each claim carries its own claim_id the per-claim results key on.
+// segmentIds lists the unit's member subtitle ids in order when the unit was
+// built from several statements, so the transcript can merge the whole group
+// into one displayed statement; absent on an older backend or a single-member
+// unit, leaving per-statement rendering unchanged.
 export type ClaimsFrame = {
   type: "claims";
   id: string;
   claims: AtomicClaim[];
+  segmentIds?: string[];
 };
 
 // ClaimResultFrame is one per-claim result on the retrieve-then-verify path. id
@@ -234,6 +255,23 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+// isClaimSpan validates one wire span: a non-empty segment id and a non-empty,
+// non-negative [start, end) integer range. Anything else is dropped so a
+// malformed range can never produce a nonsense highlight.
+function isClaimSpan(
+  value: unknown,
+): value is { segment_id: string; start: number; end: number } {
+  return (
+    isRecord(value) &&
+    typeof value.segment_id === "string" &&
+    value.segment_id.length > 0 &&
+    Number.isInteger(value.start) &&
+    Number.isInteger(value.end) &&
+    (value.start as number) >= 0 &&
+    (value.end as number) > (value.start as number)
+  );
+}
+
 // isHttpUrl reports whether value is a non-empty http(s) URL, the only schemes
 // safe to place in a rendered href; it rejects anything else so a malformed
 // frame cannot smuggle a javascript:/data: link into the source chip.
@@ -257,6 +295,17 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
   } catch {
     return null;
   }
+  return parseLiveFrameValue(value);
+}
+
+/**
+ * Validates one already-decoded frame value into a typed live frame, or null
+ * when it is malformed or carries an unknown type. The stored-analysis REST
+ * payload delivers frames as JSON values inside a larger response - the same
+ * shapes the WebSocket sends as text - so hydration shares this one validator
+ * with the socket path and the two can never drift.
+ */
+export function parseLiveFrameValue(value: unknown): LiveFrame | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -329,9 +378,49 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
         // down, so one bad row does not lose the unit's other claims.
         continue;
       }
-      claims.push({ claimId: raw.claim_id, text: raw.text, status: "pending" });
+      const claim: AtomicClaim = {
+        claimId: raw.claim_id,
+        text: raw.text,
+        status: "pending",
+      };
+      if (typeof raw.quote === "string" && raw.quote.length > 0) {
+        claim.quote = raw.quote;
+      }
+      if (Array.isArray(raw.spans)) {
+        // A malformed span is dropped individually so one bad range never costs
+        // the claim (or its siblings) their verdicts - only the highlight.
+        const spans = raw.spans.filter(isClaimSpan).map(
+          (span): ClaimSpan => ({
+            segmentId: span.segment_id,
+            start: span.start,
+            end: span.end,
+          }),
+        );
+        if (spans.length > 0) {
+          claim.spans = spans;
+        }
+      }
+      claims.push(claim);
     }
-    return { type: "claims", id: value.id, claims };
+    const frame: ClaimsFrame = { type: "claims", id: value.id, claims };
+    if (Array.isArray(value.segment_ids)) {
+      // A malformed or duplicated entry drops the whole list rather than
+      // merging a partial group: a group missing a member would render a
+      // statement's text twice (once merged, once standalone) or lose it
+      // entirely, and a duplicated member would double its text inside the
+      // merged row.
+      const segmentIds = value.segment_ids.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      if (
+        segmentIds.length > 0 &&
+        segmentIds.length === value.segment_ids.length &&
+        new Set(segmentIds).size === segmentIds.length
+      ) {
+        frame.segmentIds = segmentIds;
+      }
+    }
+    return frame;
   }
 
   if (value.type === "claim_result") {

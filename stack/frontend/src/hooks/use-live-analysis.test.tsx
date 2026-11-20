@@ -290,6 +290,106 @@ describe("useLiveAnalysis", () => {
     });
   });
 
+  test("a claims frame's member segment ids merge the unit into one statement", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() =>
+      h.sockets[0].handlers.onFrame(subtitleFrame("0", 1, "Le budget monte.")),
+    );
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        subtitleFrame("1", 2, "Il monte de dix pour cent."),
+      ),
+    );
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        JSON.stringify({
+          type: "claims",
+          id: "0",
+          segment_ids: ["0", "1"],
+          claims: [
+            {
+              claim_id: "0-0",
+              text: "Le budget monte de dix pour cent.",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+    );
+
+    // The member ids are namespaced like every other correlation id, so the
+    // merge resolves them against this session's statements.
+    const statements = h.analysis().statements;
+    expect(statements.map((s) => s.id)).toEqual(["1:0"]);
+    expect(statements[0]).toMatchObject({
+      text: "Le budget monte. Il monte de dix pour cent.",
+      parts: [
+        { id: "1:0", text: "Le budget monte." },
+        { id: "1:1", text: "Il monte de dix pour cent." },
+      ],
+    });
+    expect(h.analysis().claimsFor("1:0")).toHaveLength(1);
+  });
+
+  test("claim highlight spans namespace their segment ids to the session", () => {
+    const h = harness();
+    play(h.store());
+    act(() => h.sockets[0].handlers.onOpen());
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        subtitleFrame("0", 1, "the bridge opened in 1937"),
+      ),
+    );
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        JSON.stringify({
+          type: "claims",
+          id: "0",
+          claims: [
+            {
+              claim_id: "0-0",
+              text: "The bridge opened in 1937.",
+              status: "pending",
+              quote: "bridge opened in 1937",
+              spans: [{ segment_id: "0", start: 4, end: 25 }],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const statementId = h.analysis().statements[0].id;
+    expect(statementId).toBe("1:0");
+    // The span's segment id is namespaced like the statement id, so the row
+    // finds its highlight after a reconnect; offsets pass through untouched.
+    expect(h.analysis().highlightsFor(statementId)).toEqual([
+      {
+        unitId: "1:0",
+        claimId: "0-0",
+        start: 4,
+        end: 25,
+        status: "pending",
+        verdict: undefined,
+        quote: "bridge opened in 1937",
+      },
+    ]);
+
+    act(() =>
+      h.sockets[0].handlers.onFrame(
+        claimResultFrame("0", "0-0", "verified", {
+          source: "verified",
+          verdict: "disputed",
+        }),
+      ),
+    );
+    expect(h.analysis().highlightsFor(statementId)[0]).toMatchObject({
+      status: "verified",
+      verdict: "disputed",
+    });
+  });
+
   test("seeking drops the claims of in-flight units but keeps a resolved unit's claims", () => {
     const h = harness();
     play(h.store());

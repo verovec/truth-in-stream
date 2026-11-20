@@ -34,13 +34,36 @@ type CoverageDecider interface {
 type Gate struct {
 	classifier ClaimClassifier
 	coverage   CoverageDecider
+	// embed is the coverage stage's embed-once capability when it exposes one
+	// (CombinedCoverage does), enabling the legacy path to embed a checkable unit
+	// once and share the vector with the matcher. It is nil for a coverage decider
+	// that cannot, in which case the caller keeps the two-embed gateAndMatch path.
+	embed embeddingCoverage
 }
 
 // NewGate builds a Gate from a claim classifier and a coverage decider. Both
 // stages' validation lives with their own constructors, so the gate itself
-// cannot be misconfigured.
+// cannot be misconfigured. It detects at construction whether the coverage
+// decider can embed and decide from a shared vector, which the live legacy path
+// uses to collapse its former double embed into one.
 func NewGate(classifier ClaimClassifier, coverage CoverageDecider) *Gate {
-	return &Gate{classifier: classifier, coverage: coverage}
+	g := &Gate{classifier: classifier, coverage: coverage}
+	if ec, ok := coverage.(embeddingCoverage); ok {
+		g.embed = ec
+	}
+	return g
+}
+
+// embedOnce returns the gate's classifier and its embed-once coverage capability
+// when the coverage stage supports embedding once and deciding from the shared
+// vector; ok is false when it does not, so the caller falls back to the
+// two-embed gateAndMatch. It lets the live legacy path drive the single-embed
+// orchestration without reaching into the gate's stages directly.
+func (g *Gate) embedOnce() (ClaimClassifier, embeddingCoverage, bool) {
+	if g.embed == nil {
+		return nil, nil, false
+	}
+	return g.classifier, g.embed, true
 }
 
 // Evaluate runs the two stages and returns the decision. A non-claim is

@@ -75,10 +75,12 @@ func (f *fakeSummarizer) Summarize(_ context.Context, cards []CardInput) (map[st
 	return f.out, f.err
 }
 
-var _ CommitSource = (*fakeCommitSource)(nil)
-var _ LinearSource = (*fakeLinear)(nil)
-var _ PRSource = (*fakePRs)(nil)
-var _ CardSummarizer = (*fakeSummarizer)(nil)
+var (
+	_ CommitSource   = (*fakeCommitSource)(nil)
+	_ LinearSource   = (*fakeLinear)(nil)
+	_ PRSource       = (*fakePRs)(nil)
+	_ CardSummarizer = (*fakeSummarizer)(nil)
+)
 
 func fixedClock(t time.Time) func() time.Time { return func() time.Time { return t } }
 

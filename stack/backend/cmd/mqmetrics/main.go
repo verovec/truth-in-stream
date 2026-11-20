@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -65,7 +66,7 @@ func run(ctx context.Context) error {
 			BaseURL: fmt.Sprintf("https://%s:%d", creds.Host, cfg.managementPort),
 			Creds:   creds,
 		}
-		return poll(ctx, client, cw, mqmetrics.Options{Broker: cfg.brokerName, Base: cfg.queueName}, cfg.namespace)
+		return poll(ctx, client, cw, mqmetrics.Options{Broker: cfg.brokerName, Bases: cfg.queueNames}, cfg.namespace)
 	})
 	return nil
 }
@@ -74,7 +75,7 @@ type config struct {
 	secretARN      string
 	namespace      string
 	brokerName     string
-	queueName      string
+	queueNames     []string
 	managementPort int
 	httpTimeout    time.Duration
 }
@@ -100,10 +101,23 @@ func loadConfig() (config, error) {
 		secretARN:      secretARN,
 		namespace:      getenv("METRICS_NAMESPACE", "TruthInStream/RabbitMQ"),
 		brokerName:     brokerName,
-		queueName:      getenv("QUEUE_NAME", "embedding.jobs"),
+		queueNames:     queueNames(getenv("QUEUE_NAMES", "embedding.jobs")),
 		managementPort: port,
 		httpTimeout:    time.Duration(timeoutSeconds) * time.Second,
 	}, nil
+}
+
+// queueNames parses the comma-separated QUEUE_NAMES list into base queue names,
+// trimming blanks. Each base's versioned and dead-letter queues are measured.
+func queueNames(raw string) []string {
+	parts := strings.Split(raw, ",")
+	bases := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			bases = append(bases, v)
+		}
+	}
+	return bases
 }
 
 func getenv(key, fallback string) string {

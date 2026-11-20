@@ -15,6 +15,7 @@ import (
 // in match order, so the adapter can attach each to its converted match.
 type segmentMatcher interface {
 	MatchSegment(ctx context.Context, segment string) ([]Match, []float32, error)
+	MatchSegmentVec(ctx context.Context, segment string, vec []float32) ([]Match, []float32, error)
 	Confidence(matches []Match) domain.Confidence
 	Contributions(matches []Match) []float64
 }
@@ -41,8 +42,25 @@ func NewSegmentMatchAdapter(matcher segmentMatcher) *SegmentMatchAdapter {
 // never nil.
 func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResult, error) {
 	hits, query, err := a.matcher.MatchSegment(ctx, text)
+	return a.convert(hits, query, err)
+}
+
+// MatchVec is Match with the query embedding supplied by the caller: it searches
+// against the precomputed vector instead of embedding text again, so the legacy
+// path's coverage gate and matcher share one embedding. The converted result is
+// identical to Match for the same query.
+func (a *SegmentMatchAdapter) MatchVec(ctx context.Context, text string, vec []float32) (MatchResult, error) {
+	hits, query, err := a.matcher.MatchSegmentVec(ctx, text, vec)
+	return a.convert(hits, query, err)
+}
+
+// convert turns the matcher's rich hits into the wire-shaped MatchResult, shared
+// by Match and MatchVec so both surface identical matches, confidence, and the
+// reusable query embedding. An empty segment (or empty vector) is a no-match, not
+// a failure, matching the pre-existing Match contract.
+func (a *SegmentMatchAdapter) convert(hits []Match, query []float32, err error) (MatchResult, error) {
 	if err != nil {
-		if errors.Is(err, ErrEmptySegment) {
+		if errors.Is(err, ErrEmptySegment) || errors.Is(err, ErrEmptyEmbedding) {
 			return MatchResult{Matches: []domain.SegmentMatch{}}, nil
 		}
 		return MatchResult{}, err
@@ -64,6 +82,7 @@ func (a *SegmentMatchAdapter) Match(ctx context.Context, text string) (MatchResu
 			Similarity:   h.Score,
 			Contribution: contribution,
 			EvidenceID:   h.EvidenceID,
+			PublishedAt:  h.PublishedAt,
 		}
 		if h.Kind == domain.MatchKindEvidence {
 			article := h.Article

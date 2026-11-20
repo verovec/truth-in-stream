@@ -258,6 +258,48 @@ func TestFinalizeStagingSwapAndHeal(t *testing.T) {
 	}
 }
 
+// TestFinalizeStagingRebuildsAllIndexes proves a corpus rebuild leaves the live
+// table with the FULL index set the migrations define - the HNSW halfvec index,
+// the 0017 hybrid-FTS GIN index, and the VER-203 (source, content_hash) btree -
+// under their canonical names, with no staging- or old-named leftovers. Before
+// the fix the swap rebuilt only the HNSW, so every reingest permanently dropped
+// the FTS GIN (silently degrading lexical search to a seq scan) and the
+// content-hash index.
+func TestFinalizeStagingRebuildsAllIndexes(t *testing.T) {
+	store := setupStore(t)
+	ctx := t.Context()
+
+	stageChunks(t, store, "v2", []domain.EvidenceChunk{wikiChunk(1, 0, "v1"), wikiChunk(2, 0, "v2")})
+	b, _ := store.UnembeddedStaging(ctx, domain.EvidenceCursor{}, 10)
+	for _, c := range b {
+		embedStagingChunk(t, store, c.Source, c.ExternalID, c.ChunkIndex, unitVec(pageSeed(t, c.ExternalID)))
+	}
+	if err := store.MarkStagingReady(ctx, "v2"); err != nil {
+		t.Fatalf("MarkStagingReady: %v", err)
+	}
+	if err := store.FinalizeStaging(ctx, "simplewiki", "v2", time.Time{}, "64MB", 0); err != nil {
+		t.Fatalf("FinalizeStaging: %v", err)
+	}
+
+	// All three canonical indexes are present on the live table after the swap.
+	present := scalarInt(t, store, `SELECT count(*) FROM pg_indexes
+		WHERE tablename = 'evidence_chunks'
+		  AND indexname = ANY(ARRAY[
+		    'evidence_chunks_embedding_hnsw',
+		    'evidence_chunks_search_vector_gin',
+		    'evidence_chunks_source_content_hash'])`)
+	if present != 3 {
+		t.Fatalf("live index count = %d, want 3 (HNSW, FTS GIN, content_hash)", present)
+	}
+
+	// No staging- or old-named index survived the swap.
+	if leftovers := scalarInt(t, store, `SELECT count(*) FROM pg_indexes
+		WHERE indexname LIKE 'evidence_chunks_staging_%'
+		   OR indexname LIKE 'evidence_chunks_old_%'`); leftovers != 0 {
+		t.Fatalf("index leftovers after swap = %d, want 0", leftovers)
+	}
+}
+
 func TestStagingSwapPreservesSectionAndKind(t *testing.T) {
 	store := setupStore(t)
 	ctx := t.Context()

@@ -45,12 +45,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return err
 	}
@@ -65,21 +60,35 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	streams := factcheckarchive.BuildStreams(factcheckarchive.Strategy{
+		Topics:         archiveCfg.Topics,
+		PublisherSites: archiveCfg.PublisherSites,
+		MaxPages:       archiveCfg.MaxPages,
+		MaxAgeDays:     archiveCfg.MaxAgeDays,
+	})
+	checkpoint, err := factcheckarchive.LoadStreamCheckpoint(archiveCfg.CheckpointPath)
+	if err != nil {
+		return err
+	}
+
 	logger.InfoContext(ctx, "fact-check crawl started",
-		slog.Any("queries", archiveCfg.Queries),
+		slog.Int("streams", len(streams)),
+		slog.Int("topics", len(archiveCfg.Topics)),
+		slog.Int("publisher_sites", len(archiveCfg.PublisherSites)),
 		slog.String("language", archiveCfg.Language),
 		slog.String("queue", queueCfg.VersionedName()),
 		slog.Int("max_pages", archiveCfg.MaxPages))
 
 	p := factcheckProducer{
-		client:   producer,
-		logger:   logger,
-		pub:      qPublisher{client: client},
-		queries:  archiveCfg.Queries,
-		maxPages: archiveCfg.MaxPages,
+		client:     producer,
+		logger:     logger,
+		pub:        qPublisher{client: client},
+		streams:    streams,
+		checkpoint: checkpoint,
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 	total, err := crawlnotify.RunWithAlerts(ctx, notifier, p)
 	if err != nil {
 		return err

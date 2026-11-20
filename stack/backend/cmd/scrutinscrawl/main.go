@@ -49,12 +49,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client, err := queue.New(queue.Config{
-		URL:         queueCfg.URL,
-		QueueName:   queueCfg.VersionedName(),
-		Version:     queueCfg.Version,
-		MaxPriority: queueCfg.MaxPriority,
-	})
+	client, err := queue.New(queueCfg.ClientConfig(0))
 	if err != nil {
 		return err
 	}
@@ -69,7 +64,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	notifier := crawlnotify.NewNotifier(config.LoadCrawlAlerts().WebhookURL)
+	alerts := config.LoadCrawlAlerts()
+	notifier := crawlnotify.FleetNotifier(ctx, logger, alerts.WebhookURL, alerts.RunMetricsNamespace)
 
 	logger.InfoContext(ctx, "scrutins crawl started",
 		slog.String("legislature", archiveCfg.Legislature),

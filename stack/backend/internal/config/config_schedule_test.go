@@ -5,25 +5,41 @@ import (
 	"time"
 )
 
+// testSpecs mirrors the schedulable sources the connector registry supplies,
+// without importing it (config must stay registry-agnostic).
+func testSpecs() []ScheduleSpec {
+	return []ScheduleSpec{
+		{Name: "wikipedia", EnvPrefix: "WIKIPEDIA", DefaultCron: "0 3 * * *"},
+		{Name: "factcheck", EnvPrefix: "FACTCHECK", DefaultCron: "0 4 * * *"},
+		{Name: "scrutins", EnvPrefix: "SCRUTINS", DefaultCron: "30 4 * * *"},
+	}
+}
+
 func TestLoadScheduleDefaults(t *testing.T) {
 	clearScheduleEnv(t)
 
-	cfg, err := LoadSchedule()
+	cfg, err := LoadSchedule(testSpecs())
 	if err != nil {
 		t.Fatalf("LoadSchedule: %v", err)
 	}
 
-	if cfg.Wikipedia.Enabled || cfg.Factcheck.Enabled || cfg.Scrutins.Enabled {
-		t.Fatalf("expected every source disabled by default, got %+v", cfg)
+	for _, name := range []string{"wikipedia", "factcheck", "scrutins"} {
+		src, ok := cfg.Source(name)
+		if !ok {
+			t.Fatalf("source %q missing from schedule", name)
+		}
+		if src.Enabled {
+			t.Fatalf("source %q enabled by default, want disabled", name)
+		}
 	}
-	if cfg.Wikipedia.Cron != defaultWikipediaCron {
-		t.Fatalf("wikipedia cron = %q, want %q", cfg.Wikipedia.Cron, defaultWikipediaCron)
+	if src, _ := cfg.Source("wikipedia"); src.Cron != "0 3 * * *" {
+		t.Fatalf("wikipedia cron = %q, want default", src.Cron)
 	}
-	if cfg.Factcheck.Cron != defaultFactcheckCron {
-		t.Fatalf("factcheck cron = %q, want %q", cfg.Factcheck.Cron, defaultFactcheckCron)
+	if src, _ := cfg.Source("factcheck"); src.Cron != "0 4 * * *" {
+		t.Fatalf("factcheck cron = %q, want default", src.Cron)
 	}
-	if cfg.Scrutins.Cron != defaultScrutinsCron {
-		t.Fatalf("scrutins cron = %q, want %q", cfg.Scrutins.Cron, defaultScrutinsCron)
+	if src, _ := cfg.Source("scrutins"); src.Cron != "30 4 * * *" {
+		t.Fatalf("scrutins cron = %q, want default", src.Cron)
 	}
 	if cfg.Jitter != defaultScheduleJitter {
 		t.Fatalf("jitter = %s, want %s", cfg.Jitter, defaultScheduleJitter)
@@ -36,15 +52,15 @@ func TestLoadScheduleOverrides(t *testing.T) {
 	t.Setenv("SCHEDULE_FACTCHECK_CRON", "*/15 * * * *")
 	t.Setenv("SCHEDULE_JITTER", "10s")
 
-	cfg, err := LoadSchedule()
+	cfg, err := LoadSchedule(testSpecs())
 	if err != nil {
 		t.Fatalf("LoadSchedule: %v", err)
 	}
-	if !cfg.Wikipedia.Enabled {
+	if src, _ := cfg.Source("wikipedia"); !src.Enabled {
 		t.Fatal("expected wikipedia enabled by override")
 	}
-	if cfg.Factcheck.Cron != "*/15 * * * *" {
-		t.Fatalf("factcheck cron = %q, want override", cfg.Factcheck.Cron)
+	if src, _ := cfg.Source("factcheck"); src.Cron != "*/15 * * * *" {
+		t.Fatalf("factcheck cron = %q, want override", src.Cron)
 	}
 	if cfg.Jitter != 10*time.Second {
 		t.Fatalf("jitter = %s, want 10s", cfg.Jitter)
@@ -55,7 +71,7 @@ func TestLoadScheduleRejectsBadBool(t *testing.T) {
 	clearScheduleEnv(t)
 	t.Setenv("SCHEDULE_SCRUTINS_ENABLED", "maybe")
 
-	if _, err := LoadSchedule(); err == nil {
+	if _, err := LoadSchedule(testSpecs()); err == nil {
 		t.Fatal("expected an error for a non-boolean enable flag, got nil")
 	}
 }
@@ -64,7 +80,7 @@ func TestLoadScheduleRejectsJitterAboveMax(t *testing.T) {
 	clearScheduleEnv(t)
 	t.Setenv("SCHEDULE_JITTER", "2h")
 
-	if _, err := LoadSchedule(); err == nil {
+	if _, err := LoadSchedule(testSpecs()); err == nil {
 		t.Fatal("expected an error for a jitter above the cap, got nil")
 	}
 }

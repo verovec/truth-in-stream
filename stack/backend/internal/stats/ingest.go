@@ -168,14 +168,19 @@ func renderChunks(datapoints []domain.Datapoint, corpus string) ([]domain.Eviden
 		// section), so its metadata is empty - the source-extensible schema in
 		// action: a new source is rows under a new source value with its own
 		// (here absent) metadata keys, no column and no migration.
+		periodStart, err := d.PeriodStart()
+		if err != nil {
+			return nil, fmt.Errorf("stats: period start for %s %s: %w", d.Dataset, d.Period, err)
+		}
 		chunk := domain.EvidenceChunk{
-			Source:     corpus,
-			ExternalID: externalID,
-			ChunkIndex: chunkIndex,
-			Title:      d.Title,
-			URL:        d.SourceURL,
-			Content:    RenderFrench(d),
-			Kind:       domain.EvidenceKindLead,
+			Source:      corpus,
+			ExternalID:  externalID,
+			ChunkIndex:  chunkIndex,
+			Title:       d.Title,
+			URL:         d.SourceURL,
+			Content:     RenderFrench(d),
+			Kind:        domain.EvidenceKindLead,
+			PublishedAt: &periodStart,
 		}
 		k := domain.EvidenceCursor{Source: corpus, ExternalID: externalID, ChunkIndex: int32(chunkIndex)}
 		if i, dup := index[k]; dup {

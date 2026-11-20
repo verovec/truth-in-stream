@@ -23,13 +23,17 @@ afterEach(() => {
 // The panel reads the shared live snapshot, so a test drives it by mocking the
 // hook the provider's driver runs and rendering the panel under the provider.
 function renderPanel(
-  analysis: Omit<LiveAnalysis, "summary" | "claimsFor" | "speakers"> &
-    Partial<Pick<LiveAnalysis, "claimsFor" | "speakers">>,
+  analysis: Omit<
+    LiveAnalysis,
+    "summary" | "claimsFor" | "highlightsFor" | "speakers"
+  > &
+    Partial<Pick<LiveAnalysis, "claimsFor" | "highlightsFor" | "speakers">>,
 ) {
   mockUseLiveAnalysis.mockReturnValue({
     ...analysis,
     summary: summarizeStatements(analysis.statements),
     claimsFor: analysis.claimsFor ?? (() => []),
+    highlightsFor: analysis.highlightsFor ?? (() => []),
     speakers: analysis.speakers ?? [],
   });
   return render(
@@ -58,7 +62,7 @@ const checked = (
 describe("LiveFactCheckPanel", () => {
   test("reads the active session from the shared live provider", () => {
     renderPanel({ statements: [], caption: "", status: "idle" });
-    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1");
+    expect(mockUseLiveAnalysis).toHaveBeenCalledWith("vid-1", expect.anything());
   });
 
   test("separates the panel into a subtitles region and a fact-checks region", () => {
@@ -92,7 +96,7 @@ describe("LiveFactCheckPanel", () => {
     ).toBeGreaterThan(50);
   });
 
-  test("places the interim caption at the top of the subtitles region", () => {
+  test("places the interim caption at the bottom of the subtitles region", () => {
     renderPanel({
       statements: [checked(0, "an already committed statement")],
       caption: "and this is still being spoken",
@@ -103,10 +107,11 @@ describe("LiveFactCheckPanel", () => {
     const transcript = within(subtitles).getByRole("list", {
       name: fr.app.subtitles.transcriptAria,
     });
-    // The live utterance is the newest speech, so it sits above the committed
-    // statements rather than at the bottom of the region.
+    // The transcript reads chronologically with the newest text last, so the
+    // live utterance - the newest speech of all - sits below the committed
+    // statements, at the reading edge.
     expect(
-      caption.compareDocumentPosition(transcript) &
+      transcript.compareDocumentPosition(caption) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

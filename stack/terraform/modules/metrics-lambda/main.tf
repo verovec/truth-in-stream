@@ -95,7 +95,7 @@ resource "aws_lambda_function" "main" {
       RABBITMQ_URL_SECRET_ARN = var.rabbitmq_url_secret_arn
       METRICS_NAMESPACE       = var.metrics_namespace
       BROKER_NAME             = var.broker_name
-      QUEUE_NAME              = var.queue_name
+      QUEUE_NAMES             = join(",", var.queue_names)
       MANAGEMENT_PORT         = tostring(var.management_port)
     }
   }

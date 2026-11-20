@@ -119,7 +119,7 @@ The full data dictionary is in `.claude/skills/data-map/SKILL.md`; ground truth 
 |---------|----------------|------|---------|
 | `postgres` | `pgvector/pgvector:pg16` | 5432 | none |
 | `migrate` | `migrate/migrate:v4.18.3`, one-shot | | none |
-| `seed` | backend image, one-shot, offline | | none |
+| `seed` | backend image, one-shot, offline; run by `make seed`, never by `make up` | | `tools` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.6.3`, imports `stack/keycloak/realm.json` | 8081 | none |
 | `backend` | `stack/backend/Dockerfile` | 8080 | none |
 | `frontend` | `stack/frontend/Dockerfile` (`node:24-alpine`) | 3000 | none |

@@ -15,6 +15,7 @@ import {
   claimsForUnit,
   emptyClaims,
 } from "@/lib/live/claims";
+import { claimHighlights, NO_HIGHLIGHTS } from "@/lib/live/highlight";
 import { createLiveSocket } from "@/lib/live/socket";
 import type { LiveSocket, LiveSocketFactory } from "@/lib/live/ports";
 import { type LiveStatus, MAX_RECONNECT_ATTEMPTS } from "@/lib/live/session";
@@ -24,6 +25,7 @@ import {
   listStatements,
   type StatementsState,
 } from "@/lib/live/statements";
+import { mergeUnitStatements } from "@/lib/live/merge";
 import { summarizeStatements } from "@/lib/live/summary";
 import { channelLiveSocketUrl } from "@/lib/live/url";
 import type { LiveAnalysis } from "@/hooks/use-live-analysis";
@@ -187,8 +189,8 @@ export function useChannelLive(
   }, [channelId]);
 
   const orderedStatements = useMemo(
-    () => listStatements(statements),
-    [statements],
+    () => mergeUnitStatements(listStatements(statements), claims.members),
+    [statements, claims.members],
   );
 
   const summary = useMemo(
@@ -201,6 +203,13 @@ export function useChannelLive(
     [claims],
   );
 
+  // Channel frames are ingested without id namespacing, so the highlight index
+  // keys directly on the wire segment ids the statements also carry.
+  const highlightsFor = useMemo(() => {
+    const index = claimHighlights(claims);
+    return (segmentId: string) => index.get(segmentId) ?? NO_HIGHLIGHTS;
+  }, [claims]);
+
   const speakerList = useMemo(() => listSpeakers(speakers), [speakers]);
 
   return {
@@ -209,6 +218,7 @@ export function useChannelLive(
     status,
     summary,
     claimsFor,
+    highlightsFor,
     speakers: speakerList,
   };
 }

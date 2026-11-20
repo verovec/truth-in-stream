@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/embed"
 )
 
 // testSource is the evidence source every job fixture is stamped with. A chunk is
@@ -141,8 +143,8 @@ func TestProcessMalformedBodyDropsWithoutEmbedding(t *testing.T) {
 
 	got := w.Process(t.Context(), []byte("{not json"), 5)
 
-	if got.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (drop poison)", got.Action)
+	if got.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (dead-letter poison)", got.Action)
 	}
 	if emb.calls.Load() != 0 {
 		t.Fatalf("embed calls = %d, want 0 (malformed job must not reach the provider)", emb.calls.Load())
@@ -173,8 +175,8 @@ func TestProcessInvalidJobDropsWithoutEmbedding(t *testing.T) {
 
 			got := w.Process(t.Context(), mustJob(t, tc.job), 5)
 
-			if got.Action != ActionAck {
-				t.Fatalf("action = %v, want ActionAck", got.Action)
+			if got.Action != ActionReject {
+				t.Fatalf("action = %v, want ActionReject (dead-letter invalid)", got.Action)
 			}
 			if emb.calls.Load() != 0 {
 				t.Fatalf("embed calls = %d, want 0", emb.calls.Load())
@@ -244,8 +246,8 @@ func TestProcessExhaustedRetriesDrops(t *testing.T) {
 	// Attempt 2 is the third (final) try for MaxAttempts=3.
 	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: 2}), 5)
 
-	if got.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (drop after exhausting attempts)", got.Action)
+	if got.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (dead-letter after exhausting attempts)", got.Action)
 	}
 }
 
@@ -260,8 +262,8 @@ func TestProcessHugeAttemptDropsWithoutLooping(t *testing.T) {
 
 	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x", Attempt: math.MaxInt}), 5)
 
-	if got.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (a near-max attempt must drop, not loop)", got.Action)
+	if got.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (a near-max attempt must dead-letter, not loop)", got.Action)
 	}
 }
 
@@ -288,8 +290,8 @@ func TestProcessWrongEmbeddingShapeDrops(t *testing.T) {
 
 	got := w.Process(t.Context(), mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), 5)
 
-	if got.Action != ActionAck {
-		t.Fatalf("action = %v, want ActionAck (a deterministic bad shape must not loop)", got.Action)
+	if got.Action != ActionReject {
+		t.Fatalf("action = %v, want ActionReject (a deterministic bad shape must dead-letter, not loop)", got.Action)
 	}
 	if len(st.recorded()) != 0 {
 		t.Fatalf("store writes = %d, want 0 (never write a malformed vector)", len(st.recorded()))
@@ -414,8 +416,8 @@ func TestRunDropsUnknownVersionWithoutEmbedding(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if acked, nacked, _ := unknown.state(); !acked || nacked {
-		t.Fatalf("unknown-version delivery acked=%v nacked=%v, want dropped (acked)", acked, nacked)
+	if acked, nacked, requeue := unknown.state(); acked || !nacked || requeue {
+		t.Fatalf("unknown-version delivery acked=%v nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", acked, nacked, requeue)
 	}
 	if acked, nacked, _ := known.state(); !acked || nacked {
 		t.Fatalf("known-version delivery acked=%v nacked=%v, want processed (acked)", acked, nacked)
@@ -469,12 +471,12 @@ func TestRunRepublishesThenAcksOriginal(t *testing.T) {
 	}
 }
 
-func TestRunRequeuesOriginalWhenRepublishFails(t *testing.T) {
+func TestRunDeadLettersOriginalWhenRepublishFails(t *testing.T) {
 	t.Parallel()
 	d := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "x"}), priority: 8}
 	emb := &fakeEmbedder{err: errors.New("transient")}
 	st := &fakeStore{updated: true}
-	enq := &recEnqueuer{err: errors.New("broker down")}
+	enq := &recEnqueuer{err: errors.New("broker down")} // non-shutdown re-enqueue failure
 	w := NewWorker(emb, st, &sliceStream{[]Delivery{d}}, enq, slog.New(slog.DiscardHandler), Config{Concurrency: 1, MaxAttempts: 3})
 
 	if err := w.Run(t.Context()); err != nil {
@@ -484,8 +486,10 @@ func TestRunRequeuesOriginalWhenRepublishFails(t *testing.T) {
 	if acked {
 		t.Fatalf("original was acked despite a failed republish; the job would be lost")
 	}
-	if !nacked || !requeue {
-		t.Fatalf("original nacked=%v requeue=%v, want nacked with requeue=true", nacked, requeue)
+	// The fix for the infinite-requeue bug: a failed re-enqueue dead-letters the
+	// original (requeue=false) instead of looping it forever with an unadvanced attempt.
+	if !nacked || requeue {
+		t.Fatalf("original nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", nacked, requeue)
 	}
 }
 
@@ -664,8 +668,9 @@ func TestRunRoutesStagingFlagToCorpus(t *testing.T) {
 	}
 }
 
-// batchFailEmbedder fails any multi-input call (mimicking a hung batch endpoint)
-// but succeeds on single inputs, so a test can prove the per-chunk fallback.
+// batchFailEmbedder fails any multi-input call (mimicking a size-class provider
+// rejection) but succeeds on single inputs, so a test can prove the batch is
+// recovered by splitting down to inputs the provider accepts.
 type batchFailEmbedder struct {
 	vec        []float32
 	batchCalls atomic.Int32
@@ -674,7 +679,7 @@ type batchFailEmbedder struct {
 func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float32, error) {
 	if len(texts) > 1 {
 		e.batchCalls.Add(1)
-		return nil, errors.New("batch endpoint hung")
+		return nil, &embed.APIError{StatusCode: http.StatusBadRequest, Body: "batch too large"}
 	}
 	out := make([][]float32, len(texts))
 	for i := range texts {
@@ -683,9 +688,10 @@ func (e *batchFailEmbedder) EmbedDocuments(_ context.Context, texts []string) ([
 	return out, nil
 }
 
-// TestRunBatchEmbedErrorFallsBackToPerChunk proves a batch-level embed failure
-// degrades to embedding each delivery alone rather than failing the whole batch.
-func TestRunBatchEmbedErrorFallsBackToPerChunk(t *testing.T) {
+// TestRunBatchEmbedErrorSplitsAndRecovers proves a batch-level embed failure is
+// recovered by recursively halving the batch until each sub-batch embeds, rather
+// than failing the whole batch or dead-lettering any chunk.
+func TestRunBatchEmbedErrorSplitsAndRecovers(t *testing.T) {
 	t.Parallel()
 	const n = 4
 	deliveries := recDeliveries(t, n, false)
@@ -698,14 +704,16 @@ func TestRunBatchEmbedErrorFallsBackToPerChunk(t *testing.T) {
 	if err := w.Run(t.Context()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := emb.batchCalls.Load(); got != 1 {
-		t.Fatalf("batch calls = %d, want 1 (one failed whole-batch attempt)", got)
+	// The worker attempted at least one multi-input call (which failed) before
+	// splitting, proving it did not skip straight to one call per chunk.
+	if got := emb.batchCalls.Load(); got < 1 {
+		t.Fatalf("batch calls = %d, want at least one whole-batch attempt before splitting", got)
 	}
 	if got := len(st.recorded()); got != n {
-		t.Fatalf("writes = %d, want %d (each embedded per-chunk on fallback)", got, n)
+		t.Fatalf("writes = %d, want %d (every chunk embedded after the split)", got, n)
 	}
 	if enq.count() != 0 {
-		t.Fatalf("enqueue count = %d, want 0 (fallback succeeded, no retries)", enq.count())
+		t.Fatalf("enqueue count = %d, want 0 (the split recovered, no retries)", enq.count())
 	}
 	assertAllAcked(t, deliveries)
 }
@@ -730,7 +738,7 @@ func (e *shapeEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]f
 	return out, nil
 }
 
-func TestRunBatchDropsBadShapeKeepsRest(t *testing.T) {
+func TestRunBatchDeadLettersBadShapeKeepsRest(t *testing.T) {
 	t.Parallel()
 	good1 := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "1", ChunkIndex: 0, Content: "g1"}), priority: 5}
 	bad := &recDelivery{body: mustJob(t, Job{Source: testSource, ExternalID: "2", ChunkIndex: 0, Content: "bad"}), priority: 5}
@@ -752,8 +760,12 @@ func TestRunBatchDropsBadShapeKeepsRest(t *testing.T) {
 			t.Errorf("bad-shape chunk external 2 was written")
 		}
 	}
-	// All three deliveries are acked: the two good written, the bad dropped.
-	assertAllAcked(t, []Delivery{good1, bad, good2})
+	// The two good deliveries are acked; the bad-shape one is dead-lettered, not
+	// acked away, so it is inspectable in the DLQ.
+	assertAllAcked(t, []Delivery{good1, good2})
+	if acked, nacked, requeue := bad.state(); acked || !nacked || requeue {
+		t.Fatalf("bad-shape delivery acked=%v nacked=%v requeue=%v, want dead-lettered (nacked, requeue=false)", acked, nacked, requeue)
+	}
 }
 
 func TestRunBatchWriteFailureRepublishesJobs(t *testing.T) {

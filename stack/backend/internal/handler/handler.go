@@ -25,7 +25,7 @@ import (
 // served under /demo/ so the browser can play and live-analyze the bundled
 // sample. The only public route is /healthz for load balancer checks; the legacy
 // login and logout routes exist only when the legacy flag is on.
-func NewMux(health *service.HealthChecker, videos VideoService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, tvRecordings TVRecordingService, tvHub TVHub, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
+func NewMux(health *service.HealthChecker, videos VideoService, videoAnalyses VideoAnalysisService, videoAnalyzer VideoAnalysisStarter, videoSpeakers VideoSpeakerService, videoRecaps VideoRecapService, documents DocumentService, documentAnalyzer DocumentAnalyzerService, youtube YouTubeService, tvChannels TVChannelService, tvRecordings TVRecordingService, tvHub TVHub, live LiveAnalyzer, recorder AnalysisRecorder, replayer AnalysisReplayer, liveAllowedOrigins []string, debugFactCheck bool, debugSearch WikiSearcher, demoMediaDir string, auth AuthConfig, logger *slog.Logger) http.Handler {
 	api := http.NewServeMux()
 	// Video records and uploads (id is the record UUID). Ingestion is a
 	// backoffice operation: the mutating routes (upload, YouTube import, confirm,
@@ -38,6 +38,23 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	api.Handle("DELETE /api/videos/{id}", middleware.RequireAdmin(deleteVideoHandler(videos)))
 	api.HandleFunc("GET /api/videos", listVideosHandler(videos))
 	api.HandleFunc("GET /api/videos/{id}", getVideoHandler(videos))
+	// Durable pre-analysis read: lifecycle state plus, when complete, the
+	// stored frame list. A consumption read like the record itself, so it
+	// serves any authenticated caller. The trigger is a backoffice operation
+	// like the rest of ingestion, so it carries the RequireAdmin gate. See
+	// video_analysis.go.
+	api.HandleFunc("GET /api/videos/{id}/analysis", getVideoAnalysisHandler(videoAnalyses, videoSpeakers, debugFactCheck))
+	api.Handle("POST /api/videos/{id}/analyse", middleware.RequireAdmin(analyseVideoHandler(videoAnalyzer)))
+	// Speaker naming: the mapping from diarized labels to people. Reading it is
+	// a consumption read like the analysis it annotates; re-running the step
+	// and correcting a speaker are backoffice operations. See video_speakers.go.
+	api.HandleFunc("GET /api/videos/{id}/speakers", listVideoSpeakersHandler(videoSpeakers))
+	api.Handle("POST /api/videos/{id}/speakers/name", middleware.RequireAdmin(nameVideoSpeakersHandler(videoSpeakers)))
+	api.Handle("PATCH /api/videos/{id}/speakers/{label}", middleware.RequireAdmin(updateVideoSpeakerHandler(videoSpeakers)))
+	// Recap: a completed analysis presented as a report. A consumption read
+	// derived from the analysis, so it carries the same access rule. See
+	// video_recap.go.
+	api.HandleFunc("GET /api/videos/{id}/recap", getVideoRecapHandler(videoRecaps))
 	// PDF document records and uploads (id is the record UUID). Reads serve any
 	// authenticated user; creating and deleting documents is admin-only, so the
 	// mutating routes carry the RequireAdmin gate. See documents.go.
@@ -80,8 +97,8 @@ func NewMux(health *service.HealthChecker, videos VideoService, documents Docume
 	// the same replayer and never run transcription or an LLM. RequireAdmin gates
 	// them on a verified admin claim with 403, mirroring the debug surface. See
 	// export.go.
-	api.Handle("GET /api/videos/{id}/export/transcript.srt", middleware.RequireAdmin(exportTranscriptHandler(videos, replayer)))
-	api.Handle("GET /api/videos/{id}/export/claims.csv", middleware.RequireAdmin(exportClaimsHandler(videos, replayer)))
+	api.Handle("GET /api/videos/{id}/export/transcript.srt", middleware.RequireAdmin(exportTranscriptHandler(videos, replayer, videoSpeakers)))
+	api.Handle("GET /api/videos/{id}/export/claims.csv", middleware.RequireAdmin(exportClaimsHandler(videos, replayer, videoSpeakers)))
 	// Developer wiki-search probe (WebSocket), dev only. Registered solely when a
 	// searcher is supplied (the debug flag is on), so the route does not exist in
 	// production. It shares the live socket's origin allow-list. See debug_search.go.

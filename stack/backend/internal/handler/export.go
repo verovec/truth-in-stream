@@ -14,21 +14,25 @@ import (
 	"github.com/verovec/truth-in-stream/backend/internal/service"
 )
 
-// noSnapshotMessage tells an operator why an export is empty and how to repopulate
-// the replay cache: the snapshot is only written on a completed analysis and
-// expires with the cache TTL, so a miss is recoverable by re-running analysis.
-const noSnapshotMessage = "no cached analysis for this video; re-run analysis to repopulate the export cache"
+// noSnapshotMessage tells an operator why an export is empty and how to fix
+// it: the replayer serves the durable store first and the replay cache second,
+// so a miss means the video has no stored pre-analysis and no un-expired
+// cached session, and running an analysis makes the exports available.
+const noSnapshotMessage = "no stored or cached analysis for this video; run an analysis to make exports available"
 
 // renderExport reads the named formatter's bytes for a video and streams them as a
 // download attachment. It is the shared body of both export handlers: it resolves
 // the video for its filename, loads the cached snapshot through the replayer, and
 // never triggers transcription or an LLM call. A missing video or missing snapshot
 // is a 404; a disabled replay cache is a 503; the handler owns transport only.
+// The formatter receives the video's resolved speaker names, empty when there
+// are none, so an export names a speaker exactly where the analysis view does.
 func renderExport(
 	videos VideoService,
 	replayer AnalysisReplayer,
+	speakers speakerLister,
 	contentType, extension string,
-	render func(events []service.LiveEvent) []byte,
+	render func(events []service.LiveEvent, names map[string]string) []byte,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if replayer == nil {
@@ -57,21 +61,22 @@ func renderExport(
 		}
 
 		filename := exportFilename(playable.Video, extension)
+		names := speakerNames(r.Context(), speakers, id)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(render(events))
+		_, _ = w.Write(render(events, names))
 	}
 }
 
 // exportTranscriptHandler streams the SRT subtitle track of a video's transcript.
-func exportTranscriptHandler(videos VideoService, replayer AnalysisReplayer) http.HandlerFunc {
-	return renderExport(videos, replayer, "application/x-subrip; charset=utf-8", ".srt", export.SRT)
+func exportTranscriptHandler(videos VideoService, replayer AnalysisReplayer, speakers speakerLister) http.HandlerFunc {
+	return renderExport(videos, replayer, speakers, "application/x-subrip; charset=utf-8", ".srt", export.SRT)
 }
 
 // exportClaimsHandler streams the CSV decision trace of a video's fact-check.
-func exportClaimsHandler(videos VideoService, replayer AnalysisReplayer) http.HandlerFunc {
-	return renderExport(videos, replayer, "text/csv; charset=utf-8", ".csv", export.CSV)
+func exportClaimsHandler(videos VideoService, replayer AnalysisReplayer, speakers speakerLister) http.HandlerFunc {
+	return renderExport(videos, replayer, speakers, "text/csv; charset=utf-8", ".csv", export.CSV)
 }
 
 // exportFilename builds a safe download filename from the video's title, falling

@@ -120,15 +120,13 @@ type PoliticalResult struct {
 // two-axis assessment. It forces a single record_assessment tool call so the result
 // is always validated structured data, then runs the deterministic guard
 // (ValidatePoliticalCitations) so a fabricated grounding or an unknown flag can
-// never reach the caller. It errors when no passages are supplied (this is the
-// evidence verifier; the no-evidence case is the caller's concern) or when the
-// transport, the forced tool call, or decoding fails - the caller absorbs the error
-// rather than emitting an ungrounded verdict.
+// never reach the caller. With no passages supplied (the caller's knowledge
+// fallback for a sparse evidence corpus) the prompt says so and the model judges
+// from general knowledge alone; the guard then demotes any claimed evidence basis,
+// so a no-passage assessment can only ever be knowledge-basis with capped
+// confidence. It errors when the transport, the forced tool call, or decoding
+// fails - the caller absorbs the error rather than emitting an ungrounded verdict.
 func (c *Client) VerifyPolitical(ctx context.Context, claim string, passages []Passage) (PoliticalResult, error) {
-	if len(passages) == 0 {
-		return PoliticalResult{}, fmt.Errorf("verify: no evidence passages supplied")
-	}
-
 	res, err := llm.Classify[PoliticalResult](ctx, c.llm, llm.Request{
 		System:    politicalSystemPrompt,
 		User:      buildPrompt(claim, passages),

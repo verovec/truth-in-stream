@@ -320,6 +320,13 @@ func seedWiki(ctx context.Context, logger *slog.Logger, store *postgres.Store, e
 		return err
 	}
 	if err := seed.InsertWikiChunks(ctx, store, embedder, chunks); err != nil {
+		// A store already claimed by a real corpus (frwiki) must not fail the
+		// whole seed: the fixture is a dev convenience, the corpus is the
+		// operator's work. Skip it and keep the other datasets.
+		if errors.Is(err, domain.ErrEvidenceSourceConflict) {
+			logger.WarnContext(ctx, "wiki seed skipped: store already holds another encyclopedic corpus", slog.Any("err", err))
+			return nil
+		}
 		return err
 	}
 	logger.InfoContext(ctx, "seeded wiki chunks", slog.Int("chunks", len(chunks)))

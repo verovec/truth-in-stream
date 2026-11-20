@@ -75,7 +75,7 @@ func TestCombinedCoverageEitherCorpusCovers(t *testing.T) {
 func TestCombinedCoverageUsesRecallEfSearch(t *testing.T) {
 	t.Parallel()
 	// Coverage is recall-critical, so its evidence probe raises ef_search above
-	// the session default (coverageEfSearch), unfiltered (nil sources). This
+	// the session default (defaultCoverageEfSearch), unfiltered (nil sources). This
 	// pins the per-call-site threading the unified search builder adds - a
 	// different call site (the political top-1) passes 0 to keep the default.
 	embedder := &fakeEmbedder{vecs: [][]float32{queryVec()}}
@@ -84,11 +84,33 @@ func TestCombinedCoverageUsesRecallEfSearch(t *testing.T) {
 	if _, err := c.Covered(t.Context(), "a factual statement"); err != nil {
 		t.Fatalf("Covered: %v", err)
 	}
-	if wiki.gotEfSearch != coverageEfSearch {
-		t.Errorf("coverage evidence probe ef_search = %d, want %d", wiki.gotEfSearch, coverageEfSearch)
+	if wiki.gotEfSearch != defaultCoverageEfSearch {
+		t.Errorf("coverage evidence probe ef_search = %d, want %d", wiki.gotEfSearch, defaultCoverageEfSearch)
 	}
 	if wiki.gotSources != nil {
 		t.Errorf("coverage evidence probe sources = %v, want nil (global)", wiki.gotSources)
+	}
+}
+
+func TestCombinedCoverageThreadsConfiguredEfSearch(t *testing.T) {
+	t.Parallel()
+	// A configured CoverageConfig.EfSearch is threaded into both coverage corpora,
+	// so an operator can retune the probe budget from PRECHECK_COVERAGE_EF_SEARCH
+	// without touching the matcher's per-corpus ef_search.
+	embedder := &fakeEmbedder{vecs: [][]float32{queryVec()}}
+	claims := &fakeSearcher{hits: claimHits(0.75)}
+	wiki := &fakeEvidence{hits: wikiHits(0.75)} // below its floor, so both corpora are probed
+	cfg := bothEnabled()
+	cfg.EfSearch = 321
+	c := newCombined(t, embedder, claims, wiki, cfg)
+	if _, err := c.Covered(t.Context(), "a factual statement"); err != nil {
+		t.Fatalf("Covered: %v", err)
+	}
+	if claims.gotEfSearch != 321 {
+		t.Errorf("claims coverage ef_search = %d, want 321", claims.gotEfSearch)
+	}
+	if wiki.gotEfSearch != 321 {
+		t.Errorf("wiki coverage ef_search = %d, want 321", wiki.gotEfSearch)
 	}
 }
 

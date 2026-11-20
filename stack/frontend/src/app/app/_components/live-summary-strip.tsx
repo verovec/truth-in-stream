@@ -1,6 +1,7 @@
 "use client";
 
 import { useLiveAnalysisSelector } from "@/components/live/live-analysis-provider";
+import { useTranscriptDisplay } from "@/components/live/transcript-display";
 import { formatTemplate } from "@/lib/i18n/text";
 import type { LiveStatus } from "@/lib/live/session";
 import type { LiveSummary } from "@/lib/live/summary";
@@ -21,14 +22,14 @@ export function LiveSummaryStrip() {
 // Each running count and the tone that ties claim verdicts to the same semantic
 // verdict tokens the badges use. Labels come from the dictionary at render
 // time; rendering from this config keeps the strip data-driven: a new stat is a
-// new row here, not copied markup.
+// new row here, not copied markup. The displayed verdict vocabulary is exactly
+// corroborated, contradicted, and unverified - the states the current verify
+// pipeline produces.
 const STAT_TONES = {
   neutral: "text-ink dark:text-paper",
   positive: "text-verdict-credible",
   negative: "text-verdict-disputed",
-  unclear: "text-verdict-flag dark:text-amber-300",
   unverifiable: "text-verdict-unverifiable",
-  evidence: "text-bleu dark:text-sky-300",
   muted: "text-ink/50 dark:text-paper/50",
 } as const;
 
@@ -39,9 +40,7 @@ const STATS: {
   { key: "checked", tone: "neutral" },
   { key: "corroborates", tone: "positive" },
   { key: "contradicts", tone: "negative" },
-  { key: "unclear", tone: "unclear" },
   { key: "unverifiable", tone: "unverifiable" },
-  { key: "evidence", tone: "evidence" },
   { key: "skipped", tone: "muted" },
 ];
 
@@ -82,14 +81,22 @@ export function SummaryStripView({
           aria-live="polite"
           className="flex flex-1 flex-wrap items-center gap-x-5 gap-y-1"
         >
-          {STATS.map((stat) => (
-            <Stat
-              key={stat.key}
-              label={t.summary.stats[stat.key]}
-              value={summary[stat.key]}
-              tone={stat.tone}
-            />
-          ))}
+          {STATS.map((stat) =>
+            stat.key === "unverifiable" ? (
+              <UnverifiedToggle
+                key={stat.key}
+                label={t.summary.stats[stat.key]}
+                value={summary[stat.key]}
+              />
+            ) : (
+              <Stat
+                key={stat.key}
+                label={t.summary.stats[stat.key]}
+                value={summary[stat.key]}
+                tone={stat.tone}
+              />
+            ),
+          )}
           {summary.analysing > 0 && (
             <span className="text-xs text-ink/50 dark:text-paper/50">
               {formatTemplate(t.summary.inProgress, {
@@ -104,6 +111,37 @@ export function SummaryStripView({
         </p>
       )}
     </section>
+  );
+}
+
+// UnverifiedToggle is the Unverified count as a press toggle: unverifiable
+// claims never mark the transcript by default, and this is the one control that
+// reveals their muted highlights for inspection. The count and label render
+// exactly like the other stats so the strip reads as one row; the pressed state
+// carries the affordance.
+function UnverifiedToggle({ label, value }: { label: string; value: number }) {
+  const { t } = useAppI18n();
+  const { showUnverified, toggleUnverified } = useTranscriptDisplay();
+  return (
+    <button
+      type="button"
+      onClick={toggleUnverified}
+      aria-pressed={showUnverified}
+      aria-label={`${label}: ${value}. ${t.summary.unverifiedToggle}`}
+      title={t.summary.unverifiedToggle}
+      className={`-mx-1.5 flex items-baseline gap-1.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-bleu-flag dark:hover:bg-white/5 dark:focus-visible:outline-paper/60 ${
+        showUnverified
+          ? "bg-verdict-unverifiable/10 ring-1 ring-verdict-unverifiable/40"
+          : ""
+      }`}
+    >
+      <span className="text-base font-semibold tabular-nums text-verdict-unverifiable">
+        {value}
+      </span>
+      <span className="text-xs text-ink/50 underline decoration-dotted underline-offset-2 dark:text-paper/50">
+        {label}
+      </span>
+    </button>
   );
 }
 

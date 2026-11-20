@@ -57,11 +57,35 @@ function ChannelLiveDriver({
   store: LiveAnalysisStore;
   socketFactory?: LiveSocketFactory;
 }) {
-  const { statements, caption, status, summary, claimsFor, speakers } =
-    useChannelLive(channelId, socketFactory ? { socketFactory } : {});
+  const {
+    statements,
+    caption,
+    status,
+    summary,
+    claimsFor,
+    highlightsFor,
+    speakers,
+  } = useChannelLive(channelId, socketFactory ? { socketFactory } : {});
   useEffect(() => {
-    store.publish({ statements, caption, status, summary, claimsFor, speakers });
-  }, [store, statements, caption, status, summary, claimsFor, speakers]);
+    store.publish({
+      statements,
+      caption,
+      status,
+      summary,
+      claimsFor,
+      highlightsFor,
+      speakers,
+    });
+  }, [
+    store,
+    statements,
+    caption,
+    status,
+    summary,
+    claimsFor,
+    highlightsFor,
+    speakers,
+  ]);
   useEffect(() => () => store.publish(null), [store]);
   return null;
 }

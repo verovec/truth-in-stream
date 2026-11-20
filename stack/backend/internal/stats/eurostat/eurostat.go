@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/httpx"
 )
 
 const (
@@ -56,28 +57,34 @@ type Config struct {
 	// same host as BaseURL when BaseURL is set (so a test server serves both),
 	// else the public async base.
 	AsyncBaseURL string
-	// HTTPClient overrides the HTTP client (timeout, transport).
+	// HTTPClient overrides the base HTTP client (timeout, transport); it is wrapped
+	// in a retrying doer.
 	HTTPClient *http.Client
+	// Retry tunes the retry/backoff wrapper; a zero value uses the httpx defaults.
+	Retry httpx.RetryConfig
 }
 
 // Client fetches and parses Eurostat SDMX data.
 type Client struct {
-	httpClient   *http.Client
+	httpClient   httpx.Doer
 	baseURL      string
 	asyncBaseURL string
 	pollInterval time.Duration
 }
 
-// New builds a Client from cfg, applying defaults for the unset fields.
+// New builds a Client from cfg, applying defaults for the unset fields. The HTTP
+// client is wrapped in a retrying doer so a 429 or 5xx from Eurostat is backed off
+// and retried (honoring Retry-After) rather than failing the run.
 func New(cfg Config) *Client {
+	base := cfg.HTTPClient
+	if base == nil {
+		base = &http.Client{Timeout: defaultTimeout}
+	}
 	c := &Client{
-		httpClient:   cfg.HTTPClient,
+		httpClient:   httpx.NewRetryClient(base, cfg.Retry),
 		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
 		asyncBaseURL: strings.TrimRight(cfg.AsyncBaseURL, "/"),
 		pollInterval: defaultPollInterval,
-	}
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL

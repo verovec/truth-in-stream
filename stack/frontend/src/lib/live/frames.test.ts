@@ -220,6 +220,131 @@ describe("parseLiveFrame", () => {
     });
   });
 
+  test("carries the unit's member segment ids", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", "u1"],
+      }),
+    );
+    expect(frame).toMatchObject({ segmentIds: ["u0", "u1"] });
+  });
+
+  test("drops a member id list carrying a malformed entry", () => {
+    // A partial group would render a statement twice or lose it; the whole
+    // list is dropped so the unit falls back to per-statement rendering.
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", 7],
+      }),
+    );
+    expect(frame).not.toBeNull();
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
+  test("drops a member id list carrying a duplicated id", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+        segment_ids: ["u0", "u1", "u0"],
+      }),
+    );
+    expect(frame).not.toBeNull();
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
+  test("a claims frame without segment ids keeps the legacy shape", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [{ claim_id: "u0-0", text: "one" }],
+      }),
+    );
+    expect(frame).not.toHaveProperty("segmentIds");
+  });
+
+  test("carries a claim's verbatim quote and highlight spans", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [
+          {
+            claim_id: "u0-0",
+            text: "Le chomage en France a baisse.",
+            status: "pending",
+            quote: "chomage a baisse",
+            spans: [
+              { segment_id: "3", start: 3, end: 19 },
+              { segment_id: "4", start: 0, end: 5 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "Le chomage en France a baisse.",
+          status: "pending",
+          quote: "chomage a baisse",
+          spans: [
+            { segmentId: "3", start: 3, end: 19 },
+            { segmentId: "4", start: 0, end: 5 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("drops a malformed span but keeps the claim and its valid spans", () => {
+    const frame = parseLiveFrame(
+      JSON.stringify({
+        type: "claims",
+        id: "u0",
+        claims: [
+          {
+            claim_id: "u0-0",
+            text: "kept",
+            status: "pending",
+            quote: "kept",
+            spans: [
+              { segment_id: "", start: 0, end: 2 },
+              { segment_id: "3", start: 5, end: 5 },
+              { segment_id: "3", start: -1, end: 2 },
+              { segment_id: "3", start: 0.5, end: 2 },
+              { segment_id: "3", start: 1, end: 3 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(frame).toEqual({
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "kept",
+          status: "pending",
+          quote: "kept",
+          spans: [{ segmentId: "3", start: 1, end: 3 }],
+        },
+      ],
+    });
+  });
+
   test("parses a verified claim_result with source, verdict, basis, and normalized matches", () => {
     const frame = parseLiveFrame(
       JSON.stringify({

@@ -52,7 +52,13 @@ const systemPrompt = "You split one spoken statement into its atomic factual cla
 	"Each claim must be a single self-contained declarative sentence that survives on its own " +
 	"outside the conversation: resolve every pronoun and contextual reference using the speaker " +
 	"and recent context, naming the real subject explicitly. " +
+	"The recent context is background for resolving references only - never extract a claim from it. " +
 	"Emit one claim per distinct verifiable assertion. " +
+	"For each claim also record its quote: the shortest contiguous run of the statement's exact words " +
+	"that carries the claim's core - the decisive figure, date, name, or predicate being checked - " +
+	"copied verbatim from the statement, never from the recent context, never paraphrased, never reworded. " +
+	"Keep the quote tight: a handful of words, not the whole sentence, unless every word of the sentence " +
+	"is load-bearing for the claim. " +
 	"Drop anything that is not a verifiable public factual assertion - opinions, hedges, questions, " +
 	"greetings, small talk, and sentence fragments are omitted entirely. " +
 	"If the statement contains no verifiable factual claim, return an empty list. " +
@@ -70,7 +76,14 @@ const systemPromptFR = "Tu decomposes un seul enonce parle en ses affirmations f
 	"Chaque affirmation doit etre une seule phrase declarative autonome qui tient seule " +
 	"hors de la conversation : resous chaque pronom et chaque reference contextuelle a l'aide du locuteur " +
 	"et du contexte recent, en nommant explicitement le veritable sujet. " +
+	"Le contexte recent sert uniquement a resoudre les references - n'en extrais jamais une affirmation. " +
 	"Emets une affirmation pour chaque assertion verifiable. " +
+	"Pour chaque affirmation, enregistre aussi son quote : le plus court passage contigu des mots exacts " +
+	"de l'enonce qui porte le coeur de l'affirmation - le chiffre, la date, le nom ou le fait decisif " +
+	"qui est verifie - copie mot pour mot depuis l'enonce, jamais depuis le contexte recent, jamais " +
+	"paraphrase, jamais reformule. " +
+	"Garde le quote serre : quelques mots, pas la phrase entiere, sauf si chaque mot de la phrase " +
+	"est indispensable a l'affirmation. " +
 	"Ecris chaque affirmation en francais. " +
 	"Ecarte tout ce qui n'est pas une assertion factuelle publique verifiable - les opinions, les formules prudentes, les questions, " +
 	"les salutations, les conversations anodines et les fragments de phrase sont entierement omis. " +
@@ -146,25 +159,44 @@ func promptFor(locale domain.Locale) string {
 	return systemPrompt
 }
 
+// Claim is one decomposed atomic claim: the self-contained, coreference-resolved
+// sentence the verifier judges, and the verbatim quote - the exact contiguous
+// words of the source statement the claim was extracted from, so the client can
+// highlight the precise words that were checked. Quote may be empty when the
+// model failed to copy a verbatim span; the claim is still verified, it just
+// cannot be anchored.
+type Claim struct {
+	Text  string
+	Quote string
+}
+
+// claimItem is one entry of the forced tool's structured input.
+type claimItem struct {
+	Claim string `json:"claim"`
+	Quote string `json:"quote"`
+}
+
 // result is the forced tool's structured input.
 type result struct {
-	Claims []string `json:"claims"`
+	Claims []claimItem `json:"claims"`
 }
 
 // Decompose splits in.Text into atomic, self-contained claims, resolving
-// coreference against the speaker and recent context. It forces a single
+// coreference against the speaker and recent context, each paired with the
+// verbatim quote of the statement words it came from. It forces a single
 // record_claims tool call so the result is always validated structured data.
 //
 // A blank unit short-circuits to an empty list without an LLM call: there is
 // nothing to verify and the model could only hallucinate. An empty slice is also
 // a valid result for a non-blank unit that carried no verifiable claim. On any
 // failure (transport, missing tool block, malformed input) it degrades to a
-// single claim holding the unit verbatim and returns no error, so the live path
-// never stalls on a decomposition failure. The returned slice is trimmed of
-// blanks and capped at the configured MaxClaimsPerUnit.
-func (c *Client) Decompose(ctx context.Context, in Input) []string {
+// single claim holding the unit verbatim (its quote is the unit itself, which is
+// trivially verbatim) and returns no error, so the live path never stalls on a
+// decomposition failure. The returned slice is trimmed of blanks and capped at
+// the configured MaxClaimsPerUnit.
+func (c *Client) Decompose(ctx context.Context, in Input) []Claim {
 	if strings.TrimSpace(in.Text) == "" {
-		return []string{}
+		return []Claim{}
 	}
 	res, err := llm.Classify[result](ctx, c.llm, llm.Request{
 		System:    promptFor(c.locale),
@@ -172,13 +204,24 @@ func (c *Client) Decompose(ctx context.Context, in Input) []string {
 		MaxTokens: maxTokens,
 		Tool: llm.Tool{
 			Name:        toolName,
-			Description: "Record the atomic, self-contained factual claims the statement makes.",
+			Description: "Record the atomic, self-contained factual claims the statement makes, each with the verbatim statement words it came from.",
 			Properties: map[string]any{
 				"claims": map[string]any{
 					"type":        "array",
-					"description": "the atomic claims, each a standalone declarative sentence with coreference resolved; empty when the statement makes no verifiable factual claim",
+					"description": "the atomic claims; empty when the statement makes no verifiable factual claim",
 					"items": map[string]any{
-						"type": "string",
+						"type": "object",
+						"properties": map[string]any{
+							"claim": map[string]any{
+								"type":        "string",
+								"description": "the atomic claim, a standalone declarative sentence with coreference resolved",
+							},
+							"quote": map[string]any{
+								"type":        "string",
+								"description": "the shortest contiguous run of the statement's exact words expressing this claim, copied verbatim from the statement (never from the recent context, never paraphrased)",
+							},
+						},
+						"required": []string{"claim", "quote"},
 					},
 					"maxItems": c.maxClaims,
 				},
@@ -187,7 +230,7 @@ func (c *Client) Decompose(ctx context.Context, in Input) []string {
 		},
 	})
 	if err != nil {
-		return c.cleanClaims([]string{in.Text})
+		return c.cleanClaims([]claimItem{{Claim: in.Text, Quote: in.Text}})
 	}
 	return c.cleanClaims(res.Claims)
 }
@@ -227,15 +270,17 @@ func (c *Client) userMessageFR(in Input) string {
 }
 
 // cleanClaims trims surrounding whitespace, drops blanks, and enforces the cap
-// as a deterministic backstop in case the model ignores the maxItems hint.
-func (c *Client) cleanClaims(claims []string) []string {
-	cleaned := make([]string, 0, len(claims))
+// as a deterministic backstop in case the model ignores the maxItems hint. A
+// blank quote is kept as empty (the claim is still verifiable, just not
+// anchorable); a blank claim drops the whole entry.
+func (c *Client) cleanClaims(claims []claimItem) []Claim {
+	cleaned := make([]Claim, 0, len(claims))
 	for _, claim := range claims {
-		trimmed := strings.TrimSpace(claim)
-		if trimmed == "" {
+		text := strings.TrimSpace(claim.Claim)
+		if text == "" {
 			continue
 		}
-		cleaned = append(cleaned, trimmed)
+		cleaned = append(cleaned, Claim{Text: text, Quote: strings.TrimSpace(claim.Quote)})
 		if len(cleaned) == c.maxClaims {
 			break
 		}

@@ -3,25 +3,35 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
 )
 
 // fakeDecomposer splits a unit into the claims keyed by its text; an unknown
 // unit falls back to the verbatim unit as a single claim, matching the real
-// decomposer's error-degradation contract.
+// decomposer's error-degradation contract. quotes optionally maps a claim text
+// to its verbatim source quote, so span-anchoring tests can drive it.
 type fakeDecomposer struct {
 	byText map[string][]string
+	quotes map[string]string
 }
 
-func (d fakeDecomposer) Decompose(_ context.Context, text, _, _ string) []string {
-	if claims, ok := d.byText[text]; ok {
-		return claims
+func (d fakeDecomposer) Decompose(_ context.Context, text, _, _ string) []DecomposedClaim {
+	texts, ok := d.byText[text]
+	if !ok {
+		texts = []string{text}
 	}
-	return []string{text}
+	claims := make([]DecomposedClaim, len(texts))
+	for i, t := range texts {
+		claims[i] = DecomposedClaim{Text: t, Quote: d.quotes[t]}
+	}
+	return claims
 }
 
 // fakeVerifier returns the verdict keyed by claim text and records every call,
@@ -87,7 +97,11 @@ func verifyPathFixture(t *testing.T, stream SegmentStream, matcher SegmentMatche
 		Matcher:    matcher,
 		Prechecker: allowAllPrechecker{},
 		Logger:     discardLogger(),
-		Verify:     vp,
+		// The fixtures feed up-to-three-sentence units and expect them scored at
+		// once; pin the cap so the wider default does not defer the flush to the
+		// idle window.
+		MaxSentences: 3,
+		Verify:       vp,
 	})
 	if err != nil {
 		t.Fatalf("NewLiveAnalyzer: %v", err)
@@ -407,15 +421,22 @@ func TestVerifyPathSkipsNonCheckableUnit(t *testing.T) {
 
 func TestVerifyPathCacheCollapsesRepeatedClaim(t *testing.T) {
 	t.Parallel()
-	// The same claim spoken twice within the cache TTL is verified once: the
-	// second occurrence is served from the cache without a verify call.
+	// A paraphrase of a recently verified claim is verified once: the two
+	// phrasings embed to near-identical vectors, so the second occurrence hits the
+	// semantic cache (keyed on the query embedding) without a verify call.
 	u1, u2 := "the treaty was signed in 1648.", "The treaty was signed in 1648."
+	// The two phrasings embed to the same vector - the paraphrase the semantic
+	// cache is meant to collapse - so the second lookup clears the similarity bar.
+	vec := []float32{0.6, 0.8}
 	stream := &fakeSegmentStream{transcripts: finalize(
 		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: u1, Speaker: "A"},
 		domain.Segment{Start: 3 * time.Second, End: 4 * time.Second, Text: u2, Speaker: "B"},
 	)}
 	mk := []domain.SegmentMatch{{Kind: domain.MatchKindEvidence, Claim: "Peace of Westphalia 1648", Similarity: 0.7, EvidenceID: "evidence:9:0"}}
-	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{u1: mk, u2: mk}}
+	matcher := liveMatcher{
+		matches:   map[string][]domain.SegmentMatch{u1: mk, u2: mk},
+		embedding: map[string][]float32{u1: vec, u2: vec},
+	}
 	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
 		u1: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
 		u2: {Verdict: VerdictCredible, Basis: BasisEvidence, Confidence: 0.8, Citations: []EvidenceCitation{{EvidenceID: "evidence:9:0", QuotedSpan: "1648"}}},
@@ -423,7 +444,8 @@ func TestVerifyPathCacheCollapsesRepeatedClaim(t *testing.T) {
 
 	vp, err := NewVerifyPath(VerifyPathConfig{
 		Decomposer: fakeDecomposer{}, Matcher: matcher, Verifier: verifier,
-		FastTau: 0.85, VerifyConcurrency: 1, FastDeadline: time.Second, VerifyDeadline: time.Second, CacheTTL: time.Minute,
+		FastTau: 0.85, VerifyConcurrency: 1, FastDeadline: time.Second, VerifyDeadline: time.Second,
+		CacheTTL: time.Minute, CacheThreshold: 0.95, CacheMaxEntries: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewVerifyPath: %v", err)
@@ -470,13 +492,6 @@ func TestNewVerifyPathValidates(t *testing.T) {
 				t.Fatalf("NewVerifyPath(%s) = nil error, want error", tt.name)
 			}
 		})
-	}
-}
-
-func TestNormalizeClaim(t *testing.T) {
-	t.Parallel()
-	if got := normalizeClaim("  The   Earth\tis ROUND. "); got != "the earth is round." {
-		t.Fatalf("normalizeClaim = %q", got)
 	}
 }
 
@@ -559,8 +574,292 @@ func TestVerifyPathNoEvidenceIsUnverifiable(t *testing.T) {
 	if last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
 		t.Fatalf("no-evidence verdict = %q/%q, want unverifiable/knowledge", last.Verdict.Verdict, last.Verdict.Basis)
 	}
+	if last.Verdict.Rationale != noSourceRationale {
+		t.Fatalf("no-evidence rationale = %q, want the fixed French no-source rationale", last.Verdict.Rationale)
+	}
 	if seen := verifier.seen(); len(seen) != 0 {
 		t.Fatalf("verifier called %v, want no verify call with no evidence", seen)
+	}
+}
+
+func TestVerifyPathKnowledgeBasisVerdictIsDemoted(t *testing.T) {
+	t.Parallel()
+	// Evidence was retrieved but the verifier grounded its judgment in none of it
+	// (basis knowledge, no surviving citation): the emitted verdict is demoted to
+	// unverifiable - credible and disputed are reserved for verdicts a real source
+	// backs - while the model's rationale is kept for the viewer.
+	unit := "la dette publique depasse trois mille milliards."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{
+		unit: {{Kind: domain.MatchKindEvidence, Claim: "la dette atteint un niveau record", Similarity: 0.7, EvidenceID: "evidence:7:0"}},
+	}}
+	verifier := &fakeVerifier{byClaim: map[string]ClaimVerdict{
+		unit: {Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "globalement vrai selon les connaissances generales"},
+	}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   verifier,
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	results := resultsForClaim(events, claimsEv.Claims[0].ClaimID)
+	last := results[len(results)-1]
+	if last.ClaimStatus != ClaimStatusVerified || last.Verdict == nil {
+		t.Fatalf("terminal result = %+v, want a verified verdict", last)
+	}
+	if last.Verdict.Verdict != VerdictUnverifiable || last.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("demoted verdict = %q/%q, want unverifiable/knowledge", last.Verdict.Verdict, last.Verdict.Basis)
+	}
+	if last.Verdict.Rationale != "globalement vrai selon les connaissances generales" {
+		t.Fatalf("demoted rationale = %q, want the model's rationale kept", last.Verdict.Rationale)
+	}
+	if len(last.Verdict.Citations) != 0 {
+		t.Fatalf("demoted citations = %+v, want none (the unverifiable invariant)", last.Verdict.Citations)
+	}
+	if seen := verifier.seen(); len(seen) != 1 || seen[0] != unit {
+		t.Fatalf("verifier calls = %v, want exactly the evidence-bearing claim", seen)
+	}
+}
+
+func TestVerifyClaimNoEvidenceShortCircuitsBeforePool(t *testing.T) {
+	t.Parallel()
+	// The no-evidence short-circuit precedes slot acquisition: even a fully
+	// occupied pool returns the instant unverifiable verdict rather than shedding,
+	// and the verifier is never called.
+	verifier := &fakeVerifier{}
+	vp, err := NewVerifyPath(VerifyPathConfig{
+		Decomposer:        fakeDecomposer{},
+		Matcher:           liveMatcher{},
+		Verifier:          verifier,
+		FastTau:           0.85,
+		VerifyConcurrency: 1,
+		VerifyQueueDepth:  0,
+		FastDeadline:      time.Second,
+		VerifyDeadline:    50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+	// Occupy the pool's only slot: the short-circuit must not need one.
+	vp.verifySem <- struct{}{}
+	defer func() { <-vp.verifySem }()
+
+	verdict, shed, err := vp.verifyClaim(t.Context(), "no evidence claim", nil)
+	if err != nil || shed {
+		t.Fatalf("verifyClaim = shed %v, err %v; want the instant no-evidence verdict", shed, err)
+	}
+	if verdict.Verdict != VerdictUnverifiable || verdict.Basis != BasisKnowledge || verdict.Confidence != 0 {
+		t.Errorf("no-evidence verdict = %+v, want unverifiable/knowledge at zero confidence", verdict)
+	}
+	if verdict.Rationale != noSourceRationale {
+		t.Errorf("no-evidence rationale = %q, want the fixed French no-source rationale", verdict.Rationale)
+	}
+	if seen := verifier.seen(); len(seen) != 0 {
+		t.Errorf("verifier called %v, want no call with no evidence", seen)
+	}
+}
+
+func TestVerdictFromResultDemotesUngroundedVerdicts(t *testing.T) {
+	t.Parallel()
+	match := domain.SegmentMatch{Kind: domain.MatchKindEvidence, Claim: "passage", Similarity: 0.7, EvidenceID: "evidence:1:0"}
+	cases := []struct {
+		name           string
+		res            ClaimVerdict
+		matches        []domain.SegmentMatch
+		wantVerdict    string
+		wantBasis      string
+		wantCited      int
+		wantConfidence float64
+	}{
+		{
+			name:        "knowledge basis is demoted to unverifiable",
+			res:         ClaimVerdict{Verdict: VerdictCredible, Basis: BasisKnowledge, Confidence: 0.55, Rationale: "avis general"},
+			matches:     []domain.SegmentMatch{match},
+			wantVerdict: VerdictUnverifiable,
+			wantBasis:   BasisKnowledge,
+		},
+		{
+			name:        "evidence basis with unresolvable citations is demoted",
+			res:         ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:404:0", QuotedSpan: "x"}}, Rationale: "fonde sur une source disparue"},
+			matches:     []domain.SegmentMatch{match},
+			wantVerdict: VerdictUnverifiable,
+			wantBasis:   BasisKnowledge,
+		},
+		{
+			name:           "grounded evidence verdict is kept",
+			res:            ClaimVerdict{Verdict: VerdictDisputed, Basis: BasisEvidence, Confidence: 0.9, Citations: []EvidenceCitation{{EvidenceID: "evidence:1:0", QuotedSpan: "passage"}}, Rationale: "contredit par la source"},
+			matches:        []domain.SegmentMatch{match},
+			wantVerdict:    VerdictDisputed,
+			wantBasis:      BasisEvidence,
+			wantCited:      1,
+			wantConfidence: 0.9,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := verdictFromResult(tc.res, tc.matches)
+			if got.Verdict != tc.wantVerdict || got.Basis != tc.wantBasis {
+				t.Fatalf("verdict = %q/%q, want %q/%q", got.Verdict, got.Basis, tc.wantVerdict, tc.wantBasis)
+			}
+			if len(got.Citations) != tc.wantCited {
+				t.Fatalf("citations = %d, want %d", len(got.Citations), tc.wantCited)
+			}
+			if got.Rationale != tc.res.Rationale {
+				t.Fatalf("rationale = %q, want the model's rationale kept", got.Rationale)
+			}
+			if got.Confidence != tc.wantConfidence {
+				t.Fatalf("confidence = %v, want %v (a demoted verdict renders no confident percentage)", got.Confidence, tc.wantConfidence)
+			}
+		})
+	}
+}
+
+func TestBatchNoEvidenceClaimIsUnverifiable(t *testing.T) {
+	t.Parallel()
+	// The batch path shares the no-evidence short-circuit: a claim that retrieves
+	// nothing resolves verified/unverifiable with the fixed French no-source
+	// rationale and the verifier is never called.
+	claim := "la dette publique depasse trois mille milliards."
+	verifier := &fakeVerifier{}
+	vp, err := NewVerifyPath(VerifyPathConfig{
+		Decomposer:        fakeDecomposer{},
+		Matcher:           liveMatcher{},
+		Verifier:          verifier,
+		FastTau:           0.85,
+		VerifyConcurrency: 1,
+		FastDeadline:      time.Second,
+		VerifyDeadline:    time.Second,
+		Logger:            discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewVerifyPath: %v", err)
+	}
+
+	got := vp.resolveClaimBatch(t.Context(), AtomicClaim{ClaimID: "0-0", Text: claim})
+	if got.Status != ClaimStatusVerified || got.Verdict == nil {
+		t.Fatalf("batch result = %+v, want a verified verdict", got)
+	}
+	if got.Verdict.Verdict != VerdictUnverifiable || got.Verdict.Basis != BasisKnowledge {
+		t.Fatalf("batch no-evidence verdict = %+v, want unverifiable/knowledge", got.Verdict)
+	}
+	if got.Verdict.Rationale != noSourceRationale {
+		t.Fatalf("batch no-evidence rationale = %q, want the fixed French no-source rationale", got.Verdict.Rationale)
+	}
+	if seen := verifier.seen(); len(seen) != 0 {
+		t.Fatalf("verifier called %v, want no call with no evidence", seen)
+	}
+}
+
+func TestVerifyPathClaimsEventCarriesQuoteAndSpans(t *testing.T) {
+	t.Parallel()
+	// The decomposer's verbatim quote anchors onto the unit's member segment as
+	// [start, end) rune offsets, so the client can highlight the exact words that
+	// were checked; the coreference-resolved claim text rides alongside.
+	unit := "Le chomage a baisse fortement."
+	claimText := "Le chomage en France a baisse."
+	stream := &fakeSegmentStream{transcripts: finalize(domain.Segment{Start: time.Second, End: 2 * time.Second, Text: unit, Speaker: "A"})}
+	matcher := liveMatcher{matches: map[string][]domain.SegmentMatch{}}
+	a := verifyPathFixture(t, stream, matcher, VerifyPathConfig{
+		Decomposer: fakeDecomposer{
+			byText: map[string][]string{unit: {claimText}},
+			quotes: map[string]string{claimText: "chomage a baisse"},
+		},
+		Verifier: &fakeVerifier{},
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil || len(claimsEv.Claims) != 1 {
+		t.Fatalf("claims event = %+v, want one claim", claimsEv)
+	}
+	claim := claimsEv.Claims[0]
+	if claim.Quote != "chomage a baisse" {
+		t.Errorf("quote = %q, want the decomposer's verbatim quote", claim.Quote)
+	}
+	wantSpans := []domain.ClaimSpan{{SegmentID: claimsEv.ID, Start: 3, End: 19}}
+	if diff := cmp.Diff(wantSpans, claim.Spans); diff != "" {
+		t.Errorf("spans mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestVerifyPathClaimsEventCarriesSegmentIDs(t *testing.T) {
+	t.Parallel()
+	// A unit built from several same-speaker segments announces its claims with
+	// the ordered member subtitle ids, so a client can merge the whole group
+	// into one displayed statement.
+	s1 := "Le budget monte."
+	s2 := "Il monte de dix pour cent."
+	unit := s1 + " " + s2
+	stream := &fakeSegmentStream{transcripts: finalize(
+		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: s1, Speaker: "A"},
+		domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: s2, Speaker: "A"},
+	)}
+	a := verifyPathFixture(t, stream, liveMatcher{}, VerifyPathConfig{
+		Decomposer: fakeDecomposer{byText: map[string][]string{unit: {unit}}},
+		Verifier:   &fakeVerifier{},
+	})
+
+	events := runVerifyPath(t, a)
+	claimsEv := firstOfKind(events, LiveEventClaims)
+	if claimsEv == nil {
+		t.Fatal("no claims event emitted")
+	}
+	if diff := cmp.Diff([]string{"0", "1"}, claimsEv.SegmentIDs); diff != "" {
+		t.Errorf("segment ids mismatch (-want +got):\n%s", diff)
+	}
+	if claimsEv.ID != "0" {
+		t.Errorf("claims event ID = %q, want the unit anchor (first member)", claimsEv.ID)
+	}
+}
+
+// recordingDecomposer records the recent context passed on every call, so a
+// test asserts the previous unit's full text threads through.
+type recordingDecomposer struct {
+	mu       sync.Mutex
+	contexts []string
+}
+
+func (d *recordingDecomposer) Decompose(_ context.Context, text, _, recentContext string) []DecomposedClaim {
+	d.mu.Lock()
+	d.contexts = append(d.contexts, recentContext)
+	d.mu.Unlock()
+	return []DecomposedClaim{{Text: text}}
+}
+
+func (d *recordingDecomposer) seen() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.contexts...)
+}
+
+func TestVerifyPathPassesPreviousUnitContextToDecomposer(t *testing.T) {
+	t.Parallel()
+	// The first unit decomposes with no context; the second (a new speaker's
+	// reply) receives the previous unit's full text, attributed to its speaker,
+	// so a cross-unit reference like "c'est faux" resolves against anything in
+	// the group that was just said, not only its last sentence.
+	recorder := &recordingDecomposer{}
+	stream := &fakeSegmentStream{transcripts: finalize(
+		domain.Segment{Start: time.Second, End: 2 * time.Second, Text: "Le chomage a augmente. C'est un fait.", Speaker: "A"},
+		domain.Segment{Start: 2 * time.Second, End: 3 * time.Second, Text: "C'est faux.", Speaker: "B"},
+	)}
+	a := verifyPathFixture(t, stream, liveMatcher{}, VerifyPathConfig{
+		Decomposer: recorder,
+		Verifier:   &fakeVerifier{},
+	})
+
+	runVerifyPath(t, a)
+
+	contexts := recorder.seen()
+	slices.Sort(contexts)
+	want := []string{"", "A: Le chomage a augmente. C'est un fait."}
+	if diff := cmp.Diff(want, contexts); diff != "" {
+		t.Errorf("decomposer contexts mismatch (-want +got):\n%s", diff)
 	}
 }
 

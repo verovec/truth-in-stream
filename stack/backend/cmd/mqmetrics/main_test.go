@@ -44,7 +44,7 @@ func TestPollPublishesShapedMetrics(t *testing.T) {
 	}}
 	putter := &fakePutter{}
 
-	err := poll(context.Background(), fetcher, putter, mqmetrics.Options{Broker: "b", Base: "embedding.jobs"}, "TruthInStream/RabbitMQ")
+	err := poll(context.Background(), fetcher, putter, mqmetrics.Options{Broker: "b", Bases: []string{"embedding.jobs"}}, "TruthInStream/RabbitMQ")
 	if err != nil {
 		t.Fatalf("poll() error: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestPollFetchErrorSkipsPublish(t *testing.T) {
 	t.Parallel()
 
 	putter := &fakePutter{}
-	err := poll(context.Background(), fakeFetcher{err: errors.New("broker down")}, putter, mqmetrics.Options{Base: "embedding.jobs"}, "ns")
+	err := poll(context.Background(), fakeFetcher{err: errors.New("broker down")}, putter, mqmetrics.Options{Bases: []string{"embedding.jobs"}}, "ns")
 	if err == nil {
 		t.Fatal("poll() expected an error when the fetch fails")
 	}

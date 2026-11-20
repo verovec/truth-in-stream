@@ -55,8 +55,10 @@ func TestRunCrawlEndToEndWithRealGate(t *testing.T) {
 	src := fakeSource{
 		members: []CategoryMember{{PageID: 7, Title: "Atom"}},
 		lead:    map[string]Extract{"Atom": {PageID: 7, Title: "Atom", RevisionID: 5, Text: "An atom has a nucleus of protons and neutrons."}},
-		full: map[string]Extract{"Atom": {PageID: 7, Title: "Atom", RevisionID: 5,
-			Text: "An atom has a nucleus of protons and neutrons.\n\nfiller navigational see also references external links."}},
+		full: map[string]Extract{"Atom": {
+			PageID: 7, Title: "Atom", RevisionID: 5,
+			Text: "An atom has a nucleus of protons and neutrons.\n\nfiller navigational see also references external links.",
+		}},
 	}
 	cfg := CrawlConfig{
 		Categories: []string{"Category:Physics"}, Corpus: "simplewiki-crawl", Project: "simplewiki",

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/verovec/truth-in-stream/backend/internal/domain"
+	"github.com/verovec/truth-in-stream/backend/internal/queue"
+	"github.com/verovec/truth-in-stream/backend/internal/rerank"
 )
 
 // DefaultEmbeddingModel is the voyage model used for both ingest and query
@@ -531,6 +534,43 @@ const (
 	defaultMatchConfidenceClusterSize = 5
 	defaultMatchConfidenceLeadWeight  = 1.0
 	defaultMatchConfidenceBodyWeight  = 0.6
+	// Hybrid retrieval (VER-195) is on by default: fusing a French lexical
+	// full-text branch with the vector branch catches exact figures, dates, and
+	// named entities dense embeddings blur. LexicalTopK over-fetches the lexical
+	// pool per corpus (~4x the vector TopK of 5) so a lexically exact but
+	// cosine-distant passage still earns a rank to fuse; RRFK is the conventional
+	// Reciprocal Rank Fusion constant. Both defaults are starting points to be
+	// re-tuned from the retrieval eval.
+	defaultMatchHybridSearch = true
+	defaultMatchLexicalTopK  = 20
+	defaultMatchRRFK         = 60
+	// Per-corpus HNSW ef_search (VER-202). 0 keeps pgvector's per-connection
+	// session default (the long-standing hot-path behavior); a positive value
+	// raises the per-query candidate list for that corpus alone, trading latency
+	// for recall, routed through the store's existing per-query searchTuned
+	// plumbing. The claims and evidence corpora carry independent knobs because a
+	// small trusted corpus and a large noisy one warrant different budgets. Both
+	// default to 0 (unchanged behavior); raise only with eval/latency evidence.
+	defaultMatchClaimsEfSearch   = 0
+	defaultMatchEvidenceEfSearch = 0
+	// maxHNSWEfSearch is pgvector's documented upper bound for hnsw.ef_search
+	// (valid range 1..1000). 0 is accepted as "keep the session default", so the
+	// config bound is [0, maxHNSWEfSearch]. Kept as a local constant so config
+	// stays free of a store-package dependency.
+	maxHNSWEfSearch = 1000
+	// Retrieval reranking (VER-226) is on by default since the vector-first defaults (VER-230); MATCH_RERANK=false is the kill-switch. The candidate pool of 20
+	// per corpus matches the lexical over-fetch above, and the timeout keeps the
+	// rerank call well inside the verify fast-deadline so a slow rerank degrades
+	// to the fused order instead of stalling a verdict. The model default lives
+	// in the rerank package (rerank.DefaultModel).
+	defaultRerankCandidates = 20
+	defaultRerankTimeout    = 800 * time.Millisecond
+	// maxRerankCandidates is the rerank API's per-request document ceiling.
+	maxRerankCandidates = 1000
+	// Telemetry recorder defaults: a small in-memory buffer between the live
+	// loop and the writer, flushed at least once a second.
+	defaultTelemetryQueueDepth = 256
+	defaultTelemetryFlushEvery = time.Second
 )
 
 // Match holds the segment matching configuration across the curated claims and
@@ -547,6 +587,17 @@ type Match struct {
 	ConfidenceClusterSize int
 	ConfidenceLeadWeight  float64
 	ConfidenceBodyWeight  float64
+	HybridSearch          bool
+	LexicalTopK           int
+	RRFK                  int
+	// ClaimsEfSearch and EvidenceEfSearch are the per-corpus HNSW ef_search
+	// values threaded into each corpus's retrieval; 0 keeps the session default.
+	ClaimsEfSearch   int
+	EvidenceEfSearch int
+	// RecencyHalfLife, when positive, decays a dated evidence hit's
+	// corroboration weight by half per half-life of age; 0 (the default) keeps
+	// scoring untouched. Undated evidence is never decayed.
+	RecencyHalfLife time.Duration
 }
 
 // LoadMatch reads the matching configuration from the environment, applying
@@ -566,6 +617,11 @@ func LoadMatch() (Match, error) {
 		ConfidenceClusterSize: defaultMatchConfidenceClusterSize,
 		ConfidenceLeadWeight:  defaultMatchConfidenceLeadWeight,
 		ConfidenceBodyWeight:  defaultMatchConfidenceBodyWeight,
+		HybridSearch:          defaultMatchHybridSearch,
+		LexicalTopK:           defaultMatchLexicalTopK,
+		RRFK:                  defaultMatchRRFK,
+		ClaimsEfSearch:        defaultMatchClaimsEfSearch,
+		EvidenceEfSearch:      defaultMatchEvidenceEfSearch,
 	}
 	var err error
 	if m.TopK, err = intEnv("MATCH_TOP_K", m.TopK, 1, math.MaxInt32); err != nil {
@@ -608,7 +664,106 @@ func LoadMatch() (Match, error) {
 	if m.ConfidenceBodyWeight, err = floatEnv("MATCH_CONFIDENCE_BODY_WEIGHT", m.ConfidenceBodyWeight); err != nil {
 		return Match{}, err
 	}
+	if m.HybridSearch, err = boolEnvDefault("MATCH_HYBRID_SEARCH", m.HybridSearch); err != nil {
+		return Match{}, err
+	}
+	if m.LexicalTopK, err = intEnv("MATCH_LEXICAL_TOP_K", m.LexicalTopK, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.RRFK, err = intEnv("MATCH_RRF_K", m.RRFK, 1, math.MaxInt32); err != nil {
+		return Match{}, err
+	}
+	if m.ClaimsEfSearch, err = intEnv("MATCH_CLAIMS_EF_SEARCH", m.ClaimsEfSearch, 0, maxHNSWEfSearch); err != nil {
+		return Match{}, err
+	}
+	if m.EvidenceEfSearch, err = intEnv("MATCH_EVIDENCE_EF_SEARCH", m.EvidenceEfSearch, 0, maxHNSWEfSearch); err != nil {
+		return Match{}, err
+	}
+	if m.RecencyHalfLife, err = durationEnvAllowZero("MATCH_RECENCY_HALF_LIFE", 0); err != nil {
+		return Match{}, err
+	}
 	return m, nil
+}
+
+// Telemetry configures the asynchronous per-claim pipeline telemetry recorder
+// (VER-229): one analytical claim_checks row per live decision, written in
+// batches off the hot path. On by default because it is pure additive
+// observability - it changes no verdict and its growth is bounded by sampling
+// and the retention sweep; TELEMETRY_ENABLED=false switches it off entirely.
+type Telemetry struct {
+	Enabled    bool
+	QueueDepth int
+	FlushEvery time.Duration
+	SampleRate float64
+}
+
+// LoadTelemetry reads the telemetry configuration from the environment,
+// failing fast on a sample rate outside (0, 1] or non-positive bounds.
+func LoadTelemetry() (Telemetry, error) {
+	t := Telemetry{Enabled: true, QueueDepth: defaultTelemetryQueueDepth, FlushEvery: defaultTelemetryFlushEvery, SampleRate: 1}
+	var err error
+	if t.Enabled, err = boolEnvDefault("TELEMETRY_ENABLED", t.Enabled); err != nil {
+		return Telemetry{}, err
+	}
+	if t.QueueDepth, err = intEnv("TELEMETRY_QUEUE_DEPTH", t.QueueDepth, 1, math.MaxInt32); err != nil {
+		return Telemetry{}, err
+	}
+	if t.FlushEvery, err = positiveDurationEnv("TELEMETRY_FLUSH_INTERVAL", t.FlushEvery); err != nil {
+		return Telemetry{}, err
+	}
+	if t.SampleRate, err = floatEnv("TELEMETRY_SAMPLE_RATE", t.SampleRate); err != nil {
+		return Telemetry{}, err
+	}
+	if t.SampleRate <= 0 || t.SampleRate > 1 {
+		return Telemetry{}, fmt.Errorf("config: TELEMETRY_SAMPLE_RATE %v outside (0, 1]", t.SampleRate)
+	}
+	return t, nil
+}
+
+// Rerank configures the optional cross-encoder rerank stage of retrieval
+// (MATCH_RERANK): the fused candidate pool is re-scored by the Voyage rerank
+// API and relevance decides which candidates survive the final cut. The key
+// falls back to EMBEDDING_API_KEY because both call the same Voyage account;
+// RERANK_API_KEY overrides it when the accounts differ. Following the
+// enabled-and-keyed Active convention, an enabled-but-keyless stage degrades
+// to the fused order rather than failing boot.
+type Rerank struct {
+	Enabled    bool
+	Model      string
+	APIKey     string
+	Candidates int
+	Timeout    time.Duration
+}
+
+// Active reports whether reranking should be wired: enabled with a usable key.
+func (r Rerank) Active() bool {
+	return r.Enabled && r.APIKey != ""
+}
+
+// LoadRerank reads the rerank configuration from the environment, applying
+// defaults and failing fast on a candidate pool outside the API's per-request
+// ceiling or a non-positive timeout.
+func LoadRerank() (Rerank, error) {
+	r := Rerank{
+		Model:      getenv("MATCH_RERANK_MODEL", rerank.DefaultModel),
+		Candidates: defaultRerankCandidates,
+		Timeout:    defaultRerankTimeout,
+	}
+	var err error
+	if r.Enabled, err = boolEnvDefault("MATCH_RERANK", true); err != nil {
+		return Rerank{}, err
+	}
+	if r.Candidates, err = intEnv("MATCH_RERANK_CANDIDATES", r.Candidates, 1, maxRerankCandidates); err != nil {
+		return Rerank{}, err
+	}
+	if r.Timeout, err = positiveDurationEnv("MATCH_RERANK_TIMEOUT", r.Timeout); err != nil {
+		return Rerank{}, err
+	}
+	r.APIKey = os.Getenv("RERANK_API_KEY")
+	if r.APIKey == "" {
+		r.APIKey = os.Getenv("EMBEDDING_API_KEY")
+	}
+	return r, nil
 }
 
 // Debug-search defaults: 10 neighbors is enough to eyeball corpus coverage
@@ -685,6 +840,14 @@ const (
 	// filler; the old 0.6 sat above the on-topic band entirely.
 	// PRECHECK_WIKI_COVERAGE_THRESHOLD overrides it.
 	defaultPrecheckWikiCoverageThreshold = 0.46
+	// defaultPrecheckCoverageEfSearch raises hnsw.ef_search for the coverage probe
+	// above pgvector's session default. Coverage decides whether a segment is
+	// checkable at all, so missing the true nearest neighbor is a false "not
+	// covered"; the VER-173 benchmark showed 200 reaches full recall for a
+	// marginal latency cost. It matches the former service-side coverageEfSearch
+	// constant, now env-tunable (VER-202). PRECHECK_COVERAGE_EF_SEARCH overrides
+	// it; 0 keeps the session default.
+	defaultPrecheckCoverageEfSearch = 200
 )
 
 // Precheck holds the check-worthiness gate configuration. Enabled toggles the
@@ -701,6 +864,13 @@ type Precheck struct {
 	CoverageThreshold     float64
 	WikiCoverageEnabled   bool
 	WikiCoverageThreshold float64
+	// CoverageEfSearch is the HNSW ef_search the coverage probe runs at across
+	// both coverage corpora. It defaults to 200, the former hard-coded probe
+	// budget, now tunable from the environment. Unlike the matcher's per-corpus
+	// ef_search knobs, 0 does NOT keep pgvector's session default here: the
+	// coverage stage applies its recall-critical 200 default when the value is
+	// non-positive (see service.defaultCoverageEfSearch).
+	CoverageEfSearch int
 }
 
 // LoadPrecheck reads the precheck-gate configuration from the environment,
@@ -713,6 +883,7 @@ func LoadPrecheck() (Precheck, error) {
 		CoverageThreshold:     defaultPrecheckCoverageThreshold,
 		WikiCoverageEnabled:   true,
 		WikiCoverageThreshold: defaultPrecheckWikiCoverageThreshold,
+		CoverageEfSearch:      defaultPrecheckCoverageEfSearch,
 	}
 	if raw := os.Getenv("PRECHECK_ENABLED"); raw != "" {
 		enabled, err := strconv.ParseBool(raw)
@@ -745,6 +916,9 @@ func LoadPrecheck() (Precheck, error) {
 	if p.WikiCoverageThreshold, err = thresholdEnv("PRECHECK_WIKI_COVERAGE_THRESHOLD", p.WikiCoverageThreshold); err != nil {
 		return Precheck{}, err
 	}
+	if p.CoverageEfSearch, err = intEnv("PRECHECK_COVERAGE_EF_SEARCH", p.CoverageEfSearch, 0, maxHNSWEfSearch); err != nil {
+		return Precheck{}, err
+	}
 	return p, nil
 }
 
@@ -757,26 +931,38 @@ func LoadPrecheck() (Precheck, error) {
 const (
 	defaultLiveConcurrency = 4
 	defaultLiveQueueDepth  = 32
+	// defaultLiveMaxSentences caps one analysis unit at a few sentences: enough
+	// surrounding speech for the decomposer to extract claims a lone sentence
+	// leaves ambiguous, while a verdict still reads as one thought. The service
+	// package keeps a matching library default (service.defaultMaxSentences) and
+	// the two must stay in sync.
+	defaultLiveMaxSentences = 4
 )
 
 // Live holds the live-analyzer scoring configuration. Concurrency is the number
 // of verdict workers; QueueDepth is the bounded backlog those workers drain
-// before a ready unit is shed to not_checked.
+// before a ready unit is shed to not_checked; MaxSentences caps how many
+// sentences accumulate into one analysis unit before it is scored.
 type Live struct {
-	Concurrency int
-	QueueDepth  int
+	Concurrency  int
+	QueueDepth   int
+	MaxSentences int
 }
 
 // LoadLive reads the live-analyzer configuration from the environment, applying
-// defaults and failing fast when concurrency or queue depth is not a positive
-// integer (a zero pool or zero buffer would stall or drop every statement).
+// defaults and failing fast when concurrency, queue depth, or the sentence cap
+// is not a positive integer (a zero pool or zero buffer would stall or drop
+// every statement; a zero cap would flush on every segment).
 func LoadLive() (Live, error) {
-	l := Live{Concurrency: defaultLiveConcurrency, QueueDepth: defaultLiveQueueDepth}
+	l := Live{Concurrency: defaultLiveConcurrency, QueueDepth: defaultLiveQueueDepth, MaxSentences: defaultLiveMaxSentences}
 	var err error
 	if l.Concurrency, err = intEnv("LIVE_CONCURRENCY", l.Concurrency, 1, math.MaxInt32); err != nil {
 		return Live{}, err
 	}
 	if l.QueueDepth, err = intEnv("LIVE_QUEUE_DEPTH", l.QueueDepth, 1, math.MaxInt32); err != nil {
+		return Live{}, err
+	}
+	if l.MaxSentences, err = intEnv("LIVE_MAX_SENTENCES", l.MaxSentences, 1, math.MaxInt32); err != nil {
 		return Live{}, err
 	}
 	return l, nil
@@ -846,9 +1032,9 @@ func LoadConsistency() (Consistency, error) {
 	return c, nil
 }
 
-// Retrieve-then-verify defaults. The path is off by default (the old
-// gate-and-match path stays the default until the golden eval clears the
-// baseline). Decomposition and verification both run on the selected provider's
+// Retrieve-then-verify defaults. The path is on by default since the
+// vector-first defaults (VER-230) and inactive without an API key, so a
+// keyless deployment keeps the old gate-and-match path. Decomposition and verification both run on the selected provider's
 // default fast model. MaxClaimsPerUnit caps a unit's fan-out at 4 atomic claims. FastTau 0.85
 // is the curated near-match similarity at or above which the fast path borrows a
 // verdict with no LLM call - a high bar, since a borrowed verdict bypasses
@@ -866,6 +1052,19 @@ const (
 	defaultVerifyFastDeadline     = 800 * time.Millisecond
 	defaultVerifyDeadline         = 4 * time.Second
 	defaultVerifyCacheTTL         = 30 * time.Second
+	// defaultVerifyCacheThreshold is the cosine-similarity bar the semantic claim
+	// cache (VER-202) requires before it replays a cached verdict for a new claim.
+	// The cache keys on the claim's query embedding: a paraphrase of a recent
+	// talking point embeds very close to the original and reuses its verdict with
+	// no verifier call, while a genuinely different claim stays below the bar and
+	// is verified afresh. The default is deliberately high (precision over recall)
+	// so a near-duplicate must be truly near before it shares a verdict, guarding
+	// against a false cache share. FACTCHECK_VERIFY_CACHE_THRESHOLD overrides it.
+	defaultVerifyCacheThreshold = 0.95
+	// defaultVerifyCacheMaxEntries bounds the in-process semantic cache so a long
+	// session cannot grow it without limit; the oldest entries are evicted first
+	// once the bound is reached. FACTCHECK_VERIFY_CACHE_MAX_ENTRIES overrides it.
+	defaultVerifyCacheMaxEntries = 1024
 	// defaultVerifyRetrievalThreshold is the cosine floor for the evidence the
 	// verify path retrieves and hands the LLM verifier. It is deliberately lower
 	// than the legacy match/evidence threshold (defaultMatchEvidenceThreshold,
@@ -901,6 +1100,13 @@ const (
 	// answering, but still bounded so a slow or stuck reasoner can never tie up a
 	// claim's worker indefinitely.
 	defaultSecondPassDeadline = 12 * time.Second
+	// defaultFinalGateMinConfidence is the grounded confidence a terminal-gate
+	// re-judgment must reach before it is allowed to REPLACE the pipeline's weak
+	// verdict. It is deliberately high: the gate is the last word on an otherwise
+	// unverifiable or low-confidence claim, so it adopts the reasoner only when the
+	// deeper model is both grounded and near-certain, and otherwise leaves the honest
+	// weak verdict in place. FACTCHECK_FINAL_GATE_MIN_CONFIDENCE overrides it.
+	defaultFinalGateMinConfidence = 0.90
 )
 
 // VerifyPath holds the retrieve-then-verify configuration. The path is wired only
@@ -923,6 +1129,12 @@ type VerifyPath struct {
 	FastDeadline     time.Duration
 	VerifyDeadline   time.Duration
 	CacheTTL         time.Duration
+	// CacheThreshold is the cosine-similarity bar the semantic claim cache
+	// requires before it replays a cached verdict for a new claim's embedding, and
+	// CacheMaxEntries bounds the cache's size (oldest evicted first). They matter
+	// only when CacheTTL is positive (the cache is enabled).
+	CacheThreshold  float64
+	CacheMaxEntries int
 	// RetrievalThreshold is the cosine floor for the evidence the verify path
 	// retrieves and feeds the verifier. It is a recall bar, lower than the legacy
 	// borrow-by-similarity threshold, so the on-topic band is retrieved rather than
@@ -941,8 +1153,9 @@ func (v VerifyPath) Active() bool {
 // LoadVerifyPath reads the retrieve-then-verify configuration from the
 // environment, applying defaults and failing fast on out-of-range bounds (a
 // non-positive pool or deadline, a fast tau outside cosine similarity's [-1, 1]
-// range, a negative queue depth or cache ttl). FACTCHECK_VERIFY_PATH gates the
-// whole feature (default off). The secret is read but never logged.
+// range, a negative queue depth or cache ttl). FACTCHECK_VERIFY_PATH is the
+// feature's kill-switch (default on since VER-230). The secret is read but
+// never logged.
 func LoadVerifyPath() (VerifyPath, error) {
 	v := VerifyPath{
 		MaxClaimsPerUnit:   defaultVerifyMaxClaimsPerUnit,
@@ -952,6 +1165,8 @@ func LoadVerifyPath() (VerifyPath, error) {
 		FastDeadline:       defaultVerifyFastDeadline,
 		VerifyDeadline:     defaultVerifyDeadline,
 		CacheTTL:           defaultVerifyCacheTTL,
+		CacheThreshold:     defaultVerifyCacheThreshold,
+		CacheMaxEntries:    defaultVerifyCacheMaxEntries,
 		RetrievalThreshold: defaultVerifyRetrievalThreshold,
 	}
 	llmSel, err := loadLLMSelection()
@@ -959,7 +1174,7 @@ func LoadVerifyPath() (VerifyPath, error) {
 		return VerifyPath{}, err
 	}
 	v.LLMSelection = llmSel
-	if v.Enabled, err = boolEnv("FACTCHECK_VERIFY_PATH"); err != nil {
+	if v.Enabled, err = boolEnvDefault("FACTCHECK_VERIFY_PATH", true); err != nil {
 		return VerifyPath{}, err
 	}
 	v.APIKey = getenv("FACTCHECK_VERIFY_API_KEY", "")
@@ -987,6 +1202,12 @@ func LoadVerifyPath() (VerifyPath, error) {
 	}
 	// 0 disables the repeated-claim cache; a positive value is the collapse window.
 	if v.CacheTTL, err = durationEnvAllowZero("FACTCHECK_VERIFY_CACHE_TTL", v.CacheTTL); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.CacheThreshold, err = thresholdEnv("FACTCHECK_VERIFY_CACHE_THRESHOLD", v.CacheThreshold); err != nil {
+		return VerifyPath{}, err
+	}
+	if v.CacheMaxEntries, err = intEnv("FACTCHECK_VERIFY_CACHE_MAX_ENTRIES", v.CacheMaxEntries, 1, math.MaxInt32); err != nil {
 		return VerifyPath{}, err
 	}
 	return v, nil
@@ -1053,9 +1274,118 @@ func LoadSecondPass() (SecondPass, error) {
 	return s, nil
 }
 
-// CheckWorthiness holds the model stage of the check-worthiness gate. It is the
-// optional upgrade to the gate's stage one: when off (the default) or keyless,
-// the deterministic heuristic alone decides claim-worthiness, exactly as before.
+// FinalGate configures the terminal reasoning gate (VER-192), the evolution of the
+// mid-band second pass into a last-resort adjudicator. Where the second pass took a
+// mid-confidence evidence verdict for a deeper second opinion, the terminal gate runs
+// only when the pipeline's best verdict is WEAK - unverifiable, or confidence below
+// TriggerBelow - and adopts the reasoner's re-judgment only when it is grounded AND
+// reaches MinConfidence, otherwise leaving the pipeline's honest weak verdict in place.
+// Its provider is decoupled from the shared LLM_PROVIDER (FACTCHECK_FINAL_GATE_PROVIDER)
+// and falls back to the second pass's settings, so the expensive reasoner can run on a
+// different backend than the hot-path stages. Enabled gates the feature; APIKey is the
+// reasoner's Anthropic per-stage secret (env only, never logged); Model selects the
+// reasoning tier; Deadline bounds one reasoning call.
+type FinalGate struct {
+	LLMSelection
+	Enabled       bool
+	APIKey        string
+	Model         string
+	TriggerBelow  float64
+	MinConfidence float64
+	Deadline      time.Duration
+}
+
+// Active reports whether the terminal gate should be wired: it is enabled and has the
+// key its reasoner needs under the gate's (possibly overridden) provider. Wiring keys
+// off this so an enabled-but-keyless configuration degrades to the single-pass verify
+// path rather than failing to start, matching every other optional LLM stage.
+func (g FinalGate) Active() bool {
+	return g.Enabled && g.hasKey(g.APIKey)
+}
+
+// LoadFinalGate reads the terminal-gate configuration from the environment, layered
+// over the already-loaded second pass so every knob falls back to its FACTCHECK_SECOND_PASS_*
+// equivalent: an operator who only set the second pass keeps a working gate, and the
+// FACTCHECK_FINAL_GATE_* knobs override piece by piece. It fails fast on an out-of-range
+// threshold or a non-positive deadline, and - only when the gate is actually enabled -
+// on an unknown provider override or an active gate with no reasoning model. A disabled
+// gate never bricks boot on a bad provider it will never use. The secret is read but
+// never logged.
+func LoadFinalGate(sp SecondPass) (FinalGate, error) {
+	g := FinalGate{
+		LLMSelection:  sp.LLMSelection,
+		Enabled:       sp.Enabled,
+		APIKey:        sp.APIKey,
+		Model:         sp.Model,
+		TriggerBelow:  sp.BandHi,
+		MinConfidence: defaultFinalGateMinConfidence,
+		Deadline:      sp.Deadline,
+	}
+	var err error
+
+	if g.Enabled, err = boolEnvDefault("FACTCHECK_FINAL_GATE", g.Enabled); err != nil {
+		return FinalGate{}, err
+	}
+
+	// Provider decoupling: FACTCHECK_FINAL_GATE_PROVIDER overrides the shared
+	// LLM_PROVIDER for the terminal gate only, so the costly reasoner can run on a
+	// different backend than the hot path. Unset -> the second pass's provider. The
+	// provider keys stay the global GEMINI_API_KEY/DEEPSEEK_API_KEY.
+	provider := strings.ToLower(strings.TrimSpace(getenv("FACTCHECK_FINAL_GATE_PROVIDER", g.Provider)))
+	providerChanged := provider != g.Provider
+	g.Provider = provider
+
+	g.APIKey = getenv("FACTCHECK_FINAL_GATE_API_KEY", g.APIKey)
+
+	// Model default: keep the operator's second-pass model when the provider is
+	// unchanged; when the gate switches providers, the carried model names a tier the
+	// new provider does not know, so fall back to that provider's reasoning default
+	// (empty for non-DeepSeek).
+	modelFallback := g.Model
+	if providerChanged {
+		modelFallback = g.secondPassModel()
+	}
+	g.Model = getenv("FACTCHECK_FINAL_GATE_MODEL", modelFallback)
+
+	// Both configuration guards fire only when the gate is Active (enabled AND keyed),
+	// so a disabled or keyless gate degrades to off rather than bricking boot for a
+	// feature it will never run - the same keyless-degrades-off contract every other
+	// optional LLM stage keeps. An unknown provider must not silently proceed, and an
+	// active gate with no model would run the provider's cheap default stage model
+	// instead of the intended reasoner (Anthropic/Gemini name no reasoning default
+	// here), quietly defeating the gate.
+	if g.Active() {
+		switch g.Provider {
+		case LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini:
+		default:
+			return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_PROVIDER %q is not a known provider (want %q, %q, or %q)", g.Provider, LLMProviderDeepSeek, LLMProviderAnthropic, LLMProviderGemini)
+		}
+		if g.Model == "" {
+			return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_MODEL is required under provider %q (it has no default reasoning model)", g.Provider)
+		}
+	}
+
+	if g.TriggerBelow, err = floatEnv("FACTCHECK_FINAL_GATE_TRIGGER_BELOW", g.TriggerBelow); err != nil {
+		return FinalGate{}, err
+	}
+	if g.TriggerBelow < 0 || g.TriggerBelow > 1 {
+		return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_TRIGGER_BELOW %v is outside [0, 1]", g.TriggerBelow)
+	}
+	if g.MinConfidence, err = floatEnv("FACTCHECK_FINAL_GATE_MIN_CONFIDENCE", g.MinConfidence); err != nil {
+		return FinalGate{}, err
+	}
+	if g.MinConfidence < 0 || g.MinConfidence > 1 {
+		return FinalGate{}, fmt.Errorf("config: FACTCHECK_FINAL_GATE_MIN_CONFIDENCE %v is outside [0, 1]", g.MinConfidence)
+	}
+	if g.Deadline, err = positiveDurationEnv("FACTCHECK_FINAL_GATE_DEADLINE", g.Deadline); err != nil {
+		return FinalGate{}, err
+	}
+	return g, nil
+}
+
+// CheckWorthiness holds the model stage of the check-worthiness gate. It is
+// on by default since the vector-first defaults (VER-230): keyless or switched
+// off, the deterministic heuristic alone decides claim-worthiness as before.
 // When active, a model judges whether a heuristic-accepted declarative is a
 // check-worthy public claim rather than casual small talk. APIKey is a secret
 // and comes from the environment only - never logged. Model selects the
@@ -1084,7 +1414,7 @@ func LoadCheckWorthiness() (CheckWorthiness, error) {
 		return CheckWorthiness{}, err
 	}
 	c.LLMSelection = llmSel
-	if c.Enabled, err = boolEnv("CHECKWORTHINESS_ENABLED"); err != nil {
+	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_ENABLED", true); err != nil {
 		return CheckWorthiness{}, err
 	}
 	c.APIKey = getenv("CHECKWORTHINESS_API_KEY", "")
@@ -1107,7 +1437,8 @@ const defaultPoliticalCuratedTau = 0.85
 
 // Political holds the French/EU political fact-checking mode flag and the routing
 // knob the capstone (VER-103) wires behind it. The whole redesign rides
-// FACTCHECK_POLITICAL (default off) so main stays shippable: with the flag off the
+// FACTCHECK_POLITICAL (default on since VER-230, the product's French
+// political mode): with the flag off the
 // locale is the default English behavior and the verify path (when active) runs its
 // credibility-only stage unchanged, and with it on the live LLM stages prompt and
 // reason in French, the transcriber biases toward French, and the verify path's
@@ -1121,6 +1452,11 @@ type Political struct {
 	// path borrows a curated two-axis claim (literal verdict + manipulation flags +
 	// real source) without an LLM call. It is a cosine similarity in [-1, 1].
 	CuratedTau float64
+	// CuratedMaxAge, when positive, stops the fast-path borrowing a curated
+	// verdict checked longer ago than this; the claim runs the normal
+	// route+verify path instead. 0 (the default) disables the guard, keeping
+	// today's behavior until the age policy is deliberately turned on.
+	CuratedMaxAge time.Duration
 }
 
 // Active reports whether the political verify path should be wired: the political
@@ -1153,13 +1489,13 @@ func (p Political) RouterLang() string {
 }
 
 // LoadPolitical reads the political fact-checking mode flag and routing knob from
-// the environment. FACTCHECK_POLITICAL gates the whole feature (default off); an
+// the environment. FACTCHECK_POLITICAL is the mode kill-switch (default on since VER-230); an
 // unparseable value fails fast rather than silently defaulting.
 // FACTCHECK_POLITICAL_ROUTER_MIN_RESULTS overrides the thin-result floor and must
 // be positive (a non-positive floor would treat every result as thin and stampede
 // the web fallback).
 func LoadPolitical() (Political, error) {
-	enabled, err := boolEnv("FACTCHECK_POLITICAL")
+	enabled, err := boolEnvDefault("FACTCHECK_POLITICAL", true)
 	if err != nil {
 		return Political{}, err
 	}
@@ -1171,7 +1507,11 @@ func LoadPolitical() (Political, error) {
 	if err != nil {
 		return Political{}, err
 	}
-	return Political{Enabled: enabled, RouterMinResults: minResults, CuratedTau: curatedTau}, nil
+	curatedMaxAge, err := durationEnvAllowZero("FACTCHECK_POLITICAL_CURATED_MAX_AGE", 0)
+	if err != nil {
+		return Political{}, err
+	}
+	return Political{Enabled: enabled, RouterMinResults: minResults, CuratedTau: curatedTau, CuratedMaxAge: curatedMaxAge}, nil
 }
 
 // CrawlAlerts holds the ingestion-fleet Slack alerting configuration. WebhookURL
@@ -1180,6 +1520,11 @@ func LoadPolitical() (Political, error) {
 // local runs without Slack are unaffected.
 type CrawlAlerts struct {
 	WebhookURL string
+	// RunMetricsNamespace, when set, is the CloudWatch namespace a producer emits a
+	// per-source RunSuccess metric to on a finished run, so a "no successful run in
+	// 24h" alarm can page. Empty disables the metric (local and dev runs stay
+	// AWS-free); RUN_METRICS_NAMESPACE sets it.
+	RunMetricsNamespace string
 }
 
 // Active reports whether crawl alerts should post to Slack: it has a webhook URL.
@@ -1193,73 +1538,84 @@ func (c CrawlAlerts) Active() bool {
 // environment. SLACK_WEBHOOK_URL is optional: when unset, alerting is a silent
 // no-op. It carries the webhook secret, so it is never logged.
 func LoadCrawlAlerts() CrawlAlerts {
-	return CrawlAlerts{WebhookURL: os.Getenv("SLACK_WEBHOOK_URL")}
+	return CrawlAlerts{
+		WebhookURL:          os.Getenv("SLACK_WEBHOOK_URL"),
+		RunMetricsNamespace: os.Getenv("RUN_METRICS_NAMESPACE"),
+	}
 }
 
-// Scheduler defaults. Each source defaults DISABLED with a daily off-peak cron, so
-// the always-on scheduler service idles on a plain `docker compose up` and never
-// starts paid ingestion until an operator opts a source in with
-// SCHEDULE_<SOURCE>_ENABLED=true - the same cost-safety convention the paid wiki
-// profiles follow. The jitter spreads concurrently-due sources to avoid a
-// thundering herd on the shared broker and upstream APIs.
+// Scheduler defaults. Each source defaults DISABLED, so the always-on scheduler
+// service idles on a plain `docker compose up` and never starts paid ingestion
+// until an operator opts a source in with SCHEDULE_<SOURCE>_ENABLED=true - the
+// same cost-safety convention the paid wiki profiles follow. The jitter spreads
+// concurrently-due sources to avoid a thundering herd on the shared broker and
+// upstream APIs. Per-source cron defaults live in the connector registry, not
+// here, so config stays registry-agnostic and a new source adds no knob to this
+// file.
 const (
-	defaultWikipediaCron  = "0 3 * * *"  // 03:00 daily
-	defaultFactcheckCron  = "0 4 * * *"  // 04:00 daily
-	defaultScrutinsCron   = "30 4 * * *" // 04:30 daily
 	defaultScheduleJitter = 30 * time.Second
 	maxScheduleJitter     = time.Hour
 )
 
-// ScheduleSource is one source's scheduling configuration: whether it is enabled
-// and the cron spec it fires on. The cron spec is validated by the scheduler at
-// startup, so a malformed spec fails fast.
+// ScheduleSpec is one schedulable source's identity, supplied by the connector
+// registry: its name, the SCHEDULE_<PREFIX>_* env prefix derived from that name,
+// and the default cron the registry declares. Passing it in keeps config free of
+// any dependency on the registry while still reading a per-source env knob for
+// every registered source.
+type ScheduleSpec struct {
+	Name        string
+	EnvPrefix   string
+	DefaultCron string
+}
+
+// ScheduleSource is one source's resolved scheduling configuration: whether it is
+// enabled and the cron spec it fires on. The cron spec is validated by the
+// scheduler at startup, so a malformed spec fails fast.
 type ScheduleSource struct {
 	Enabled bool
 	Cron    string
 }
 
-// Schedule holds the ingestion fleet's per-source scheduling configuration plus the
-// shared jitter. It is read from the environment only; an invalid cron spec is
-// rejected when the scheduler parses it at startup, and an invalid jitter is
-// rejected here.
+// Schedule holds the ingestion fleet's per-source scheduling configuration keyed
+// by source name, plus the shared jitter. It is read from the environment only;
+// an invalid cron spec is rejected when the scheduler parses it at startup, and an
+// invalid jitter is rejected here.
 type Schedule struct {
-	Wikipedia ScheduleSource
-	Factcheck ScheduleSource
-	Scrutins  ScheduleSource
-	Jitter    time.Duration
+	Sources map[string]ScheduleSource
+	Jitter  time.Duration
 }
 
-// LoadSchedule reads the scheduler configuration from the environment. Each source
-// defaults disabled; SCHEDULE_<SOURCE>_ENABLED=true opts it in and
-// SCHEDULE_<SOURCE>_CRON overrides its daily-default cadence. SCHEDULE_JITTER bounds
-// the random per-run spread (default 30s, capped at 1h). A bad boolean or jitter
-// fails fast; a bad cron spec is caught by the scheduler when it parses the
-// registry.
-func LoadSchedule() (Schedule, error) {
-	wikiEnabled, err := boolEnv("SCHEDULE_WIKIPEDIA_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
-	factcheckEnabled, err := boolEnv("SCHEDULE_FACTCHECK_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
-	scrutinsEnabled, err := boolEnv("SCHEDULE_SCRUTINS_ENABLED")
-	if err != nil {
-		return Schedule{}, err
-	}
+// Source returns the resolved config for a source name and whether it was among
+// the specs LoadSchedule was given.
+func (s Schedule) Source(name string) (ScheduleSource, bool) {
+	src, ok := s.Sources[name]
+	return src, ok
+}
 
+// LoadSchedule reads the scheduler configuration for the given registry-supplied
+// specs. Each source defaults disabled; SCHEDULE_<PREFIX>_ENABLED=true opts it in
+// and SCHEDULE_<PREFIX>_CRON overrides its registry-default cadence. SCHEDULE_JITTER
+// bounds the random per-run spread (default 30s, capped at 1h). A bad boolean or
+// jitter fails fast; a bad cron spec is caught by the scheduler when it parses the
+// registry.
+func LoadSchedule(specs []ScheduleSpec) (Schedule, error) {
 	jitter, err := boundedDurationEnv("SCHEDULE_JITTER", defaultScheduleJitter, maxScheduleJitter)
 	if err != nil {
 		return Schedule{}, err
 	}
 
-	return Schedule{
-		Wikipedia: ScheduleSource{Enabled: wikiEnabled, Cron: getenv("SCHEDULE_WIKIPEDIA_CRON", defaultWikipediaCron)},
-		Factcheck: ScheduleSource{Enabled: factcheckEnabled, Cron: getenv("SCHEDULE_FACTCHECK_CRON", defaultFactcheckCron)},
-		Scrutins:  ScheduleSource{Enabled: scrutinsEnabled, Cron: getenv("SCHEDULE_SCRUTINS_CRON", defaultScrutinsCron)},
-		Jitter:    jitter,
-	}, nil
+	sources := make(map[string]ScheduleSource, len(specs))
+	for _, spec := range specs {
+		enabled, err := boolEnv("SCHEDULE_" + spec.EnvPrefix + "_ENABLED")
+		if err != nil {
+			return Schedule{}, err
+		}
+		sources[spec.Name] = ScheduleSource{
+			Enabled: enabled,
+			Cron:    getenv("SCHEDULE_"+spec.EnvPrefix+"_CRON", spec.DefaultCron),
+		}
+	}
+	return Schedule{Sources: sources, Jitter: jitter}, nil
 }
 
 // thresholdEnv reads a cosine-similarity threshold, falling back when unset and
@@ -1309,28 +1665,20 @@ func LoadWiki() (Wiki, error) {
 	return Wiki{Corpus: corpus}, nil
 }
 
-// Bulk-embedding defaults. A 128-input batch sits well under Voyage's 1000
-// input / 320k token per-request ceilings even for the longest chunks; four
-// concurrent requests stay inside the tier-1 rate limit; six retries ride out
-// transient throttling. A 30s per-request HTTP timeout is generous for a
-// healthy batch (Voyage returns a 128-input request in seconds) yet surfaces a
-// throttling stall fast, instead of burning two minutes on each hung request
-// before the retry. RequestsPerMinute is off by default (0 = unpaced, right for
-// a paid tier whose limit is thousands of RPM); set it to pace a run onto a
-// constrained tier's request budget rather than bursting past it and stalling.
-// 512MB maintenance_work_mem builds the simplewiki HNSW in memory and is safe on
-// a small instance - raise it for enwiki - and seven parallel workers matches
-// pgvector's index-build guidance.
+// Bulk index-build defaults. 512MB maintenance_work_mem builds the simplewiki
+// HNSW in memory and is safe on a small instance - raise it for enwiki - and
+// seven parallel workers matches pgvector's index-build guidance. (The embedding
+// itself runs on the worker fleet, tuned by EMBED_WORKER_*, so the bulk path no
+// longer carries its own batch/concurrency/retry knobs.)
 const (
-	defaultWikiEmbedBatchSize          = 128
-	defaultWikiEmbedConcurrency        = 4
-	defaultWikiEmbedMaxRetries         = 6
-	defaultWikiEmbedHTTPTimeout        = 30 * time.Second
-	defaultWikiEmbedRequestsPerMinute  = 0
 	defaultWikiEmbedMaintenanceWorkMem = "512MB"
 	defaultWikiEmbedMaxParallelWorkers = 7
 	// maxVoyageInputsPerRequest is Voyage's documented per-request input cap.
 	maxVoyageInputsPerRequest = 1000
+	// maxVoyageTokensPerRequest is Voyage's documented per-request token ceiling
+	// for voyage-4-large (docs.voyageai.com, verified 2026-07); a request over it
+	// returns HTTP 400, so a batch's token budget must stay under it.
+	maxVoyageTokensPerRequest = 120000
 )
 
 // workMemRe matches a Postgres memory size like "512MB" or "2GB". It guards
@@ -1338,52 +1686,24 @@ const (
 // not a bare size literal.
 var workMemRe = regexp.MustCompile(`^[1-9][0-9]*(kB|MB|GB|TB)$`)
 
-// WikiEmbed holds the bulk-embedding pipeline configuration. BatchSize and
-// Concurrency bound the embedding API load; RequestsPerMinute optionally paces
-// outbound embedding requests onto a tier's budget (0 = unpaced); HTTPTimeout
-// bounds each Voyage request on the bulk path; MaintenanceWorkMem and
-// MaxParallelWorkers tune the post-load HNSW index build.
+// WikiEmbed holds the bulk index-build configuration. MaintenanceWorkMem and
+// MaxParallelWorkers tune the post-load HNSW index build the atomic bulk finalize
+// runs; the embedding itself is fanned out to the worker fleet (EMBED_WORKER_*),
+// so this no longer carries batch/concurrency/retry/timeout knobs.
 type WikiEmbed struct {
-	BatchSize          int
-	Concurrency        int
-	MaxRetries         int
-	RequestsPerMinute  int
-	HTTPTimeout        time.Duration
 	MaintenanceWorkMem string
 	MaxParallelWorkers int
 }
 
-// LoadWikiEmbed reads the bulk-embedding configuration from the environment,
-// applying defaults and failing fast on values that would overrun the
-// embedding API limits or produce invalid index-build settings.
+// LoadWikiEmbed reads the bulk index-build configuration from the environment,
+// applying defaults and failing fast on values that would produce invalid
+// index-build settings.
 func LoadWikiEmbed() (WikiEmbed, error) {
 	w := WikiEmbed{
-		BatchSize:          defaultWikiEmbedBatchSize,
-		Concurrency:        defaultWikiEmbedConcurrency,
-		MaxRetries:         defaultWikiEmbedMaxRetries,
-		RequestsPerMinute:  defaultWikiEmbedRequestsPerMinute,
-		HTTPTimeout:        defaultWikiEmbedHTTPTimeout,
 		MaintenanceWorkMem: defaultWikiEmbedMaintenanceWorkMem,
 		MaxParallelWorkers: defaultWikiEmbedMaxParallelWorkers,
 	}
 	var err error
-	if w.BatchSize, err = intEnv("WIKI_EMBED_BATCH_SIZE", w.BatchSize, 1, maxVoyageInputsPerRequest); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.Concurrency, err = intEnv("WIKI_EMBED_CONCURRENCY", w.Concurrency, 1, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.MaxRetries, err = intEnv("WIKI_EMBED_MAX_RETRIES", w.MaxRetries, 1, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	// 0 disables pacing; a positive value caps outbound requests per minute so a
-	// constrained tier is not overrun.
-	if w.RequestsPerMinute, err = intEnv("WIKI_EMBED_RPM", w.RequestsPerMinute, 0, math.MaxInt32); err != nil {
-		return WikiEmbed{}, err
-	}
-	if w.HTTPTimeout, err = positiveDurationEnv("WIKI_EMBED_HTTP_TIMEOUT", w.HTTPTimeout); err != nil {
-		return WikiEmbed{}, err
-	}
 	if w.MaxParallelWorkers, err = intEnv("WIKI_EMBED_MAX_PARALLEL_WORKERS", w.MaxParallelWorkers, 0, math.MaxInt32); err != nil {
 		return WikiEmbed{}, err
 	}
@@ -1714,9 +2034,17 @@ const (
 	defaultQueueName        = "embedding.jobs"
 	defaultQueueMaxPriority = 10
 	defaultQueuePrefetch    = 1
-	// defaultQueueVersion is the single active version when none is configured,
-	// so a fresh local dev runs against embedding.jobs.v1.
-	defaultQueueVersion = "1"
+	// defaultQueueVersion is the single active version when none is configured. It
+	// is 2 because dead-letter routing (VER-188) added x-dead-letter-* arguments to
+	// every queue: those arguments are fixed at declaration and cannot be changed on
+	// a live queue, so declaring the pre-existing v1 queue with them would fail a 406
+	// PRECONDITION_FAILED and crash the fleet. Bumping the version declares fresh
+	// v2 queues (embedding.jobs.v2, ...) with the dead-letter topology and leaves the
+	// old v1 queues untouched. A worker consumes only the active (newest) version, so
+	// any messages still queued under v1 at cutover are not auto-drained; an operator
+	// with a v1 backlog drains it with a one-off consumer against the old queue name
+	// before removing it (fresh environments and empty queues need nothing).
+	defaultQueueVersion = "2"
 	// defaultCrawlQueueName is the base queue the category crawler publishes to,
 	// kept separate from the embedding-jobs queue so the crawl worker and the
 	// dump-pipeline fleet never consume each other's messages.
@@ -1729,6 +2057,15 @@ const (
 	// publishes per-scrutin jobs to, kept separate from every other queue so the
 	// scrutins worker never consumes a wiki chunk or curated claim.
 	defaultScrutinsQueueName = "scrutins.votes"
+	// defaultQueueDLQEnabled routes a rejected message to a dead-letter queue by
+	// default, so an unprocessable message is parked and inspectable rather than
+	// silently discarded.
+	defaultQueueDLQEnabled = true
+	// defaultQueueMinBackoff and defaultQueueMaxBackoff bound the transport redial
+	// wait after a broker drop; the transport applies these same defaults when a
+	// value is zero, and they are surfaced here so the knobs have a documented home.
+	defaultQueueMinBackoff = 250 * time.Millisecond
+	defaultQueueMaxBackoff = 30 * time.Second
 )
 
 // Queue holds the RabbitMQ embedding-job queue configuration. URL is required
@@ -1751,6 +2088,16 @@ type Queue struct {
 	Prefetch      int
 	Version       string
 	KnownVersions []string
+
+	// DLQEnabled routes a rejected message to a companion dead-letter queue
+	// instead of discarding it. It defaults on and must hold the same value for
+	// every process that declares the queue, or the declarations conflict; one
+	// environment value forwarded to producers and consumers keeps them in step.
+	// ReconnectMinBackoff and ReconnectMaxBackoff bound the transport's redial
+	// wait after a broker drop.
+	DLQEnabled          bool
+	ReconnectMinBackoff time.Duration
+	ReconnectMaxBackoff time.Duration
 }
 
 // VersionedName is the broker queue name for the active version: the base name
@@ -1760,10 +2107,28 @@ func (q Queue) VersionedName() string {
 	return q.Name + ".v" + q.Version
 }
 
+// ClientConfig builds the transport-layer queue.Config for this queue, binding to
+// the active versioned name and carrying the resilience knobs (DLQ routing,
+// reconnect backoff bounds) so every producer and consumer declares an identical
+// topology. Prefetch is passed per call because a consumer sizes it to its own
+// concurrency while a producer does not consume; zero leaves it unbounded.
+func (q Queue) ClientConfig(prefetch int) queue.Config {
+	return queue.Config{
+		URL:         q.URL,
+		QueueName:   q.VersionedName(),
+		Version:     q.Version,
+		MaxPriority: q.MaxPriority,
+		Prefetch:    prefetch,
+		DisableDLQ:  !q.DLQEnabled,
+		MinBackoff:  q.ReconnectMinBackoff,
+		MaxBackoff:  q.ReconnectMaxBackoff,
+	}
+}
+
 // LoadQueue reads the broker configuration from the environment. RABBITMQ_URL is
 // required; the queue name defaults to embedding.jobs, the max priority to 10
 // (validated to [1, 255]) and the prefetch to 1 (validated non-negative). The
-// versions default to a single "1"; RABBITMQ_QUEUE_VERSIONS overrides them as a
+// versions default to a single "2"; RABBITMQ_QUEUE_VERSIONS overrides them as a
 // comma-separated, oldest-first list, with the newest taken as the active
 // version. Bad values fail fast at startup rather than surfacing as a broker
 // error later.
@@ -1821,13 +2186,31 @@ func loadQueue(nameEnv, nameDefault string) (Queue, error) {
 	if err != nil {
 		return Queue{}, err
 	}
+	dlqEnabled, err := boolEnvDefault("RABBITMQ_DLQ_ENABLED", defaultQueueDLQEnabled)
+	if err != nil {
+		return Queue{}, err
+	}
+	minBackoff, err := positiveDurationEnv("RABBITMQ_RECONNECT_MIN_BACKOFF", defaultQueueMinBackoff)
+	if err != nil {
+		return Queue{}, err
+	}
+	maxBackoff, err := positiveDurationEnv("RABBITMQ_RECONNECT_MAX_BACKOFF", defaultQueueMaxBackoff)
+	if err != nil {
+		return Queue{}, err
+	}
+	if maxBackoff < minBackoff {
+		return Queue{}, fmt.Errorf("config: RABBITMQ_RECONNECT_MAX_BACKOFF (%s) must be at least RABBITMQ_RECONNECT_MIN_BACKOFF (%s)", maxBackoff, minBackoff)
+	}
 	return Queue{
-		URL:           url,
-		Name:          getenv(nameEnv, nameDefault),
-		MaxPriority:   uint8(maxPriority),
-		Prefetch:      prefetch,
-		Version:       versions[len(versions)-1],
-		KnownVersions: versions,
+		URL:                 url,
+		Name:                getenv(nameEnv, nameDefault),
+		MaxPriority:         uint8(maxPriority),
+		Prefetch:            prefetch,
+		Version:             versions[len(versions)-1],
+		KnownVersions:       versions,
+		DLQEnabled:          dlqEnabled,
+		ReconnectMinBackoff: minBackoff,
+		ReconnectMaxBackoff: maxBackoff,
 	}, nil
 }
 
@@ -1884,6 +2267,10 @@ const (
 	defaultEmbedWorkerHTTPTimeout       = 30 * time.Second
 	defaultEmbedWorkerRequestsPerMinute = 0
 	defaultEmbedWorkerEmbedMaxRetries   = 6
+	// defaultEmbedWorkerMaxBatchTokens packs each Voyage call to 80% of the
+	// per-request token ceiling for voyage-4-large, leaving headroom for the
+	// worker's character-based token estimate to under-count.
+	defaultEmbedWorkerMaxBatchTokens = maxVoyageTokensPerRequest * 8 / 10
 )
 
 // EmbedWorker holds the embedding-worker configuration. Concurrency bounds the
@@ -1895,11 +2282,15 @@ const (
 // request; RequestsPerMinute optionally paces outbound requests onto a tier's
 // budget (0 = unpaced); EmbedMaxRetries is the embedder's internal retry count
 // for a transient Voyage 429 or network timeout.
+// MaxBatchTokens caps a batch's estimated token count so a provider call stays
+// under Voyage's per-request token ceiling; an over-budget batch is split before
+// the call rather than failing it.
 type EmbedWorker struct {
 	Concurrency       int
 	BatchSize         int
 	BatchWait         time.Duration
 	MaxAttempts       int
+	MaxBatchTokens    int
 	HTTPTimeout       time.Duration
 	RequestsPerMinute int
 	EmbedMaxRetries   int
@@ -1920,6 +2311,12 @@ func LoadEmbedWorker() (EmbedWorker, error) {
 		return EmbedWorker{}, err
 	}
 	if w.BatchWait, err = positiveDurationEnv("EMBED_WORKER_BATCH_WAIT", w.BatchWait); err != nil {
+		return EmbedWorker{}, err
+	}
+	// Capped at Voyage's per-request token ceiling so a packed batch never exceeds
+	// what the provider accepts in one call; the worker splits an over-budget batch
+	// before sending it.
+	if w.MaxBatchTokens, err = intEnv("EMBED_WORKER_MAX_BATCH_TOKENS", w.MaxBatchTokens, 1, maxVoyageTokensPerRequest); err != nil {
 		return EmbedWorker{}, err
 	}
 	return w, nil
@@ -1943,11 +2340,35 @@ func LoadScrutinsWorker() (EmbedWorker, error) {
 	return loadWorkerCommon("SCRUTINS_WORKER", defaultWorker())
 }
 
+// maxWorkerIdleTimeout caps the drain-to-idle window so a typo cannot pin a
+// consumer host up for an absurd stretch, billing while it waits to idle out.
+const maxWorkerIdleTimeout = 24 * time.Hour
+
+// LoadWorkerIdle reads the shared consumer drain-to-idle window from
+// WORKER_IDLE_TIMEOUT. Zero - the default, and the local default - disables idle
+// exit: a worker runs until SIGTERM, exactly as before. A positive value turns on
+// drain-to-idle: a worker whose queue yields no delivery for the window exits
+// cleanly (reporting what it drained through the existing consumer stop alert),
+// which the cloud consumer host keys its self-stop on once every worker has idled
+// out. The window is capped so an over-long value cannot strand an idle host
+// running.
+func LoadWorkerIdle() (time.Duration, error) {
+	idle, err := durationEnvAllowZero("WORKER_IDLE_TIMEOUT", 0)
+	if err != nil {
+		return 0, err
+	}
+	if idle > maxWorkerIdleTimeout {
+		return 0, fmt.Errorf("config: WORKER_IDLE_TIMEOUT %s exceeds the maximum %s", idle, maxWorkerIdleTimeout)
+	}
+	return idle, nil
+}
+
 // defaultWorker is the worker configuration before any environment override.
 func defaultWorker() EmbedWorker {
 	return EmbedWorker{
 		Concurrency:       defaultEmbedWorkerConcurrency,
 		BatchSize:         defaultEmbedWorkerBatchSize,
+		MaxBatchTokens:    defaultEmbedWorkerMaxBatchTokens,
 		BatchWait:         defaultEmbedWorkerBatchWait,
 		MaxAttempts:       defaultEmbedWorkerMaxAttempts,
 		HTTPTimeout:       defaultEmbedWorkerHTTPTimeout,
@@ -2067,6 +2488,14 @@ func LoadWikiDelta() (WikiDelta, error) {
 const (
 	defaultCrawlMaxDepth = 1
 	defaultCrawlMaxPages = 5000
+	// defaultCrawlCheckpointPath is the state file a crawl records resolved pages
+	// in so a rerun resumes; it sits on the same /state volume as the scrutins
+	// marker. It may be set empty to disable resume.
+	defaultCrawlCheckpointPath = "/state/crawl-checkpoint.json"
+	// defaultCrawlErrorBudget is how many pages a run may skip (an extract or
+	// publish failure) before it fails, so a single bad page or transient blip does
+	// not discard a whole crawl.
+	defaultCrawlErrorBudget = 50
 )
 
 // Crawl configures the category crawler. Categories are the seed category titles
@@ -2089,6 +2518,13 @@ type Crawl struct {
 	IncludeBody bool
 	Shards      int
 	ShardIndex  int
+	// CheckpointPath is the resume state file (empty disables resume); ErrorBudget
+	// is how many pages may be skipped before the run fails; GateFailClosed holds a
+	// chunk whose fact-checkability gate errored (rather than publishing it) so a
+	// rerun retries it.
+	CheckpointPath string
+	ErrorBudget    int
+	GateFailClosed bool
 }
 
 // LoadCrawl reads the category-crawl configuration. CRAWL_CATEGORIES is required
@@ -2142,16 +2578,58 @@ func LoadCrawl() (Crawl, error) {
 		return Crawl{}, fmt.Errorf("config: CRAWL_SHARD_INDEX %d out of range for CRAWL_SHARDS %d (must be 0..%d)", shardIndex, shards, shards-1)
 	}
 
+	checkpointPath := defaultCrawlCheckpointPath
+	if raw, ok := os.LookupEnv("CRAWL_CHECKPOINT_PATH"); ok {
+		checkpointPath = raw
+	}
+	// Sharded producers share one /state volume, so give each shard its own
+	// checkpoint file; a single file would be clobbered by concurrent atomic writes.
+	if shards > 1 && checkpointPath != "" {
+		checkpointPath = shardCheckpointPath(checkpointPath, shardIndex)
+	}
+	errorBudget, err := intEnv("CRAWL_ERROR_BUDGET", defaultCrawlErrorBudget, 0, math.MaxInt32)
+	if err != nil {
+		return Crawl{}, err
+	}
+	gateFailClosed, err := crawlGateFailClosed()
+	if err != nil {
+		return Crawl{}, err
+	}
+
 	return Crawl{
-		Categories:  categories,
-		Project:     project,
-		Corpus:      corpus,
-		MaxDepth:    maxDepth,
-		MaxPages:    maxPages,
-		IncludeBody: includeBody,
-		Shards:      shards,
-		ShardIndex:  shardIndex,
+		Categories:     categories,
+		Project:        project,
+		Corpus:         corpus,
+		MaxDepth:       maxDepth,
+		MaxPages:       maxPages,
+		IncludeBody:    includeBody,
+		Shards:         shards,
+		ShardIndex:     shardIndex,
+		CheckpointPath: checkpointPath,
+		ErrorBudget:    errorBudget,
+		GateFailClosed: gateFailClosed,
 	}, nil
+}
+
+// shardCheckpointPath inserts a per-shard suffix before the extension so each
+// sharded producer writes its own checkpoint file (crawl-checkpoint.shard2.json).
+func shardCheckpointPath(path string, index int) string {
+	ext := filepath.Ext(path)
+	return fmt.Sprintf("%s.shard%d%s", strings.TrimSuffix(path, ext), index, ext)
+}
+
+// crawlGateFailClosed parses CRAWL_GATE_FAIL_MODE: "open" (default) publishes a
+// chunk whose gate call errored, "closed" holds it for a rerun. Any other value is
+// an operator mistake worth failing on.
+func crawlGateFailClosed() (bool, error) {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("CRAWL_GATE_FAIL_MODE"))); v {
+	case "", "open":
+		return false, nil
+	case "closed":
+		return true, nil
+	default:
+		return false, fmt.Errorf("config: CRAWL_GATE_FAIL_MODE %q must be \"open\" or \"closed\"", v)
+	}
 }
 
 // Crawl fact-checkability gate defaults: the gate is on by default so the corpus
@@ -2227,50 +2705,288 @@ func LoadCrawlCheckworthy() (CrawlCheckworthy, error) {
 // only jurisdiction this ingest targets.
 const defaultFactCheckLanguage = "fr"
 
-// FactCheckArchive configures the fact-check-archive producer that reads
-// already-checked claims from the Google Fact Check Tools API into the curated
-// claim DB. APIKey is the Google API key (sourced from the environment only,
-// never logged); Queries are the comma-separated claims:search query terms to
-// walk (a politician's name, a policy area); Language filters by claim language;
-// MaxPages caps result pages followed per query (0 = follow every page).
-type FactCheckArchive struct {
-	APIKey   string
-	Queries  []string
-	Language string
-	MaxPages int
+// defaultFactCheckTopics is the broadened French-language topic rotation the Google
+// Fact Check Tools path walks when FACTCHECK_QUERIES is unset: a systematic sweep of
+// the French political domains (institutions, parties and figures, and the recurring
+// policy areas), far wider than the fixed ~19-topic legacy set. Combined with the
+// full-catalog publisher-scoped streams over the outlet allowlist, it takes the
+// Google path to the broadest French yield the API exposes.
+var defaultFactCheckTopics = []string{
+	// Institutions and process
+	"élection présidentielle", "élections législatives", "élections européennes",
+	"Assemblée nationale", "Sénat", "gouvernement", "Conseil constitutionnel",
+	"référendum", "motion de censure", "Union européenne", "Commission européenne",
+	// Figures and parties
+	"Emmanuel Macron", "Marine Le Pen", "Jean-Luc Mélenchon", "Gabriel Attal",
+	"Rassemblement national", "La France insoumise", "Renaissance", "Les Républicains",
+	"Parti socialiste", "Europe Écologie Les Verts", "Jordan Bardella", "Édouard Philippe",
+	// Policy areas
+	"retraites", "réforme des retraites", "chômage", "emploi", "pouvoir d'achat",
+	"inflation", "immigration", "asile", "sécurité", "délinquance", "impôts", "fiscalité",
+	"dette publique", "déficit public", "santé", "hôpital", "école", "éducation",
+	"énergie", "nucléaire", "climat", "transition écologique", "logement", "agriculture",
+	"salaire minimum", "SMIC", "dépenses publiques", "sécurité sociale", "défense",
+	"Ukraine", "OTAN", "terrorisme", "laïcité", "police", "justice",
 }
 
-// LoadFactCheckArchive reads the fact-check-archive producer configuration.
-// FACTCHECK_API_KEY and FACTCHECK_QUERIES are required (the producer has nothing
-// to ingest without a query); the rest default. Bad values fail fast at startup.
-// The secret is read but never logged.
+// defaultFactCheckPublisherSites is the vetted French fact-check outlet allowlist the
+// publisher-scoped streams page in full (reviewPublisherSiteFilter). It is the same
+// EFCSN/IFCN-derived allowlist the DataCommons feed is filtered to.
+var defaultFactCheckPublisherSites = []string{
+	"factuel.afp.com",
+	"lemonde.fr",
+	"francetvinfo.fr",
+	"20minutes.fr",
+	"liberation.fr",
+	"observers.france24.com",
+}
+
+// defaultFactCheckCheckpointPath persists the per-stream drain checkpoint between
+// producer runs so a killed run resumes at the next undrained stream. Defaults under
+// a state dir the operator can mount as a volume to survive container restarts.
+const defaultFactCheckCheckpointPath = "/state/factcheck-checkpoint.json"
+
+// FactCheckArchive configures the fact-check-archive producer that reads
+// already-checked claims from the Google Fact Check Tools API into the curated
+// claim DB. APIKey is the Google API key (sourced from the environment only, never
+// logged); Topics are the claims:search query terms to walk (languageCode-filtered);
+// PublisherSites are the outlet sites paged in full via reviewPublisherSiteFilter;
+// Language filters by claim language; MaxPages caps result pages per stream (0 =
+// every page); MaxAgeDays bounds results to recently published claims (0 = no
+// bound); CheckpointPath persists per-stream resume state (empty disables it).
+type FactCheckArchive struct {
+	APIKey         string
+	Topics         []string
+	PublisherSites []string
+	Language       string
+	MaxPages       int
+	MaxAgeDays     int
+	CheckpointPath string
+}
+
+// LoadFactCheckArchive reads the fact-check-archive producer configuration. Only
+// FACTCHECK_API_KEY is required. FACTCHECK_QUERIES overrides the broadened default
+// topic rotation (comma-separated); FACTCHECK_PUBLISHER_SITES overrides the outlet
+// allowlist and may be set empty to disable publisher-scoped streams; the rest
+// default. Bad values fail fast at startup. The secret is read but never logged.
 func LoadFactCheckArchive() (FactCheckArchive, error) {
 	apiKey, err := requireEnv("FACTCHECK_API_KEY")
 	if err != nil {
 		return FactCheckArchive{}, err
 	}
-	raw, err := requireEnv("FACTCHECK_QUERIES")
-	if err != nil {
-		return FactCheckArchive{}, err
-	}
-	queries := make([]string, 0)
-	for _, q := range strings.Split(raw, ",") {
-		if trimmed := strings.TrimSpace(q); trimmed != "" {
-			queries = append(queries, trimmed)
-		}
-	}
-	if len(queries) == 0 {
-		return FactCheckArchive{}, fmt.Errorf("config: FACTCHECK_QUERIES %q has no query", raw)
-	}
+	// An empty-but-present value (a shipped compose injects FACTCHECK_QUERIES="") is
+	// treated the same as unset: fall back to the broadened default rotation rather
+	// than booting with no topics. Publisher streams stay on by default; the explicit
+	// sentinel "none" opts out of them.
+	topics := listEnvOr("FACTCHECK_QUERIES", defaultFactCheckTopics)
+	sites := listEnvOr("FACTCHECK_PUBLISHER_SITES", defaultFactCheckPublisherSites, "none")
 	maxPages, err := intEnv("FACTCHECK_MAX_PAGES", 0, 0, math.MaxInt32)
 	if err != nil {
 		return FactCheckArchive{}, err
 	}
+	maxAgeDays, err := intEnv("FACTCHECK_MAX_AGE_DAYS", 0, 0, math.MaxInt32)
+	if err != nil {
+		return FactCheckArchive{}, err
+	}
+	checkpointPath := defaultFactCheckCheckpointPath
+	if raw, ok := os.LookupEnv("FACTCHECK_CHECKPOINT_PATH"); ok {
+		checkpointPath = raw
+	}
 	return FactCheckArchive{
-		APIKey:   apiKey,
-		Queries:  queries,
-		Language: getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
-		MaxPages: maxPages,
+		APIKey:         apiKey,
+		Topics:         topics,
+		PublisherSites: sites,
+		Language:       getenv("FACTCHECK_LANGUAGE", defaultFactCheckLanguage),
+		MaxPages:       maxPages,
+		MaxAgeDays:     maxAgeDays,
+		CheckpointPath: checkpointPath,
+	}, nil
+}
+
+// splitCommaList splits a comma-separated env value into trimmed, non-empty items.
+func splitCommaList(raw string) []string {
+	items := make([]string, 0)
+	for _, s := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
+}
+
+// listEnvOr resolves a comma-separated list env var, treating unset AND
+// empty-but-present (and a value that trims to no items) identically as "use the
+// default". This is deliberate: the ingest compose files inject every knob as
+// ${VAR:-} (empty when the host var is unset), so an empty value MUST NOT be read as
+// an explicit "" that discards a vetted default (which for an outlet allowlist would
+// silently widen ingestion worldwide, and for the topic set would boot with nothing).
+// An explicit opt-out/opt-in-all is a distinct sentinel (case-insensitive), which
+// returns the empty slice; only that sentinel does.
+func listEnvOr(key string, def []string, emptySentinels ...string) []string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return def
+	}
+	for _, s := range emptySentinels {
+		if strings.EqualFold(strings.TrimSpace(raw), s) {
+			return []string{}
+		}
+	}
+	items := splitCommaList(raw)
+	if len(items) == 0 {
+		return def
+	}
+	return items
+}
+
+// defaultDataCommonsFeedURL is the daily ClaimReview data feed DataCommons
+// publishes. It is a public, keyless object, so the DataCommons producer needs no
+// Secrets Manager entry.
+const defaultDataCommonsFeedURL = "https://storage.googleapis.com/datacommons-feeds/claimreview/latest/data.json"
+
+// defaultDataCommonsOutlets is the vetted French fact-check outlet allowlist the
+// DataCommons feed is filtered to. The feed carries no per-record language tag, so
+// an author-URL allowlist is how the French subset is selected; each entry is a
+// host substring matched case-insensitively against the record's author URL.
+var defaultDataCommonsOutlets = []string{
+	"factuel.afp.com",
+	"lemonde.fr",
+	"francetvinfo.fr",
+	"20minutes.fr",
+	"liberation.fr",
+	"observers.france24.com",
+}
+
+// DataCommonsArchive configures the DataCommons ClaimReview feed producer that
+// reads the aggregated ClaimReview markup feed into the curated claim DB. FeedURL
+// is the DataFeed JSON endpoint (the daily feed by default, or a historical dump
+// served in the same format for a one-shot backfill); OutletAllowlist is the set
+// of author-URL host substrings a record must match to be ingested (empty ingests
+// every outlet); MaxItems caps records examined (0 = the whole feed). It carries
+// no secret: the feed is public and the broker URL loads from LoadFactCheckQueue.
+type DataCommonsArchive struct {
+	FeedURL         string
+	OutletAllowlist []string
+	MaxItems        int
+	// Format selects the decoder: "datafeed" (the daily schema.org DataFeed JSON,
+	// the default) or "ndjson" (one ClaimReview object per line, the shape of the
+	// one-shot historical dump). Gzip is auto-detected from the URL/headers either way.
+	Format string
+}
+
+// LoadDataCommonsArchive reads the DataCommons feed producer configuration from
+// the environment. DATACOMMONS_FEED_URL defaults to the daily feed;
+// DATACOMMONS_OUTLET_ALLOWLIST defaults to the vetted French outlet set — an
+// empty-but-present value (which the ingest compose injects) keeps that default, so
+// ingestion is NEVER silently widened worldwide; the explicit sentinel "*" (or
+// "all") is the only way to ingest every outlet. DATACOMMONS_MAX_ITEMS caps examined
+// records. Bad values fail fast at startup.
+func LoadDataCommonsArchive() (DataCommonsArchive, error) {
+	allow := listEnvOr("DATACOMMONS_OUTLET_ALLOWLIST", defaultDataCommonsOutlets, "*", "all")
+	maxItems, err := intEnv("DATACOMMONS_MAX_ITEMS", 0, 0, math.MaxInt32)
+	if err != nil {
+		return DataCommonsArchive{}, err
+	}
+	format := getenv("DATACOMMONS_FEED_FORMAT", "datafeed")
+	if format != "datafeed" && format != "ndjson" {
+		return DataCommonsArchive{}, fmt.Errorf("config: DATACOMMONS_FEED_FORMAT %q must be datafeed or ndjson", format)
+	}
+	return DataCommonsArchive{
+		FeedURL:         getenv("DATACOMMONS_FEED_URL", defaultDataCommonsFeedURL),
+		OutletAllowlist: allow,
+		MaxItems:        maxItems,
+		Format:          format,
+	}, nil
+}
+
+// ClaimReviewOutlet is one allowlisted fact-check outlet the JSON-LD reader visits:
+// a display Name, the Host its reviews live on (the stored outlet tag and robots
+// authority), and the Sitemap URL its article pages are discovered from.
+type ClaimReviewOutlet struct {
+	Name    string
+	Host    string
+	Sitemap string
+}
+
+// defaultClaimReviewOutlets is the EFCSN/IFCN-derived, config-curated French outlet
+// allowlist the JSON-LD reader discovers ClaimReview markup from. Only official
+// sitemaps are listed; discovery never spiders links. Sitemap URLs are the outlets'
+// standard locations and are overridable per deploy if an outlet relocates one.
+var defaultClaimReviewOutlets = []ClaimReviewOutlet{
+	{Name: "AFP Factuel", Host: "factuel.afp.com", Sitemap: "https://factuel.afp.com/sitemap.xml"},
+	{Name: "Les Décodeurs", Host: "www.lemonde.fr", Sitemap: "https://www.lemonde.fr/sitemap_index.xml"},
+	{Name: "franceinfo Vrai ou Fake", Host: "www.francetvinfo.fr", Sitemap: "https://www.francetvinfo.fr/sitemap_index.xml"},
+	{Name: "20 Minutes Fake Off", Host: "www.20minutes.fr", Sitemap: "https://www.20minutes.fr/sitemap.xml"},
+}
+
+const (
+	defaultClaimReviewUserAgent = "truth-in-stream-factcheck-bot"
+	defaultClaimReviewMinDelay  = 2 * time.Second
+	defaultClaimReviewMaxURLs   = 200
+)
+
+// ClaimReviewSites configures the ClaimReview JSON-LD outlet reader. Outlets is the
+// curated allowlist; UserAgent identifies the bot to robots.txt; MinDelay is the
+// per-outlet pacing floor (raised by a robots Crawl-delay); MaxURLsPerOutlet caps
+// pages fetched per outlet per run. It carries no secret: every source is public
+// and the broker URL loads from LoadFactCheckQueue.
+type ClaimReviewSites struct {
+	Outlets          []ClaimReviewOutlet
+	UserAgent        string
+	MinDelay         time.Duration
+	MaxURLsPerOutlet int
+}
+
+// LoadClaimReviewSites reads the ClaimReview outlet-reader configuration.
+// CLAIMREVIEW_USER_AGENT, CLAIMREVIEW_MIN_DELAY_MS, and CLAIMREVIEW_MAX_URLS default;
+// the outlet allowlist is the curated default (a deploy edits it in code, keeping it
+// reviewable). Bad values fail fast at startup.
+func LoadClaimReviewSites() (ClaimReviewSites, error) {
+	minDelayMs, err := intEnv("CLAIMREVIEW_MIN_DELAY_MS", int(defaultClaimReviewMinDelay/time.Millisecond), 0, math.MaxInt32)
+	if err != nil {
+		return ClaimReviewSites{}, err
+	}
+	maxURLs, err := intEnv("CLAIMREVIEW_MAX_URLS", defaultClaimReviewMaxURLs, 1, math.MaxInt32)
+	if err != nil {
+		return ClaimReviewSites{}, err
+	}
+	return ClaimReviewSites{
+		Outlets:          defaultClaimReviewOutlets,
+		UserAgent:        getenv("CLAIMREVIEW_USER_AGENT", defaultClaimReviewUserAgent),
+		MinDelay:         time.Duration(minDelayMs) * time.Millisecond,
+		MaxURLsPerOutlet: maxURLs,
+	}, nil
+}
+
+// ClaimsKGSeed configures the one-time ClaimsKG seed importer. It is a no-op unless
+// Enabled is true and SeedFile points at a ClaimsKG CSV/TSV export; Vintage marks the
+// snapshot's age in each record's provenance; TSV selects a tab delimiter. It carries
+// no secret: the export is a local file and the broker URL loads from LoadFactCheckQueue.
+type ClaimsKGSeed struct {
+	Enabled  bool
+	SeedFile string
+	Vintage  string
+	TSV      bool
+}
+
+// LoadClaimsKGSeed reads the ClaimsKG seed configuration. CLAIMSKG_SEED_ENABLED
+// defaults false so the large stale snapshot is never ingested by accident;
+// CLAIMSKG_SEED_FILE is the export path; CLAIMSKG_SEED_VINTAGE defaults to 2023;
+// CLAIMSKG_SEED_TSV selects a tab-delimited export.
+func LoadClaimsKGSeed() (ClaimsKGSeed, error) {
+	enabled, err := boolEnvDefault("CLAIMSKG_SEED_ENABLED", false)
+	if err != nil {
+		return ClaimsKGSeed{}, err
+	}
+	tsv, err := boolEnvDefault("CLAIMSKG_SEED_TSV", false)
+	if err != nil {
+		return ClaimsKGSeed{}, err
+	}
+	return ClaimsKGSeed{
+		Enabled:  enabled,
+		SeedFile: getenv("CLAIMSKG_SEED_FILE", ""),
+		Vintage:  getenv("CLAIMSKG_SEED_VINTAGE", "2023"),
+		TSV:      tsv,
 	}, nil
 }
 
@@ -2350,6 +3066,20 @@ func EvidenceBinaryQuantizationMultiplier() (int, error) {
 	return intEnv("EVIDENCE_BQ_MULTIPLIER", 0, 0, 1000)
 }
 
+// EvidenceNearDupSimilarity reads EVIDENCE_NEAR_DUP_SIMILARITY, the cosine
+// similarity bar the near-duplicate gate (VER-203, measure 2) applies at
+// embed-write time on the single-write ingest path. 0 (the default) disables the
+// gate: every embedded chunk is served. A positive value in (0, 1] turns it on -
+// a fresh chunk whose nearest same-source neighbor is at least this similar is
+// withheld from search (stored for provenance with no vector) as a redundant
+// re-rendering. The intended setting sits well above the evidence borrow
+// threshold so only true near-identities are gated, and it stays off by default
+// until the golden eval proves no recall loss. The [0, 1] bound matches cosine
+// similarity; floatEnv rejects anything outside it.
+func EvidenceNearDupSimilarity() (float64, error) {
+	return floatEnv("EVIDENCE_NEAR_DUP_SIMILARITY", 0)
+}
+
 // floatEnv reads a unit-interval float environment variable, applying fallback
 // when unset and enforcing an inclusive [0, 1] range.
 func floatEnv(key string, fallback float64) (float64, error) {
@@ -2415,4 +3145,157 @@ func requireEnv(key string) (string, error) {
 		return "", fmt.Errorf("config: %s is required", key)
 	}
 	return v, nil
+}
+
+// CheckWorthinessLocal configures the locally-served check-worthiness
+// classifier (VER-225): a fine-tuned French encoder scoring statements on CPU
+// so the generative gate is consulted only inside the uncertainty band. The
+// model and tokenizer artifacts are distributed outside git and located by
+// path; a missing artifact, a load failure, or a binary built without the
+// localinference build tag all degrade to the existing heuristic-plus-model
+// cascade at boot, never blocking a session.
+type CheckWorthinessLocal struct {
+	Enabled       bool
+	ModelPath     string
+	TokenizerPath string
+	LibraryPath   string
+	BandLow       float64
+	BandHigh      float64
+	Timeout       time.Duration
+}
+
+// Active reports whether the local scorer should be wired: enabled with both
+// artifacts configured. Artifact existence is proven by the boot-time health
+// check, not here, so a bad path degrades with a warning instead of failing
+// the boot.
+func (c CheckWorthinessLocal) Active() bool {
+	return c.Enabled && c.ModelPath != "" && c.TokenizerPath != ""
+}
+
+// Default band bounds ship from the calibration run on the golden gate set:
+// below low rejects locally, at or above high accepts locally, in between
+// routes to the generative gate.
+const (
+	defaultCheckWorthinessLocalBandLow  = 0.35
+	defaultCheckWorthinessLocalBandHigh = 0.75
+	defaultCheckWorthinessLocalTimeout  = 300 * time.Millisecond
+)
+
+// LoadCheckWorthinessLocal reads the CHECKWORTHINESS_LOCAL_* block.
+func LoadCheckWorthinessLocal() (CheckWorthinessLocal, error) {
+	c := CheckWorthinessLocal{
+		ModelPath:     os.Getenv("CHECKWORTHINESS_LOCAL_MODEL_PATH"),
+		TokenizerPath: os.Getenv("CHECKWORTHINESS_LOCAL_TOKENIZER_PATH"),
+		LibraryPath:   os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY"),
+	}
+	var err error
+	if c.Enabled, err = boolEnvDefault("CHECKWORTHINESS_LOCAL_ENABLED", true); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if c.BandLow, err = floatEnv("CHECKWORTHINESS_LOCAL_BAND_LOW", defaultCheckWorthinessLocalBandLow); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if c.BandHigh, err = floatEnv("CHECKWORTHINESS_LOCAL_BAND_HIGH", defaultCheckWorthinessLocalBandHigh); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	if !(c.BandLow >= 0 && c.BandLow <= 1) || !(c.BandHigh >= 0 && c.BandHigh <= 1) {
+		return CheckWorthinessLocal{}, fmt.Errorf("config: CHECKWORTHINESS_LOCAL band bounds must be probabilities in [0, 1], got low %v high %v", c.BandLow, c.BandHigh)
+	}
+	if c.BandLow > c.BandHigh {
+		return CheckWorthinessLocal{}, fmt.Errorf("config: CHECKWORTHINESS_LOCAL_BAND_LOW %v must not exceed CHECKWORTHINESS_LOCAL_BAND_HIGH %v", c.BandLow, c.BandHigh)
+	}
+	if c.Timeout, err = positiveDurationEnv("CHECKWORTHINESS_LOCAL_TIMEOUT", defaultCheckWorthinessLocalTimeout); err != nil {
+		return CheckWorthinessLocal{}, err
+	}
+	return c, nil
+}
+
+// VerifyNLI configures the local NLI stance stage in front of the generative
+// verifier (VER-228): a French cross-encoder scores each retrieved passage's
+// stance toward the claim on CPU, and clear support or contradiction decides
+// the verdict locally with citations. Thresholds and the calibration
+// temperature ship from the training pipeline's calibration run; the model
+// artifact is the published community ONNX export, distributed outside git. A
+// missing artifact, a load failure, or a binary built without the
+// localinference build tag degrades to the LLM-first verify path at boot.
+type VerifyNLI struct {
+	Enabled             bool
+	ModelPath           string
+	TokenizerPath       string
+	LibraryPath         string
+	Temperature         float64
+	EntailThreshold     float64
+	ContradictThreshold float64
+	MinAgree            int
+	MaxPassages         int
+	Timeout             time.Duration
+}
+
+// Active reports whether the stance stage should be wired: enabled with both
+// artifacts configured. Artifact usability is proven by the boot-time health
+// check, not here.
+func (c VerifyNLI) Active() bool {
+	return c.Enabled && c.ModelPath != "" && c.TokenizerPath != ""
+}
+
+// Defaults ship from the calibration run recorded by the training pipeline
+// (stack/ml/checkworthy nli-calibrate): temperature fitted on the labeled
+// French pair set, thresholds chosen at 100 percent decided-accuracy with the
+// contradiction bar deliberately higher than the entailment bar - wrongly
+// refuting a claim costs more than escalating it.
+const (
+	defaultVerifyNLITemperature         = 1.8634
+	defaultVerifyNLIEntailThreshold     = 0.70
+	defaultVerifyNLIContradictThreshold = 0.90
+	defaultVerifyNLIMinAgree            = 1
+	defaultVerifyNLIMaxPassages         = 6
+	defaultVerifyNLITimeout             = 2 * time.Second
+)
+
+// LoadVerifyNLI reads the FACTCHECK_NLI_* block. The ONNX Runtime library
+// path falls back to the check-worthiness scorer's, since one process loads
+// exactly one runtime.
+func LoadVerifyNLI() (VerifyNLI, error) {
+	c := VerifyNLI{
+		ModelPath:     os.Getenv("FACTCHECK_NLI_MODEL_PATH"),
+		TokenizerPath: os.Getenv("FACTCHECK_NLI_TOKENIZER_PATH"),
+		LibraryPath:   os.Getenv("FACTCHECK_NLI_ONNX_LIBRARY"),
+	}
+	if c.LibraryPath == "" {
+		c.LibraryPath = os.Getenv("CHECKWORTHINESS_LOCAL_ONNX_LIBRARY")
+	}
+	var err error
+	if c.Enabled, err = boolEnvDefault("FACTCHECK_NLI_ENABLED", true); err != nil {
+		return VerifyNLI{}, err
+	}
+	// A softmax temperature legitimately exceeds one, so it cannot go through
+	// the probability-bounded floatEnv helper.
+	c.Temperature = defaultVerifyNLITemperature
+	if raw := os.Getenv("FACTCHECK_NLI_TEMPERATURE"); raw != "" {
+		if c.Temperature, err = strconv.ParseFloat(raw, 64); err != nil {
+			return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE %q: %w", raw, err)
+		}
+	}
+	if !(c.Temperature > 0) || math.IsInf(c.Temperature, 0) {
+		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI_TEMPERATURE must be a positive finite number, got %v", c.Temperature)
+	}
+	if c.EntailThreshold, err = floatEnv("FACTCHECK_NLI_ENTAIL_THRESHOLD", defaultVerifyNLIEntailThreshold); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.ContradictThreshold, err = floatEnv("FACTCHECK_NLI_CONTRADICT_THRESHOLD", defaultVerifyNLIContradictThreshold); err != nil {
+		return VerifyNLI{}, err
+	}
+	if !(c.EntailThreshold > 0 && c.EntailThreshold <= 1) || !(c.ContradictThreshold > 0 && c.ContradictThreshold <= 1) {
+		return VerifyNLI{}, fmt.Errorf("config: FACTCHECK_NLI thresholds must be probabilities in (0, 1], got entail %v contradict %v", c.EntailThreshold, c.ContradictThreshold)
+	}
+	if c.MinAgree, err = intEnv("FACTCHECK_NLI_MIN_AGREE", defaultVerifyNLIMinAgree, 1, 100); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.MaxPassages, err = intEnv("FACTCHECK_NLI_MAX_PASSAGES", defaultVerifyNLIMaxPassages, 1, 100); err != nil {
+		return VerifyNLI{}, err
+	}
+	if c.Timeout, err = positiveDurationEnv("FACTCHECK_NLI_TIMEOUT", defaultVerifyNLITimeout); err != nil {
+		return VerifyNLI{}, err
+	}
+	return c, nil
 }

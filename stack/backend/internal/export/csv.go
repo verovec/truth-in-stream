@@ -31,7 +31,12 @@ var csvHeader = []string{
 	"confidence",
 	"rationale",
 	"citations",
+	"speaker_name",
 }
+
+// speakerNameColumn is appended last so the columns before it keep the
+// positions existing spreadsheets rely on.
+const speakerNameColumn = 15
 
 // CSV renders the fact-check decision trace of a snapshot: a header row plus one
 // row per result event (LiveEventResult), in order. Each row captures the full
@@ -43,8 +48,9 @@ var csvHeader = []string{
 // "what is unverifiable and why" is explicit. Multi-value cells are joined with a
 // stable delimiter; encoding/csv handles all quoting and escaping. Non-result
 // events (subtitles, interims, claim announcements, speaker tallies) produce no
-// rows.
-func CSV(events []service.LiveEvent) []byte {
+// rows. The speaker column keeps the diarized label; speaker_name carries the
+// person names maps that label to, and is empty for an unnamed label.
+func CSV(events []service.LiveEvent, names map[string]string) []byte {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	_ = w.Write(csvHeader)
@@ -55,7 +61,9 @@ func CSV(events []service.LiveEvent) []byte {
 		if isNonTerminalClaim(ev) {
 			continue
 		}
-		_ = w.Write(resultRow(ev))
+		row := resultRow(ev)
+		row[speakerNameColumn] = names[ev.Segment.Speaker]
+		_ = w.Write(row)
 	}
 	w.Flush()
 	return buf.Bytes()

@@ -477,6 +477,21 @@ func TestPresignPublicEndpoint(t *testing.T) {
 	if !hasSignedHeader(download.SignedHeaders, "host") {
 		t.Errorf("signed headers %v missing host", download.SignedHeaders)
 	}
+
+	// A server-side consumer (the pre-analysis ffmpeg fetch) dereferences its
+	// URL from inside the backend's network horizon, so the internal download
+	// presign must stay on the internal Endpoint even when a PublicEndpoint is
+	// configured - and its host is signed too, so it cannot be repointed.
+	internal, err := store.PresignInternalDownload(t.Context(), "videos/clip.mp4")
+	if err != nil {
+		t.Fatalf("presign internal download: %v", err)
+	}
+	if host := mustParse(t, internal.URL).Host; host != "minio:9000" {
+		t.Errorf("internal download host = %q, want minio:9000", host)
+	}
+	if !hasSignedHeader(internal.SignedHeaders, "host") {
+		t.Errorf("internal signed headers %v missing host", internal.SignedHeaders)
+	}
 }
 
 // TestServerSideOpsIgnorePublicEndpoint proves Upload and Download address the

@@ -57,3 +57,9 @@ variable "db_backup_bucket_arn" {
   default     = ""
   description = "S3 database-backup bucket ARN the task role may write dumps to (s3:PutObject). Empty disables the grant."
 }
+
+variable "run_metrics_namespace" {
+  type        = string
+  default     = ""
+  description = "CloudWatch namespace a producer publishes the per-source RunSuccess metric to. When set, the task role is granted cloudwatch:PutMetricData scoped to this namespace; empty attaches no metric policy."
+}

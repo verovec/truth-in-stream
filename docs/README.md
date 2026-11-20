@@ -13,6 +13,10 @@
 | Fact-check evidence sources and how each one produces a verdict | [`fact-check-sources.md`](fact-check-sources.md) |
 | Embedding-model migration runbook | [`embedding-model-migration.md`](embedding-model-migration.md) |
 | Datastore scale benchmark verdict | [`datastore-scale-benchmark.md`](datastore-scale-benchmark.md) |
+| Vector-first defaults: local models decide the clear cases, the LLM the grey zones | [`vector-first-defaults.md`](vector-first-defaults.md) |
+| Video pre-analysis: durable one-shot fact-check, analysed playback, claim timeline | [`video-preanalysis.md`](video-preanalysis.md) |
+| Speaker naming: who the diarized voices are, signals, operator corrections | [`speaker-naming.md`](speaker-naming.md) |
+| Recap: an analysed video as a report, with PDF export | [`recap.md`](recap.md) |
 | PDF fact-check: upload, analysis, the Documents surface | [`pdf-fact-check.md`](pdf-fact-check.md) |
 | Backoffice: the admin-only ingestion area and its access model | [`backoffice.md`](backoffice.md) |
 | Live TV capture: channels, recorder, retention, legal posture | [`tv-live.md`](tv-live.md) |

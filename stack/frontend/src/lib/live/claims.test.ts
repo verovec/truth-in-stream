@@ -51,6 +51,32 @@ describe("claims store", () => {
     ]);
   });
 
+  test("a claim's quote and spans survive its whole result lifecycle", () => {
+    const announced: ClaimsFrame = {
+      type: "claims",
+      id: "u0",
+      claims: [
+        {
+          claimId: "u0-0",
+          text: "Le chomage a baisse.",
+          status: "pending",
+          quote: "chomage a baisse",
+          spans: [{ segmentId: "3", start: 3, end: 19 }],
+        },
+      ],
+    };
+    let state = applyClaimsFrame(emptyClaims(), announced);
+    state = applyClaimResultFrame(state, result("u0", "u0-0", "checking"));
+    state = applyClaimResultFrame(
+      state,
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
+    );
+    const claim = claimsForUnit(state, "u0")[0];
+    expect(claim.verdict).toBe("credible");
+    expect(claim.quote).toBe("chomage a baisse");
+    expect(claim.spans).toEqual([{ segmentId: "3", start: 3, end: 19 }]);
+  });
+
   test("pending -> checking -> verified replaces the claim row in place, keyed on claim_id", () => {
     let state = applyClaimsFrame(
       emptyClaims(),
@@ -229,5 +255,43 @@ describe("claims store", () => {
     );
     expect(claimsForUnit(first, "u0")[0].status).toBe("pending");
     expect(claimsForUnit(second, "u0")[0].status).toBe("verified");
+  });
+
+  test("records the unit's member segment ids from the claims frame", () => {
+    const state = applyClaimsFrame(emptyClaims(), {
+      ...claimsFrame("u0", ["u0-0", "one"]),
+      segmentIds: ["u0", "u1"],
+    });
+    expect(state.members.get("u0")).toEqual(["u0", "u1"]);
+  });
+
+  test("a claims frame without member ids leaves members untouched", () => {
+    const state = applyClaimsFrame(emptyClaims(), claimsFrame("u0", ["u0-0", "one"]));
+    expect(state.members.size).toBe(0);
+  });
+
+  test("a claim result carries the members map through", () => {
+    const announced = applyClaimsFrame(emptyClaims(), {
+      ...claimsFrame("u0", ["u0-0", "one"]),
+      segmentIds: ["u0", "u1"],
+    });
+    const resolved = applyClaimResultFrame(
+      announced,
+      result("u0", "u0-0", "verified", { verdict: "credible" }),
+    );
+    expect(resolved.members.get("u0")).toEqual(["u0", "u1"]);
+  });
+
+  test("dropUnits drops a dropped unit's members and keeps the rest", () => {
+    const announced = applyClaimsFrame(
+      applyClaimsFrame(emptyClaims(), {
+        ...claimsFrame("u0", ["u0-0", "one"]),
+        segmentIds: ["u0", "u1"],
+      }),
+      { ...claimsFrame("u5", ["u5-0", "two"]), segmentIds: ["u5", "u6"] },
+    );
+    const pruned = dropUnits(announced, new Set(["u5"]));
+    expect(pruned.members.has("u0")).toBe(false);
+    expect(pruned.members.get("u5")).toEqual(["u5", "u6"]);
   });
 });

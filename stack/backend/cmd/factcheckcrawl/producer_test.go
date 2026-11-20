@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"slices"
 	"testing"
 
 	"github.com/verovec/truth-in-stream/backend/internal/crawlnotify"
@@ -22,96 +21,99 @@ func (r *recordingNotifier) Notify(_ context.Context, e crawlnotify.CrawlEvent) 
 	return nil
 }
 
-// fakeArchive returns a fixed result per query and records the queries it was
-// asked to run, so a test can prove the producer walks every query in order.
+// fakeArchive returns a fixed result and records how many streams it was asked to run.
 type fakeArchive struct {
-	results map[string]struct {
-		stats factcheckarchive.Stats
-		err   error
-	}
-	ranQueries []string
+	stats      factcheckarchive.Stats
+	err        error
+	ranStreams int
 }
 
-func (f *fakeArchive) Run(_ context.Context, _ *slog.Logger, _ factcheckarchive.Publisher, cfg factcheckarchive.RunConfig) (factcheckarchive.Stats, error) {
-	f.ranQueries = append(f.ranQueries, cfg.Query)
-	r := f.results[cfg.Query]
-	return r.stats, r.err
+func (f *fakeArchive) RunStreams(_ context.Context, _ *slog.Logger, _ factcheckarchive.Publisher, streams []factcheckarchive.RunConfig, _ factcheckarchive.StreamCheckpoint) (factcheckarchive.Stats, error) {
+	f.ranStreams = len(streams)
+	return f.stats, f.err
+}
+
+// spyCheckpoint records whether Clear was called, so a test can assert the producer
+// clears the checkpoint only on full success.
+type spyCheckpoint struct {
+	factcheckarchive.NoStreamCheckpoint
+	cleared bool
+}
+
+func (c *spyCheckpoint) Clear() error {
+	c.cleared = true
+	return nil
+}
+
+func nStreams(n int) []factcheckarchive.RunConfig {
+	out := make([]factcheckarchive.RunConfig, n)
+	for i := range out {
+		out[i] = factcheckarchive.RunConfig{Query: "topic"}
+	}
+	return out
 }
 
 func TestFactcheckProducerScope(t *testing.T) {
 	t.Parallel()
-	p := factcheckProducer{queries: []string{"Macron", "retraites"}}
+	p := factcheckProducer{streams: []factcheckarchive.RunConfig{
+		{Query: "retraites"}, {Query: "immigration"}, {PublisherSite: "lemonde.fr"},
+	}}
 	if got := p.Name(); got != "factcheck" {
 		t.Errorf("Name() = %q, want factcheck", got)
 	}
-	if got, want := p.Scope(), "Macron, retraites"; got != want {
+	if got, want := p.Scope(), "2 topics + 1 publisher streams"; got != want {
 		t.Errorf("Scope() = %q, want %q", got, want)
 	}
 }
 
-func TestFactcheckProducerRunSumsStats(t *testing.T) {
+func TestFactcheckProducerRunClearsCheckpointOnSuccess(t *testing.T) {
 	t.Parallel()
-	arch := &fakeArchive{results: map[string]struct {
-		stats factcheckarchive.Stats
-		err   error
-	}{
-		"Macron":    {stats: factcheckarchive.Stats{Published: 5, Skipped: 2}},
-		"retraites": {stats: factcheckarchive.Stats{Published: 3, Skipped: 1}},
-	}}
-	p := factcheckProducer{client: arch, queries: []string{"Macron", "retraites"}, maxPages: 4}
+	arch := &fakeArchive{stats: factcheckarchive.Stats{Published: 8, Skipped: 3}}
+	cp := &spyCheckpoint{}
+	p := factcheckProducer{client: arch, streams: nStreams(4), checkpoint: cp}
 
 	stats, err := p.Run(t.Context())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if want := (crawlnotify.Stats{New: 8, Updated: 0, Skipped: 3}); stats != want {
+	if want := (crawlnotify.Stats{New: 8, Skipped: 3}); stats != want {
 		t.Errorf("stats = %+v, want %+v", stats, want)
 	}
-	// Every configured query is walked, in order: pagination per query is unchanged.
-	if want := []string{"Macron", "retraites"}; !slices.Equal(arch.ranQueries, want) {
-		t.Errorf("ran queries = %v, want %v", arch.ranQueries, want)
+	if arch.ranStreams != 4 {
+		t.Errorf("ran %d streams, want 4", arch.ranStreams)
+	}
+	if !cp.cleared {
+		t.Error("checkpoint not cleared after a full successful run")
 	}
 }
 
-func TestFactcheckProducerRunStopsAndReportsOnError(t *testing.T) {
+func TestFactcheckProducerRunKeepsCheckpointOnError(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("api down")
-	arch := &fakeArchive{results: map[string]struct {
-		stats factcheckarchive.Stats
-		err   error
-	}{
-		"Macron":    {stats: factcheckarchive.Stats{Published: 5, Skipped: 2}},
-		"retraites": {stats: factcheckarchive.Stats{Published: 1}, err: wantErr},
-		"never":     {stats: factcheckarchive.Stats{Published: 99}},
-	}}
-	p := factcheckProducer{client: arch, queries: []string{"Macron", "retraites", "never"}}
+	arch := &fakeArchive{stats: factcheckarchive.Stats{Published: 2}, err: wantErr}
+	cp := &spyCheckpoint{}
+	p := factcheckProducer{client: arch, streams: nStreams(4), checkpoint: cp}
 
 	stats, err := p.Run(t.Context())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
-	// Counts gathered before the failure are reported; the query after the failure never runs.
-	if want := (crawlnotify.Stats{New: 6, Skipped: 2}); stats != want {
+	if want := (crawlnotify.Stats{New: 2}); stats != want {
 		t.Errorf("stats = %+v, want %+v", stats, want)
 	}
-	if got := arch.ranQueries; len(got) != 2 {
-		t.Errorf("ran %v queries, want to stop after the failing one", got)
+	if cp.cleared {
+		t.Error("checkpoint cleared despite a stream error; a rerun must resume")
 	}
 }
 
-// TestFactcheckProducerThroughRunWithAlerts is the end-to-end exercise: the
-// producer runs through the seam exactly as the command does, and a fake notifier
-// observes the start + finish alerts carrying the real scope and counts.
+// TestFactcheckProducerThroughRunWithAlerts is the end-to-end exercise: the producer
+// runs through the seam exactly as the command does, and a fake notifier observes
+// the start + finish alerts carrying the real scope and counts.
 func TestFactcheckProducerThroughRunWithAlerts(t *testing.T) {
 	t.Parallel()
 	rec := &recordingNotifier{}
-	arch := &fakeArchive{results: map[string]struct {
-		stats factcheckarchive.Stats
-		err   error
-	}{
-		"Macron": {stats: factcheckarchive.Stats{Published: 7, Skipped: 2}},
-	}}
-	p := factcheckProducer{client: arch, queries: []string{"Macron"}}
+	arch := &fakeArchive{stats: factcheckarchive.Stats{Published: 7, Skipped: 2}}
+	p := factcheckProducer{client: arch, streams: []factcheckarchive.RunConfig{{Query: "Macron"}}, checkpoint: factcheckarchive.NoStreamCheckpoint{}}
 
 	stats, err := crawlnotify.RunWithAlerts(t.Context(), rec, p)
 	if err != nil {
@@ -124,11 +126,11 @@ func TestFactcheckProducerThroughRunWithAlerts(t *testing.T) {
 		t.Fatalf("got %d events, want start + finish", len(rec.events))
 	}
 	start, ok := rec.events[0].(crawlnotify.RunStarted)
-	if !ok || start.Source != "factcheck" || start.Scope != "Macron" {
+	if !ok || start.Source != "factcheck" {
 		t.Errorf("start event = %#v", rec.events[0])
 	}
 	fin, ok := rec.events[1].(crawlnotify.RunFinished)
-	if !ok || fin.Source != "factcheck" || fin.Scope != "Macron" || fin.New != 7 || fin.Skipped != 2 {
+	if !ok || fin.Source != "factcheck" || fin.New != 7 || fin.Skipped != 2 {
 		t.Errorf("finish event = %#v", rec.events[1])
 	}
 }
@@ -137,13 +139,8 @@ func TestFactcheckProducerFailureAlerts(t *testing.T) {
 	t.Parallel()
 	rec := &recordingNotifier{}
 	wantErr := errors.New("boom")
-	arch := &fakeArchive{results: map[string]struct {
-		stats factcheckarchive.Stats
-		err   error
-	}{
-		"Macron": {err: wantErr},
-	}}
-	p := factcheckProducer{client: arch, queries: []string{"Macron"}}
+	arch := &fakeArchive{err: wantErr}
+	p := factcheckProducer{client: arch, streams: nStreams(1), checkpoint: factcheckarchive.NoStreamCheckpoint{}}
 
 	_, err := crawlnotify.RunWithAlerts(t.Context(), rec, p)
 	if !errors.Is(err, wantErr) {
@@ -153,7 +150,7 @@ func TestFactcheckProducerFailureAlerts(t *testing.T) {
 		t.Fatalf("got %d events, want start + fail", len(rec.events))
 	}
 	fail, ok := rec.events[1].(crawlnotify.RunFailed)
-	if !ok || fail.Source != "factcheck" || fail.Scope != "Macron" || !errors.Is(fail.Err, wantErr) {
+	if !ok || fail.Source != "factcheck" || !errors.Is(fail.Err, wantErr) {
 		t.Errorf("fail event = %#v", rec.events[1])
 	}
 }

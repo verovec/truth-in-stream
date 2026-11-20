@@ -21,17 +21,13 @@ export type LiveSummary = {
   // error. Some may have found no match; they still count as checked.
   checked: number;
   // Claim-verdict tallies across the matches of every checked statement. These
-  // mirror the claim entries in the fact-check list one-for-one. unclear is the
-  // legacy curated path's neutral verdict; unverifiable is the verify path's
-  // first-class "can't be confirmed" verdict, kept distinct so the strip reads
-  // the same word as the per-claim list.
+  // mirror the claim entries in the fact-check list one-for-one. The displayed
+  // vocabulary is exactly corroborated, contradicted, and unverifiable - the
+  // states the verify pipeline produces; a legacy curated match with any other
+  // verdict contributes to checked but to no verdict bucket.
   corroborates: number;
   contradicts: number;
-  unclear: number;
   unverifiable: number;
-  // Supporting Wikipedia evidence matches across checked statements, kept
-  // distinct from claim verdicts.
-  evidence: number;
   // Verified claims (verify path) that carried at least one manipulation flag,
   // orthogonal to the verdict counts: a claim can be literally accurate yet
   // cherry-picked, so a flagged claim is tallied here in addition to its verdict.
@@ -49,9 +45,7 @@ export function emptySummary(): LiveSummary {
     checked: 0,
     corroborates: 0,
     contradicts: 0,
-    unclear: 0,
     unverifiable: 0,
-    evidence: 0,
     misleadingFraming: 0,
     skipped: 0,
     analysing: 0,
@@ -92,10 +86,14 @@ export function summarizeStatements(
       continue;
     }
     summary.checked += 1;
+    // Only the two displayed curated verdicts contribute; an evidence match or
+    // the legacy neutral "unclear" verdict counts toward checked but toward no
+    // verdict bucket, since neither is shown anywhere anymore.
     for (const match of statement.matches) {
-      if (match.kind === "evidence") {
-        summary.evidence += 1;
-      } else {
+      if (
+        match.kind !== "evidence" &&
+        (match.verdict === "corroborates" || match.verdict === "contradicts")
+      ) {
         summary[match.verdict] += 1;
       }
     }
@@ -105,9 +103,9 @@ export function summarizeStatements(
 
 // VERIFY_VERDICT_BUCKET maps a verified claim's credibility verdict (the
 // verifier's credible/disputed/unverifiable vocabulary) onto the strip's counts.
-// credible and disputed reuse the curated corroborates/contradicts buckets, but
-// unverifiable keeps its own bucket rather than collapsing into the curated
-// unclear, so the strip reads "Unverifiable" exactly as the per-claim list does.
+// credible and disputed reuse the curated corroborates/contradicts buckets, and
+// unverifiable keeps its own bucket, so the strip reads "Unverified" exactly as
+// the per-claim list does.
 // A verified claim with no verdict (a degenerate frame) reads as unverifiable,
 // mirroring how the list renders it. The Record over ClaimVerdict is exhaustive by
 // construction: a new verdict added to the wire enum fails to compile here until it

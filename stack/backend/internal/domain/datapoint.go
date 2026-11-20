@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Datapoint is one source-agnostic statistical observation: a single figure for
@@ -82,6 +83,28 @@ const (
 	INSEEGDPCorpus          = "insee-pib"
 )
 
+// ECBStatCorpus and OECDStatCorpus are the evidence_chunks.source labels for the
+// two supranational macro-statistical sources ingested through the generic SDMX
+// connector (internal/source/sdmx): the European Central Bank and the OECD.
+//
+// The OpenDataSoft connector ingests three institutional portals sharing the
+// identical Explore API v2.1, plus the interior-ministry security-statistics
+// service (SSMSI) publishing CSV bases on data.gouv.fr: DREES (health/social
+// policy), DARES (labor market), URSSAF (private-sector employment by territory),
+// SSMSI (recorded delinquency).
+//
+// Each is a distinct corpus so a retrieved passage's publisher is identifiable,
+// and each is excluded from the wiki-only maintenance reads exactly like every
+// other statistical corpus.
+const (
+	ECBStatCorpus    = "ecb"
+	OECDStatCorpus   = "oecd"
+	DREESStatCorpus  = "drees"
+	DARESStatCorpus  = "dares"
+	URSSAFStatCorpus = "urssaf"
+	SSMSIStatCorpus  = "ssmsi"
+)
+
 // statCorpora is every statistical corpus label sharing the evidence_chunks table.
 // The wiki-maintenance reads (CountWikiPages, EmbeddedWikiChunks) exclude all of
 // them so statistical evidence never skews the encyclopedic page-count guard or
@@ -96,6 +119,12 @@ var statCorpora = []string{
 	INSEEEmploymentCorpus,
 	INSEEPricesCorpus,
 	INSEEGDPCorpus,
+	ECBStatCorpus,
+	OECDStatCorpus,
+	DREESStatCorpus,
+	DARESStatCorpus,
+	URSSAFStatCorpus,
+	SSMSIStatCorpus,
 }
 
 // StatCorpora returns a fresh copy of the statistical corpus labels to exclude
@@ -149,6 +178,27 @@ func (d Datapoint) SeriesPageID() int64 {
 // collide on one (page_id, chunk_index) row and the four quarters sort within
 // the year after the months.
 const quarterSlotBase = 20
+
+// PeriodStart maps the observation period to its first day (annual to 1
+// January, monthly to the first of the month, quarterly to the quarter's first
+// month), the typed publication date a statistical passage carries: the figure
+// speaks about that period, so recency ordering follows the period, not the
+// crawl. It shares parsePeriod with PeriodChunkIndex so the two can never
+// disagree about what a period means.
+func (d Datapoint) PeriodStart() (time.Time, error) {
+	year, slot, err := parsePeriod(d.Period)
+	if err != nil {
+		return time.Time{}, err
+	}
+	month := time.January
+	switch {
+	case slot >= 1 && slot <= 12:
+		month = time.Month(slot)
+	case slot > quarterSlotBase:
+		month = time.Month((slot-quarterSlotBase-1)*3 + 1)
+	}
+	return time.Date(year, month, 1, 0, 0, 0, 0, time.UTC), nil
+}
 
 // PeriodChunkIndex derives a stable, non-negative chunk index from the period
 // so one series' periods occupy distinct rows under the same page id. It is the
