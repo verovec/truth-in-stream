@@ -60,7 +60,7 @@ jobs:
       # The metrics-poller lambda is provisioned by default (enable_metrics_lambda),
       # so its bootstrap binary must exist for the data.archive_file to package it at
       # plan/apply. Cross-compiled here (no build step otherwise runs in this job), so
-      # an automated dev apply / prod release does not need a manual pre-build.
+      # a CI plan / prod release does not need a manual pre-build.
       - uses: actions/setup-go@v5
         with:
           go-version-file: stack/backend/go.mod

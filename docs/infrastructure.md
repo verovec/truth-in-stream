@@ -190,7 +190,7 @@ dispatched build's `sha-<7>` revision, same as the release — a sha-pinned serv
 by a plain force-new-deployment, and the pinned roll also picks up terraform-side task-definition
 changes the service resource no longer tracks. See [Development -> CI](development.md#ci).
 
-The tag is the gate: an ordinary merge to `main` never deploys and never applies prod (the
-`terraform.yml` prod job stays plan-only), and the main-account root is always a deliberate human
-apply. Repo variables `AWS_REGION`, `DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and
+The tag is the gate: an ordinary merge to `main` never deploys and never applies anything (both
+`terraform.yml` jobs, `dev` and `prod`, stay plan-only), and the `dev` and main-account roots are
+always a deliberate human apply. Repo variables `AWS_REGION`, `DEPLOY_PROJECT`, `DEPLOY_ENVIRONMENT=prod`, and
 `AWS_DEPLOY_ROLE_ARN` drive the deploy jobs.

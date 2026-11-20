@@ -182,6 +182,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/release-guard.test.sh
+  # Gate the workflows themselves: only the tag release may ask for a terraform
+  # apply, so a branch push (a merge to main included) can never apply.
+  ci-apply-gate-script:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci-apply-gate.test.sh
   # Unit-test the CloudWatch-alarm-to-Slack forwarder Lambda's message formatting
   # (pure, no AWS calls; boto3 is stubbed). The handler ships as a single source
   # file with no build step, so this is its only gate.
