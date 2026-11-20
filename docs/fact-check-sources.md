@@ -13,6 +13,59 @@ source produces a verdict. It also covers what the user sees today vs. what a
 
 ---
 
+## Run model — how to actually run a source
+
+The inventory below documents *what* each source is. This section is *how you run it*. Read it
+first: it's the lens for the inventory's **Cadence** and **Producer -> queue -> worker** columns.
+Full pipeline mechanics (queues, idempotency, resilience) are in
+[`docs/ingestion-pipeline.md`](ingestion-pipeline.md); this is just the operating model.
+
+**Every source is a pair, run drain-first.** A source is one **producer** (the "crawler" - fills a
+RabbitMQ queue and exits) plus one long-running **worker** (the "consumer" - drains that queue into
+a store). The source -> queue -> worker mapping is the connector registry
+(`stack/backend/internal/connector/sources.json`), which the inventory's "Producer -> queue ->
+worker" column renders. Order always matters:
+
+1. **Start the worker/consumer first** - it sits idle, waiting on the queue.
+2. **Run the producer/crawler** - it fills the queue, then exits.
+3. **Watch the queue drain**, then stop the worker (cloud: stop the host, to cap cost).
+
+**Three environments - pick one.** The same pair runs in any of these:
+
+| Environment | Runs it | Use it for |
+|-------------|---------|------------|
+| **Local Docker** | `make` target pairs (`fleet-up`/`wiki-populate`, `crawl-workers`/`crawl`, `factcheck-workers`/`factcheck-crawl`, `scrutins-workers`/`scrutins-crawl`, one-shots `make stats-ingest`, `make reingest`) | dev on your machine, filling local pgvector |
+| **Always-on local scheduler** | `cmd/scheduler` (one long-running process) | hands-off cron: fires *scheduled* sources on their `DefaultCron`; workers must already be up |
+| **On-demand cloud hosts** | `/crawler` + `/consumer` (thin wrappers over `scripts/ingest-host.sh`, run over SSM) | the real dev-account EC2 ingestion hosts |
+
+**Cadence decides what auto-fires.** In the inventory, a clock-time **Cadence** (03:00, 04:00, ...)
+means the scheduler fires that producer automatically on its cron (`SCHEDULE_<SOURCE>_ENABLED` /
+`SCHEDULE_<SOURCE>_CRON` override per environment); the local scheduler still needs the worker fleet
+running. A **host-only** cadence (`stats`, `sdmx`, `ods`, `legifrance`, `claimskg`) is **never**
+scheduled - you always trigger those by hand.
+
+**Cloud, per source (the `/crawler` + `/consumer` loop):**
+
+```
+/consumer <source> up      # start consumer host + bring the worker up (detached)
+/crawler  <source> up      # start crawler host + run the producer; streams output, exits
+/consumer <source> status  # watch the queue depth fall to 0
+/consumer <source> down    # stop the host - it BILLS until you do this
+```
+
+`up`/`down` act on the **whole host**, not one source, so running everything means bringing each host
+up once, looping the producer/worker over the source list, waiting for the queues to drain, then one
+`down` per host. Two guardrails the commands enforce: the dev-account guard refuses until
+`deploy/targets.json`'s `dev.account_id` placeholder holds the real id (gitignored, operator-only),
+and an absent host reports the `terraform apply -var enable_ingestion_hosts=true` prerequisite
+(human-gated - don't apply it).
+
+**There is no single "run everything" button.** You iterate the source list within one environment.
+`make pipeline-health ENV=dev` is the closest global view: a read-only snapshot of both host states,
+per-queue and per-DLQ backlog, and each source's last-successful-run recency.
+
+---
+
 ## Source inventory (the connector registry)
 
 This table is the canonical list and must match `stack/backend/internal/connector/registry.go`
